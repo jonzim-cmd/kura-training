@@ -1,9 +1,11 @@
+# Rust
+target/
+
 # OS
 .DS_Store
 
 # IDE
 *.swp
-*.lock
 .idea/
 .vscode/
 
@@ -19,10 +21,11 @@ build/
 venv/
 env/
 
-# Environment
+# Environment (secrets)
 .env
 .env.local
 .env.*.local
+docker/.env
 
 # Testing
 .coverage
