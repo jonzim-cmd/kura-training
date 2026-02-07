@@ -1,4 +1,4 @@
-# Training Data Platform
+# Kura Training
 
 ## Kernidee
 
@@ -6,50 +6,90 @@ Die Agent-Welt spaltet sich in zwei Hälften: **Intelligence** (was der Agent mi
 
 Ein Cloud-Backend + CLI für Trainingsdaten, gebaut für AI Agents — nicht für Menschen. Der Agent ist das Frontend, der Coach, der Analyst. Das Backend liefert was der Agent selbst nicht kann: persistenter Zustand, vorberechnete Statistik, strukturierte Daten über Monate und Jahre.
 
+### Compute, not Storage
+
+Trainingsdaten sind klein. Ein paar Jahre History passen in wenige Megabyte. Jeder Agent mit API-Zugang hat de facto eine vollständige Kopie — und das ist kein Bug, sondern Feature. "Wir speichern deine Daten" ist kein Moat. Agents klonen strukturierte, kleine Datensätze in Sekunden.
+
+Der Moat ist, was wir *aus* den Daten machen: statistische Analysen die kein Agent im Kontextfenster berechnen kann, Projections die über Jahre vorberechnet werden, Cross-User Benchmarks die nur zentral möglich sind, Multi-Agent Governance die Shared State konsistent hält. Kura ist keine Datenbank mit API — es ist eine Compute- und Governance-Engine, die Trainingsdaten als Input nimmt.
+
 ## Warum ein Backend, nicht nur ein Agent
 
-- **Source of Truth.** Agent-Memory ist fuzzy. Eine Datenbank ist exakt. "Waren es 80kg oder 85kg?" braucht eine Quelle der Wahrheit, keine Erinnerung.
-- **Compute at Scale.** 10.000 Sessions bei jeder Frage neu durchrechnen ist Verschwendung. Materialized Views, Aggregationen, Indices — das bleibt Backend-Arbeit.
-- **Vorberechnete Statistik.** Agents haben limitierte Kontextfenster. Trends über 2 Jahre, Korrelationsanalysen, statistische Tests — das muss im Hintergrund laufen und abrufbereit sein.
-- **Multi-Agent-Zugriff.** Dein Agent, der deines Coaches, dein Physio, dein Arzt — alle brauchen eine gemeinsame Datenbasis.
+- **Compute at Scale.** 10.000 Sessions bei jeder Frage neu durchrechnen ist Verschwendung. Materialized Views, Aggregationen, Indices — das bleibt Backend-Arbeit. Ein Agent kann Daten kopieren, aber keine Regressionsanalyse über 2 Jahre in seinem Kontextfenster laufen lassen.
+- **Vorberechnete Statistik.** Trends über 2 Jahre, Korrelationsanalysen, statistische Tests — das muss im Hintergrund laufen und abrufbereit sein. Das ist der Kern dessen, was ein Agent nicht replizieren kann, egal ob er die Rohdaten hat.
+- **Multi-Agent Governance.** Dein Agent, der deines Coaches, dein Physio, dein Arzt — alle brauchen nicht nur eine gemeinsame Datenbasis, sondern konsistenten Shared State mit Berechtigungen. Wer darf was sehen, wer darf schreiben, wer hat wann was geändert. Multi-User Sync und Permissioning sind harte Probleme, die ein einzelner Agent nicht löst.
 - **Integrationen.** Garmin, Apple Health, Strava, Whoop, Oura — das sind Daten-Pipelines, kein Agent-Feature.
-- **Audit & Nachweis.** "Beweise, dass ich vor der Verletzung 120kg gehoben hab." Unveränderliches Log, nicht Agent-Erinnerung.
+- **Audit & Nachweis.** "Beweise, dass ich vor der Verletzung 120kg gehoben hab." Unveränderliches Log mit kryptographischer Integrität, nicht Agent-Erinnerung. Governance und Compliance brauchen eine autoritäre Quelle — nicht weil die Daten sonst nirgends wären, sondern weil Nachweisbarkeit Vertrauen in die Quelle erfordert.
+- **Authoritative Write Coordination.** Auch wenn jeder Agent eine Lese-Kopie hat: Schreiben muss durch einen zentralen Punkt. Sonst gibt es Konflikte, Race Conditions, und keine konsistente History. Kura ist der Single Writer, aus dem alle Agents ihre Wahrheit ableiten.
 
 ## Wie es funktioniert
 
 ```
 User (Handy, Laptop, Sprache, Chat — egal)
     → Agent (beliebig: Claude, GPT, Clawdbot, Custom Bot, ...)
-        → CLI (auf Server des Agents installiert, 24/7 online)
-            → Cloud Backend (REST API, PostgreSQL, Statistik-Engine)
+        → Kura CLI / MCP / REST API
+            → Cloud Backend (PostgreSQL, Statistik-Engine)
 ```
 
-Der User spricht mit seinem Agent — per Telegram, WhatsApp, Claude App, Slack, egal. Der Agent läuft auf einem Server und bedient das CLI. Das CLI ist das primäre Interface für Agents: self-documenting (`--help`), strukturiert, auth-managed. Unter der Haube ruft das CLI die REST API des Backends auf.
+Der User sieht die Technik nie. Er redet mit seinem Agent. Der Agent redet mit Kura. Kura liefert die Wahrheit.
 
-Der User sieht das CLI nie. Er redet mit seinem Agent. Der Agent redet mit dem CLI. Das CLI redet mit dem Backend.
+### Was wir bauen: Zwei Schichten, nicht drei Projekte
 
-### Zugangsebenen
+```
+REST API          ← baust du einmal, perfekt. Alles redet mit ihr.
+    ↑
+CLI               ← thin client, ruft REST API auf
+    ↑
+MCP Mode          ← eingebaut im CLI, gleicher Code
+```
 
-| Priorität | Interface | Für wen |
+Die REST API ist die Wahrheit. Das CLI ist ein Binary das zwei Dinge kann: Shell-Commands UND MCP-Server-Modus. Beides ruft die gleiche API auf. Für Cloud-Agents (Claude.ai, ChatGPT App) gibt es einen gehosteten MCP Server — ein dünner Wrapper um die REST API.
+
+### Welcher Agent nutzt was
+
+| Agent / Umgebung | Zugang | Wie |
 |---|---|---|
-| 1 | **CLI** | Jeder Agent auf jedem Server. Primary Interface. Self-documenting, auth-managed, structured I/O. |
-| 2 | **REST API** | Transport-Layer unter dem CLI. Auch direkt nutzbar für Agents die HTTP bevorzugen. |
-| 3 | **OpenAPI Spec** | Agent-Frameworks (LangChain, Custom GPTs) die automatisch Clients generieren. |
-| 4 | **MCP Server** | Claude-native Agents. Wächst mit dem Ökosystem. |
+| Claude Code (lokal, Shell) | **CLI direkt** | Auf dem Rechner installiert |
+| Cursor / Codex / Aider (lokal, Shell) | **CLI direkt** | Auf dem Rechner installiert |
+| Agent auf VPS (Server, Shell) | **CLI direkt** | Auf dem Server installiert, 24/7 |
+| Claude Desktop (lokal, MCP) | **CLI im MCP-Modus** | CLI als lokaler MCP Server |
+| Claude.ai / Claude App (Cloud, MCP) | **Gehosteter MCP Server** | Kura hostet MCP-Endpoint |
+| ChatGPT / ChatGPT App (Cloud) | **REST API** | Via Function Calling / Actions, gehosteter MCP wenn verfügbar |
+| Telegram / WhatsApp | **Optional** | Für User ohne AI-Agent die per Chat tracken wollen. Nicht der Hauptweg. |
 
-Das CLI ist die Developer Experience für Agents — wie ein Mensch einen Hammer nimmt, statt die Physik des Nagelns zu berechnen.
+### Entscheidungslogik
 
-## Was das Backend tut, was der Agent nicht kann
+```
+Hat Shell-Zugriff?  → CLI
+Hat MCP?            → CLI im MCP-Modus (lokal) oder gehosteter MCP (Cloud)
+Hat beides nicht?   → REST API direkt
+Telegram/WhatsApp?  → Optionaler Kanal, nicht der Hauptweg
+```
 
-| Fähigkeit | Warum nicht der Agent? |
+### Zugangsebenen (Priorität)
+
+| Priorität | Interface | Rolle |
+|---|---|---|
+| 1 | **REST API** | Fundament. Alles redet mit ihr. Einmal perfekt bauen. |
+| 2 | **CLI** | Primary Agent Interface. Thin Client über die API. Self-documenting, auth-managed, structured JSON. Source-available (BSL). |
+| 3 | **MCP (im CLI)** | Eingebaut im CLI-Binary. Gleicher Code, MCP-Protokoll. Für lokale MCP-Agents. |
+| 4 | **Gehosteter MCP** | Dünner Wrapper um REST API. Für Cloud-Agents (Claude.ai, ChatGPT App). |
+| 5 | **OpenAPI Spec** | Automatische Client-Generierung für Agent-Frameworks. |
+
+## Was das Backend tut, was der Agent nicht kann — auch wenn er die Daten hat
+
+Ein Agent mit API-Zugang hat eine Kopie der Rohdaten. Trotzdem kann er folgendes nicht:
+
+| Fähigkeit | Warum nicht der Agent, selbst mit Datenkopie? |
 |---|---|
-| Persistenter Zustand über Jahre | Agents starten jede Session neu |
-| Statistische Tests (Signifikanz, Effektstärke, CI) | Braucht Compute, nicht Sprachmodell |
-| Trend-Erkennung über Monate | Passt nicht ins Kontextfenster |
-| Anomaly Detection | Braucht historische Baselines |
-| Korrelationsanalysen (Schlaf↔Performance) | Braucht vollständige Zeitreihen |
-| Cross-User Benchmarks | Braucht Daten anderer User (nur bei SaaS) |
+| Statistische Tests (Signifikanz, Effektstärke, CI) | Braucht Compute, nicht Sprachmodell. Agents halluzinieren Statistik. |
+| Trend-Erkennung über Monate | 10.000 Events passen nicht ins Kontextfenster. Vorberechnung ist zwingend. |
+| Anomaly Detection | Braucht historische Baselines, die kontinuierlich aktualisiert werden |
+| Korrelationsanalysen (Schlaf↔Performance) | Braucht vollständige Zeitreihen und echte statistische Methoden |
+| Cross-User Benchmarks | Braucht Daten anderer User — ein Agent hat nur seine eigenen |
+| Multi-Agent Write Coordination | Mehrere Agents gleichzeitig schreiben → Konflikte. Braucht zentralen Koordinator. |
+| Governance & Permissions | Welcher Agent darf was sehen/schreiben? Braucht zentrale Autorität. |
 | Daten-Import/Normalisierung | Pipeline-Arbeit, kein LLM-Task |
+| Audit & Nachweisbarkeit | Agent-Kopie ist nicht beweiskräftig. Immutable Log mit Provenance schon. |
 
 ## Architektur: Event Sourcing + CQRS auf PostgreSQL
 
@@ -81,16 +121,23 @@ Zusätzlich: `LISTEN/NOTIFY` für Event-Subscriptions, Partitioning für Event-T
 Vorteile einer einzigen DB:
 - Ein Backup, ein Monitoring, ein Scaling-Pfad
 - Transaktionale Konsistenz: Event schreiben + Projection updaten in einer Transaktion
-- Self-Hosting wird trivial: ein Docker-Container
+- Self-Hosting wird einfach: ein Docker-Container plus Postgres-Setup
 - pg_duckdb für Statistical Engine: Regression über 2 Jahre direkt in der DB
 - pgvector für Semantic Layer: Exercise-Embeddings direkt querybar
+
+Extensions sind optional. Wenn pg_duckdb/pgvector nicht verfügbar sind (z.B. bei Managed Postgres), läuft ein Minimal-Mode: Core-Features bleiben, Analytics/Semantik wandern in Background Workers oder nutzen Ersatz-Queries.
 
 ### Architektur-Übersicht
 
 ```
-CLI (Open Source, BSL)
-        │
-        ▼
+CLI (Shell + MCP-Modus)    Gehosteter MCP    REST API direkt
+        │                       │                  │
+        └───────────┬───────────┘                  │
+                    │                               │
+                    ▼                               │
+              REST API ◄───────────────────────────┘
+                    │
+                    ▼
 ┌─────────────────────────────────────────────────────┐
 │                  CLOUD BACKEND (SaaS)                │
 │                                                      │
@@ -144,6 +191,8 @@ id, user_id, timestamp, event_type, data (JSONB), metadata (JSONB)
 - Corrections und Undos sind Compensating Events — das Original wird nie verändert
 - Jedes Event hat einen Client-generierten Idempotency-Key gegen Duplikate
 
+Löschung/Rectification: personenbezogene Daten werden separat gehalten oder redigierbar gemacht, damit "Delete" möglich ist ohne den Event-Stream zu zerstören. Wie genau, ist eine bewusste Design-Entscheidung (Privacy vs. Audit).
+
 ### Read Path (Query Side)
 
 Agents lesen nie aus dem Event Store. Sie lesen aus vorberechneten Projections.
@@ -158,7 +207,7 @@ Projections werden bei jedem neuen Event aktualisiert:
 Zwischen Client und Command/Query Side. Powered by pgvector.
 
 - **Exercise Resolution:** "bench", "Bankdrücken", "Bench Press" → gleiche Übung (Embedding-Similarity)
-- **Zeitliche Auflösung:** "letzte Woche" → konkreter Datumsbereich
+- **Zeitliche Auflösung:** Agent liefert den Datumsbereich, Backend normalisiert/validiert ihn
 - **Semantische Auflösung:** "Oberkörper" → [push, pull] Muskelgruppen
 - **Keine NL-Interpretation.** Das macht der Agent. Das Backend resolved Begriffe, nicht Sätze.
 
@@ -173,6 +222,8 @@ Nichts hardcoded. Typen emergieren aus Nutzung, nicht aus Schema.
 Erst wenn genug Daten da sind, bietet das System passende Projections an. Kein Zwang zur Kategorisierung.
 
 Zusätzlich: User/Agent kann jederzeit explizit taggen (Muskelgruppen, Bewegungsmuster, Equipment). Community-Taxonomy als optionaler Default für bekannte Übungen.
+
+Inference ist versioniert und stabilisiert: Sobald ein Typ "gefriert", bleibt er konsistent, kann aber bewusst vom User/Agent überschrieben werden. Änderungen triggern Rebuilds der Projections.
 
 ### Context-Enriched Responses
 
@@ -197,6 +248,15 @@ Jede Response enthält nicht nur die angefragten Daten, sondern automatisch rele
 ```
 
 Der Agent braucht einen Call, nicht fünf.
+
+### Agent-First Interface (Requirement)
+
+Agents brauchen deterministische, strukturierte Antworten statt "wahrer Sätze":
+- Stabile IDs, klare Enums, versionierte Schemas
+- Konsistente Fehlercodes und Idempotency-Keys
+- Pagination, Filter, Zeitfenster, inkrementelle Updates
+- Kostenhinweise (query_cost, cache_hit) und Daten-Linie (computed_at, projection_version)
+- Berechtigungen/Scopes maschinenlesbar (was darf dieser Agent sehen/schreiben)
 
 ### Temporal Queries als First-Class
 
@@ -253,11 +313,15 @@ SaaS ist das Primärmodell weil:
 - Statistische Engine von zentralem Compute profitiert
 - Zielkunde (Person mit Agent) will kein Backend deployen
 
-### CLI (Primary Agent Interface)
+### CLI + MCP (Agent Interface)
 
-Open Source (BSL-Lizenz). Treibt Adoption. Ist das primäre Interface für Agents — self-documenting, auth-managed, structured JSON output. Ohne Backend-Account wertlos.
+Source-available (BSL-Lizenz). Ein Binary, zwei Modi:
+1. **Shell-Modus:** Klassische CLI-Commands. Für Agents mit Shell-Zugriff.
+2. **MCP-Modus:** Gleicher Code, MCP-Protokoll. Für lokale MCP-Agents (Claude Desktop etc.).
 
-Läuft auf dem Server des Agents, nicht auf dem Gerät des Users. Phone-only User merken nichts vom CLI — sie reden mit ihrem Agent, der Agent bedient das CLI.
+Zusätzlich: **Gehosteter MCP Server** für Cloud-Agents (Claude.ai, ChatGPT App). Dünner Wrapper um die REST API.
+
+Alle drei rufen die gleiche REST API auf. Kein separater Code, kein Maintenance-Overhead.
 
 ### Self-Hosted (Phase 2)
 
@@ -271,11 +335,13 @@ Architektur ist von Tag 1 self-hosting-fähig: PostgreSQL-Only, ein Docker-Conta
 - **Architektur:** Event Sourcing + CQRS
 - **Datenbank:** PostgreSQL-Only mit pg_duckdb, pgvector, JSONB. Kein zweites System.
 - **Datenmodell:** Events statt starkes Schema. Type Inference statt vordefinierte Typen. Nichts hardcoded.
-- **Business Model:** SaaS primary (Phase 1), Self-Hosted als spätere Option (Phase 2). CLI Open Source (BSL).
-- **Primary Interface:** CLI auf Agent-Server. REST API als Transport darunter. User interagiert nie direkt mit CLI.
+- **Business Model:** SaaS primary (Phase 1), Self-Hosted als spätere Option (Phase 2). CLI Source-available (BSL).
+- **Interface-Stack:** REST API als Fundament → CLI als Thin Client → MCP eingebaut im CLI. Gehosteter MCP für Cloud-Agents. Alles ein Codebase, kein Maintenance-Overhead.
+- **Produktname:** Kura Training
 - **Response-Design:** Context-Enriched. Jede Antwort enthält data + context + meta.
 - **Temporal Queries:** First-Class. Zeitreisen, Vergleiche, Hypotheticals nativ.
 - **Corrections:** Compensating Events, nie Mutation. Idempotency-Keys auf jedem Event.
+- **Defensibility:** Compute, not Storage. Daten sind klein und kopierbar. Der Moat liegt in vorberechneter Statistik, Cross-User Benchmarks, Multi-Agent Governance, und Write Coordination — nicht in der Datenhaltung selbst.
 
 ## Offene Entscheidungen
 
@@ -313,5 +379,4 @@ Architektur ist von Tag 1 self-hosting-fähig: PostgreSQL-Only, ein Docker-Conta
 
 ### Naming
 
-- CLI-Command: `td`, `trn`, `lift`, anderes?
-- Produktname: offen
+- CLI-Command: `kura`, `kt`, anderes?
