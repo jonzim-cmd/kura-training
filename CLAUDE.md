@@ -77,6 +77,28 @@ Rust Workspace: api/ cli/ core/
 
 **CLI-Commands:** `kura health`, `kura event create/list`, `kura projection get/list`, `kura admin create-user/create-key`, `kura login/logout`
 
+### Dimension Design Conventions
+
+**Time conventions (mandatory for all time series):**
+- Week keys: ISO 8601 (`2026-W06`)
+- Date keys: ISO 8601 (`2026-02-08`)
+- Timestamps: ISO 8601 with timezone
+- All dimensions using time series MUST use these formats — guarantees cross-dimension joinability.
+
+**Granularity checklist (ask before building any new dimension):**
+
+| Level | Example | Ask yourself |
+|-------|---------|-------------|
+| Set / Individual | Single set, meal, measurement | Does this dimension track individual events? |
+| Session | Training session, daily nutrition | Are events naturally grouped? |
+| Day | Per-day aggregates | Almost always needed |
+| Week | Weekly summaries | Almost always needed |
+| All time | Totals, records, streaks | Almost always needed |
+
+Not every dimension needs all levels. But the question must be asked.
+
+**Declaration (Decision 7):** Every handler declares `dimension_meta` at registration: description, key_structure, granularity levels, relationships to other dimensions. See Design Doc 002, Decision 7.
+
 ## Technische Konfiguration
 
 ### Volta/Node Pfade

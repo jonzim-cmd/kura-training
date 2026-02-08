@@ -351,6 +351,239 @@ The agent handles interactive normalization (and is better at it than any
 small model). Backend ML handles batch processing and cross-user patterns
 where the agent isn't present. Neither replaces the other.
 
+## Decision 7: The Agent's Entry Point — Three Layers in One Call
+
+### The Problem
+
+The agent's first action in any conversation is: understand the user and the
+system. With Decision 5, user_profile became a manifest. But the manifest has
+gaps:
+
+1. **Race condition.** user_profile discovers dimensions by querying the
+   projections table. On the first-ever event, other handlers haven't written
+   yet. The manifest is incomplete.
+2. **No navigation.** The manifest lists dimensions but not how they relate.
+   With 3 dimensions the agent's world knowledge suffices. With 15 it won't.
+3. **No proactivity.** The manifest describes what IS but not what the agent
+   SHOULD DO. Data quality problems, unconfirmed aliases, goals at risk —
+   the system sees these but doesn't surface them as actionable items.
+4. **Missing context for decisions.** `last_updated` tells when the projection
+   was rebuilt, not when the user last trained. The agent can't decide which
+   dimensions to read in detail without reading them first.
+
+### The Solution: Three Layers
+
+One call (`GET /v1/projections/user_profile/me`) returns three layers:
+
+#### Layer 1: `system` — What Kura Can Do (Declaration)
+
+Static capabilities, identical for all users. Changes only on deployment.
+Declared by handlers at registration time, not discovered from data.
+
+```json
+"system": {
+  "dimensions": {
+    "exercise_progression": {
+      "description": "Strength progression per exercise over time",
+      "key_structure": "one per exercise (exercise_id as key)",
+      "granularity": ["set", "week"],
+      "event_types": ["set.logged"],
+      "relates_to": {
+        "training_timeline": {"join": "week", "why": "frequency vs progression"},
+        "user_profile": {"join": "exercises_logged", "why": "which exercises to query"}
+      }
+    },
+    "training_timeline": {
+      "description": "Training patterns: when, what, how much",
+      "key_structure": "single overview per user",
+      "granularity": ["day", "week"],
+      "event_types": ["set.logged"],
+      "relates_to": {
+        "exercise_progression": {"join": "week", "why": "volume breakdown per exercise"}
+      }
+    }
+  },
+  "time_conventions": {
+    "week": "ISO 8601 (2026-W06)",
+    "date": "ISO 8601 (2026-02-08)",
+    "timestamp": "ISO 8601 with timezone"
+  }
+}
+```
+
+**Why declaration, not observation?** Solves the race condition. The system
+layer is built from handler registrations at worker startup, not from
+database queries. A dimension is listed the moment its handler is deployed,
+even before any data exists.
+
+**Why relationships?** The agent needs a navigation graph, not a flat list.
+"If the user asks about Squat progression AND consistency, read
+exercise_progression AND training_timeline, join on week." At 3 dimensions
+this is obvious. At 15 it's essential.
+
+**Why granularity?** When building new dimensions, forces the question:
+"Which granularity levels does this dimension provide?" Prevents gaps like
+the missing session level in the initial implementation.
+
+#### Layer 2: `user` — What Kura Knows About This User (Observation)
+
+Dynamic, per-user. Rebuilt on every event. Identity, dimension coverage,
+data quality with actionable items.
+
+```json
+"user": {
+  "aliases": {"Kniebeuge": "barbell_back_squat"},
+  "preferences": {"unit_system": "metric", "language": "de"},
+  "goals": [{"goal_type": "strength", "target_exercise": "barbell_back_squat", "target_1rm_kg": 140}],
+  "exercises_logged": ["barbell_back_squat", "barbell_bench_press"],
+  "total_events": 312,
+  "first_event": "2025-06-15T10:00:00Z",
+  "last_event": "2026-02-08T14:30:00Z",
+  "dimensions": {
+    "exercise_progression": {
+      "status": "active",
+      "exercises": ["barbell_back_squat", "barbell_bench_press"],
+      "coverage": {"from": "2025-06-15", "to": "2026-02-08"},
+      "freshness": "2026-02-08T14:30:00Z"
+    },
+    "training_timeline": {
+      "status": "active",
+      "coverage": {"from": "2025-06-15", "to": "2026-02-08"},
+      "freshness": "2026-02-08T14:30:00Z",
+      "total_training_days": 127,
+      "last_training": "2026-02-08"
+    }
+  },
+  "data_quality": {
+    "total_set_logged_events": 188,
+    "events_without_exercise_id": 12,
+    "actionable": [
+      {
+        "type": "unresolved_exercise",
+        "exercise": "that weird cable thing",
+        "occurrences": 7
+      },
+      {
+        "type": "unconfirmed_alias",
+        "alias": "SQ",
+        "target": "barbell_back_squat",
+        "confidence": "inferred"
+      }
+    ]
+  }
+}
+```
+
+**`status`**: `"active"` (has data), `"no_data"` (handler registered but no
+projections yet), `"stale"` (freshness > threshold). Comes from merging the
+declaration (Layer 1) with actual projection data.
+
+**`coverage`**: Date range of actual data. Not when the projection was rebuilt,
+but what time period the data spans. Enough for the agent to decide "do I
+need this dimension for a question about last month?"
+
+**`actionable`**: Not passive statistics but a task list for the agent.
+"Here are things you can fix right now." Grows as more intelligence layers
+come online (semantic suggestions, goal tracking, anomaly detection).
+
+#### Layer 3: `agenda` — What the Agent Should Do (Proactive)
+
+Handlungsaufforderungen. Cross-dimensional pattern recognition that surfaces
+opportunities, risks, and maintenance tasks.
+
+```json
+"agenda": [
+  {
+    "priority": "high",
+    "type": "goal_at_risk",
+    "detail": "Squat 140kg goal in 8 weeks, but weekly_history shows plateau since W03",
+    "dimensions": ["exercise_progression", "user_profile"]
+  },
+  {
+    "priority": "medium",
+    "type": "resolve_exercises",
+    "detail": "7 sets logged as 'that weird cable thing' — suggest canonical name",
+    "dimensions": ["user_profile"]
+  },
+  {
+    "priority": "low",
+    "type": "confirm_alias",
+    "detail": "Alias 'SQ' → barbell_back_squat is inferred, not confirmed",
+    "dimensions": ["user_profile"]
+  }
+]
+```
+
+**Implementation phases:**
+- **Now:** Data-quality-based items (unresolved exercises, unconfirmed aliases).
+  Pure pattern matching over existing data, no ML needed.
+- **With Bayesian Engine:** Goal tracking, plateau detection, anomaly alerts.
+  Requires statistical compute but fits the same structure.
+- **With Semantic Layer:** Exercise suggestions ("that weird cable thing"
+  → "cable_crossover" with 92% embedding similarity).
+
+**The principle:** Kura is not just a data store the agent queries. It's a
+partner that tells the agent what to pay attention to. Not by talking to the
+user — by giving the agent the right impulses.
+
+### Design Rules
+
+1. **One call, full picture.** The agent's first call returns system + user +
+   agenda. No second call needed to understand the landscape.
+2. **Declaration over observation.** System capabilities come from handler
+   registration, not from database queries. No race conditions.
+3. **Navigation, not enumeration.** Dimensions declare relationships so the
+   agent can traverse a graph, not scan a list.
+4. **Actionable, not descriptive.** data_quality and agenda surface things
+   the agent should DO, not just things that ARE.
+5. **Composable time conventions.** All dimensions that produce time series
+   use ISO 8601 week keys (`2026-W06`) and date keys (`2026-02-08`).
+   Guaranteed joinable across dimensions.
+
+### Granularity Checklist for New Dimensions
+
+Before building a new dimension, verify which granularity levels it provides:
+
+| Level | Example | Must have? |
+|-------|---------|-----------|
+| Set / Individual | Single set, single meal, single measurement | If the dimension tracks individual events |
+| Session | Training session, daily nutrition | If events are naturally grouped |
+| Day | Per-day aggregates | Almost always |
+| Week | Weekly summaries, trends | Almost always |
+| All time | Totals, records, streaks | Almost always |
+
+A dimension doesn't need all levels. But the question must be asked. The
+missing session level in training_timeline was caught by this checklist.
+
+### Technical Implementation
+
+**Registry extension:** `projection_handler` decorator gains an optional
+`dimension_meta` parameter:
+
+```python
+@projection_handler("set.logged", dimension_meta={
+    "name": "exercise_progression",
+    "description": "Strength progression per exercise over time",
+    "key_structure": "one per exercise (exercise_id as key)",
+    "granularity": ["set", "week"],
+    "relates_to": {
+        "training_timeline": {"join": "week", "why": "frequency vs progression"},
+    },
+})
+async def update_exercise_progression(conn, payload):
+    ...
+```
+
+**Registry API:** New function `get_dimension_metadata()` returns all
+declared dimension metadata. user_profile handler calls this to build
+the `system` layer.
+
+**user_profile handler:** Merges declaration (from registry) with observation
+(from projections table) to produce the three-layer response. The `system`
+layer is static (from registry). The `user` layer enriches dimension entries
+with coverage/freshness from actual projection data. The `agenda` layer
+runs pattern-matching rules over user data.
+
 ## Implementation Priority
 
 1. ~~**Preference/Alias event types + user_profile projection**~~ ✅ Done.
@@ -359,8 +592,10 @@ where the agent isn't present. Neither replaces the other.
    - `exercise_progression` extended with `weekly_history` (26 weeks)
    - `training_timeline` dimension built (recent_days, weekly_summary, frequency, streak)
    - `user_profile` evolved into manifest (dimensions discovery, data_quality)
-4. **Onboarding interview design** — agent-side, produces standard events.
-5. **Semantic layer (pgvector + embeddings)** — background resolution,
+4. **Three-layer entry point** (Decision 7) — Declaration-based manifest,
+   enriched user state, proactive agenda.
+5. **Onboarding interview design** — agent-side, produces standard events.
+6. **Semantic layer (pgvector + embeddings)** — background resolution,
    cross-language matching, fuzzy alias suggestions.
 
 ## Accepted Trade-offs (Dimension Architecture)
@@ -377,20 +612,20 @@ a rebuild. We accept this because:
 - Atomic all-or-nothing would mean one broken handler blocks all projections.
 - At current scale, the risk is low. Revisit when we add monitoring/alerting.
 
-### Flat user_profile structure (no `identity` wrapper)
+### user_profile structure evolving (Decision 5 → Decision 7)
 
-The design doc shows `identity: { aliases, preferences, goals }` as a wrapper.
-Implementation uses a flat structure with these fields at the top level.
-The flat version is simpler for the agent — fewer nesting levels to navigate.
-If the manifest grows significantly, we may introduce grouping later.
+Decision 5 showed `identity: { aliases, preferences, goals }` as a wrapper.
+Initial implementation used a flat structure. Decision 7 defines the target:
+`system` / `user` / `agenda` three-layer structure. Current implementation
+will be migrated incrementally.
 
-### Alias `confidence` field not stored in projection
+### Alias `confidence` field — stored for actionable items
 
 `exercise.alias_created` events have a `confidence` field ("confirmed" /
-"inferred"), but the user_profile projection only stores alias → target
-mapping. The confidence information is preserved in the events and can be
-surfaced when we need to distinguish confirmed from inferred aliases
-(e.g., for the semantic layer's fuzzy suggestions).
+"inferred"). Initially not stored in the projection. Decision 7's `agenda`
+layer needs confidence to surface "unconfirmed_alias" actionable items.
+Implementation will store confidence in the alias map when Decision 7 is
+implemented.
 
 ### training_timeline only covers `set.logged`
 
