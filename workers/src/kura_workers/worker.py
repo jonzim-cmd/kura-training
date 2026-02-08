@@ -146,7 +146,7 @@ class Worker:
             logger.info("Job %d completed (type=%s)", job_id, job_type)
 
         except Exception as exc:
-            await conn.rollback()
+            # conn.transaction() context manager already rolled back
             logger.exception("Job %d failed (type=%s)", job_id, job_type)
 
             attempt = job["attempt"]
