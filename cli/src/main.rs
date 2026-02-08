@@ -221,31 +221,29 @@ async fn event_list(
     limit: Option<u32>,
     cursor: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut url = format!("{api_url}/v1/events");
-    let mut params = Vec::new();
+    let mut url = reqwest::Url::parse(&format!("{api_url}/v1/events"))?;
 
-    if let Some(et) = event_type {
-        params.push(format!("event_type={et}"));
-    }
-    if let Some(s) = since {
-        params.push(format!("since={s}"));
-    }
-    if let Some(u) = until {
-        params.push(format!("until={u}"));
-    }
-    if let Some(l) = limit {
-        params.push(format!("limit={l}"));
-    }
-    if let Some(c) = cursor {
-        params.push(format!("cursor={c}"));
-    }
-
-    if !params.is_empty() {
-        url = format!("{}?{}", url, params.join("&"));
+    {
+        let mut q = url.query_pairs_mut();
+        if let Some(et) = event_type {
+            q.append_pair("event_type", et);
+        }
+        if let Some(s) = since {
+            q.append_pair("since", s);
+        }
+        if let Some(u) = until {
+            q.append_pair("until", u);
+        }
+        if let Some(l) = limit {
+            q.append_pair("limit", &l.to_string());
+        }
+        if let Some(c) = cursor {
+            q.append_pair("cursor", c);
+        }
     }
 
     let resp = client()
-        .get(&url)
+        .get(url)
         .header("x-user-id", user_id)
         .send()
         .await?;

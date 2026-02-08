@@ -96,12 +96,11 @@ async fn insert_event(
     let mut tx = pool.begin().await?;
 
     // Set RLS context: this transaction can only see/write events for this user
-    sqlx::query(&format!(
-        "SET LOCAL kura.current_user_id = '{}'",
-        user_id
-    ))
-    .execute(&mut *tx)
-    .await?;
+    // Uses set_config with parameter binding (not format!) to prevent SQL injection
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
 
     let row = sqlx::query_as::<_, EventRow>(
         r#"
@@ -231,51 +230,69 @@ pub async fn create_events_batch(
     let mut tx = state.db.begin().await?;
 
     // Set RLS context for the entire batch transaction
-    sqlx::query(&format!(
-        "SET LOCAL kura.current_user_id = '{}'",
-        user_id
-    ))
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
 
-    let mut created_events = Vec::with_capacity(req.events.len());
+    // Prepare arrays for multi-row INSERT (avoids N+1 queries)
+    let mut ids = Vec::with_capacity(req.events.len());
+    let mut user_ids = Vec::with_capacity(req.events.len());
+    let mut timestamps = Vec::with_capacity(req.events.len());
+    let mut event_types = Vec::with_capacity(req.events.len());
+    let mut data_values = Vec::with_capacity(req.events.len());
+    let mut metadata_values = Vec::with_capacity(req.events.len());
+    let mut idempotency_keys = Vec::with_capacity(req.events.len());
 
-    for event_req in req.events {
-        let event_id = Uuid::now_v7();
-        let metadata_json = serde_json::to_value(&event_req.metadata).map_err(|e| {
+    for event_req in &req.events {
+        ids.push(Uuid::now_v7());
+        user_ids.push(user_id);
+        timestamps.push(event_req.timestamp);
+        event_types.push(event_req.event_type.clone());
+        data_values.push(event_req.data.clone());
+        metadata_values.push(serde_json::to_value(&event_req.metadata).map_err(|e| {
             AppError::Internal(format!("Failed to serialize metadata: {}", e))
-        })?;
-
-        let row = sqlx::query_as::<_, EventRow>(
-            r#"
-            INSERT INTO events (id, user_id, timestamp, event_type, data, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, user_id, timestamp, event_type, data, metadata, created_at
-            "#,
-        )
-        .bind(event_id)
-        .bind(user_id)
-        .bind(event_req.timestamp)
-        .bind(&event_req.event_type)
-        .bind(&event_req.data)
-        .bind(&metadata_json)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| {
-            if let sqlx::Error::Database(ref db_err) = e {
-                if db_err.code().as_deref() == Some("23505") {
-                    return AppError::IdempotencyConflict {
-                        idempotency_key: event_req.metadata.idempotency_key.clone(),
-                    };
-                }
-            }
-            AppError::Database(e)
-        })?;
-
-        created_events.push(row.into_event());
+        })?);
+        idempotency_keys.push(event_req.metadata.idempotency_key.clone());
     }
 
+    let rows = sqlx::query_as::<_, EventRow>(
+        r#"
+        INSERT INTO events (id, user_id, timestamp, event_type, data, metadata)
+        SELECT * FROM UNNEST($1::uuid[], $2::uuid[], $3::timestamptz[], $4::text[], $5::jsonb[], $6::jsonb[])
+        RETURNING id, user_id, timestamp, event_type, data, metadata, created_at
+        "#,
+    )
+    .bind(&ids)
+    .bind(&user_ids)
+    .bind(&timestamps)
+    .bind(&event_types)
+    .bind(&data_values)
+    .bind(&metadata_values)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::Database(ref db_err) = e {
+            if db_err.code().as_deref() == Some("23505") {
+                // Find which idempotency key conflicted from error detail/message
+                let pg_detail = db_err
+                    .try_downcast_ref::<sqlx::postgres::PgDatabaseError>()
+                    .and_then(|pg| pg.detail())
+                    .unwrap_or_default();
+                let search_text = format!("{} {}", db_err.message(), pg_detail);
+                let key = idempotency_keys.iter()
+                    .find(|k| search_text.contains(k.as_str()))
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string());
+                return AppError::IdempotencyConflict { idempotency_key: key };
+            }
+        }
+        AppError::Database(e)
+    })?;
+
     tx.commit().await?;
+
+    let created_events: Vec<Event> = rows.into_iter().map(|r| r.into_event()).collect();
 
     Ok((StatusCode::CREATED, Json(created_events)))
 }
@@ -339,12 +356,10 @@ pub async fn list_events(
     let mut tx = state.db.begin().await?;
 
     // Set RLS context
-    sqlx::query(&format!(
-        "SET LOCAL kura.current_user_id = '{}'",
-        user_id
-    ))
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
 
     // Build query dynamically based on filters
     // We order by (timestamp DESC, id DESC) for stable cursor pagination
@@ -531,12 +546,15 @@ struct EventRow {
 impl EventRow {
     fn into_event(self) -> Event {
         let metadata: EventMetadata =
-            serde_json::from_value(self.metadata).unwrap_or_else(|_| EventMetadata {
-                source: None,
-                agent: None,
-                device: None,
-                session_id: None,
-                idempotency_key: "unknown".to_string(),
+            serde_json::from_value(self.metadata).unwrap_or_else(|e| {
+                tracing::warn!(event_id = %self.id, error = %e, "Failed to deserialize event metadata, using fallback");
+                EventMetadata {
+                    source: None,
+                    agent: None,
+                    device: None,
+                    session_id: None,
+                    idempotency_key: "unknown".to_string(),
+                }
             });
 
         Event {
