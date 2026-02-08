@@ -87,12 +87,14 @@ async def update_user_profile(
         elif event_type == "goal.set":
             goals.append(data)
 
-    # Count distinct sessions from metadata
-    # (we'd need to query metadata for session_id, but for now count by date)
-    # This is a simplification — session_summary projection will handle true sessions
+    # Resolve exercises through alias map: "kniebeuge" → "barbell_back_squat"
+    alias_lookup = {a.strip().lower(): target for a, target in aliases.items()}
+    resolved_exercises: set[str] = set()
+    for ex in exercises_logged:
+        resolved_exercises.add(alias_lookup.get(ex, ex))
 
     projection_data = {
-        "exercises_logged": sorted(exercises_logged),
+        "exercises_logged": sorted(resolved_exercises),
         "aliases": aliases,
         "preferences": preferences,
         "goals": goals,
@@ -117,5 +119,5 @@ async def update_user_profile(
 
     logger.info(
         "Updated user_profile for user=%s (exercises=%d, aliases=%d, prefs=%d)",
-        user_id, len(exercises_logged), len(aliases), len(preferences),
+        user_id, len(resolved_exercises), len(aliases), len(preferences),
     )
