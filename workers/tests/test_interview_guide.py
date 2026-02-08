@@ -6,10 +6,23 @@ from kura_workers.interview_guide import COVERAGE_AREAS, get_interview_guide
 class TestInterviewGuideStructure:
     def test_has_required_sections(self):
         guide = get_interview_guide()
+        assert "introduction" in guide
         assert "philosophy" in guide
         assert "phases" in guide
         assert "coverage_areas" in guide
         assert "event_conventions" in guide
+
+    def test_introduction_has_required_fields(self):
+        guide = get_interview_guide()
+        intro = guide["introduction"]
+        assert "purpose" in intro
+        assert "tone" in intro
+        assert "orientation" in intro
+        assert "example" in intro
+        # Tone must explicitly discourage role announcements
+        assert "identity" in intro["tone"].lower() or "agent" in intro["tone"].lower()
+        # Orientation must mention duration and what will be asked
+        assert "long" in intro["orientation"].lower() or "minutes" in intro["orientation"].lower()
 
     def test_philosophy_is_non_empty_list(self):
         guide = get_interview_guide()
@@ -18,6 +31,11 @@ class TestInterviewGuideStructure:
         for item in guide["philosophy"]:
             assert isinstance(item, str)
             assert len(item) > 10
+
+    def test_philosophy_enforces_one_question_rule(self):
+        guide = get_interview_guide()
+        philosophy_text = " ".join(guide["philosophy"]).lower()
+        assert "one question" in philosophy_text, "Philosophy must enforce one-question-per-message rule"
 
     def test_phases_have_required_fields(self):
         guide = get_interview_guide()

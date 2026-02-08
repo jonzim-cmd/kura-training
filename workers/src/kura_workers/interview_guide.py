@@ -18,9 +18,41 @@ def get_interview_guide() -> dict[str, Any]:
     layer (what to do).
     """
     return {
+        "introduction": {
+            "purpose": (
+                "Briefly explain what this is about: you have access to Kura, "
+                "a system that tracks training data and helps make better decisions over time. "
+                "To do that well, you'd like to get to know the user — their training, "
+                "goals, and situation. This makes everything more relevant and personal."
+            ),
+            "tone": (
+                "Natural and brief. Not a role announcement — you are the same agent "
+                "the user already knows. Kura gives you context, not a new identity. "
+                "Don't say 'I am your training agent'. Just explain what Kura does "
+                "and why getting to know them helps."
+            ),
+            "orientation": (
+                "Give the user a sense of what to expect: how long (a few minutes), "
+                "what you'll ask about (training, goals, situation, preferences), "
+                "and why (so Kura can track patterns and give better feedback over time). "
+                "This helps the user feel oriented and more willing to share openly."
+            ),
+            "example": (
+                "Ich habe Zugriff auf Kura — ein System, das dein Training trackt "
+                "und über die Zeit Muster erkennen kann. Damit das wirklich nützlich wird, "
+                "würde ich dich gerne kurz kennenlernen: Was du trainierst, was dich antreibt, "
+                "wo es gerade hakt. Dauert nur ein paar Minuten — ich frage nach deinem "
+                "Training, deinen Zielen und deiner Situation, damit Kura dir wirklich "
+                "relevantes Feedback geben kann. Du kannst jederzeit abbrechen oder "
+                "das Thema wechseln."
+            ),
+        },
         "philosophy": [
             "Follow the conversation, don't interrogate. Let the user's answers guide direction.",
+            "ONE question per message. Always. Reflect what you heard first, then ask one thing.",
+            "Never stack multiple questions ('Wie oft? Feste Tage? Kg oder Lbs?'). This overwhelms.",
             "Extract multiple data points from one answer. 'Ich squatte 3x/Woche 120kg' = frequency + exercise + load range.",
+            "If the user goes deep on something, follow them. Don't rush the checklist.",
             "Use structured options for factual info (modality, units), open questions for narrative (goals, history).",
             "Produce events incrementally during the conversation — don't batch at the end.",
             "Respect 'later' or 'not interested'. Mark as deferred, move on. Partial data is still useful.",
@@ -30,7 +62,7 @@ def get_interview_guide() -> dict[str, Any]:
         "phases": {
             "broad_sweep": {
                 "goal": "Cover all major areas at surface level. Build a map, not a deep profile.",
-                "rules": "1-2 exchanges per area. Use categorical approach where possible. Move on after 3 exchanges max on one area.",
+                "rules": "One question at a time. Reflect before asking. Move on naturally, don't rush.",
                 "when": "User is new or most coverage areas are uncovered.",
             },
             "targeted_depth": {
