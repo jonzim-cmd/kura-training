@@ -27,4 +27,12 @@ async def handle_projection_update(
         return
 
     for handler in handlers:
-        await handler(conn, payload)
+        try:
+            async with conn.transaction():
+                await handler(conn, payload)
+        except Exception:
+            logger.exception(
+                "Projection handler %s failed for event_type=%s event_id=%s",
+                handler.__name__, event_type, payload.get("event_id", "?"),
+            )
+            # Continue with remaining handlers — don't let one failure block others

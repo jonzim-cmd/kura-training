@@ -101,10 +101,15 @@ async def update_exercise_progression(
 
     for row in rows:
         data = row["data"]
-        # Support both weight_kg (convention) and weight (legacy)
-        weight = float(data.get("weight_kg", data.get("weight", 0)))
-        reps = int(data.get("reps", 0))
         ts: datetime = row["timestamp"]
+
+        # Support both weight_kg (convention) and weight (legacy)
+        try:
+            weight = float(data.get("weight_kg", data.get("weight", 0)))
+            reps = int(data.get("reps", 0))
+        except (ValueError, TypeError):
+            logger.warning("Skipping event %s: invalid weight/reps data", row["id"])
+            continue
 
         volume = weight * reps
         total_volume_kg += volume
@@ -124,7 +129,10 @@ async def update_exercise_progression(
         }
         # Include optional fields if present
         if "rpe" in data:
-            set_entry["rpe"] = float(data["rpe"])
+            try:
+                set_entry["rpe"] = float(data["rpe"])
+            except (ValueError, TypeError):
+                pass
         if "set_type" in data:
             set_entry["set_type"] = data["set_type"]
 
