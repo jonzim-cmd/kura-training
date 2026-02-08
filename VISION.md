@@ -411,9 +411,11 @@ Ob der Mensch einen einzelnen Agent nutzt oder sein Agent intern einen Schwarm o
 
 ### Authentifizierung
 
-API Keys mit Scopes. Kein OAuth (kein Browser-Redirect nötig — Agents haben keine Browser).
+**Ein Flow für alle End-User: OAuth Authorization Code + PKCE.** Browser öffnet sich, Mensch autorisiert, Agent bekommt Token. CLI, MCP und REST nutzen denselben Flow.
 
-- **User-Token:** Voller Zugriff auf eigene Daten (Training, Ernährung, Gesundheit). Der eigene Agent (oder Schwarm) bekommt diesen Token.
+- **OAuth Auth Code + PKCE:** Primärer Auth-Flow. CLI startet lokalen Callback-Server, öffnet Browser, User loggt ein, Token wird lokal gespeichert mit Auto-Refresh.
+- **API Keys für Maschinen:** CI/CD, Server, Automation — kein Browser verfügbar. API Keys werden per Admin-CLI direkt in der DB erstellt.
+- **Scoping nach Mensch, nicht nach Agent:** Ein Token gilt für den Menschen. Ob ein Agent oder ein Schwarm ihn nutzt, ist transparent für die API.
 - **Delegated Tokens:** Eingeschränkter Zugriff, erstellt vom User für andere Menschen deren Agents Zugriff brauchen.
 
 ### Multi-Agent / Multi-Mensch
@@ -475,7 +477,7 @@ Architektur ist von Tag 1 self-hosting-fähig: PostgreSQL-Only, Docker Compose, 
 - **Monetarisierung:** Free = Logging + Lesen + Export. Pro = Compute (Bayesian, Korrelationen, Benchmarks, Anomaly Detection).
 - **Interface-Stack:** REST API als Fundament → CLI als Thin Client → MCP eingebaut im CLI. Gehosteter MCP für Cloud-Agents. Alles ein Codebase, kein Maintenance-Overhead.
 - **CLI-Design:** JSON-only. Kein Human-Readable Mode. Agents sind die User. `kura` als Command-Name.
-- **Auth:** API Keys mit Scopes. Scoping nach Mensch, nicht nach Agent. Delegated Tokens für Coach/Arzt/Physio. Kein OAuth (Agents haben keine Browser).
+- **Auth:** OAuth Authorization Code + PKCE als primärer Flow (CLI, MCP, REST). API Keys für Maschinen (CI/CD). Scoping nach Mensch, nicht nach Agent. Delegated Tokens für Coach/Arzt/Physio.
 - **Background Workers:** PostgreSQL-based Job Queue (SKIP LOCKED / pgmq). Kein Redis, kein RabbitMQ.
 - **Hosting:** Fly.io oder Hetzner Cloud zum Start. Managed PostgreSQL (Supabase, Neon, oder Crunchy Bridge). Kein Vendor Lock-in.
 - **Docker:** Docker Compose für Entwicklung und Self-Hosted. PostgreSQL + Rust API + Python Workers.

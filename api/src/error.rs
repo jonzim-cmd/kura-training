@@ -13,6 +13,11 @@ pub enum AppError {
         received: Option<serde_json::Value>,
         docs_hint: Option<String>,
     },
+    /// Unauthorized (401) — missing or invalid credentials
+    Unauthorized {
+        message: String,
+        docs_hint: Option<String>,
+    },
     /// Idempotency conflict — same idempotency_key already used (409)
     IdempotencyConflict { idempotency_key: String },
     /// Database error (500)
@@ -39,6 +44,17 @@ impl IntoResponse for AppError {
                     message,
                     field,
                     received,
+                    request_id,
+                    docs_hint,
+                },
+            ),
+            AppError::Unauthorized { message, docs_hint } => (
+                StatusCode::UNAUTHORIZED,
+                ApiError {
+                    error: error::codes::UNAUTHORIZED.to_string(),
+                    message,
+                    field: None,
+                    received: None,
                     request_id,
                     docs_hint,
                 },

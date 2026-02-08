@@ -1,5 +1,5 @@
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -12,6 +12,7 @@ use kura_core::events::{
     BatchCreateEventsRequest, CreateEventRequest, Event, EventMetadata, PaginatedResponse,
 };
 
+use crate::auth::AuthenticatedUser;
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -19,37 +20,6 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/events", get(list_events).post(create_event))
         .route("/v1/events/batch", post(create_events_batch))
-}
-
-/// Temporary: extract user_id from header until auth is implemented.
-/// In production, this comes from the authenticated API key's associated user.
-fn extract_user_id(headers: &HeaderMap) -> Result<Uuid, AppError> {
-    let header_val = headers
-        .get("x-user-id")
-        .ok_or_else(|| AppError::Validation {
-            message: "x-user-id header is required (temporary, will be replaced by auth)"
-                .to_string(),
-            field: Some("headers.x-user-id".to_string()),
-            received: None,
-            docs_hint: Some(
-                "Pass x-user-id as a UUID header. This is temporary until API key auth is implemented."
-                    .to_string(),
-            ),
-        })?;
-
-    let user_id_str = header_val.to_str().map_err(|_| AppError::Validation {
-        message: "x-user-id must be a valid UTF-8 string".to_string(),
-        field: Some("headers.x-user-id".to_string()),
-        received: None,
-        docs_hint: None,
-    })?;
-
-    Uuid::parse_str(user_id_str).map_err(|_| AppError::Validation {
-        message: "x-user-id must be a valid UUID".to_string(),
-        field: Some("headers.x-user-id".to_string()),
-        received: Some(serde_json::Value::String(user_id_str.to_string())),
-        docs_hint: Some("Use a valid UUIDv4 or UUIDv7, e.g. 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'".to_string()),
-    })
 }
 
 /// Validate a single event request
@@ -145,19 +115,18 @@ async fn insert_event(
     responses(
         (status = 201, description = "Event created", body = Event),
         (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
         (status = 409, description = "Idempotency conflict", body = ApiError)
     ),
-    params(
-        ("x-user-id" = Uuid, Header, description = "User ID (temporary, replaced by auth)")
-    ),
+    security(("bearer_auth" = [])),
     tag = "events"
 )]
 pub async fn create_event(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: AuthenticatedUser,
     Json(req): Json<CreateEventRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let user_id = extract_user_id(&headers)?;
+    let user_id = auth.user_id;
     validate_event(&req)?;
 
     let event = insert_event(&state.db, user_id, req).await?;
@@ -177,19 +146,18 @@ pub async fn create_event(
     responses(
         (status = 201, description = "All events created", body = Vec<Event>),
         (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
         (status = 409, description = "Idempotency conflict", body = ApiError)
     ),
-    params(
-        ("x-user-id" = Uuid, Header, description = "User ID (temporary, replaced by auth)")
-    ),
+    security(("bearer_auth" = [])),
     tag = "events"
 )]
 pub async fn create_events_batch(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: AuthenticatedUser,
     Json(req): Json<BatchCreateEventsRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let user_id = extract_user_id(&headers)?;
+    let user_id = auth.user_id;
 
     if req.events.is_empty() {
         return Err(AppError::Validation {
@@ -325,22 +293,21 @@ pub struct ListEventsParams {
 #[utoipa::path(
     get,
     path = "/v1/events",
-    params(
-        ListEventsParams,
-        ("x-user-id" = Uuid, Header, description = "User ID (temporary, replaced by auth)")
-    ),
+    params(ListEventsParams),
     responses(
         (status = 200, description = "Paginated list of events", body = PaginatedResponse<Event>),
-        (status = 400, description = "Validation error", body = ApiError)
+        (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError)
     ),
+    security(("bearer_auth" = [])),
     tag = "events"
 )]
 pub async fn list_events(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: AuthenticatedUser,
     Query(params): Query<ListEventsParams>,
 ) -> Result<Json<PaginatedResponse<Event>>, AppError> {
-    let user_id = extract_user_id(&headers)?;
+    let user_id = auth.user_id;
 
     let limit = params.limit.unwrap_or(50).min(200).max(1);
     // Fetch one extra to determine has_more

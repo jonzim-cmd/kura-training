@@ -8,6 +8,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
+mod auth;
 mod error;
 mod routes;
 mod state;
@@ -24,6 +25,10 @@ mod state;
         routes::events::create_event,
         routes::events::create_events_batch,
         routes::events::list_events,
+        routes::auth::register,
+        routes::auth::authorize_form,
+        routes::auth::authorize_submit,
+        routes::auth::token,
     ),
     components(schemas(
         HealthResponse,
@@ -33,9 +38,30 @@ mod state;
         kura_core::events::CreateEventRequest,
         kura_core::events::BatchCreateEventsRequest,
         kura_core::events::PaginatedResponse<kura_core::events::Event>,
-    ))
+        routes::auth::RegisterRequest,
+        routes::auth::RegisterResponse,
+        routes::auth::TokenRequest,
+        routes::auth::TokenResponse,
+    )),
+    modifiers(&SecurityAddon)
 )]
 struct ApiDoc;
+
+struct SecurityAddon;
+
+impl utoipa::Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme(
+            "bearer_auth",
+            utoipa::openapi::security::SecurityScheme::Http(
+                utoipa::openapi::security::Http::new(
+                    utoipa::openapi::security::HttpAuthScheme::Bearer,
+                ),
+            ),
+        );
+    }
+}
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct HealthResponse {
@@ -80,6 +106,7 @@ async fn main() {
         .merge(SwaggerUi::new("/swagger-ui").url("/api-doc/openapi.json", ApiDoc::openapi()))
         .merge(routes::health::router())
         .merge(routes::events::router())
+        .merge(routes::auth::router())
         .layer(TraceLayer::new_for_http())
         .with_state(app_state);
 
