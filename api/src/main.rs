@@ -23,6 +23,7 @@ mod state;
         routes::health::health_check,
         routes::events::create_event,
         routes::events::create_events_batch,
+        routes::events::list_events,
     ),
     components(schemas(
         HealthResponse,
@@ -31,6 +32,7 @@ mod state;
         kura_core::events::EventMetadata,
         kura_core::events::CreateEventRequest,
         kura_core::events::BatchCreateEventsRequest,
+        kura_core::events::PaginatedResponse<kura_core::events::Event>,
     ))
 )]
 struct ApiDoc;

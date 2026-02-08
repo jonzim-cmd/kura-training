@@ -21,3 +21,4 @@ tracing-subscriber = { workspace = true }
 utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
 dotenvy = { workspace = true }
+base64 = "0.22"

@@ -1,19 +1,23 @@
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use kura_core::error::ApiError;
-use kura_core::events::{BatchCreateEventsRequest, CreateEventRequest, Event, EventMetadata};
+use kura_core::events::{
+    BatchCreateEventsRequest, CreateEventRequest, Event, EventMetadata, PaginatedResponse,
+};
 
 use crate::error::AppError;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/v1/events", post(create_event))
+        .route("/v1/events", get(list_events).post(create_event))
         .route("/v1/events/batch", post(create_events_batch))
 }
 
@@ -274,6 +278,241 @@ pub async fn create_events_batch(
     tx.commit().await?;
 
     Ok((StatusCode::CREATED, Json(created_events)))
+}
+
+/// Query parameters for listing events
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct ListEventsParams {
+    /// Filter by event type (e.g. "set.logged", "meal.logged")
+    #[serde(default)]
+    pub event_type: Option<String>,
+    /// Only events after this timestamp (inclusive)
+    #[serde(default)]
+    pub since: Option<DateTime<Utc>>,
+    /// Only events before this timestamp (exclusive)
+    #[serde(default)]
+    pub until: Option<DateTime<Utc>>,
+    /// Maximum number of events to return (default 50, max 200)
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// Cursor for pagination (opaque string from previous response's next_cursor)
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+/// List events with cursor-based pagination
+///
+/// Returns events ordered by timestamp descending (newest first).
+/// Use cursor-based pagination for stable iteration over growing data.
+/// Filter by event_type and/or time range (since/until).
+#[utoipa::path(
+    get,
+    path = "/v1/events",
+    params(
+        ListEventsParams,
+        ("x-user-id" = Uuid, Header, description = "User ID (temporary, replaced by auth)")
+    ),
+    responses(
+        (status = 200, description = "Paginated list of events", body = PaginatedResponse<Event>),
+        (status = 400, description = "Validation error", body = ApiError)
+    ),
+    tag = "events"
+)]
+pub async fn list_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ListEventsParams>,
+) -> Result<Json<PaginatedResponse<Event>>, AppError> {
+    let user_id = extract_user_id(&headers)?;
+
+    let limit = params.limit.unwrap_or(50).min(200).max(1);
+    // Fetch one extra to determine has_more
+    let fetch_limit = limit + 1;
+
+    // Decode cursor: it's a base64-encoded "timestamp,id" pair
+    let cursor_data = if let Some(ref cursor_str) = params.cursor {
+        Some(decode_cursor(cursor_str)?)
+    } else {
+        None
+    };
+
+    let mut tx = state.db.begin().await?;
+
+    // Set RLS context
+    sqlx::query(&format!(
+        "SET LOCAL kura.current_user_id = '{}'",
+        user_id
+    ))
+    .execute(&mut *tx)
+    .await?;
+
+    // Build query dynamically based on filters
+    // We order by (timestamp DESC, id DESC) for stable cursor pagination
+    let rows = if let Some(ref event_type) = params.event_type {
+        if let Some(ref cursor) = cursor_data {
+            sqlx::query_as::<_, EventRow>(
+                r#"
+                SELECT id, user_id, timestamp, event_type, data, metadata, created_at
+                FROM events
+                WHERE user_id = $1
+                  AND event_type = $2
+                  AND (timestamp, id) < ($3, $4)
+                  AND ($5::timestamptz IS NULL OR timestamp >= $5)
+                  AND ($6::timestamptz IS NULL OR timestamp < $6)
+                ORDER BY timestamp DESC, id DESC
+                LIMIT $7
+                "#,
+            )
+            .bind(user_id)
+            .bind(event_type)
+            .bind(cursor.timestamp)
+            .bind(cursor.id)
+            .bind(params.since)
+            .bind(params.until)
+            .bind(fetch_limit)
+            .fetch_all(&mut *tx)
+            .await?
+        } else {
+            sqlx::query_as::<_, EventRow>(
+                r#"
+                SELECT id, user_id, timestamp, event_type, data, metadata, created_at
+                FROM events
+                WHERE user_id = $1
+                  AND event_type = $2
+                  AND ($3::timestamptz IS NULL OR timestamp >= $3)
+                  AND ($4::timestamptz IS NULL OR timestamp < $4)
+                ORDER BY timestamp DESC, id DESC
+                LIMIT $5
+                "#,
+            )
+            .bind(user_id)
+            .bind(event_type)
+            .bind(params.since)
+            .bind(params.until)
+            .bind(fetch_limit)
+            .fetch_all(&mut *tx)
+            .await?
+        }
+    } else if let Some(ref cursor) = cursor_data {
+        sqlx::query_as::<_, EventRow>(
+            r#"
+            SELECT id, user_id, timestamp, event_type, data, metadata, created_at
+            FROM events
+            WHERE user_id = $1
+              AND (timestamp, id) < ($2, $3)
+              AND ($4::timestamptz IS NULL OR timestamp >= $4)
+              AND ($5::timestamptz IS NULL OR timestamp < $5)
+            ORDER BY timestamp DESC, id DESC
+            LIMIT $6
+            "#,
+        )
+        .bind(user_id)
+        .bind(cursor.timestamp)
+        .bind(cursor.id)
+        .bind(params.since)
+        .bind(params.until)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await?
+    } else {
+        sqlx::query_as::<_, EventRow>(
+            r#"
+            SELECT id, user_id, timestamp, event_type, data, metadata, created_at
+            FROM events
+            WHERE user_id = $1
+              AND ($2::timestamptz IS NULL OR timestamp >= $2)
+              AND ($3::timestamptz IS NULL OR timestamp < $3)
+            ORDER BY timestamp DESC, id DESC
+            LIMIT $4
+            "#,
+        )
+        .bind(user_id)
+        .bind(params.since)
+        .bind(params.until)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await?
+    };
+
+    tx.commit().await?;
+
+    let has_more = rows.len() as i64 > limit;
+    let events: Vec<Event> = rows
+        .into_iter()
+        .take(limit as usize)
+        .map(|r| r.into_event())
+        .collect();
+
+    let next_cursor = if has_more {
+        events.last().map(|e| encode_cursor(&e.timestamp, &e.id))
+    } else {
+        None
+    };
+
+    Ok(Json(PaginatedResponse {
+        data: events,
+        next_cursor,
+        has_more,
+    }))
+}
+
+/// Cursor is base64("timestamp\0id") — opaque to the client, stable for pagination
+fn encode_cursor(timestamp: &DateTime<Utc>, id: &Uuid) -> String {
+    use base64::Engine;
+    let raw = format!("{}\0{}", timestamp.to_rfc3339(), id);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw.as_bytes())
+}
+
+struct CursorData {
+    timestamp: DateTime<Utc>,
+    id: Uuid,
+}
+
+fn decode_cursor(cursor: &str) -> Result<CursorData, AppError> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| AppError::Validation {
+            message: "Invalid cursor format".to_string(),
+            field: Some("cursor".to_string()),
+            received: Some(serde_json::Value::String(cursor.to_string())),
+            docs_hint: Some("Use the next_cursor value from a previous response".to_string()),
+        })?;
+
+    let s = String::from_utf8(bytes).map_err(|_| AppError::Validation {
+        message: "Invalid cursor encoding".to_string(),
+        field: Some("cursor".to_string()),
+        received: None,
+        docs_hint: None,
+    })?;
+
+    let parts: Vec<&str> = s.splitn(2, '\0').collect();
+    if parts.len() != 2 {
+        return Err(AppError::Validation {
+            message: "Invalid cursor structure".to_string(),
+            field: Some("cursor".to_string()),
+            received: None,
+            docs_hint: Some("Use the next_cursor value from a previous response".to_string()),
+        });
+    }
+
+    let timestamp = DateTime::parse_from_rfc3339(parts[0])
+        .map(|t| t.with_timezone(&Utc))
+        .map_err(|_| AppError::Validation {
+            message: "Invalid cursor timestamp".to_string(),
+            field: Some("cursor".to_string()),
+            received: None,
+            docs_hint: None,
+        })?;
+
+    let id = Uuid::parse_str(parts[1]).map_err(|_| AppError::Validation {
+        message: "Invalid cursor id".to_string(),
+        field: Some("cursor".to_string()),
+        received: None,
+        docs_hint: None,
+    })?;
+
+    Ok(CursorData { timestamp, id })
 }
 
 /// Internal row type for sqlx mapping
