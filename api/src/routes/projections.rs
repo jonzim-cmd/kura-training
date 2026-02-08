@@ -108,6 +108,37 @@ pub async fn get_projection(
 
     match row {
         Some(r) => Ok(Json(r.into_response())),
+        // Bootstrap response for new users: return empty profile with
+        // onboarding_needed agenda instead of 404 (Decision 8).
+        // The full three-layer response becomes available after the first event
+        // triggers the Python worker.
+        None if projection_type == "user_profile" && key == "me" => {
+            Ok(Json(ProjectionResponse {
+                projection: Projection {
+                    id: Uuid::nil(),
+                    user_id,
+                    projection_type: "user_profile".to_string(),
+                    key: "me".to_string(),
+                    data: serde_json::json!({
+                        "system": null,
+                        "user": null,
+                        "agenda": [{
+                            "priority": "high",
+                            "type": "onboarding_needed",
+                            "detail": "New user. No data yet. Produce initial events to bootstrap profile.",
+                            "dimensions": ["user_profile"]
+                        }]
+                    }),
+                    version: 0,
+                    last_event_id: None,
+                    updated_at: chrono::Utc::now(),
+                },
+                meta: ProjectionMeta {
+                    projection_version: 0,
+                    computed_at: chrono::Utc::now(),
+                },
+            }))
+        }
         None => Err(AppError::NotFound {
             resource: format!("projection {}/{}", projection_type, key),
         }),

@@ -592,9 +592,15 @@ runs pattern-matching rules over user data.
    - `exercise_progression` extended with `weekly_history` (26 weeks)
    - `training_timeline` dimension built (recent_days, weekly_summary, frequency, streak)
    - `user_profile` evolved into manifest (dimensions discovery, data_quality)
-4. **Three-layer entry point** (Decision 7) — Declaration-based manifest,
-   enriched user state, proactive agenda.
-5. **Onboarding interview design** — agent-side, produces standard events.
+4. ~~**Three-layer entry point** (Decision 7)~~ ✅ Done.
+   - `system` / `user` / `agenda` three-layer structure
+   - Declaration-based manifest, enriched user state, proactive agenda
+5. ~~**Onboarding interview design** (Decision 8)~~ ✅ Done.
+   - Interview guide in system layer, context_seeds on dimensions
+   - `profile.updated` and `injury.reported` event types
+   - Coverage computation, onboarding/refresh agenda triggers
+   - Bootstrap response for empty users (Rust endpoint)
+   - See `docs/design/008-onboarding-interview.md`
 6. **Semantic layer (pgvector + embeddings)** — background resolution,
    cross-language matching, fuzzy alias suggestions.
 
@@ -626,6 +632,58 @@ will be migrated incrementally.
 layer needs confidence to surface "unconfirmed_alias" actionable items.
 Implementation will store confidence in the alias map when Decision 7 is
 implemented.
+
+## Event Type Conventions: `profile.updated` (Decision 8)
+
+For user attributes gathered during onboarding or updated over time.
+Delta merge: later events overwrite earlier per field.
+
+```json
+{
+  "event_type": "profile.updated",
+  "data": {
+    "experience_level": "intermediate",
+    "training_modality": "strength",
+    "training_frequency_per_week": 4,
+    "available_equipment": ["barbell", "dumbbells", "rack"],
+    "primary_location": "home_gym",
+    "current_program": "5/3/1"
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `experience_level` | string | beginner, intermediate, advanced |
+| `training_modality` | string | strength, endurance, hybrid, crossfit |
+| `training_frequency_per_week` | number | Typical sessions per week |
+| `available_equipment` | list[string] | Available equipment |
+| `primary_location` | string | commercial_gym, home_gym, outdoor |
+| `current_program` | string | Program name if applicable |
+| `nutrition_tracking` | string | active, not_interested, later |
+| `injuries_none` | bool | Explicit "no injuries" flag |
+
+All fields optional. Any subset is valid. Future fields accepted without changes.
+
+## Event Type Conventions: `injury.reported` (Decision 8)
+
+```json
+{
+  "event_type": "injury.reported",
+  "data": {
+    "description": "Leichtes Ziehen im linken Knie bei tiefen Squats",
+    "affected_area": "knee",
+    "severity": "mild"
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `description` | Yes | Free text description |
+| `affected_area` | No | knee, shoulder, back, hip, etc. |
+| `severity` | No | mild, moderate, severe |
+| `since` | No | ISO date when injury started |
 
 ### training_timeline only covers `set.logged`
 

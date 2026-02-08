@@ -1,4 +1,4 @@
-"""Tests for user_profile three-layer structure (Decision 7)."""
+"""Tests for user_profile three-layer structure (Decision 7 + Decision 8)."""
 
 from datetime import datetime, timezone
 
@@ -7,8 +7,11 @@ from kura_workers.handlers.user_profile import (
     _build_data_quality,
     _build_system_layer,
     _build_user_dimensions,
+    _compute_interview_coverage,
     _find_unconfirmed_aliases,
     _resolve_exercises,
+    _should_suggest_onboarding,
+    _should_suggest_refresh,
 )
 
 
@@ -54,6 +57,35 @@ class TestBuildSystemLayer:
         result = _build_system_layer({})
         assert "time_conventions" in result
         assert result["time_conventions"]["week"] == "ISO 8601 (2026-W06)"
+
+    def test_includes_interview_guide(self):
+        result = _build_system_layer({})
+        assert "interview_guide" in result
+        guide = result["interview_guide"]
+        assert "philosophy" in guide
+        assert "phases" in guide
+        assert "coverage_areas" in guide
+        assert "event_conventions" in guide
+
+    def test_includes_context_seeds(self):
+        meta = {
+            "dim_a": {
+                "name": "dim_a",
+                "description": "A",
+                "event_types": ["x"],
+                "context_seeds": ["experience_level", "training_modality"],
+            },
+        }
+        result = _build_system_layer(meta)
+        dim = result["dimensions"]["dim_a"]
+        assert dim["context_seeds"] == ["experience_level", "training_modality"]
+
+    def test_omits_context_seeds_when_not_declared(self):
+        meta = {
+            "dim_a": {"name": "dim_a", "description": "A", "event_types": ["x"]},
+        }
+        result = _build_system_layer(meta)
+        assert "context_seeds" not in result["dimensions"]["dim_a"]
 
     def test_empty_metadata(self):
         result = _build_system_layer({})
@@ -392,3 +424,239 @@ class TestThreeLayerOutput:
             [],
         )
         assert agenda[0]["type"] == "resolve_exercises"
+
+
+# --- TestInterviewCoverage (Decision 8) ---
+
+
+class TestInterviewCoverage:
+    def test_all_uncovered_for_empty_user(self):
+        result = _compute_interview_coverage(
+            aliases={}, preferences={}, goals=[], profile_data={}, injuries=[],
+        )
+        assert len(result) == 9  # All coverage areas
+        for item in result:
+            assert item["status"] == "uncovered"
+
+    def test_training_background_covered(self):
+        result = _compute_interview_coverage(
+            aliases={}, preferences={}, goals=[],
+            profile_data={"training_modality": "strength"}, injuries=[],
+        )
+        bg = next(c for c in result if c["area"] == "training_background")
+        assert bg["status"] == "covered"
+
+    def test_training_background_covered_by_experience(self):
+        result = _compute_interview_coverage(
+            aliases={}, preferences={}, goals=[],
+            profile_data={"experience_level": "intermediate"}, injuries=[],
+        )
+        bg = next(c for c in result if c["area"] == "training_background")
+        assert bg["status"] == "covered"
+
+    def test_goals_covered(self):
+        result = _compute_interview_coverage(
+            aliases={}, preferences={},
+            goals=[{"goal_type": "strength"}],
+            profile_data={}, injuries=[],
+        )
+        goals = next(c for c in result if c["area"] == "goals")
+        assert goals["status"] == "covered"
+
+    def test_exercise_vocabulary_needs_depth(self):
+        aliases = {
+            "SQ": {"target": "barbell_back_squat", "confidence": "confirmed"},
+            "BP": {"target": "barbell_bench_press", "confidence": "confirmed"},
+        }
+        result = _compute_interview_coverage(
+            aliases=aliases, preferences={}, goals=[], profile_data={}, injuries=[],
+        )
+        vocab = next(c for c in result if c["area"] == "exercise_vocabulary")
+        assert vocab["status"] == "needs_depth"
+        assert "2 aliases" in vocab["note"]
+
+    def test_exercise_vocabulary_covered_with_three(self):
+        aliases = {
+            "SQ": {"target": "barbell_back_squat", "confidence": "confirmed"},
+            "BP": {"target": "barbell_bench_press", "confidence": "confirmed"},
+            "DL": {"target": "barbell_deadlift", "confidence": "confirmed"},
+        }
+        result = _compute_interview_coverage(
+            aliases=aliases, preferences={}, goals=[], profile_data={}, injuries=[],
+        )
+        vocab = next(c for c in result if c["area"] == "exercise_vocabulary")
+        assert vocab["status"] == "covered"
+
+    def test_unit_preferences_covered(self):
+        result = _compute_interview_coverage(
+            aliases={}, preferences={"unit_system": "metric"}, goals=[],
+            profile_data={}, injuries=[],
+        )
+        units = next(c for c in result if c["area"] == "unit_preferences")
+        assert units["status"] == "covered"
+
+    def test_injuries_covered_by_report(self):
+        result = _compute_interview_coverage(
+            aliases={}, preferences={}, goals=[], profile_data={},
+            injuries=[{"description": "knee pain", "severity": "mild"}],
+        )
+        inj = next(c for c in result if c["area"] == "injuries")
+        assert inj["status"] == "covered"
+
+    def test_injuries_covered_by_none_flag(self):
+        result = _compute_interview_coverage(
+            aliases={}, preferences={}, goals=[],
+            profile_data={"injuries_none": True}, injuries=[],
+        )
+        inj = next(c for c in result if c["area"] == "injuries")
+        assert inj["status"] == "covered"
+
+    def test_equipment_covered(self):
+        result = _compute_interview_coverage(
+            aliases={}, preferences={}, goals=[],
+            profile_data={"available_equipment": ["barbell", "rack"]}, injuries=[],
+        )
+        eq = next(c for c in result if c["area"] == "equipment")
+        assert eq["status"] == "covered"
+
+    def test_schedule_covered(self):
+        result = _compute_interview_coverage(
+            aliases={}, preferences={}, goals=[],
+            profile_data={"training_frequency_per_week": 4}, injuries=[],
+        )
+        sched = next(c for c in result if c["area"] == "schedule")
+        assert sched["status"] == "covered"
+
+    def test_nutrition_interest_covered(self):
+        result = _compute_interview_coverage(
+            aliases={}, preferences={"nutrition_tracking": "later"}, goals=[],
+            profile_data={}, injuries=[],
+        )
+        nutr = next(c for c in result if c["area"] == "nutrition_interest")
+        assert nutr["status"] == "covered"
+
+    def test_current_program_covered(self):
+        result = _compute_interview_coverage(
+            aliases={}, preferences={}, goals=[],
+            profile_data={"current_program": "5/3/1"}, injuries=[],
+        )
+        prog = next(c for c in result if c["area"] == "current_program")
+        assert prog["status"] == "covered"
+
+    def test_mixed_coverage(self):
+        result = _compute_interview_coverage(
+            aliases={"SQ": {"target": "squat", "confidence": "confirmed"}},
+            preferences={"unit_system": "metric"},
+            goals=[{"goal_type": "strength"}],
+            profile_data={"training_modality": "strength"},
+            injuries=[],
+        )
+        statuses = {c["area"]: c["status"] for c in result}
+        assert statuses["training_background"] == "covered"
+        assert statuses["goals"] == "covered"
+        assert statuses["unit_preferences"] == "covered"
+        assert statuses["exercise_vocabulary"] == "needs_depth"
+        assert statuses["injuries"] == "uncovered"
+        assert statuses["equipment"] == "uncovered"
+
+
+# --- TestOnboardingTrigger ---
+
+
+class TestOnboardingTrigger:
+    def _all_uncovered(self):
+        return [{"area": f"area_{i}", "status": "uncovered"} for i in range(9)]
+
+    def _mostly_covered(self):
+        return [
+            {"area": "a", "status": "covered"},
+            {"area": "b", "status": "covered"},
+            {"area": "c", "status": "covered"},
+            {"area": "d", "status": "covered"},
+            {"area": "e", "status": "uncovered"},
+        ]
+
+    def test_new_user_triggers_onboarding(self):
+        assert _should_suggest_onboarding(0, self._all_uncovered()) is True
+
+    def test_few_events_triggers_onboarding(self):
+        assert _should_suggest_onboarding(3, self._all_uncovered()) is True
+
+    def test_enough_events_no_onboarding(self):
+        assert _should_suggest_onboarding(5, self._all_uncovered()) is False
+
+    def test_mostly_covered_no_onboarding(self):
+        assert _should_suggest_onboarding(2, self._mostly_covered()) is False
+
+    def test_refresh_with_many_events_and_gaps(self):
+        coverage = [{"area": f"a{i}", "status": "uncovered"} for i in range(4)]
+        assert _should_suggest_refresh(25, coverage, has_goals=False, has_preferences=True) is True
+
+    def test_no_refresh_for_new_user(self):
+        coverage = [{"area": f"a{i}", "status": "uncovered"} for i in range(4)]
+        assert _should_suggest_refresh(10, coverage, has_goals=False, has_preferences=False) is False
+
+    def test_no_refresh_when_covered(self):
+        coverage = [{"area": "a", "status": "covered"}, {"area": "b", "status": "covered"}]
+        assert _should_suggest_refresh(50, coverage, has_goals=True, has_preferences=True) is False
+
+    def test_no_refresh_when_goals_and_prefs_present(self):
+        coverage = [{"area": f"a{i}", "status": "uncovered"} for i in range(4)]
+        assert _should_suggest_refresh(25, coverage, has_goals=True, has_preferences=True) is False
+
+
+# --- TestBuildAgendaWithInterview ---
+
+
+class TestBuildAgendaWithInterview:
+    def test_onboarding_in_agenda(self):
+        coverage = [{"area": f"a{i}", "status": "uncovered"} for i in range(9)]
+        result = _build_agenda(
+            [], [], interview_coverage=coverage, total_events=0,
+            has_goals=False, has_preferences=False,
+        )
+        types = [a["type"] for a in result]
+        assert "onboarding_needed" in types
+        item = next(a for a in result if a["type"] == "onboarding_needed")
+        assert item["priority"] == "high"
+
+    def test_refresh_in_agenda(self):
+        coverage = [{"area": f"a{i}", "status": "uncovered"} for i in range(4)]
+        result = _build_agenda(
+            [], [], interview_coverage=coverage, total_events=30,
+            has_goals=False, has_preferences=True,
+        )
+        types = [a["type"] for a in result]
+        assert "profile_refresh_suggested" in types
+
+    def test_no_interview_items_when_covered(self):
+        coverage = [{"area": "a", "status": "covered"}, {"area": "b", "status": "covered"}]
+        result = _build_agenda(
+            [], [], interview_coverage=coverage, total_events=50,
+            has_goals=True, has_preferences=True,
+        )
+        types = [a["type"] for a in result]
+        assert "onboarding_needed" not in types
+        assert "profile_refresh_suggested" not in types
+
+    def test_interview_items_come_before_data_quality(self):
+        coverage = [{"area": f"a{i}", "status": "uncovered"} for i in range(9)]
+        result = _build_agenda(
+            [{"exercise": "x", "occurrences": 1}],
+            [],
+            interview_coverage=coverage,
+            total_events=0,
+            has_goals=False,
+            has_preferences=False,
+        )
+        assert result[0]["type"] == "onboarding_needed"
+        assert result[1]["type"] == "resolve_exercises"
+
+    def test_backwards_compatible_without_coverage(self):
+        """_build_agenda still works when called without interview_coverage."""
+        result = _build_agenda(
+            [{"exercise": "x", "occurrences": 1}],
+            [],
+        )
+        assert len(result) == 1
+        assert result[0]["type"] == "resolve_exercises"

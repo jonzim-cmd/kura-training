@@ -161,6 +161,11 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     "relates_to": {
         "exercise_progression": {"join": "week", "why": "volume breakdown per exercise"},
     },
+    "context_seeds": [
+        "training_frequency",
+        "current_program",
+        "training_schedule",
+    ],
     "manifest_contribution": _manifest_contribution,
 })
 async def update_training_timeline(

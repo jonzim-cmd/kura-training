@@ -28,16 +28,22 @@ def _build_system_layer(dimension_metadata: dict[str, dict[str, Any]]) -> dict[s
     """Build the system layer from registry declarations.
 
     Strips non-serializable fields (manifest_contribution callable).
+    Includes context_seeds for interview guidance (Decision 8).
     """
+    from ..interview_guide import get_interview_guide
+
     dimensions = {}
     for name, meta in dimension_metadata.items():
-        dimensions[name] = {
+        entry: dict[str, Any] = {
             "description": meta.get("description", ""),
             "key_structure": meta.get("key_structure", ""),
             "granularity": meta.get("granularity", []),
             "event_types": meta.get("event_types", []),
             "relates_to": meta.get("relates_to", {}),
         }
+        if "context_seeds" in meta:
+            entry["context_seeds"] = meta["context_seeds"]
+        dimensions[name] = entry
     return {
         "dimensions": dimensions,
         "time_conventions": {
@@ -45,6 +51,7 @@ def _build_system_layer(dimension_metadata: dict[str, dict[str, Any]]) -> dict[s
             "date": "ISO 8601 (2026-02-08)",
             "timestamp": "ISO 8601 with timezone",
         },
+        "interview_guide": get_interview_guide(),
     }
 
 
@@ -138,17 +145,158 @@ def _build_data_quality(
     }
 
 
+def _compute_interview_coverage(
+    aliases: dict[str, dict[str, str]],
+    preferences: dict[str, Any],
+    goals: list[dict[str, Any]],
+    profile_data: dict[str, Any],
+    injuries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Compute interview coverage status per area (Decision 8).
+
+    Returns a list of {area, status, note?} dicts.
+    Status: covered, uncovered, needs_depth.
+    """
+    from ..interview_guide import COVERAGE_AREAS
+
+    coverage: list[dict[str, Any]] = []
+
+    for area in COVERAGE_AREAS:
+        if area == "training_background":
+            has_modality = bool(profile_data.get("training_modality"))
+            has_experience = bool(profile_data.get("experience_level"))
+            if has_modality or has_experience:
+                coverage.append({"area": area, "status": "covered"})
+            else:
+                coverage.append({"area": area, "status": "uncovered"})
+
+        elif area == "goals":
+            if goals:
+                coverage.append({"area": area, "status": "covered"})
+            else:
+                coverage.append({"area": area, "status": "uncovered"})
+
+        elif area == "exercise_vocabulary":
+            alias_count = len(aliases)
+            if alias_count >= 3:
+                coverage.append({"area": area, "status": "covered"})
+            elif alias_count > 0:
+                coverage.append({
+                    "area": area,
+                    "status": "needs_depth",
+                    "note": f"{alias_count} aliases, suggest more",
+                })
+            else:
+                coverage.append({"area": area, "status": "uncovered"})
+
+        elif area == "unit_preferences":
+            if "unit_system" in preferences:
+                coverage.append({"area": area, "status": "covered"})
+            else:
+                coverage.append({"area": area, "status": "uncovered"})
+
+        elif area == "injuries":
+            if injuries or profile_data.get("injuries_none"):
+                coverage.append({"area": area, "status": "covered"})
+            else:
+                coverage.append({"area": area, "status": "uncovered"})
+
+        elif area == "equipment":
+            if profile_data.get("available_equipment"):
+                coverage.append({"area": area, "status": "covered"})
+            else:
+                coverage.append({"area": area, "status": "uncovered"})
+
+        elif area == "schedule":
+            if profile_data.get("training_frequency_per_week") is not None:
+                coverage.append({"area": area, "status": "covered"})
+            else:
+                coverage.append({"area": area, "status": "uncovered"})
+
+        elif area == "nutrition_interest":
+            if "nutrition_tracking" in preferences:
+                coverage.append({"area": area, "status": "covered"})
+            else:
+                coverage.append({"area": area, "status": "uncovered"})
+
+        elif area == "current_program":
+            if profile_data.get("current_program"):
+                coverage.append({"area": area, "status": "covered"})
+            else:
+                coverage.append({"area": area, "status": "uncovered"})
+
+        else:
+            coverage.append({"area": area, "status": "uncovered"})
+
+    return coverage
+
+
+def _should_suggest_onboarding(
+    total_events: int,
+    coverage: list[dict[str, Any]],
+) -> bool:
+    """Check if onboarding interview should be suggested.
+
+    True when most coverage areas are uncovered and data is sparse.
+    """
+    if total_events >= 5:
+        return False
+    uncovered = sum(1 for c in coverage if c["status"] == "uncovered")
+    return uncovered >= 5
+
+
+def _should_suggest_refresh(
+    total_events: int,
+    coverage: list[dict[str, Any]],
+    has_goals: bool,
+    has_preferences: bool,
+) -> bool:
+    """Check if profile refresh should be suggested.
+
+    True when user has training data but missing context.
+    """
+    if total_events <= 20:
+        return False
+    uncovered = sum(1 for c in coverage if c["status"] == "uncovered")
+    if uncovered >= 3 and (not has_goals or not has_preferences):
+        return True
+    return False
+
+
 def _build_agenda(
     unresolved_exercises: list[dict[str, Any]],
     unconfirmed_aliases: list[dict[str, Any]],
+    interview_coverage: list[dict[str, Any]] | None = None,
+    total_events: int = 0,
+    has_goals: bool = False,
+    has_preferences: bool = False,
 ) -> list[dict[str, Any]]:
     """Build proactive agenda items for the agent.
 
-    Phase 1: data-quality-based items.
+    Includes data-quality items and interview triggers (Decision 8).
     Future: goal_at_risk, plateau_detected (needs Bayesian engine).
     """
     agenda: list[dict[str, Any]] = []
 
+    # Interview triggers (Decision 8)
+    if interview_coverage is not None:
+        if _should_suggest_onboarding(total_events, interview_coverage):
+            agenda.append({
+                "priority": "high",
+                "type": "onboarding_needed",
+                "detail": "New user with minimal data. Interview recommended to bootstrap profile.",
+                "dimensions": ["user_profile"],
+            })
+        elif _should_suggest_refresh(total_events, interview_coverage, has_goals, has_preferences):
+            uncovered = [c["area"] for c in interview_coverage if c["status"] == "uncovered"]
+            agenda.append({
+                "priority": "medium",
+                "type": "profile_refresh_suggested",
+                "detail": f"Missing context in {len(uncovered)} areas: {', '.join(uncovered[:3])}. Brief interview would improve analysis.",
+                "dimensions": ["user_profile"],
+            })
+
+    # Data quality items
     if unresolved_exercises:
         total = sum(item["occurrences"] for item in unresolved_exercises)
         exercises = [item["exercise"] for item in unresolved_exercises]
@@ -185,6 +333,8 @@ def _build_agenda(
     "exercise.alias_created",
     "preference.set",
     "goal.set",
+    "profile.updated",
+    "injury.reported",
 )
 async def update_user_profile(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
@@ -199,7 +349,10 @@ async def update_user_profile(
             SELECT id, timestamp, event_type, data
             FROM events
             WHERE user_id = %s
-              AND event_type IN ('set.logged', 'exercise.alias_created', 'preference.set', 'goal.set')
+              AND event_type IN (
+                  'set.logged', 'exercise.alias_created', 'preference.set',
+                  'goal.set', 'profile.updated', 'injury.reported'
+              )
             ORDER BY timestamp ASC
             """,
             (user_id,),
@@ -213,6 +366,8 @@ async def update_user_profile(
     aliases: dict[str, dict[str, str]] = {}
     preferences: dict[str, Any] = {}
     goals: list[dict[str, Any]] = []
+    profile_data: dict[str, Any] = {}
+    injuries: list[dict[str, Any]] = []
     exercises_logged: set[str] = set()
     total_events = 0
     total_set_logged = 0
@@ -265,6 +420,14 @@ async def update_user_profile(
         elif event_type == "goal.set":
             goals.append(data)
 
+        elif event_type == "profile.updated":
+            # Delta merge: later events overwrite earlier per field
+            for field_key, field_value in data.items():
+                profile_data[field_key] = field_value
+
+        elif event_type == "injury.reported":
+            injuries.append(data)
+
     # Resolve exercises through alias map
     resolved_exercises = _resolve_exercises(exercises_logged, aliases)
 
@@ -274,6 +437,11 @@ async def update_user_profile(
         ex for ex in raw_exercises_without_id if ex not in alias_lookup
     )
     unconfirmed_aliases = _find_unconfirmed_aliases(aliases)
+
+    # Compute interview coverage (Decision 8)
+    interview_coverage = _compute_interview_coverage(
+        aliases, preferences, goals, profile_data, injuries,
+    )
 
     # --- Build three layers ---
 
@@ -316,7 +484,14 @@ async def update_user_profile(
         {"exercise": ex, "occurrences": exercise_occurrences.get(ex, 0)}
         for ex in unresolved_exercises
     ]
-    agenda = _build_agenda(unresolved_items, unconfirmed_aliases)
+    agenda = _build_agenda(
+        unresolved_items,
+        unconfirmed_aliases,
+        interview_coverage=interview_coverage,
+        total_events=total_events,
+        has_goals=bool(goals),
+        has_preferences=bool(preferences),
+    )
 
     projection_data = {
         "system": system_layer,
@@ -324,12 +499,15 @@ async def update_user_profile(
             "aliases": aliases,
             "preferences": preferences,
             "goals": goals,
+            "profile": profile_data if profile_data else None,
+            "injuries": injuries if injuries else None,
             "exercises_logged": sorted(resolved_exercises),
             "total_events": total_events,
             "first_event": first_event.isoformat(),
             "last_event": last_event.isoformat(),
             "dimensions": user_dimensions,
             "data_quality": data_quality,
+            "interview_coverage": interview_coverage,
         },
         "agenda": agenda,
     }
@@ -349,6 +527,8 @@ async def update_user_profile(
         )
 
     logger.info(
-        "Updated user_profile for user=%s (exercises=%d, aliases=%d, agenda=%d)",
+        "Updated user_profile for user=%s (exercises=%d, aliases=%d, agenda=%d, coverage=%d/%d)",
         user_id, len(resolved_exercises), len(aliases), len(agenda),
+        sum(1 for c in interview_coverage if c["status"] == "covered"),
+        len(interview_coverage),
     )
