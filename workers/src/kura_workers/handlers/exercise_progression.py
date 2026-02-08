@@ -36,13 +36,13 @@ def _resolve_exercise_key(data: dict[str, Any]) -> str | None:
 
     Prefers exercise_id (canonical) over exercise (free text).
     """
-    exercise_id = data.get("exercise_id", "")
+    exercise_id = data.get("exercise_id", "").strip().lower()
     if exercise_id:
-        return exercise_id.strip().lower()
+        return exercise_id
 
-    exercise = data.get("exercise", "")
+    exercise = data.get("exercise", "").strip().lower()
     if exercise:
-        return exercise.strip().lower()
+        return exercise
 
     return None
 

@@ -149,6 +149,42 @@ Projections take what's there and handle missing fields gracefully.
   are lenient — they take what's there. This keeps the system flexible for
   new exercise types, metrics, etc.
 
+### Validation Philosophy
+
+The API validates **structure** (valid JSON, non-empty event_type, valid user)
+but not **content** (field types, value ranges, required fields within `data`).
+
+Why:
+- The agent is the intelligence layer. It reads conventions, structures data
+  correctly. If it sends bad data, that's an agent bug — not an API concern.
+- API-level validation couples the API to event types. New event types should
+  work without API changes.
+- Imports (Garmin, Excel, legacy data) may not conform to conventions.
+  The API accepts them; projections handle them gracefully.
+- Event data is immutable. But the solution to bad data is visibility, not
+  rejection: handlers skip invalid records with warnings. A future
+  `data_quality` projection will surface these issues to the agent.
+
+### Projection Coverage by Field
+
+Not every field is consumed by every projection. Fields are stored in events
+and available for current and future projections.
+
+| Field | Used by | Notes |
+|-------|---------|-------|
+| `exercise`, `exercise_id` | exercise_progression, user_profile | Core identity fields |
+| `weight_kg`, `reps` | exercise_progression | Strength exercises: 1RM, volume, PRs |
+| `rpe`, `set_type` | exercise_progression (recent_sessions) | Context in output |
+| `duration_seconds` | *future: timed_progression* | Planks, carries, holds |
+| `distance_meters` | *future: activity_progression* | Runs, rows, swims |
+| `tempo` | *future* | Stored, not projected yet |
+| `rest_seconds` | *future* | Stored, not projected yet |
+| `notes` | *future* | Stored, not projected yet |
+
+Different exercise types need different progression logic. Strength (weight x reps)
+is fundamentally different from endurance (distance / time) or isometric (duration).
+Each gets its own projection handler when needed.
+
 ## Decision 3: Session Grouping
 
 Sessions are a grouping concept, not a first-class entity. Sets belonging
