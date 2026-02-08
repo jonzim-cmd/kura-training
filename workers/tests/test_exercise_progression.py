@@ -2,7 +2,11 @@
 
 import pytest
 
-from kura_workers.handlers.exercise_progression import _epley_1rm, _iso_week
+from kura_workers.handlers.exercise_progression import (
+    _epley_1rm,
+    _iso_week,
+    _manifest_contribution,
+)
 from kura_workers.utils import resolve_exercise_key
 from datetime import date
 
@@ -77,3 +81,21 @@ class TestIsoWeek:
     def test_year_boundary(self):
         # Dec 29, 2025 is Monday of ISO week 1 of 2026
         assert _iso_week(date(2025, 12, 29)) == "2026-W01"
+
+
+class TestManifestContribution:
+    def test_extracts_exercise_keys(self):
+        rows = [
+            {"key": "barbell_back_squat", "data": {}},
+            {"key": "barbell_bench_press", "data": {}},
+        ]
+        result = _manifest_contribution(rows)
+        assert result == {"exercises": ["barbell_back_squat", "barbell_bench_press"]}
+
+    def test_empty_rows(self):
+        assert _manifest_contribution([]) == {"exercises": []}
+
+    def test_single_exercise(self):
+        rows = [{"key": "deadlift", "data": {}}]
+        result = _manifest_contribution(rows)
+        assert result == {"exercises": ["deadlift"]}

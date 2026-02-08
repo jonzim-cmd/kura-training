@@ -140,7 +140,29 @@ def _compute_streak(
     }
 
 
-@projection_handler("set.logged")
+def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Extract summary for user_profile manifest (Decision 7)."""
+    if not projection_rows:
+        return {}
+    data = projection_rows[0]["data"]
+    return {
+        "last_training": data.get("last_training"),
+        "total_training_days": data.get("total_training_days"),
+        "current_frequency": data.get("current_frequency"),
+        "streak": data.get("streak"),
+    }
+
+
+@projection_handler("set.logged", dimension_meta={
+    "name": "training_timeline",
+    "description": "Training patterns: when, what, how much",
+    "key_structure": "single overview per user",
+    "granularity": ["day", "week"],
+    "relates_to": {
+        "exercise_progression": {"join": "week", "why": "volume breakdown per exercise"},
+    },
+    "manifest_contribution": _manifest_contribution,
+})
 async def update_training_timeline(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
 ) -> None:

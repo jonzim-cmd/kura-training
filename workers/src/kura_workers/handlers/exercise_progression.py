@@ -39,7 +39,22 @@ def _iso_week(d) -> str:
     return f"{iso.year}-W{iso.week:02d}"
 
 
-@projection_handler("set.logged")
+def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Extract summary for user_profile manifest (Decision 7)."""
+    return {"exercises": [r["key"] for r in projection_rows]}
+
+
+@projection_handler("set.logged", dimension_meta={
+    "name": "exercise_progression",
+    "description": "Strength progression per exercise over time",
+    "key_structure": "one per exercise (exercise_id as key)",
+    "granularity": ["set", "week"],
+    "relates_to": {
+        "training_timeline": {"join": "week", "why": "frequency vs progression"},
+        "user_profile": {"join": "exercises_logged", "why": "which exercises to query"},
+    },
+    "manifest_contribution": _manifest_contribution,
+})
 async def update_exercise_progression(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
 ) -> None:

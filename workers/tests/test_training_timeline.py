@@ -8,6 +8,7 @@ from kura_workers.handlers.training_timeline import (
     _compute_streak,
     _compute_weekly_summary,
     _iso_week,
+    _manifest_contribution,
 )
 
 
@@ -235,3 +236,34 @@ class TestComputeStreak:
         result = _compute_streak(training_dates, ref)
         assert result["current_weeks"] == 2
         assert result["longest_weeks"] == 10
+
+
+class TestManifestContribution:
+    def test_extracts_summary(self):
+        rows = [{"key": "overview", "data": {
+            "last_training": "2026-02-08",
+            "total_training_days": 127,
+            "current_frequency": {"last_4_weeks": 3.25, "last_12_weeks": 2.8},
+            "streak": {"current_weeks": 4, "longest_weeks": 12},
+            "recent_days": [],
+            "weekly_summary": [],
+        }}]
+        result = _manifest_contribution(rows)
+        assert result["last_training"] == "2026-02-08"
+        assert result["total_training_days"] == 127
+        assert result["current_frequency"] == {"last_4_weeks": 3.25, "last_12_weeks": 2.8}
+        assert result["streak"] == {"current_weeks": 4, "longest_weeks": 12}
+
+    def test_empty_rows(self):
+        assert _manifest_contribution([]) == {}
+
+    def test_ignores_extra_fields(self):
+        rows = [{"key": "overview", "data": {
+            "last_training": "2026-02-08",
+            "total_training_days": 5,
+            "current_frequency": {"last_4_weeks": 1.0, "last_12_weeks": 0.5},
+            "streak": {"current_weeks": 1, "longest_weeks": 1},
+            "recent_days": [{"date": "2026-02-08", "exercises": ["squat"]}],
+        }}]
+        result = _manifest_contribution(rows)
+        assert "recent_days" not in result
