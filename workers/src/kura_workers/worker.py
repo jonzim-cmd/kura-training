@@ -84,7 +84,13 @@ class Worker:
             async with await psycopg.AsyncConnection.connect(
                 self.config.database_url
             ) as conn:
+                # Assume app_worker role for BYPASSRLS (cross-user event/projection access)
+                await conn.execute("SET ROLE app_worker")
+                await conn.commit()
+
                 jobs = await self._claim_jobs(conn)
+                await conn.commit()  # Commit claims immediately so they survive crashes
+
                 for job in jobs:
                     await self._process_job(conn, job)
         except Exception:
@@ -126,13 +132,10 @@ class Worker:
             return
 
         try:
-            # Run handler in its own transaction (autocommit=False is the default)
+            # Handler + job completion in one transaction — no crash window
             async with conn.transaction():
                 await handler(conn, job["payload"])
-
-            # Mark completed
-            async with conn.cursor() as cur:
-                await cur.execute(
+                await conn.execute(
                     """
                     UPDATE background_jobs
                     SET status = 'completed', completed_at = NOW()
@@ -140,7 +143,6 @@ class Worker:
                     """,
                     (job_id,),
                 )
-            await conn.commit()
             logger.info("Job %d completed (type=%s)", job_id, job_type)
 
         except Exception as exc:
