@@ -17,34 +17,38 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
-from ..registry import register
+from ..registry import projection_handler
 
 logger = logging.getLogger(__name__)
 
 
-def _epley_1rm(weight: float, reps: int) -> float:
+def _epley_1rm(weight_kg: float, reps: int) -> float:
     """Estimate 1RM using the Epley formula. Returns 0 for invalid inputs."""
-    if reps <= 0 or weight <= 0:
+    if reps <= 0 or weight_kg <= 0:
         return 0.0
     if reps == 1:
-        return weight
-    return weight * (1 + reps / 30)
+        return weight_kg
+    return weight_kg * (1 + reps / 30)
 
 
-@register("projection.update")
-async def handle_projection_update(
-    conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
-) -> None:
-    """Route projection.update jobs to the appropriate handler based on event_type."""
-    event_type = payload.get("event_type", "")
+def _resolve_exercise_key(data: dict[str, Any]) -> str | None:
+    """Resolve the canonical exercise key from event data.
 
-    if event_type == "set.logged":
-        await _update_exercise_progression(conn, payload)
-    else:
-        logger.debug("No projection handler for event_type=%s, skipping", event_type)
+    Prefers exercise_id (canonical) over exercise (free text).
+    """
+    exercise_id = data.get("exercise_id", "")
+    if exercise_id:
+        return exercise_id.strip().lower()
+
+    exercise = data.get("exercise", "")
+    if exercise:
+        return exercise.strip().lower()
+
+    return None
 
 
-async def _update_exercise_progression(
+@projection_handler("set.logged")
+async def update_exercise_progression(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
 ) -> None:
     """Full recompute of exercise_progression projection for the affected exercise."""
@@ -53,25 +57,19 @@ async def _update_exercise_progression(
 
     # Get the exercise name from this specific event
     async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            "SELECT data FROM events WHERE id = %s",
-            (event_id,),
-        )
+        await cur.execute("SELECT data FROM events WHERE id = %s", (event_id,))
         row = await cur.fetchone()
         if row is None:
             logger.warning("Event %s not found, skipping", event_id)
             return
 
-    event_data = row["data"]
-    exercise_raw = event_data.get("exercise", "")
-    if not exercise_raw:
+    exercise_key = _resolve_exercise_key(row["data"])
+    if not exercise_key:
         logger.warning("Event %s has no exercise field, skipping", event_id)
         return
 
-    # Normalize exercise name (semantic layer comes later)
-    exercise_key = exercise_raw.strip().lower()
-
     # Full recompute: fetch ALL set.logged events for this user+exercise
+    # Match on both exercise_id and normalized exercise name
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
@@ -79,10 +77,13 @@ async def _update_exercise_progression(
             FROM events
             WHERE user_id = %s
               AND event_type = 'set.logged'
-              AND lower(trim(data->>'exercise')) = %s
+              AND (
+                  lower(trim(data->>'exercise_id')) = %s
+                  OR lower(trim(data->>'exercise')) = %s
+              )
             ORDER BY timestamp ASC
             """,
-            (user_id, exercise_key),
+            (user_id, exercise_key, exercise_key),
         )
         rows = await cur.fetchall()
 
@@ -100,35 +101,39 @@ async def _update_exercise_progression(
 
     for row in rows:
         data = row["data"]
-        weight = float(data.get("weight", 0))
+        # Support both weight_kg (convention) and weight (legacy)
+        weight = float(data.get("weight_kg", data.get("weight", 0)))
         reps = int(data.get("reps", 0))
         ts: datetime = row["timestamp"]
 
         volume = weight * reps
         total_volume_kg += volume
 
-        # Track sessions by date
         session_dates.add(ts.date().isoformat())
 
-        # Track best estimated 1RM
         e1rm = _epley_1rm(weight, reps)
         if e1rm > best_1rm:
             best_1rm = e1rm
             best_1rm_date = ts
 
-        # Collect for recent history
-        recent_sets.append({
+        set_entry: dict[str, Any] = {
             "timestamp": ts.isoformat(),
-            "weight": weight,
+            "weight_kg": weight,
             "reps": reps,
             "estimated_1rm": round(e1rm, 1),
-        })
+        }
+        # Include optional fields if present
+        if "rpe" in data:
+            set_entry["rpe"] = float(data["rpe"])
+        if "set_type" in data:
+            set_entry["set_type"] = data["set_type"]
+
+        recent_sets.append(set_entry)
 
     # Last 5 sessions worth of sets (by date)
     sorted_dates = sorted(session_dates, reverse=True)[:5]
     recent_date_set = set(sorted_dates)
     recent_sessions = [s for s in recent_sets if s["timestamp"][:10] in recent_date_set]
-    # Reverse so most recent is first
     recent_sessions.reverse()
 
     projection_data = {
@@ -141,7 +146,6 @@ async def _update_exercise_progression(
         "recent_sessions": recent_sessions,
     }
 
-    # UPSERT projection
     async with conn.cursor() as cur:
         await cur.execute(
             """
@@ -158,8 +162,5 @@ async def _update_exercise_progression(
 
     logger.info(
         "Updated exercise_progression for user=%s exercise=%s (sets=%d, 1rm=%.1f)",
-        user_id,
-        exercise_key,
-        total_sets,
-        best_1rm,
+        user_id, exercise_key, total_sets, best_1rm,
     )

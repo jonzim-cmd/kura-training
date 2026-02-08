@@ -5,7 +5,7 @@ import logging
 import sys
 
 from .config import Config
-from .registry import registered_types
+from .registry import registered_event_types, registered_types
 from .worker import Worker
 
 # Import handlers to register them
@@ -21,7 +21,8 @@ def main() -> None:
 
     config = Config.from_env()
     logger = logging.getLogger(__name__)
-    logger.info("Registered handlers: %s", registered_types())
+    logger.info("Registered job handlers: %s", registered_types())
+    logger.info("Registered event types: %s", registered_event_types())
 
     worker = Worker(config)
     asyncio.run(worker.run())

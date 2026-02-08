@@ -1,0 +1,121 @@
+"""User Profile projection handler.
+
+Builds a meta-projection: "What does Kura know about this user?"
+Reacts to all relevant event types and aggregates into a single profile.
+
+Full recompute on every event — idempotent by design.
+"""
+
+import json
+import logging
+from typing import Any
+
+import psycopg
+from psycopg.rows import dict_row
+
+from ..registry import projection_handler
+
+logger = logging.getLogger(__name__)
+
+
+@projection_handler(
+    "set.logged",
+    "exercise.alias_created",
+    "preference.set",
+    "goal.set",
+)
+async def update_user_profile(
+    conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
+) -> None:
+    """Full recompute of user_profile projection from all user events."""
+    user_id = payload["user_id"]
+    event_id = payload["event_id"]
+
+    # Fetch all relevant events for this user in one query
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT id, timestamp, event_type, data
+            FROM events
+            WHERE user_id = %s
+              AND event_type IN ('set.logged', 'exercise.alias_created', 'preference.set', 'goal.set')
+            ORDER BY timestamp ASC
+            """,
+            (user_id,),
+        )
+        rows = await cur.fetchall()
+
+    if not rows:
+        return
+
+    # Build profile from events
+    aliases: dict[str, str] = {}
+    preferences: dict[str, Any] = {}
+    goals: list[dict[str, Any]] = []
+    exercises_logged: set[str] = set()
+    session_ids: set[str] = set()
+    total_events = 0
+    first_event = rows[0]["timestamp"]
+    last_event = rows[-1]["timestamp"]
+    last_event_id_value = rows[-1]["id"]
+
+    for row in rows:
+        event_type = row["event_type"]
+        data = row["data"]
+        total_events += 1
+
+        if event_type == "set.logged":
+            # Track exercises (prefer exercise_id over exercise)
+            exercise_id = data.get("exercise_id", "")
+            exercise = data.get("exercise", "")
+            key = (exercise_id or exercise).strip().lower()
+            if key:
+                exercises_logged.add(key)
+
+        elif event_type == "exercise.alias_created":
+            alias = data.get("alias", "").strip()
+            target = data.get("exercise_id", "").strip().lower()
+            if alias and target:
+                aliases[alias] = target
+
+        elif event_type == "preference.set":
+            pref_key = data.get("key", "")
+            pref_value = data.get("value")
+            if pref_key:
+                preferences[pref_key] = pref_value
+
+        elif event_type == "goal.set":
+            goals.append(data)
+
+    # Count distinct sessions from metadata
+    # (we'd need to query metadata for session_id, but for now count by date)
+    # This is a simplification — session_summary projection will handle true sessions
+
+    projection_data = {
+        "exercises_logged": sorted(exercises_logged),
+        "aliases": aliases,
+        "preferences": preferences,
+        "goals": goals,
+        "total_events": total_events,
+        "first_event": first_event.isoformat(),
+        "last_event": last_event.isoformat(),
+    }
+
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            INSERT INTO projections (user_id, projection_type, key, data, version, last_event_id, updated_at)
+            VALUES (%s, 'user_profile', 'me', %s, 1, %s, NOW())
+            ON CONFLICT (user_id, projection_type, key) DO UPDATE SET
+                data = EXCLUDED.data,
+                version = projections.version + 1,
+                last_event_id = EXCLUDED.last_event_id,
+                updated_at = NOW()
+            """,
+            (user_id, json.dumps(projection_data), str(last_event_id_value)),
+        )
+
+    logger.info(
+        "Updated user_profile for user=%s (exercises=%d, aliases=%d, prefs=%d)",
+        user_id, len(exercises_logged), len(aliases), len(preferences),
+    )
