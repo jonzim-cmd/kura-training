@@ -32,17 +32,17 @@ User (Handy, Laptop, Sprache, Chat — egal)
 
 Der User sieht die Technik nie. Er redet mit seinem Agent. Der Agent redet mit Kura. Kura liefert die Wahrheit. Ob der Agent intern einen Schwarm orchestriert oder alleine arbeitet, ist seine Entscheidung — Kura sieht nur authentifizierte Requests.
 
-### Was wir bauen: Zwei Schichten, nicht drei Projekte
+### Was wir bauen: Drei unabhängige Interfaces
 
 ```
-REST API          ← baust du einmal, perfekt. Alles redet mit ihr.
-    ↑
-CLI               ← thin client, ruft REST API auf
-    ↑
-MCP Mode          ← eingebaut im CLI, gleicher Code
+REST API          ← Fundament. Alles redet mit ihr.
+CLI               ← Eigenes Binary. Thin Client über REST API. Shell-optimiert.
+MCP Server        ← Eigenes Projekt. Thin Client über REST API. MCP-optimiert.
 ```
 
-Die REST API ist die Wahrheit. Das CLI ist ein Binary das zwei Dinge kann: Shell-Commands UND MCP-Server-Modus. Beides ruft die gleiche API auf. Für Cloud-Agents (Claude.ai, ChatGPT App) gibt es einen gehosteten MCP Server — ein dünner Wrapper um die REST API.
+Die REST API ist die Wahrheit. CLI und MCP Server sind **separate Projekte** — beide dünn, beide rufen die gleiche API auf, aber jedes spielt seine eigenen Stärken aus.
+
+**Warum getrennt, nicht ein Binary?** CLI und MCP haben fundamental unterschiedliche Stärken. Das CLI ist ephemeral (start, execute, exit), composable (Pipes, Scripts), minimal (ein Binary, keine Runtime). Der MCP Server ist long-lived (persistente Verbindung), bietet Tool Discovery (Agent sieht automatisch verfügbare Tools + Schemas), und hat native Integration mit MCP-Clients. Diese Stärken verwässern sich wenn man beides in ein Binary presst. Der "shared Code" ist minimal — beide machen HTTP-Requests, das sind ein paar Zeilen.
 
 ### Welcher Agent nutzt was
 
@@ -51,8 +51,8 @@ Die REST API ist die Wahrheit. Das CLI ist ein Binary das zwei Dinge kann: Shell
 | Claude Code (lokal, Shell) | **CLI direkt** | Auf dem Rechner installiert |
 | Cursor / Codex / Aider (lokal, Shell) | **CLI direkt** | Auf dem Rechner installiert |
 | Agent auf VPS (Server, Shell) | **CLI direkt** | Auf dem Server installiert, 24/7 |
-| Claude Desktop (lokal, MCP) | **CLI im MCP-Modus** | CLI als lokaler MCP Server |
-| Claude.ai / Claude App (Cloud, MCP) | **Gehosteter MCP Server** | Kura hostet MCP-Endpoint |
+| Claude Desktop (lokal, MCP) | **MCP Server (lokal)** | Eigenes Projekt, lokale Installation |
+| Claude.ai / Claude App (Cloud, MCP) | **MCP Server (gehostet)** | Kura hostet MCP-Endpoint |
 | ChatGPT / ChatGPT App (Cloud) | **REST API** | Via Function Calling / Actions, gehosteter MCP wenn verfügbar |
 | Agent-Schwarm (beliebig) | **REST API** | Orchestrierender Agent verteilt Arbeit, alle Sub-Agents nutzen gleichen Token |
 
@@ -60,7 +60,7 @@ Die REST API ist die Wahrheit. Das CLI ist ein Binary das zwei Dinge kann: Shell
 
 ```
 Hat Shell-Zugriff?  → CLI
-Hat MCP?            → CLI im MCP-Modus (lokal) oder gehosteter MCP (Cloud)
+Hat MCP?            → MCP Server (lokal oder gehostet)
 Hat beides nicht?   → REST API direkt
 ```
 
@@ -69,10 +69,9 @@ Hat beides nicht?   → REST API direkt
 | Priorität | Interface | Rolle |
 |---|---|---|
 | 1 | **REST API** | Fundament. Alles redet mit ihr. Einmal perfekt bauen. |
-| 2 | **CLI** | Primary Agent Interface. Thin Client über die API. JSON-only. Source-available (BSL). |
-| 3 | **MCP (im CLI)** | Eingebaut im CLI-Binary. Gleicher Code, MCP-Protokoll. Für lokale MCP-Agents. |
-| 4 | **Gehosteter MCP** | Dünner Wrapper um REST API. Für Cloud-Agents (Claude.ai, ChatGPT App). |
-| 5 | **OpenAPI Spec** | Automatische Client-Generierung für Agent-Frameworks. |
+| 2 | **CLI** | Shell-optimierter Agent-Client. Ephemeral, composable, JSON-only. Eigenes Binary. |
+| 3 | **MCP Server** | Eigenes Projekt. Tool Discovery, typisierte Parameter, persistente Verbindung. Lokal oder gehostet. |
+| 4 | **OpenAPI Spec** | Automatische Client-Generierung für Agent-Frameworks. |
 
 ## Was das Backend tut, was der Agent nicht kann — auch wenn er die Daten hat
 
@@ -449,15 +448,15 @@ SaaS ist das Primärmodell weil:
 - Bayesian Engine von zentralem Compute profitiert
 - Zielkunde (Person mit Agent) will kein Backend deployen
 
-### CLI + MCP (Agent Interface)
+### CLI (Shell-Agents)
 
-Source-available (BSL-Lizenz). Ein Binary, zwei Modi:
-1. **Shell-Modus:** CLI-Commands, JSON-only Output. Für Agents mit Shell-Zugriff.
-2. **MCP-Modus:** Gleicher Code, MCP-Protokoll. Für lokale MCP-Agents (Claude Desktop etc.).
+Source-available (BSL-Lizenz). Eigenes Rust-Binary, JSON-only. Für Agents mit Shell-Zugriff (Claude Code, Cursor, VPS-Agents). Spielt die Stärken der Shell aus: composable, ephemeral, scriptbar, minimale Dependencies.
 
-Zusätzlich: **Gehosteter MCP Server** für Cloud-Agents (Claude.ai, ChatGPT App). Dünner Wrapper um die REST API.
+### MCP Server (MCP-Agents)
 
-Alle drei rufen die gleiche REST API auf. Kein separater Code, kein Maintenance-Overhead.
+Eigenes Projekt. Thin Client über die REST API, spricht MCP-Protokoll. Für MCP-Clients (Claude Desktop lokal, Claude.ai/ChatGPT gehostet). Spielt die Stärken von MCP aus: Tool Discovery, typisierte Schemas, persistente Verbindung, native Integration.
+
+Beide rufen die gleiche REST API auf. Kein shared Code nötig — der Overlap ist trivial (HTTP-Requests).
 
 ### Self-Hosted (Phase 2)
 
@@ -475,7 +474,7 @@ Architektur ist von Tag 1 self-hosting-fähig: PostgreSQL-Only, Docker Compose, 
 - **Statistical Engine:** Bayesian-First. PyMC + Stan + ArviZ. Frequentist als Baseline. Goldstandard, kein Marketing.
 - **Business Model:** SaaS primary (Phase 1), Self-Hosted als spätere Option (Phase 2). CLI Source-available (BSL).
 - **Monetarisierung:** Free = Logging + Lesen + Export. Pro = Compute (Bayesian, Korrelationen, Benchmarks, Anomaly Detection).
-- **Interface-Stack:** REST API als Fundament → CLI als Thin Client → MCP eingebaut im CLI. Gehosteter MCP für Cloud-Agents. Alles ein Codebase, kein Maintenance-Overhead.
+- **Interface-Stack:** REST API als Fundament. CLI und MCP Server als separate Projekte — jedes spielt seine eigenen Stärken aus. CLI: Shell-optimiert, ephemeral, composable. MCP: Tool Discovery, typisiert, persistent. Kein shared Binary, bewusst getrennt.
 - **CLI-Design:** JSON-only. Kein Human-Readable Mode. Agents sind die User. `kura` als Command-Name.
 - **Auth:** OAuth Authorization Code + PKCE als primärer Flow (CLI, MCP, REST). API Keys für Maschinen (CI/CD). Scoping nach Mensch, nicht nach Agent. Delegated Tokens für Coach/Arzt/Physio.
 - **Background Workers:** PostgreSQL-based Job Queue (SKIP LOCKED / pgmq). Kein Redis, kein RabbitMQ.
