@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use axum::Router;
 use serde::Serialize;
 use sqlx::postgres::PgPoolOptions;
+use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use utoipa::OpenApi;
@@ -10,6 +11,7 @@ use utoipa_swagger_ui::SwaggerUi;
 
 mod auth;
 mod error;
+mod middleware;
 mod routes;
 mod state;
 
@@ -101,13 +103,30 @@ async fn main() {
 
     let app_state = state::AppState { db: pool };
 
-    // Router
+    // HTTPS enforcement (only when KURA_REQUIRE_HTTPS=true)
+    let require_https = std::env::var("KURA_REQUIRE_HTTPS")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+
+    // CORS
+    let cors_layer = middleware::cors::build_cors_layer();
+
+    // Router with per-endpoint rate limiting on auth routes
     let app = Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-doc/openapi.json", ApiDoc::openapi()))
         .merge(routes::health::router())
         .merge(routes::events::router())
-        .merge(routes::auth::router())
-        .layer(TraceLayer::new_for_http())
+        .merge(routes::auth::register_router().layer(middleware::rate_limit::register_layer()))
+        .merge(routes::auth::authorize_router().layer(middleware::rate_limit::authorize_layer()))
+        .merge(routes::auth::token_router().layer(middleware::rate_limit::token_layer()))
+        .layer(
+            ServiceBuilder::new()
+                .layer(TraceLayer::new_for_http())
+                .option_layer(require_https.then(|| {
+                    axum::middleware::from_fn(middleware::https::require_https)
+                }))
+                .layer(cors_layer),
+        )
         .with_state(app_state);
 
     let port: u16 = std::env::var("PORT")
@@ -119,5 +138,10 @@ async fn main() {
     tracing::info!("Kura API listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }

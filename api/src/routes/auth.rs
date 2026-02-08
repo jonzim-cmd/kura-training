@@ -12,14 +12,19 @@ use kura_core::auth;
 use crate::error::AppError;
 use crate::state::AppState;
 
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/v1/auth/register", post(register))
-        .route(
-            "/v1/auth/authorize",
-            get(authorize_form).post(authorize_submit),
-        )
-        .route("/v1/auth/token", post(token))
+pub fn register_router() -> Router<AppState> {
+    Router::new().route("/v1/auth/register", post(register))
+}
+
+pub fn authorize_router() -> Router<AppState> {
+    Router::new().route(
+        "/v1/auth/authorize",
+        get(authorize_form).post(authorize_submit),
+    )
+}
+
+pub fn token_router() -> Router<AppState> {
+    Router::new().route("/v1/auth/token", post(token))
 }
 
 // ──────────────────────────────────────────────

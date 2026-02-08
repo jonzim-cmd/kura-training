@@ -22,6 +22,8 @@ pub enum AppError {
     IdempotencyConflict { idempotency_key: String },
     /// Database error (500)
     Database(sqlx::Error),
+    /// Rate limited (429)
+    RateLimited { retry_after_secs: u64 },
     /// Internal error (500)
     Internal(String),
 }
@@ -77,6 +79,28 @@ impl IntoResponse for AppError {
                     ),
                 },
             ),
+            AppError::RateLimited { retry_after_secs } => {
+                let mut response = (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(ApiError {
+                        error: error::codes::RATE_LIMITED.to_string(),
+                        message: format!(
+                            "Too many requests. Retry after {} seconds.",
+                            retry_after_secs
+                        ),
+                        field: None,
+                        received: None,
+                        request_id,
+                        docs_hint: None,
+                    }),
+                )
+                    .into_response();
+                response.headers_mut().insert(
+                    "retry-after",
+                    retry_after_secs.to_string().parse().unwrap(),
+                );
+                return response;
+            }
             AppError::Database(err) => {
                 tracing::error!("Database error: {:?}", err);
 

@@ -53,6 +53,10 @@ rand = "0.8"
 hex = "0.4"
 base64 = "0.22"
 
+# Rate limiting
+tower_governor = "0.8"
+governor = "0.10"
+
 # URL handling
 url = "2"
 
