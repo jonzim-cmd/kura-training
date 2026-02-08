@@ -77,7 +77,7 @@ def _compute_frequency(
     """Compute rolling average training days per week."""
     def _avg_for_weeks(n_weeks: int) -> float:
         cutoff = reference_date - timedelta(weeks=n_weeks)
-        days_in_range = sum(1 for d in training_dates if d > cutoff)
+        days_in_range = sum(1 for d in training_dates if d >= cutoff)
         return round(days_in_range / n_weeks, 2)
 
     return {

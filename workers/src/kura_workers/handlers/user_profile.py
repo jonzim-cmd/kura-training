@@ -54,6 +54,7 @@ async def update_user_profile(
     goals: list[dict[str, Any]] = []
     exercises_logged: set[str] = set()
     total_events = 0
+    total_set_logged = 0
     # Data quality tracking
     events_without_exercise_id = 0
     raw_exercises_without_id: set[str] = set()
@@ -67,6 +68,7 @@ async def update_user_profile(
         total_events += 1
 
         if event_type == "set.logged":
+            total_set_logged += 1
             # Track exercises (prefer exercise_id over exercise)
             exercise_id = data.get("exercise_id", "")
             exercise = data.get("exercise", "")
@@ -140,6 +142,7 @@ async def update_user_profile(
         "last_event": last_event.isoformat(),
         "dimensions": dimensions,
         "data_quality": {
+            "total_set_logged_events": total_set_logged,
             "events_without_exercise_id": events_without_exercise_id,
             "unresolved_exercises": unresolved_exercises,
         },

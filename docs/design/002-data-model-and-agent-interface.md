@@ -355,10 +355,46 @@ where the agent isn't present. Neither replaces the other.
 
 1. ~~**Preference/Alias event types + user_profile projection**~~ ✅ Done.
 2. ~~**set.logged conventions documented + exercise_progression updated**~~ ✅ Done.
-3. **Dimension architecture** — Evolve projections into composable dimensions:
-   - Evolve `exercise_progression` with weekly time series (history field)
-   - Build `training_timeline` dimension (per-day/week aggregates)
-   - Evolve `user_profile` into manifest (dimensions catalog, data quality)
+3. ~~**Dimension architecture**~~ ✅ Done.
+   - `exercise_progression` extended with `weekly_history` (26 weeks)
+   - `training_timeline` dimension built (recent_days, weekly_summary, frequency, streak)
+   - `user_profile` evolved into manifest (dimensions discovery, data_quality)
 4. **Onboarding interview design** — agent-side, produces standard events.
 5. **Semantic layer (pgvector + embeddings)** — background resolution,
    cross-language matching, fuzzy alias suggestions.
+
+## Accepted Trade-offs (Dimension Architecture)
+
+Reviewed 2026-02-08. These are conscious decisions, not oversights.
+
+### Router transaction isolation (per-handler, not atomic)
+
+Each projection handler runs in its own transaction. If one handler fails,
+the others still complete and the job is marked done. This means a failed
+handler's projection can be temporarily stale until the next event triggers
+a rebuild. We accept this because:
+- Full recompute on every event is self-healing — the next event fixes it.
+- Atomic all-or-nothing would mean one broken handler blocks all projections.
+- At current scale, the risk is low. Revisit when we add monitoring/alerting.
+
+### Flat user_profile structure (no `identity` wrapper)
+
+The design doc shows `identity: { aliases, preferences, goals }` as a wrapper.
+Implementation uses a flat structure with these fields at the top level.
+The flat version is simpler for the agent — fewer nesting levels to navigate.
+If the manifest grows significantly, we may introduce grouping later.
+
+### Alias `confidence` field not stored in projection
+
+`exercise.alias_created` events have a `confidence` field ("confirmed" /
+"inferred"), but the user_profile projection only stores alias → target
+mapping. The confidence information is preserved in the events and can be
+surfaced when we need to distinguish confirmed from inferred aliases
+(e.g., for the semantic layer's fuzzy suggestions).
+
+### training_timeline only covers `set.logged`
+
+The handler name suggests broader coverage, but it only processes `set.logged`
+events. `activity.logged` (runs, swims) and other training event types are
+not yet defined as conventions. When they are, training_timeline will be
+extended to include them. Until then, the scope is intentionally limited.
