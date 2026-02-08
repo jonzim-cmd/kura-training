@@ -1,0 +1,239 @@
+# Design 002: Data Model, Agent Interface & Onboarding
+
+Status: **Decided** (2026-02-08)
+
+## Context
+
+Kura has a working Event Store, Auth, and Projection Infrastructure. The next
+question: how does messy real-world training data become structured, useful
+events? The agent (LLM) is the primary interface — it parses user input,
+normalizes data, and writes structured events. But the agent needs persistent
+context to do this well.
+
+## Core Principle: The Agent Normalizes, Kura Remembers
+
+The LLM is the intelligence layer. It understands "Kniebeuge" = "squat",
+handles ambiguity, asks clarifying questions. But session context dies when
+the conversation ends. Kura's job is to persist the knowledge the agent
+gains — aliases, preferences, vocabulary — so any agent, any session, any
+time can pick up where the last one left off.
+
+```
+User Input
+  |
+Agent (LLM)
+  |-- [1] Read user_profile projection -> know aliases, preferences, context
+  |-- [2] Parse user input -> recognize exercises, values, intention
+  |-- [3] Resolve exercise -> alias lookup, or ask user to confirm
+  |-- [4] Structure event(s) -> conventions, units, exercise_id
+  `-- [5] POST /v1/events/batch -> Kura stores, workers compute projections
+
+User Question
+  |
+Agent (LLM)
+  |-- [1] Read relevant projections
+  |-- [2] Contextualize (language, units, user level)
+  `-- [3] Answer the user
+```
+
+## Decision 1: Per-User Alias & Preference System
+
+Every user builds a personal vocabulary over time. Aliases and preferences
+are events like everything else — immutable, versioned, per user.
+
+### Event Types
+
+**`exercise.alias_created`**
+```json
+{
+  "event_type": "exercise.alias_created",
+  "data": {
+    "alias": "Kniebeuge",
+    "exercise_id": "barbell_back_squat",
+    "confidence": "confirmed"
+  }
+}
+```
+- `confidence`: "confirmed" (user confirmed) or "inferred" (agent guessed)
+- Many-to-one: "Kniebeuge", "SQ", "Squats" -> all map to same exercise_id
+- Any agent working with this user inherits the vocabulary
+
+**`preference.set`**
+```json
+{
+  "event_type": "preference.set",
+  "data": {
+    "key": "unit_system",
+    "value": "metric"
+  }
+}
+```
+- Keys: `unit_system` (metric/imperial), `language`, `default_rpe_scale`, etc.
+- Latest event per key wins (projection rebuilds from all preference events)
+
+**`goal.set`**
+```json
+{
+  "event_type": "goal.set",
+  "data": {
+    "goal_type": "strength",
+    "target_exercise": "barbell_back_squat",
+    "target_1rm_kg": 140,
+    "timeframe_weeks": 12
+  }
+}
+```
+
+### User Profile Projection
+
+A meta-projection that answers: "What does Kura know about this user?"
+
+```json
+{
+  "projection_type": "user_profile",
+  "key": "me",
+  "data": {
+    "exercises_logged": ["barbell_back_squat", "barbell_bench_press"],
+    "aliases": {
+      "Kniebeuge": "barbell_back_squat",
+      "SQ": "barbell_back_squat",
+      "Bankdruecken": "barbell_bench_press"
+    },
+    "preferences": {
+      "unit_system": "metric",
+      "language": "de"
+    },
+    "goals": [...],
+    "total_sessions": 47,
+    "total_events": 312,
+    "first_event": "2025-06-15",
+    "last_event": "2026-02-08",
+    "available_projections": ["exercise_progression", "session_summary"]
+  }
+}
+```
+
+One call. Agent knows everything it needs from the first message.
+
+## Decision 2: Conventions for set.logged (Not Schemas)
+
+No hardcoded schemas, no enums. Documented conventions that agents follow.
+Projections take what's there and handle missing fields gracefully.
+
+### Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `exercise` | Yes | Free text, what the user/agent said. For provenance. |
+| `exercise_id` | No | Canonical ID (e.g. `barbell_back_squat`). For projections. |
+| `weight_kg` | No* | Weight in kg. Unit in field name eliminates ambiguity. |
+| `reps` | No* | Repetition count. |
+| `rpe` | No | Rate of perceived exertion (1-10, half steps allowed). |
+| `set_type` | No | warmup, working, amrap, drop, backoff, etc. Free text. |
+| `tempo` | No | String like "3-1-2-0" (eccentric-pause-concentric-pause). |
+| `duration_seconds` | No* | For timed exercises (planks, carries, etc.). |
+| `distance_meters` | No* | For distance exercises (runs, rows, etc.). |
+| `rest_seconds` | No | Rest before this set. |
+| `notes` | No | Free text notes for this specific set. |
+
+*At least one measurement required (weight_kg+reps, or duration_seconds, or distance_meters).
+
+### Design Decisions
+
+- **Units in field names** (`weight_kg`, `distance_meters`, `duration_seconds`).
+  No separate unit field needed. The agent converts at write time.
+- **`exercise` + `exercise_id` duality**: `exercise` is always set (provenance).
+  `exercise_id` is set when the agent is confident about the canonical mapping.
+  Projections prefer `exercise_id`, fall back to normalized `exercise`.
+- **No validation at API level** for field contents. The projection handlers
+  are lenient — they take what's there. This keeps the system flexible for
+  new exercise types, metrics, etc.
+
+## Decision 3: Session Grouping
+
+Sessions are a grouping concept, not a first-class entity. Sets belonging
+to the same session share a `session_id` in their metadata.
+
+Optional `session.started` and `session.ended` events can bracket a session
+for additional context (duration, location, program phase, overall RPE, notes).
+But they're not required — sets can exist without a session envelope.
+
+## Decision 4: Onboarding Interview
+
+Inspired by [Anthropic Interviewer](https://www.anthropic.com/research/anthropic-interviewer).
+
+When a new user connects for the first time, the agent conducts a structured
+but adaptive interview. Not pre-built questions — the agent reacts to context
+and adapts. The interview produces events that bootstrap the user's profile.
+
+### What the Interview Establishes
+
+- Training history (duration, type, experience level)
+- Current program (if any)
+- Goals (strength, hypertrophy, endurance, weight loss, health)
+- Exercise vocabulary (what they call their exercises)
+- Unit preferences (kg/lbs, km/miles)
+- Language
+- Injuries / limitations
+- Available equipment
+- Training frequency and schedule
+- Nutrition tracking interest (yes/no/later)
+
+### Output: Events
+
+Every piece of information becomes an event:
+- `preference.set` (units, language)
+- `exercise.alias_created` (vocabulary mapping)
+- `goal.set` (training goals)
+- `injury.reported` (current injuries)
+- `profile.updated` (experience level, training frequency)
+
+After the interview, `user_profile` projection is populated. Every future
+interaction is contextualized from the start.
+
+### Key Design Principle
+
+The interview is conducted by the agent (LLM), not by Kura. Kura doesn't
+need interview logic — it receives the structured events that result from
+the interview. Any agent can conduct the interview, in any language, in
+any style. The output format (events) is standardized.
+
+## Decision 5: Three Layers of Intelligence
+
+```
+LLM (Agent)     -> Understanding, communication, clarification, context
+ML (Backend)    -> Pattern matching, classification, embeddings, batch processing
+Statistics      -> Analysis, Bayesian inference, trends, predictions (PyMC/Stan)
+```
+
+### Where ML fits (not LLM, not statistics)
+
+1. **Embeddings (pgvector)**: Pre-trained sentence transformers for semantic
+   similarity. "Kniebeuge" and "barbell back squat" are close in embedding
+   space. Works across languages natively. No custom training needed.
+
+2. **Background classification**: When the agent isn't in the loop (imports,
+   batch processing), small classifiers for:
+   - Exercise -> muscle group mapping
+   - Exercise type inference (strength/cardio/flexibility)
+   - Movement pattern classification (push/pull/hinge/squat/carry)
+
+3. **Cross-user pattern recognition**: The agent sees one user. Backend ML
+   sees all users. "90% of users who write 'RDL' mean Romanian Deadlift."
+
+### Principle
+
+The agent handles interactive normalization (and is better at it than any
+small model). Backend ML handles batch processing and cross-user patterns
+where the agent isn't present. Neither replaces the other.
+
+## Implementation Priority
+
+1. **Preference/Alias event types + user_profile projection** — foundation
+   for everything else. Without this, every session starts from zero.
+2. **set.logged conventions documented + exercise_progression updated** —
+   support exercise_id, weight_kg convention, richer data.
+3. **session_summary projection** — "what did I do this week?"
+4. **Onboarding interview design** — agent-side, produces standard events.
+5. **Semantic layer (pgvector + embeddings)** — background resolution,
+   cross-language matching, fuzzy alias suggestions.
