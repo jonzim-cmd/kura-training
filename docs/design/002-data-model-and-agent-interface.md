@@ -234,7 +234,95 @@ need interview logic — it receives the structured events that result from
 the interview. Any agent can conduct the interview, in any language, in
 any style. The output format (events) is standardized.
 
-## Decision 5: Three Layers of Intelligence
+## Decision 5: Dimensions, Not Answers
+
+### The Problem
+
+We cannot predict every question a user will ask. A user might log a workout,
+ask for a suggestion, ask why they're stagnating, or request a training plan.
+Building projections around specific questions ("session summary", "weekly
+report") creates a rigid system that breaks whenever reality doesn't match
+our assumptions.
+
+### The Solution: Kura describes what IS. The agent decides what to DO.
+
+Projections are **dimensions** — orthogonal views of the data that the agent
+composes freely to answer any question. Each dimension covers a data axis,
+not a use case.
+
+### Core Dimensions
+
+| Dimension | Key | What it provides |
+|-----------|-----|------------------|
+| `user_profile` | `me` | Identity + Manifest of all available dimensions |
+| `exercise_progression` | per exercise | Current state + weekly time series per exercise |
+| `training_timeline` | `overview` | Per-day/week aggregates: volume, exercises, frequency |
+
+Future dimensions (nutrition, sleep, body composition, Bayesian posteriors)
+follow the same pattern. Each is independent, each registers in the manifest.
+
+### The Manifest Pattern
+
+`user_profile` is the agent's entry point — not just "who is this user" but
+"what does Kura know about this user." It includes a `dimensions` section
+that describes every available dimension: what it covers, how fresh it is,
+where the gaps are.
+
+```json
+{
+  "identity": {
+    "aliases": {"Kniebeuge": "barbell_back_squat"},
+    "preferences": {"unit_system": "metric", "language": "de"},
+    "goals": [...]
+  },
+  "dimensions": {
+    "exercise_progression": {
+      "exercises": ["barbell_back_squat", "barbell_bench_press"],
+      "coverage": {"from": "2025-06-15", "to": "2026-02-08"},
+      "freshness": "2026-02-08T14:30:00Z"
+    },
+    "training_timeline": {
+      "weeks_tracked": 34,
+      "last_training": "2026-02-07",
+      "freshness": "2026-02-08T14:30:00Z"
+    }
+  },
+  "data_quality": {
+    "events_without_exercise_id": 12,
+    "unresolved_exercises": ["that weird cable thing"]
+  }
+}
+```
+
+One call. The agent knows everything that's available. Then it decides —
+based on the user's actual question — which dimensions to read in detail.
+
+### Why This Works
+
+The agent brings general intelligence. Kura brings persistent context.
+A specialized model (like Anthropic Interviewer) is trained for one task
+and excels at it. A general agent with perfect context can handle ANY task —
+because it composes context into answers on the fly.
+
+Kura doesn't need to anticipate questions. It needs to organize knowledge
+so that the agent can find and compose it efficiently. The manifest tells
+the agent what's available. The dimensions provide the data. The agent
+does the thinking.
+
+### Design Rules for Dimensions
+
+1. **Dimensions describe data axes, not use cases.** "Exercise over time" not
+   "weekly report." "Training patterns" not "am I consistent?"
+2. **Every dimension registers in the manifest.** New handler → manifest update.
+   The agent discovers new dimensions automatically.
+3. **Dimensions are composable.** exercise_progression + training_timeline =
+   "am I progressing AND am I consistent?" No dimension assumes it's read alone.
+4. **Time granularity is built in.** A dimension provides day/week/month views
+   in one projection, not three separate projections.
+5. **Raw events remain accessible.** For edge cases no dimension covers, the
+   agent falls back to `GET /v1/events` with filters.
+
+## Decision 6: Three Layers of Intelligence (unchanged)
 
 ```
 LLM (Agent)     -> Understanding, communication, clarification, context
@@ -265,11 +353,12 @@ where the agent isn't present. Neither replaces the other.
 
 ## Implementation Priority
 
-1. **Preference/Alias event types + user_profile projection** — foundation
-   for everything else. Without this, every session starts from zero.
-2. **set.logged conventions documented + exercise_progression updated** —
-   support exercise_id, weight_kg convention, richer data.
-3. **session_summary projection** — "what did I do this week?"
+1. ~~**Preference/Alias event types + user_profile projection**~~ ✅ Done.
+2. ~~**set.logged conventions documented + exercise_progression updated**~~ ✅ Done.
+3. **Dimension architecture** — Evolve projections into composable dimensions:
+   - Evolve `exercise_progression` with weekly time series (history field)
+   - Build `training_timeline` dimension (per-day/week aggregates)
+   - Evolve `user_profile` into manifest (dimensions catalog, data quality)
 4. **Onboarding interview design** — agent-side, produces standard events.
 5. **Semantic layer (pgvector + embeddings)** — background resolution,
    cross-language matching, fuzzy alias suggestions.
