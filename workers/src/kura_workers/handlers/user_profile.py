@@ -53,8 +53,10 @@ async def update_user_profile(
     preferences: dict[str, Any] = {}
     goals: list[dict[str, Any]] = []
     exercises_logged: set[str] = set()
-    session_ids: set[str] = set()
     total_events = 0
+    # Data quality tracking
+    events_without_exercise_id = 0
+    raw_exercises_without_id: set[str] = set()
     first_event = rows[0]["timestamp"]
     last_event = rows[-1]["timestamp"]
     last_event_id_value = rows[-1]["id"]
@@ -71,6 +73,11 @@ async def update_user_profile(
             key = (exercise_id or exercise).strip().lower()
             if key:
                 exercises_logged.add(key)
+            # Track data quality
+            if not exercise_id.strip():
+                events_without_exercise_id += 1
+                if key:
+                    raw_exercises_without_id.add(key)
 
         elif event_type == "exercise.alias_created":
             alias = data.get("alias", "").strip()
@@ -93,6 +100,36 @@ async def update_user_profile(
     for ex in exercises_logged:
         resolved_exercises.add(alias_lookup.get(ex, ex))
 
+    # Discover existing dimensions from projections table
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT projection_type, array_agg(key ORDER BY key) as keys,
+                   max(updated_at) as last_updated, count(*) as count
+            FROM projections
+            WHERE user_id = %s AND projection_type != 'user_profile'
+            GROUP BY projection_type
+            """,
+            (user_id,),
+        )
+        dim_rows = await cur.fetchall()
+
+    dimensions: dict[str, Any] = {}
+    for dim_row in dim_rows:
+        ptype = dim_row["projection_type"]
+        entry: dict[str, Any] = {
+            "last_updated": dim_row["last_updated"].isoformat(),
+        }
+        if ptype == "exercise_progression":
+            entry["exercises"] = dim_row["keys"]
+        dimensions[ptype] = entry
+
+    # Compute data quality: unresolved exercises
+    unresolved_exercises = sorted(
+        ex for ex in raw_exercises_without_id
+        if ex not in alias_lookup
+    )
+
     projection_data = {
         "exercises_logged": sorted(resolved_exercises),
         "aliases": aliases,
@@ -101,6 +138,11 @@ async def update_user_profile(
         "total_events": total_events,
         "first_event": first_event.isoformat(),
         "last_event": last_event.isoformat(),
+        "dimensions": dimensions,
+        "data_quality": {
+            "events_without_exercise_id": events_without_exercise_id,
+            "unresolved_exercises": unresolved_exercises,
+        },
     }
 
     async with conn.cursor() as cur:

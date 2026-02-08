@@ -11,6 +11,7 @@ Full recompute on every event — idempotent by design.
 
 import json
 import logging
+from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
@@ -18,6 +19,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
+from ..utils import resolve_exercise_key
 
 logger = logging.getLogger(__name__)
 
@@ -31,20 +33,10 @@ def _epley_1rm(weight_kg: float, reps: int) -> float:
     return weight_kg * (1 + reps / 30)
 
 
-def _resolve_exercise_key(data: dict[str, Any]) -> str | None:
-    """Resolve the canonical exercise key from event data.
-
-    Prefers exercise_id (canonical) over exercise (free text).
-    """
-    exercise_id = data.get("exercise_id", "").strip().lower()
-    if exercise_id:
-        return exercise_id
-
-    exercise = data.get("exercise", "").strip().lower()
-    if exercise:
-        return exercise
-
-    return None
+def _iso_week(d) -> str:
+    """Return ISO week string like '2026-W06'."""
+    iso = d.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
 
 
 @projection_handler("set.logged")
@@ -63,7 +55,7 @@ async def update_exercise_progression(
             logger.warning("Event %s not found, skipping", event_id)
             return
 
-    exercise_key = _resolve_exercise_key(row["data"])
+    exercise_key = resolve_exercise_key(row["data"])
     if not exercise_key:
         logger.warning("Event %s has no exercise field, skipping", event_id)
         return
@@ -99,6 +91,11 @@ async def update_exercise_progression(
     recent_sets: list[dict[str, Any]] = []
     last_event_id = rows[-1]["id"]
 
+    # Weekly aggregation for weekly_history
+    week_data: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"estimated_1rm": 0.0, "total_sets": 0, "total_volume_kg": 0.0, "max_weight_kg": 0.0}
+    )
+
     for row in rows:
         data = row["data"]
         ts: datetime = row["timestamp"]
@@ -120,6 +117,16 @@ async def update_exercise_progression(
         if e1rm > best_1rm:
             best_1rm = e1rm
             best_1rm_date = ts
+
+        # Weekly aggregation
+        week_key = _iso_week(ts.date())
+        w = week_data[week_key]
+        w["total_sets"] += 1
+        w["total_volume_kg"] += volume
+        if e1rm > w["estimated_1rm"]:
+            w["estimated_1rm"] = e1rm
+        if weight > w["max_weight_kg"]:
+            w["max_weight_kg"] = weight
 
         set_entry: dict[str, Any] = {
             "timestamp": ts.isoformat(),
@@ -144,6 +151,20 @@ async def update_exercise_progression(
     recent_sessions = [s for s in recent_sets if s["timestamp"][:10] in recent_date_set]
     recent_sessions.reverse()
 
+    # Build weekly_history: last 26 weeks, chronological
+    sorted_weeks = sorted(week_data.keys(), reverse=True)[:26]
+    sorted_weeks.reverse()
+    weekly_history = [
+        {
+            "week": wk,
+            "estimated_1rm": round(week_data[wk]["estimated_1rm"], 1),
+            "total_sets": week_data[wk]["total_sets"],
+            "total_volume_kg": round(week_data[wk]["total_volume_kg"], 1),
+            "max_weight_kg": round(week_data[wk]["max_weight_kg"], 1),
+        }
+        for wk in sorted_weeks
+    ]
+
     projection_data = {
         "exercise": exercise_key,
         "estimated_1rm": round(best_1rm, 1),
@@ -152,6 +173,7 @@ async def update_exercise_progression(
         "total_sets": total_sets,
         "total_volume_kg": round(total_volume_kg, 1),
         "recent_sessions": recent_sessions,
+        "weekly_history": weekly_history,
     }
 
     async with conn.cursor() as cur:
