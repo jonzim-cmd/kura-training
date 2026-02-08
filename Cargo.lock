@@ -1070,14 +1070,15 @@ dependencies = [
 name = "kura-cli"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "clap",
  "dotenvy",
  "kura-core",
  "reqwest",
  "serde",
  "serde_json",
- "thiserror",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

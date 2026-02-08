@@ -240,7 +240,7 @@ pub async fn create_events_batch(
 
     let mut created_events = Vec::with_capacity(req.events.len());
 
-    for (i, event_req) in req.events.into_iter().enumerate() {
+    for event_req in req.events {
         let event_id = Uuid::now_v7();
         let metadata_json = serde_json::to_value(&event_req.metadata).map_err(|e| {
             AppError::Internal(format!("Failed to serialize metadata: {}", e))
@@ -524,6 +524,7 @@ struct EventRow {
     event_type: String,
     data: serde_json::Value,
     metadata: serde_json::Value,
+    #[allow(dead_code)]
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
