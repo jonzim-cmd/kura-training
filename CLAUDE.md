@@ -28,6 +28,22 @@ Kura-training ist ein Schritt in diese Richtung: Ein System, das einen Menschen
 tief versteht — seinen Körper, sein Training, seine Gesundheit — und mit ihm
 zusammen bessere Entscheidungen trifft als jeder von beiden allein könnte.
 
+### Agent-First Design
+
+Kura ist kein Tool mit API-Anbindung. Der AI-Agent ist der **primäre Consumer** — jede Designentscheidung wird danach bewertet, ob sie dem Agenten ermöglicht, autonom, sicher und effizient zu arbeiten.
+
+**Was "Agent-First" konkret bedeutet:**
+
+- **JSON-only, überall** — CLI, API-Responses, Fehler: alles strukturiert. Kein Human-Readable Output, der geparst werden muss.
+- **Selbstkorrigierende Fehler** — Jeder API-Error enthält `error` (maschinenlesbar), `field` (was ist kaputt), `docs_hint` (wie man es richtig macht). Der Agent kann sich selbst korrigieren, ohne Dokumentation zu durchsuchen.
+- **Idempotency by Default** — Jede Schreiboperation hat einen `idempotency_key`. Der Agent kann sicher retryen, ohne Duplikate zu erzeugen.
+- **Projections statt Queries** — Agents lesen nie den Event Store direkt. Sie lesen vorberechnete Projections — fertige Antworten statt komplexe Query-Konstruktion.
+- **Append-only Event Store** — Der Agent kann nichts versehentlich zerstören. Korrekturen sind kompensierende Events, kein UPDATE/DELETE.
+- **Free-form event_type** — Kein starres Enum, keine Schema-Updates nötig. Der Agent kann neue Datentypen sofort verwenden. Struktur entsteht aus Nutzung.
+- **Discoverable API** — OpenAPI/Swagger-Spec ist immer aktuell. Der Agent kann Endpoints verstehen, ohne externe Docs zu brauchen.
+
+**Designregel:** Wenn eine Entscheidung den Agenten einschränkt, damit es für Menschen hübscher aussieht — falsche Entscheidung. Die Human-Experience ist das CLI-Tool und Dashboards (kommen später). Die Agent-Experience ist die API, und die muss makellos sein.
+
 ## Architektur (Kurzreferenz)
 
 Event Sourcing + CQRS auf PostgreSQL-only. Vollständige Vision in `VISION.md`.
@@ -36,11 +52,12 @@ Event Sourcing + CQRS auf PostgreSQL-only. Vollständige Vision in `VISION.md`.
 Rust Workspace: api/ cli/ core/
 ├── api    — axum REST API, Auth-Middleware, Routes
 ├── cli    — clap CLI, thin client über REST, OAuth login flow
-├── core   — Shared types (events, auth, errors)
+├── core   — Shared types (events, auth, errors, projections)
+├── workers/ — Python background workers (projections, stats)
 └── migrations/ — sqlx SQL-Migrationen
 ```
 
-**Stack:** Rust (axum + sqlx), Python (PyMC + Stan, geplant), PostgreSQL (JSONB, pgvector geplant, pg_duckdb geplant)
+**Stack:** Rust (axum + sqlx), Python (psycopg3 workers, PyMC + Stan geplant), PostgreSQL (JSONB, pgvector geplant, pg_duckdb geplant)
 
 **Auth:** OAuth Auth Code + PKCE (primary), API Keys (machines). Tokens prefixed: `kura_sk_` (API key), `kura_at_` (access token). RLS per User auf events-Tabelle.
 
@@ -50,11 +67,15 @@ Rust Workspace: api/ cli/ core/
 - `POST /v1/events` — einzelnes Event
 - `POST /v1/events/batch` — atomarer Batch (max 100)
 - `GET /v1/events` — Cursor-Pagination, Zeitfilter, event_type-Filter
+- `GET /v1/projections/{type}/{key}` — einzelne Projection
+- `GET /v1/projections/{type}` — alle Projections eines Typs
 - `POST /v1/auth/register` — User anlegen
 - `GET /v1/auth/authorize` — OAuth authorize form
 - `POST /v1/auth/token` — Token exchange + refresh
 
-**CLI-Commands:** `kura health`, `kura event create/list`, `kura admin create-user/create-key`, `kura login/logout`
+**Worker-Pipeline:** Event INSERT → PostgreSQL Trigger → background_jobs + NOTIFY → Python Worker (SKIP LOCKED) → UPSERT Projection
+
+**CLI-Commands:** `kura health`, `kura event create/list`, `kura projection get/list`, `kura admin create-user/create-key`, `kura login/logout`
 
 ## Technische Konfiguration
 
