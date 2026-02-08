@@ -16,5 +16,18 @@ services:
       timeout: 5s
       retries: 5
 
+  worker:
+    build:
+      context: ../workers
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql://kura:${POSTGRES_PASSWORD:-kura_dev_password}@postgres:5432/kura
+      KURA_POLL_INTERVAL: "5.0"
+      KURA_BATCH_SIZE: "10"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pgdata:

@@ -30,10 +30,34 @@ enum Commands {
         #[command(subcommand)]
         command: AdminCommands,
     },
+    /// Projection operations (read-optimized views computed from events)
+    Projection {
+        #[command(subcommand)]
+        command: ProjectionCommands,
+    },
     /// Authenticate with the Kura API via OAuth (opens browser)
     Login,
     /// Remove stored credentials
     Logout,
+}
+
+#[derive(Subcommand)]
+enum ProjectionCommands {
+    /// Get a single projection by type and key
+    Get {
+        /// Projection type (e.g. "exercise_progression")
+        #[arg(long)]
+        projection_type: String,
+        /// Projection key (e.g. "squat")
+        #[arg(long)]
+        key: String,
+    },
+    /// List all projections of a given type
+    List {
+        /// Projection type (e.g. "exercise_progression")
+        #[arg(long)]
+        projection_type: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -242,6 +266,21 @@ async fn main() {
         Commands::Admin { command } => admin_command(command).await,
         Commands::Login => login(&cli.api_url).await,
         Commands::Logout => logout(),
+        Commands::Projection { command } => {
+            let token = match resolve_token(&cli.api_url).await {
+                Ok(t) => t,
+                Err(e) => exit_error(&e.to_string(), Some("Run `kura login` or set KURA_API_KEY")),
+            };
+            match command {
+                ProjectionCommands::Get {
+                    projection_type,
+                    key,
+                } => projection_get(&cli.api_url, &token, &projection_type, &key).await,
+                ProjectionCommands::List { projection_type } => {
+                    projection_list(&cli.api_url, &token, &projection_type).await
+                }
+            }
+        }
         Commands::Event { command } => {
             let token = match resolve_token(&cli.api_url).await {
                 Ok(t) => t,
@@ -630,6 +669,61 @@ async fn event_list(
 
     let resp = client()
         .get(url)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await?;
+
+    let status = resp.status();
+    let resp_body: serde_json::Value = resp.json().await?;
+
+    if !status.is_success() {
+        eprintln!("{}", serde_json::to_string_pretty(&resp_body)?);
+        std::process::exit(1);
+    }
+
+    println!("{}", serde_json::to_string_pretty(&resp_body)?);
+    Ok(())
+}
+
+// ──────────────────────────────────────────────
+// Projection commands (authenticated via Bearer token)
+// ──────────────────────────────────────────────
+
+async fn projection_get(
+    api_url: &str,
+    token: &str,
+    projection_type: &str,
+    key: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let url = format!("{api_url}/v1/projections/{projection_type}/{key}");
+
+    let resp = client()
+        .get(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await?;
+
+    let status = resp.status();
+    let resp_body: serde_json::Value = resp.json().await?;
+
+    if !status.is_success() {
+        eprintln!("{}", serde_json::to_string_pretty(&resp_body)?);
+        std::process::exit(1);
+    }
+
+    println!("{}", serde_json::to_string_pretty(&resp_body)?);
+    Ok(())
+}
+
+async fn projection_list(
+    api_url: &str,
+    token: &str,
+    projection_type: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let url = format!("{api_url}/v1/projections/{projection_type}");
+
+    let resp = client()
+        .get(&url)
         .header("Authorization", format!("Bearer {token}"))
         .send()
         .await?;

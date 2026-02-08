@@ -9,6 +9,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- app_writer: INSERT on events (the hot path)
 -- app_reader: SELECT on projections and events
 -- app_migrator: DDL operations (used by migration tool only)
+-- app_worker: background job processing (BYPASSRLS for cross-user access)
 
 DO $$
 BEGIN
@@ -26,6 +27,11 @@ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_migrator') THEN
         CREATE ROLE app_migrator;
     END IF;
+
+    -- Worker role: processes background jobs across all users
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_worker') THEN
+        CREATE ROLE app_worker BYPASSRLS;
+    END IF;
 END
 $$;
 
@@ -33,3 +39,4 @@ $$;
 GRANT app_writer TO kura;
 GRANT app_reader TO kura;
 GRANT app_migrator TO kura;
+GRANT app_worker TO kura;

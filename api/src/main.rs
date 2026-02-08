@@ -31,6 +31,8 @@ mod state;
         routes::auth::authorize_form,
         routes::auth::authorize_submit,
         routes::auth::token,
+        routes::projections::get_projection,
+        routes::projections::list_projections,
     ),
     components(schemas(
         HealthResponse,
@@ -44,6 +46,9 @@ mod state;
         routes::auth::RegisterResponse,
         routes::auth::TokenRequest,
         routes::auth::TokenResponse,
+        kura_core::projections::Projection,
+        kura_core::projections::ProjectionResponse,
+        kura_core::projections::ProjectionMeta,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -116,6 +121,7 @@ async fn main() {
         .merge(SwaggerUi::new("/swagger-ui").url("/api-doc/openapi.json", ApiDoc::openapi()))
         .merge(routes::health::router())
         .merge(routes::events::router())
+        .merge(routes::projections::router())
         .merge(routes::auth::register_router().layer(middleware::rate_limit::register_layer()))
         .merge(routes::auth::authorize_router().layer(middleware::rate_limit::authorize_layer()))
         .merge(routes::auth::token_router().layer(middleware::rate_limit::token_layer()))

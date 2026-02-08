@@ -24,6 +24,8 @@ pub enum AppError {
     Database(sqlx::Error),
     /// Rate limited (429)
     RateLimited { retry_after_secs: u64 },
+    /// Not found (404)
+    NotFound { resource: String },
     /// Internal error (500)
     Internal(String),
 }
@@ -101,6 +103,20 @@ impl IntoResponse for AppError {
                 );
                 return response;
             }
+            AppError::NotFound { resource } => (
+                StatusCode::NOT_FOUND,
+                ApiError {
+                    error: error::codes::NOT_FOUND.to_string(),
+                    message: format!("{} not found", resource),
+                    field: None,
+                    received: None,
+                    request_id,
+                    docs_hint: Some(
+                        "The requested resource does not exist or has not been computed yet."
+                            .to_string(),
+                    ),
+                },
+            ),
             AppError::Database(err) => {
                 tracing::error!("Database error: {:?}", err);
 
