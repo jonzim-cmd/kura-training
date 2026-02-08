@@ -8,6 +8,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
+mod error;
 mod routes;
 mod state;
 
@@ -18,7 +19,11 @@ mod state;
         version = "0.1.0",
         description = "Agent-first API for training, nutrition, and health data. Built for AI agents, not humans."
     ),
-    paths(routes::health::health_check),
+    paths(
+        routes::health::health_check,
+        routes::events::create_event,
+        routes::events::create_events_batch,
+    ),
     components(schemas(
         HealthResponse,
         kura_core::error::ApiError,
@@ -72,6 +77,7 @@ async fn main() {
     let app = Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-doc/openapi.json", ApiDoc::openapi()))
         .merge(routes::health::router())
+        .merge(routes::events::router())
         .layer(TraceLayer::new_for_http())
         .with_state(app_state);
 
