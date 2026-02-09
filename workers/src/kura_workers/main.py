@@ -2,10 +2,11 @@
 
 import asyncio
 import logging
-import sys
 
 from .config import Config
-from .registry import registered_event_types, registered_types
+from .health import start_health_server
+from .logging import setup_logging
+from .registry import registered_event_types, registered_types, _projection_handlers
 from .worker import Worker
 
 # Import handlers to register them
@@ -13,19 +14,41 @@ from . import handlers  # noqa: F401
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        stream=sys.stderr,
-    )
-
     config = Config.from_env()
-    logger = logging.getLogger(__name__)
-    logger.info("Registered job handlers: %s", registered_types())
-    logger.info("Registered event types: %s", registered_event_types())
+    setup_logging(config.log_format)
 
-    worker = Worker(config)
-    asyncio.run(worker.run())
+    logger = logging.getLogger(__name__)
+
+    # Enhanced startup log
+    job_types = registered_types()
+    event_types = registered_event_types()
+    handler_counts = {
+        et: len(handlers_list)
+        for et, handlers_list in _projection_handlers.items()
+    }
+
+    logger.info("Kura worker starting")
+    logger.info("Log format: %s", config.log_format)
+    logger.info("Health port: %d", config.health_port)
+    logger.info("Registered job types: %s", job_types)
+    logger.info("Registered event types (%d): %s", len(event_types), handler_counts)
+
+    asyncio.run(_run(config))
+
+
+async def _run(config: Config) -> None:
+    logger = logging.getLogger(__name__)
+
+    # Start health server as background task
+    health_server = await start_health_server(config.health_port, config.database_url)
+    logger.info("Health server started")
+
+    try:
+        worker = Worker(config)
+        await worker.run()
+    finally:
+        health_server.close()
+        await health_server.wait_closed()
 
 
 if __name__ == "__main__":

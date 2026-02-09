@@ -11,11 +11,13 @@ pg_advisory_xact_lock (transaction-scoped, auto-releases on commit/rollback).
 """
 
 import logging
+import time
 from typing import Any
 
 import psycopg
 from psycopg.types.json import Json
 
+from ..metrics import record_handler_invocation
 from ..registry import (
     get_projection_handler_by_name,
     get_projection_handlers,
@@ -54,10 +56,15 @@ async def handle_projection_update(
     await _acquire_user_lock(conn, user_id)
 
     for handler in handlers:
+        t0 = time.monotonic()
         try:
             async with conn.transaction():
                 await handler(conn, payload)
+            duration_ms = (time.monotonic() - t0) * 1000
+            record_handler_invocation(handler.__name__, duration_ms, success=True)
         except Exception:
+            duration_ms = (time.monotonic() - t0) * 1000
+            record_handler_invocation(handler.__name__, duration_ms, success=False)
             logger.exception(
                 "Projection handler %s failed for event_type=%s event_id=%s — scheduling retry",
                 handler.__name__, event_type, payload.get("event_id", "?"),
@@ -107,4 +114,12 @@ async def handle_projection_retry(
         "Retrying handler %s for event_type=%s user=%s",
         handler_name, payload.get("event_type", "?"), user_id,
     )
-    await handler(conn, payload)
+    t0 = time.monotonic()
+    try:
+        await handler(conn, payload)
+        duration_ms = (time.monotonic() - t0) * 1000
+        record_handler_invocation(handler_name, duration_ms, success=True)
+    except Exception:
+        duration_ms = (time.monotonic() - t0) * 1000
+        record_handler_invocation(handler_name, duration_ms, success=False)
+        raise

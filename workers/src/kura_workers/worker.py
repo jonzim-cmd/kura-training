@@ -7,6 +7,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from .config import Config
+from .metrics import record_job_completed, record_job_dead, record_job_failed
 from .registry import get_handler
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,7 @@ class Worker:
                     """,
                     (job_id,),
                 )
+            record_job_completed()
             logger.info("Job %d completed (type=%s)", job_id, job_type)
 
         except Exception as exc:
@@ -155,6 +157,7 @@ class Worker:
             if attempt >= max_retries:
                 await self._dead_job(conn, job_id, str(exc))
             else:
+                record_job_failed()
                 await self._retry_job(conn, job_id, attempt, str(exc))
 
     async def _fail_job(
@@ -174,6 +177,7 @@ class Worker:
     async def _dead_job(
         self, conn: psycopg.AsyncConnection[Any], job_id: int, error: str
     ) -> None:
+        record_job_dead()
         logger.error("Job %d is dead after max retries: %s", job_id, error)
         await self._fail_job(conn, job_id, error)
 
