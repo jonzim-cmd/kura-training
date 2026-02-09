@@ -105,7 +105,7 @@ async def update_nutrition(
     if not rows and not target:
         return
 
-    last_event_id = (rows[-1]["id"] if rows else target_row["id"]) if (rows or target_row) else None
+    last_event_id = rows[-1]["id"] if rows else target_row["id"]
 
     # Per-day aggregation
     day_data: dict[date, dict[str, Any]] = defaultdict(

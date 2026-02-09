@@ -104,7 +104,7 @@ async def update_recovery(
     if not rows and not sleep_target:
         return
 
-    last_event_id = (rows[-1]["id"] if rows else target_row["id"]) if (rows or target_row) else None
+    last_event_id = rows[-1]["id"] if rows else target_row["id"]
 
     # Sleep data
     sleep_entries: list[dict[str, Any]] = []

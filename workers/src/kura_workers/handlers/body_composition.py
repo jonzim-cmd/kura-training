@@ -101,7 +101,7 @@ async def update_body_composition(
     if not rows and not weight_target:
         return
 
-    last_event_id = (rows[-1]["id"] if rows else target_row["id"]) if (rows or target_row) else None
+    last_event_id = rows[-1]["id"] if rows else target_row["id"]
 
     # Process bodyweight entries
     weight_by_week: dict[str, list[float]] = defaultdict(list)
