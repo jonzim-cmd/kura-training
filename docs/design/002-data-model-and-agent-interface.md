@@ -108,7 +108,7 @@ A meta-projection that answers: "What does Kura know about this user?"
     "total_events": 312,
     "first_event": "2025-06-15",
     "last_event": "2026-02-08",
-    "available_projections": ["exercise_progression", "session_summary"]
+    "available_projections": ["exercise_progression", "training_timeline"]
   }
 }
 ```
@@ -691,3 +691,177 @@ The handler name suggests broader coverage, but it only processes `set.logged`
 events. `activity.logged` (runs, swims) and other training event types are
 not yet defined as conventions. When they are, training_timeline will be
 extended to include them. Until then, the scope is intentionally limited.
+
+## Decision 9: Dimension Map & Organic Growth
+
+### The Problem
+
+Decision 5 established that projections are dimensions, not answers. But which
+dimensions should exist? We cannot enumerate every possible data axis upfront.
+Nor should we — premature dimensions are waste.
+
+Yet some dimensions are clearly needed based on domain knowledge. Training
+science, sports medicine, and health tracking define well-established data axes.
+We should build those, and let the system tell us when new ones are needed.
+
+### The Dimension Map (Domain Knowledge)
+
+| Dimension | Key | Granularity | Event Types | Status |
+|-----------|-----|-------------|-------------|--------|
+| `user_profile` | `me` | — | preference.set, exercise.alias_created, goal.set, profile.updated, injury.reported | Implemented |
+| `exercise_progression` | per exercise | set, week | set.logged | Implemented |
+| `training_timeline` | overview | day, week | set.logged | Implemented |
+| `body_composition` | overview | day, week, all-time | bodyweight.logged, measurement.logged | Implemented |
+| `recovery` | overview | day, week | sleep.logged, soreness.logged, energy.logged | Implemented |
+| `training_plan` | per plan | session, week, cycle | training_plan.* | Needs Design |
+| `nutrition` | overview | meal, day, week | meal.logged | Needs Design |
+| `activity_progression` | per activity | session, week | activity.logged | When events exist |
+
+The first five dimensions cover all data an agent needs for informed coaching
+of strength-focused training. `training_plan` (prescriptive) and `nutrition`
+are distinct features that warrant their own design documents.
+
+`activity_progression` follows when endurance/cardio events are conventionalized.
+
+### Three Mechanisms for Dimension Discovery
+
+**1. Domain Knowledge (this decision)**
+
+Sports science defines the axes: performance, volume, frequency, body
+composition, recovery, periodization, nutrition. These are the dimensions
+above. No ML, no guessing — established science.
+
+**2. Event-Driven Discovery (built-in)**
+
+The Event Store accepts any `event_type`. When users send events that no
+handler processes, the system detects this via `orphaned_event_types` in
+`data_quality`:
+
+```json
+"data_quality": {
+  "orphaned_event_types": [
+    {"event_type": "mobility.logged", "count": 23}
+  ]
+}
+```
+
+The system surfaces unknown data as a signal: "Consider a new dimension."
+Implementation: `user_profile` handler queries all distinct `event_type`
+values for a user and compares with `registered_event_types()`.
+
+**3. Agent Pattern Analysis (future)**
+
+When the agent repeatedly computes the same derivation from raw events
+across multiple conversations, that's a dimension waiting to crystallize.
+Analysis of agent conversation patterns could identify these repeating
+computations. This is where ML becomes relevant — not for discovering
+dimensions from data, but from agent behavior.
+
+### Event Conventions: body_composition
+
+#### `bodyweight.logged`
+
+```json
+{
+  "event_type": "bodyweight.logged",
+  "data": {
+    "weight_kg": 82.5,
+    "time_of_day": "morning",
+    "conditions": "fasted"
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `weight_kg` | Yes | Body weight in kg |
+| `time_of_day` | No | morning, evening, pre_workout, post_workout |
+| `conditions` | No | fasted, post_meal, post_workout |
+
+#### `measurement.logged`
+
+```json
+{
+  "event_type": "measurement.logged",
+  "data": {
+    "type": "waist",
+    "value_cm": 84
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | Yes | waist, chest, bicep, thigh, hip, neck, calf, forearm |
+| `value_cm` | Yes | Measurement in centimeters |
+| `side` | No | left, right (for bilateral measurements) |
+
+### Event Conventions: recovery
+
+#### `sleep.logged`
+
+```json
+{
+  "event_type": "sleep.logged",
+  "data": {
+    "duration_hours": 7.5,
+    "quality": "good"
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `duration_hours` | Yes | Total sleep duration |
+| `quality` | No | good, fair, poor |
+| `bedtime` | No | HH:MM format |
+| `wake_time` | No | HH:MM format |
+| `notes` | No | Free text |
+
+#### `soreness.logged`
+
+```json
+{
+  "event_type": "soreness.logged",
+  "data": {
+    "area": "legs",
+    "severity": 7
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `area` | Yes | legs, back, shoulders, chest, arms, full_body, etc. |
+| `severity` | Yes | 1-10 scale (1 = minimal, 10 = severe) |
+| `notes` | No | Free text |
+
+#### `energy.logged`
+
+```json
+{
+  "event_type": "energy.logged",
+  "data": {
+    "level": 7,
+    "time_of_day": "morning"
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `level` | Yes | 1-10 scale (1 = exhausted, 10 = peak) |
+| `time_of_day` | No | morning, afternoon, evening, pre_workout, post_workout |
+| `notes` | No | Free text |
+
+### Design Rules for New Dimensions
+
+1. **Orthogonality test.** Does this dimension overlap with an existing one?
+   If yes, extend the existing dimension. If no, create a new one.
+2. **Granularity checklist.** Before building, decide which levels
+   (set/session/day/week/all-time) using the checklist from Decision 7.
+3. **Event-first.** Define event conventions before building the handler.
+   The handler adapts to what events provide, not the other way around.
+4. **Self-healing.** Full recompute on every event. No incremental state.
+5. **Register in manifest.** Every dimension declares `dimension_meta` and
+   `manifest_contribution` for the three-layer entry point.

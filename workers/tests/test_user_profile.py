@@ -8,6 +8,7 @@ from kura_workers.handlers.user_profile import (
     _build_system_layer,
     _build_user_dimensions,
     _compute_interview_coverage,
+    _find_orphaned_event_types,
     _find_unconfirmed_aliases,
     _resolve_exercises,
     _should_suggest_onboarding,
@@ -660,3 +661,77 @@ class TestBuildAgendaWithInterview:
         )
         assert len(result) == 1
         assert result[0]["type"] == "resolve_exercises"
+
+
+# --- TestOrphanedEventTypes (Decision 9) ---
+
+
+class TestOrphanedEventTypes:
+    def test_detects_orphaned_types(self):
+        # Simulate a user who has sent event types not handled by any handler
+        all_event_types = {
+            "set.logged": 50,
+            "preference.set": 3,
+            "mobility.logged": 23,
+            "meditation.logged": 5,
+        }
+        result = _find_orphaned_event_types(all_event_types)
+        orphaned_types = {o["event_type"] for o in result}
+        assert "mobility.logged" in orphaned_types
+        assert "meditation.logged" in orphaned_types
+        assert "set.logged" not in orphaned_types
+        assert "preference.set" not in orphaned_types
+
+    def test_no_orphans_when_all_handled(self):
+        all_event_types = {
+            "set.logged": 50,
+            "preference.set": 3,
+        }
+        result = _find_orphaned_event_types(all_event_types)
+        assert result == []
+
+    def test_empty_event_types(self):
+        result = _find_orphaned_event_types({})
+        assert result == []
+
+    def test_preserves_counts(self):
+        all_event_types = {"unknown.event": 42}
+        result = _find_orphaned_event_types(all_event_types)
+        assert len(result) == 1
+        assert result[0]["event_type"] == "unknown.event"
+        assert result[0]["count"] == 42
+
+
+class TestDataQualityWithOrphans:
+    def test_orphaned_event_types_in_data_quality(self):
+        result = _build_data_quality(
+            total_set_logged=10,
+            events_without_exercise_id=0,
+            unresolved_exercises=[],
+            exercise_occurrences={},
+            unconfirmed_aliases=[],
+            orphaned_event_types=[{"event_type": "mobility.logged", "count": 23}],
+        )
+        assert "orphaned_event_types" in result
+        assert result["orphaned_event_types"][0]["event_type"] == "mobility.logged"
+
+    def test_no_orphaned_key_when_empty(self):
+        result = _build_data_quality(
+            total_set_logged=10,
+            events_without_exercise_id=0,
+            unresolved_exercises=[],
+            exercise_occurrences={},
+            unconfirmed_aliases=[],
+            orphaned_event_types=[],
+        )
+        assert "orphaned_event_types" not in result
+
+    def test_no_orphaned_key_when_none(self):
+        result = _build_data_quality(
+            total_set_logged=10,
+            events_without_exercise_id=0,
+            unresolved_exercises=[],
+            exercise_occurrences={},
+            unconfirmed_aliases=[],
+        )
+        assert "orphaned_event_types" not in result

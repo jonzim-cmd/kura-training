@@ -16,7 +16,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
-from ..registry import get_dimension_metadata, projection_handler
+from ..registry import get_dimension_metadata, projection_handler, registered_event_types
 
 logger = logging.getLogger(__name__)
 
@@ -113,12 +113,29 @@ def _find_unconfirmed_aliases(
     ]
 
 
+def _find_orphaned_event_types(
+    all_event_types: dict[str, int],
+) -> list[dict[str, Any]]:
+    """Find event types that no handler processes (Decision 9).
+
+    Compares all distinct event_types a user has sent with
+    the set of event_types that have registered handlers.
+    """
+    handled = set(registered_event_types())
+    orphaned = []
+    for event_type, count in sorted(all_event_types.items()):
+        if event_type not in handled:
+            orphaned.append({"event_type": event_type, "count": count})
+    return orphaned
+
+
 def _build_data_quality(
     total_set_logged: int,
     events_without_exercise_id: int,
     unresolved_exercises: list[str],
     exercise_occurrences: dict[str, int],
     unconfirmed_aliases: list[dict[str, str]],
+    orphaned_event_types: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build data_quality with actionable items."""
     actionable: list[dict[str, Any]] = []
@@ -138,11 +155,16 @@ def _build_data_quality(
             "confidence": alias_info["confidence"],
         })
 
-    return {
+    result: dict[str, Any] = {
         "total_set_logged_events": total_set_logged,
         "events_without_exercise_id": events_without_exercise_id,
         "actionable": actionable,
     }
+
+    if orphaned_event_types:
+        result["orphaned_event_types"] = orphaned_event_types
+
+    return result
 
 
 def _compute_interview_coverage(
@@ -335,6 +357,11 @@ def _build_agenda(
     "goal.set",
     "profile.updated",
     "injury.reported",
+    "bodyweight.logged",
+    "measurement.logged",
+    "sleep.logged",
+    "soreness.logged",
+    "energy.logged",
 )
 async def update_user_profile(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
@@ -438,6 +465,20 @@ async def update_user_profile(
     )
     unconfirmed_aliases = _find_unconfirmed_aliases(aliases)
 
+    # Detect orphaned event types (Decision 9)
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT event_type, COUNT(*) as count
+            FROM events
+            WHERE user_id = %s
+            GROUP BY event_type
+            """,
+            (user_id,),
+        )
+        event_type_counts = {r["event_type"]: r["count"] for r in await cur.fetchall()}
+    orphaned_event_types = _find_orphaned_event_types(event_type_counts)
+
     # Compute interview coverage (Decision 8)
     interview_coverage = _compute_interview_coverage(
         aliases, preferences, goals, profile_data, injuries,
@@ -477,6 +518,7 @@ async def update_user_profile(
         unresolved_exercises,
         exercise_occurrences,
         unconfirmed_aliases,
+        orphaned_event_types,
     )
 
     # Layer 3: agenda (pattern matching over user data)
