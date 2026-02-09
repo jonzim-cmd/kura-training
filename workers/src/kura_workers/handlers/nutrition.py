@@ -41,10 +41,12 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     latest = data.get("latest_date")
     if latest:
         result["latest_date"] = latest
+    if data.get("target"):
+        result["has_target"] = True
     return result
 
 
-@projection_handler("meal.logged", dimension_meta={
+@projection_handler("meal.logged", "nutrition_target.set", dimension_meta={
     "name": "nutrition",
     "description": "Nutritional intake: calories, macros, meal patterns",
     "key_structure": "single overview per user",
@@ -67,6 +69,7 @@ async def update_nutrition(
     """Full recompute of nutrition projection."""
     user_id = payload["user_id"]
 
+    # Fetch meal events
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
@@ -80,10 +83,29 @@ async def update_nutrition(
         )
         rows = await cur.fetchall()
 
-    if not rows:
+    # Fetch latest nutrition target (latest event wins)
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT id, data
+            FROM events
+            WHERE user_id = %s
+              AND event_type = 'nutrition_target.set'
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        target_row = await cur.fetchone()
+
+    target: dict[str, Any] | None = None
+    if target_row:
+        target = target_row["data"]
+
+    if not rows and not target:
         return
 
-    last_event_id = rows[-1]["id"]
+    last_event_id = (rows[-1]["id"] if rows else target_row["id"]) if (rows or target_row) else None
 
     # Per-day aggregation
     day_data: dict[date, dict[str, Any]] = defaultdict(
@@ -205,7 +227,7 @@ async def update_nutrition(
     # Recent meals (last 20)
     recent_meals = all_meals[-20:]
 
-    projection_data = {
+    projection_data: dict[str, Any] = {
         "total_meals": len(all_meals),
         "tracking_days": len(day_data),
         "latest_date": max(day_data.keys()).isoformat() if day_data else None,
@@ -213,6 +235,9 @@ async def update_nutrition(
         "weekly_average": weekly_average,
         "recent_meals": recent_meals,
     }
+
+    if target:
+        projection_data["target"] = target
 
     async with conn.cursor() as cur:
         await cur.execute(

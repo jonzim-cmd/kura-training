@@ -39,10 +39,12 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     measurement_types = data.get("measurement_types", [])
     if measurement_types:
         result["measurement_types"] = measurement_types
+    if data.get("target"):
+        result["has_target"] = True
     return result
 
 
-@projection_handler("bodyweight.logged", "measurement.logged", dimension_meta={
+@projection_handler("bodyweight.logged", "measurement.logged", "weight_target.set", dimension_meta={
     "name": "body_composition",
     "description": "Body weight and measurements over time",
     "key_structure": "single overview per user",
@@ -77,10 +79,29 @@ async def update_body_composition(
         )
         rows = await cur.fetchall()
 
-    if not rows:
+    # Fetch latest weight target (latest event wins)
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT id, data
+            FROM events
+            WHERE user_id = %s
+              AND event_type = 'weight_target.set'
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        target_row = await cur.fetchone()
+
+    weight_target: dict[str, Any] | None = None
+    if target_row:
+        weight_target = target_row["data"]
+
+    if not rows and not weight_target:
         return
 
-    last_event_id = rows[-1]["id"]
+    last_event_id = (rows[-1]["id"] if rows else target_row["id"]) if (rows or target_row) else None
 
     # Process bodyweight entries
     weight_by_week: dict[str, list[float]] = defaultdict(list)
@@ -176,13 +197,16 @@ async def update_body_composition(
             },
         }
 
-    projection_data = {
+    projection_data: dict[str, Any] = {
         "current_weight_kg": all_weights[-1]["weight_kg"] if all_weights else None,
         "total_weigh_ins": len(all_weights),
         "weight_trend": weight_trend,
         "measurements": measurements,
         "measurement_types": sorted(measurements_by_type.keys()),
     }
+
+    if weight_target:
+        projection_data["target"] = weight_target
 
     async with conn.cursor() as cur:
         await cur.execute(

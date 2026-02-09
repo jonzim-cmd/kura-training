@@ -42,10 +42,12 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     energy = data.get("energy", {})
     if energy.get("overall"):
         result["avg_energy_level"] = energy["overall"]["avg_level"]
+    if data.get("targets"):
+        result["has_targets"] = True
     return result
 
 
-@projection_handler("sleep.logged", "soreness.logged", "energy.logged", dimension_meta={
+@projection_handler("sleep.logged", "soreness.logged", "energy.logged", "sleep_target.set", dimension_meta={
     "name": "recovery",
     "description": "Recovery signals: sleep, soreness, energy levels",
     "key_structure": "single overview per user",
@@ -80,10 +82,29 @@ async def update_recovery(
         )
         rows = await cur.fetchall()
 
-    if not rows:
+    # Fetch latest sleep target (latest event wins)
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT id, data
+            FROM events
+            WHERE user_id = %s
+              AND event_type = 'sleep_target.set'
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        target_row = await cur.fetchone()
+
+    sleep_target: dict[str, Any] | None = None
+    if target_row:
+        sleep_target = target_row["data"]
+
+    if not rows and not sleep_target:
         return
 
-    last_event_id = rows[-1]["id"]
+    last_event_id = (rows[-1]["id"] if rows else target_row["id"]) if (rows or target_row) else None
 
     # Sleep data
     sleep_entries: list[dict[str, Any]] = []
@@ -211,11 +232,14 @@ async def update_recovery(
             "total_entries": len(energy_entries),
         }
 
-    projection_data = {
+    projection_data: dict[str, Any] = {
         "sleep": sleep_data,
         "soreness": soreness_data,
         "energy": energy_data,
     }
+
+    if sleep_target:
+        projection_data["targets"] = {"sleep": sleep_target}
 
     async with conn.cursor() as cur:
         await cur.execute(

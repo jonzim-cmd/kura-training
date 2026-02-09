@@ -971,6 +971,76 @@ are updated; omitted fields remain unchanged.
 | `plan_id` | No | Plan to archive (defaults to "default") |
 | `reason` | No | Why the plan was archived |
 
+### Event Conventions: Targets (Prescriptive Data in Descriptive Dimensions)
+
+Every descriptive dimension can have a prescriptive counterpart. The rule:
+
+- **Simple targets** → `*_target.set` event processed by the existing dimension
+- **Complex prescriptions** (session templates, periodization) → own dimension
+
+This avoids dimension explosion (no `nutrition_plan`, `recovery_plan`,
+`body_composition_plan` as separate dimensions). The projection shows
+Ist AND Soll in one call. The agent compares them to assess adherence.
+
+#### `nutrition_target.set`
+
+```json
+{
+  "event_type": "nutrition_target.set",
+  "data": {
+    "calories": 2500,
+    "protein_g": 180,
+    "carbs_g": 250,
+    "fat_g": 80
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `calories` | No | Daily calorie target |
+| `protein_g` | No | Daily protein target in grams |
+| `carbs_g` | No | Daily carbs target in grams |
+| `fat_g` | No | Daily fat target in grams |
+
+Latest event wins. All fields optional — any subset is a valid target.
+
+#### `sleep_target.set`
+
+```json
+{
+  "event_type": "sleep_target.set",
+  "data": {
+    "duration_hours": 8,
+    "bedtime": "23:00"
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `duration_hours` | No | Target sleep duration |
+| `bedtime` | No | Target bedtime (HH:MM) |
+
+#### `weight_target.set`
+
+```json
+{
+  "event_type": "weight_target.set",
+  "data": {
+    "weight_kg": 80,
+    "target_date": "2026-06-01",
+    "direction": "lose"
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `weight_kg` | Yes | Target body weight in kg |
+| `target_date` | No | Target date (ISO 8601) |
+| `direction` | No | lose, gain, maintain |
+
 ### Design Rules for New Dimensions
 
 1. **Orthogonality test.** Does this dimension overlap with an existing one?
@@ -982,3 +1052,6 @@ are updated; omitted fields remain unchanged.
 4. **Self-healing.** Full recompute on every event. No incremental state.
 5. **Register in manifest.** Every dimension declares `dimension_meta` and
    `manifest_contribution` for the three-layer entry point.
+6. **Targets inside, plans outside.** Simple targets (`*_target.set`) are
+   processed by the dimension they apply to. Complex prescriptions
+   (training plans with session structure) get their own dimension.

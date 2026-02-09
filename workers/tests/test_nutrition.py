@@ -61,3 +61,29 @@ class TestManifestContribution:
             "total_meals": 5,
             "tracking_days": 3,
         }
+
+    def test_with_target(self):
+        rows = [{
+            "key": "overview",
+            "data": {
+                "total_meals": 10,
+                "tracking_days": 5,
+                "latest_date": "2026-02-08",
+                "target": {"calories": 2500, "protein_g": 180},
+            },
+        }]
+        result = _manifest_contribution(rows)
+        assert result["has_target"] is True
+        assert result["total_meals"] == 10
+
+    def test_without_target(self):
+        rows = [{
+            "key": "overview",
+            "data": {
+                "total_meals": 10,
+                "tracking_days": 5,
+                "latest_date": "2026-02-08",
+            },
+        }]
+        result = _manifest_contribution(rows)
+        assert "has_target" not in result

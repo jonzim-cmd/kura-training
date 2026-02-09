@@ -92,3 +92,17 @@ class TestManifestContribution:
         }]
         result = _manifest_contribution(rows)
         assert result == {"total_soreness_entries": 5}
+
+    def test_with_targets(self):
+        rows = [{
+            "key": "overview",
+            "data": {
+                "sleep": {"overall": {"avg_duration_hours": 7.0, "total_entries": 10}},
+                "soreness": {"total_entries": 0},
+                "energy": {},
+                "targets": {"sleep": {"duration_hours": 8}},
+            },
+        }]
+        result = _manifest_contribution(rows)
+        assert result["has_targets"] is True
+        assert result["avg_sleep_hours"] == 7.0
