@@ -7,7 +7,11 @@ from kura_workers.handlers.exercise_progression import (
     _iso_week,
     _manifest_contribution,
 )
-from kura_workers.utils import resolve_exercise_key
+from kura_workers.utils import (
+    find_all_keys_for_canonical,
+    resolve_exercise_key,
+    resolve_through_aliases,
+)
 from datetime import date
 
 
@@ -99,3 +103,58 @@ class TestManifestContribution:
         rows = [{"key": "deadlift", "data": {}}]
         result = _manifest_contribution(rows)
         assert result == {"exercises": ["deadlift"]}
+
+
+# --- Alias resolution (pure functions) ---
+
+
+class TestResolveThroughAliases:
+    def test_known_alias(self):
+        alias_map = {"kniebeuge": "barbell_back_squat"}
+        assert resolve_through_aliases("kniebeuge", alias_map) == "barbell_back_squat"
+
+    def test_unknown_key_unchanged(self):
+        alias_map = {"kniebeuge": "barbell_back_squat"}
+        assert resolve_through_aliases("bench_press", alias_map) == "bench_press"
+
+    def test_canonical_unchanged(self):
+        alias_map = {"kniebeuge": "barbell_back_squat"}
+        assert resolve_through_aliases("barbell_back_squat", alias_map) == "barbell_back_squat"
+
+    def test_empty_map(self):
+        assert resolve_through_aliases("anything", {}) == "anything"
+
+    def test_multiple_aliases_same_target(self):
+        alias_map = {
+            "kniebeuge": "barbell_back_squat",
+            "sq": "barbell_back_squat",
+            "squats": "barbell_back_squat",
+        }
+        assert resolve_through_aliases("sq", alias_map) == "barbell_back_squat"
+        assert resolve_through_aliases("kniebeuge", alias_map) == "barbell_back_squat"
+
+
+class TestFindAllKeysForCanonical:
+    def test_with_aliases(self):
+        alias_map = {
+            "kniebeuge": "barbell_back_squat",
+            "sq": "barbell_back_squat",
+            "bp": "barbell_bench_press",
+        }
+        result = find_all_keys_for_canonical("barbell_back_squat", alias_map)
+        assert result == {"barbell_back_squat", "kniebeuge", "sq"}
+
+    def test_no_aliases(self):
+        alias_map = {"bp": "barbell_bench_press"}
+        result = find_all_keys_for_canonical("barbell_back_squat", alias_map)
+        assert result == {"barbell_back_squat"}
+
+    def test_empty_map(self):
+        result = find_all_keys_for_canonical("squat", {})
+        assert result == {"squat"}
+
+    def test_canonical_always_included(self):
+        alias_map = {"kniebeuge": "barbell_back_squat"}
+        result = find_all_keys_for_canonical("barbell_back_squat", alias_map)
+        assert "barbell_back_squat" in result
+        assert "kniebeuge" in result

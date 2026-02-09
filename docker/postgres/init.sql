@@ -29,6 +29,7 @@ BEGIN
     END IF;
 
     -- Worker role: processes background jobs across all users
+    -- Needs DELETE on projections for alias consolidation (stale projection cleanup)
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_worker') THEN
         CREATE ROLE app_worker BYPASSRLS;
     END IF;

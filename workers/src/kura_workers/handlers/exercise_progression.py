@@ -1,10 +1,14 @@
 """Exercise Progression projection handler.
 
-Reacts to set.logged events and computes per-exercise statistics:
+Reacts to set.logged and exercise.alias_created events.
+Computes per-exercise statistics:
 - Estimated 1RM (Epley formula)
 - Total sessions, sets, volume
 - Personal records
 - Recent session history (last 5)
+
+Alias-aware: resolves through alias map, consolidates fragmented
+projections when aliases are created, DELETEs stale alias-named projections.
 
 Full recompute on every event — idempotent by design.
 """
@@ -19,7 +23,12 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
-from ..utils import resolve_exercise_key
+from ..utils import (
+    find_all_keys_for_canonical,
+    get_alias_map,
+    resolve_exercise_key,
+    resolve_through_aliases,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +53,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     return {"exercises": [r["key"] for r in projection_rows]}
 
 
-@projection_handler("set.logged", dimension_meta={
+@projection_handler("set.logged", "exercise.alias_created", dimension_meta={
     "name": "exercise_progression",
     "description": "Strength progression per exercise over time",
     "key_structure": "one per exercise (exercise_id as key)",
@@ -67,8 +76,12 @@ async def update_exercise_progression(
     """Full recompute of exercise_progression projection for the affected exercise."""
     user_id = payload["user_id"]
     event_id = payload["event_id"]
+    event_type = payload.get("event_type", "")
 
-    # Get the exercise name from this specific event
+    # Load alias map for this user
+    alias_map = await get_alias_map(conn, user_id)
+
+    # Determine which canonical exercise to recompute
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT data FROM events WHERE id = %s", (event_id,))
         row = await cur.fetchone()
@@ -76,13 +89,25 @@ async def update_exercise_progression(
             logger.warning("Event %s not found, skipping", event_id)
             return
 
-    exercise_key = resolve_exercise_key(row["data"])
-    if not exercise_key:
-        logger.warning("Event %s has no exercise field, skipping", event_id)
-        return
+    if event_type == "exercise.alias_created":
+        # The canonical target is what we recompute
+        canonical = row["data"].get("exercise_id", "").strip().lower()
+        if not canonical:
+            logger.warning("Alias event %s has no exercise_id, skipping", event_id)
+            return
+    else:
+        # set.logged: resolve the exercise key through aliases
+        raw_key = resolve_exercise_key(row["data"])
+        if not raw_key:
+            logger.warning("Event %s has no exercise field, skipping", event_id)
+            return
+        canonical = resolve_through_aliases(raw_key, alias_map)
 
-    # Full recompute: fetch ALL set.logged events for this user+exercise
-    # Match on both exercise_id and normalized exercise name
+    # Find all keys (canonical + aliases) that map to this canonical exercise
+    all_keys = find_all_keys_for_canonical(canonical, alias_map)
+
+    # Full recompute: fetch ALL set.logged events matching ANY of these keys
+    all_keys_list = list(all_keys)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
@@ -91,12 +116,12 @@ async def update_exercise_progression(
             WHERE user_id = %s
               AND event_type = 'set.logged'
               AND (
-                  lower(trim(data->>'exercise_id')) = %s
-                  OR lower(trim(data->>'exercise')) = %s
+                  lower(trim(data->>'exercise_id')) = ANY(%s)
+                  OR lower(trim(data->>'exercise')) = ANY(%s)
               )
             ORDER BY timestamp ASC
             """,
-            (user_id, exercise_key, exercise_key),
+            (user_id, all_keys_list, all_keys_list),
         )
         rows = await cur.fetchall()
 
@@ -187,7 +212,7 @@ async def update_exercise_progression(
     ]
 
     projection_data = {
-        "exercise": exercise_key,
+        "exercise": canonical,
         "estimated_1rm": round(best_1rm, 1),
         "estimated_1rm_date": best_1rm_date.isoformat() if best_1rm_date else None,
         "total_sessions": len(session_dates),
@@ -197,6 +222,7 @@ async def update_exercise_progression(
         "weekly_history": weekly_history,
     }
 
+    # UPSERT canonical projection
     async with conn.cursor() as cur:
         await cur.execute(
             """
@@ -208,10 +234,28 @@ async def update_exercise_progression(
                 last_event_id = EXCLUDED.last_event_id,
                 updated_at = NOW()
             """,
-            (user_id, exercise_key, json.dumps(projection_data), str(last_event_id)),
+            (user_id, canonical, json.dumps(projection_data), str(last_event_id)),
+        )
+
+    # DELETE stale projections for non-canonical keys (alias consolidation)
+    stale_keys = list(all_keys - {canonical})
+    if stale_keys:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                DELETE FROM projections
+                WHERE user_id = %s
+                  AND projection_type = 'exercise_progression'
+                  AND key = ANY(%s)
+                """,
+                (user_id, stale_keys),
+            )
+        logger.info(
+            "Deleted stale exercise_progression projections for user=%s keys=%s (consolidated into %s)",
+            user_id, stale_keys, canonical,
         )
 
     logger.info(
         "Updated exercise_progression for user=%s exercise=%s (sets=%d, 1rm=%.1f)",
-        user_id, exercise_key, total_sets, best_1rm,
+        user_id, canonical, total_sets, best_1rm,
     )

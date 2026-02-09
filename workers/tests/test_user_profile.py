@@ -10,6 +10,7 @@ from kura_workers.handlers.user_profile import (
     _compute_interview_coverage,
     _find_orphaned_event_types,
     _find_unconfirmed_aliases,
+    _get_conventions,
     _resolve_exercises,
     _should_suggest_onboarding,
     _should_suggest_refresh,
@@ -88,6 +89,11 @@ class TestBuildSystemLayer:
         result = _build_system_layer(meta)
         assert "context_seeds" not in result["dimensions"]["dim_a"]
 
+    def test_includes_conventions(self):
+        result = _build_system_layer({})
+        assert "conventions" in result
+        assert "exercise_normalization" in result["conventions"]
+
     def test_empty_metadata(self):
         result = _build_system_layer({})
         assert result["dimensions"] == {}
@@ -101,6 +107,49 @@ class TestBuildSystemLayer:
         assert len(result["dimensions"]) == 2
         assert "dim_a" in result["dimensions"]
         assert "dim_b" in result["dimensions"]
+
+
+# --- TestConventions ---
+
+
+class TestConventions:
+    def test_has_exercise_normalization(self):
+        result = _get_conventions()
+        assert "exercise_normalization" in result
+
+    def test_exercise_normalization_has_rules(self):
+        result = _get_conventions()
+        rules = result["exercise_normalization"]["rules"]
+        assert isinstance(rules, list)
+        assert len(rules) >= 3
+
+    def test_exercise_normalization_has_example_batch(self):
+        result = _get_conventions()
+        batch = result["exercise_normalization"]["example_batch"]
+        assert isinstance(batch, list)
+        assert len(batch) == 2
+        event_types = [e["event_type"] for e in batch]
+        assert "set.logged" in event_types
+        assert "exercise.alias_created" in event_types
+
+    def test_example_batch_set_logged_has_exercise_id(self):
+        result = _get_conventions()
+        set_event = next(
+            e for e in result["exercise_normalization"]["example_batch"]
+            if e["event_type"] == "set.logged"
+        )
+        assert "exercise_id" in set_event["data"]
+        assert "exercise" in set_event["data"]
+
+    def test_rules_mention_exercise_id(self):
+        result = _get_conventions()
+        rules_text = " ".join(result["exercise_normalization"]["rules"]).lower()
+        assert "exercise_id" in rules_text
+
+    def test_rules_mention_aliases(self):
+        result = _get_conventions()
+        rules_text = " ".join(result["exercise_normalization"]["rules"]).lower()
+        assert "alias" in rules_text
 
 
 # --- TestAliasWithConfidence ---

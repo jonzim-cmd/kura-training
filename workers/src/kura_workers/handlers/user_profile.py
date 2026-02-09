@@ -24,6 +24,45 @@ logger = logging.getLogger(__name__)
 # --- Pure functions (testable without DB) ---
 
 
+def _get_conventions() -> dict[str, Any]:
+    """Return normalization conventions for the agent.
+
+    These tell the agent HOW to log data correctly, preventing
+    fragmentation issues like exercises without exercise_id.
+    """
+    return {
+        "exercise_normalization": {
+            "rules": [
+                "ALWAYS set exercise_id when you recognize the exercise.",
+                "When setting both exercise + exercise_id for a user term the first time, "
+                "also create exercise.alias_created in the same batch.",
+                "When uncertain about the canonical name, ask the user.",
+                "Only omit exercise_id when the exercise is truly unknown to you.",
+                "Check user.aliases for existing mappings before creating new ones.",
+            ],
+            "example_batch": [
+                {
+                    "event_type": "set.logged",
+                    "data": {
+                        "exercise": "Kniebeuge",
+                        "exercise_id": "barbell_back_squat",
+                        "weight_kg": 100,
+                        "reps": 5,
+                    },
+                },
+                {
+                    "event_type": "exercise.alias_created",
+                    "data": {
+                        "alias": "Kniebeuge",
+                        "exercise_id": "barbell_back_squat",
+                        "confidence": "confirmed",
+                    },
+                },
+            ],
+        },
+    }
+
+
 def _build_system_layer(dimension_metadata: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """Build the system layer from registry declarations.
 
@@ -46,6 +85,7 @@ def _build_system_layer(dimension_metadata: dict[str, dict[str, Any]]) -> dict[s
         dimensions[name] = entry
     return {
         "dimensions": dimensions,
+        "conventions": _get_conventions(),
         "time_conventions": {
             "week": "ISO 8601 (2026-W06)",
             "date": "ISO 8601 (2026-02-08)",
@@ -366,6 +406,9 @@ def _build_agenda(
     "training_plan.created",
     "training_plan.updated",
     "training_plan.archived",
+    "nutrition_target.set",
+    "sleep_target.set",
+    "weight_target.set",
 )
 async def update_user_profile(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]

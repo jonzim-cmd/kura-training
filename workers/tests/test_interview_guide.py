@@ -119,6 +119,17 @@ class TestEventConventions:
         assert "description" in inj["fields"]
         assert "affected_area" in inj["fields"]
 
+    def test_set_logged_convention(self):
+        guide = get_interview_guide()
+        assert "set.logged" in guide["event_conventions"]
+        sl = guide["event_conventions"]["set.logged"]
+        assert "exercise" in sl["fields"]
+        assert "exercise_id" in sl["fields"]
+        assert "weight_kg" in sl["fields"]
+        assert "reps" in sl["fields"]
+        assert "exercise_id" in sl["example"]
+        assert "normalization" in sl
+
 
 class TestCoverageAreasConstant:
     def test_is_non_empty(self):

@@ -19,7 +19,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
-from ..utils import resolve_exercise_key
+from ..utils import get_alias_map, resolve_exercise_key, resolve_through_aliases
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +153,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     }
 
 
-@projection_handler("set.logged", dimension_meta={
+@projection_handler("set.logged", "exercise.alias_created", dimension_meta={
     "name": "training_timeline",
     "description": "Training patterns: when, what, how much",
     "key_structure": "single overview per user",
@@ -173,6 +173,9 @@ async def update_training_timeline(
 ) -> None:
     """Full recompute of training_timeline projection."""
     user_id = payload["user_id"]
+
+    # Load alias map for resolving exercise names
+    alias_map = await get_alias_map(conn, user_id)
 
     # Fetch ALL set.logged events for this user
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -207,7 +210,8 @@ async def update_training_timeline(
         d = ts.date()
         w = _iso_week(d)
 
-        exercise_key = resolve_exercise_key(data) or "unknown"
+        raw_key = resolve_exercise_key(data) or "unknown"
+        exercise_key = resolve_through_aliases(raw_key, alias_map)
 
         try:
             weight = float(data.get("weight_kg", data.get("weight", 0)))

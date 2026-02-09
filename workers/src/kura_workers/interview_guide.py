@@ -142,6 +142,29 @@ def get_interview_guide() -> dict[str, Any]:
             },
         ],
         "event_conventions": {
+            "set.logged": {
+                "description": "A single training set (the core training event)",
+                "fields": {
+                    "exercise": "string (required, what the user says)",
+                    "exercise_id": "string (required when recognized, canonical ID)",
+                    "weight_kg": "number (required for weighted exercises)",
+                    "reps": "number (required)",
+                    "rpe": "number (optional, 1-10)",
+                    "set_type": "string (optional: warmup, working, backoff, amrap)",
+                },
+                "example": {
+                    "exercise": "Kniebeuge",
+                    "exercise_id": "barbell_back_squat",
+                    "weight_kg": 100,
+                    "reps": 5,
+                    "rpe": 8,
+                },
+                "normalization": (
+                    "ALWAYS set exercise_id when you recognize the exercise. "
+                    "If this is the first time the user uses a term, also create "
+                    "exercise.alias_created in the same batch. Check user.aliases first."
+                ),
+            },
             "preference.set": {
                 "description": "User preference (latest per key wins)",
                 "fields": {"key": "string (required)", "value": "any (required)"},
