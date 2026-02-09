@@ -230,6 +230,151 @@ def get_interview_guide() -> dict[str, Any]:
                     "severity": "mild",
                 },
             },
+            # --- Tracking event conventions (ongoing, post-onboarding) ---
+            "bodyweight.logged": {
+                "description": "Body weight measurement",
+                "fields": {
+                    "weight_kg": "number (required)",
+                    "time_of_day": "string (optional: morning, evening)",
+                    "conditions": "string (optional: fasted, post-meal)",
+                },
+                "example": {"weight_kg": 82.5, "time_of_day": "morning"},
+            },
+            "measurement.logged": {
+                "description": "Body measurement (e.g. waist, chest, arm)",
+                "fields": {
+                    "type": "string (required: waist, chest, arm, thigh, etc.)",
+                    "value_cm": "number (required)",
+                    "side": "string (optional: left, right)",
+                },
+                "example": {"type": "waist", "value_cm": 85.0},
+            },
+            "sleep.logged": {
+                "description": "Sleep entry for one night",
+                "fields": {
+                    "duration_hours": "number (required)",
+                    "quality": "string (optional: poor, fair, good, excellent)",
+                    "bed_time": "string (optional, HH:MM)",
+                    "wake_time": "string (optional, HH:MM)",
+                },
+                "example": {
+                    "duration_hours": 7.5,
+                    "quality": "good",
+                    "bed_time": "23:00",
+                    "wake_time": "06:30",
+                },
+            },
+            "soreness.logged": {
+                "description": "Muscle soreness report",
+                "fields": {
+                    "area": "string (required: chest, back, shoulders, legs, etc.)",
+                    "severity": "number (required, 1-5 scale)",
+                    "notes": "string (optional)",
+                },
+                "example": {"area": "chest", "severity": 3},
+            },
+            "energy.logged": {
+                "description": "Subjective energy level",
+                "fields": {
+                    "level": "number (required, 1-10 scale)",
+                    "time_of_day": "string (optional: morning, pre-workout, evening)",
+                },
+                "example": {"level": 7, "time_of_day": "pre-workout"},
+            },
+            "meal.logged": {
+                "description": "Nutrition entry for a single meal",
+                "fields": {
+                    "calories": "number (optional)",
+                    "protein_g": "number (optional)",
+                    "carbs_g": "number (optional)",
+                    "fat_g": "number (optional)",
+                    "meal_type": "string (optional: breakfast, lunch, dinner, snack)",
+                    "description": "string (optional, free text)",
+                },
+                "example": {
+                    "calories": 750,
+                    "protein_g": 45,
+                    "carbs_g": 80,
+                    "fat_g": 25,
+                    "meal_type": "lunch",
+                },
+            },
+            "training_plan.created": {
+                "description": "Create a new training plan",
+                "fields": {
+                    "name": "string (optional, plan name)",
+                    "plan_id": "string (optional, defaults to 'default')",
+                    "sessions": "list[{day, name, exercises}] (optional)",
+                    "cycle_weeks": "number (optional)",
+                    "notes": "string (optional)",
+                },
+                "example": {
+                    "name": "Upper/Lower Split",
+                    "sessions": [
+                        {
+                            "day": "monday",
+                            "name": "Upper Body A",
+                            "exercises": ["bench_press", "overhead_press"],
+                        },
+                    ],
+                },
+            },
+            "training_plan.updated": {
+                "description": "Update an existing training plan (delta merge)",
+                "fields": {
+                    "plan_id": "string (optional, defaults to 'default')",
+                    "name": "string (optional)",
+                    "sessions": "list[{day, name, exercises}] (optional)",
+                    "cycle_weeks": "number (optional)",
+                    "notes": "string (optional)",
+                },
+                "example": {"plan_id": "default", "name": "Updated Plan Name"},
+            },
+            "training_plan.archived": {
+                "description": "Archive a training plan",
+                "fields": {
+                    "plan_id": "string (optional, defaults to 'default')",
+                    "reason": "string (optional)",
+                },
+                "example": {"plan_id": "default", "reason": "Switching to new program"},
+            },
+            # --- Target events (Soll-Werte) ---
+            "weight_target.set": {
+                "description": "Set body weight goal",
+                "fields": {
+                    "target_weight_kg": "number (required)",
+                    "target_date": "string (optional, ISO date)",
+                    "strategy": "string (optional: slow_cut, aggressive_cut, lean_bulk, maintain)",
+                },
+                "example": {
+                    "target_weight_kg": 80,
+                    "target_date": "2026-06-01",
+                    "strategy": "slow_cut",
+                },
+            },
+            "sleep_target.set": {
+                "description": "Set sleep goal",
+                "fields": {
+                    "target_hours": "number (required)",
+                    "target_bed_time": "string (optional, HH:MM)",
+                },
+                "example": {"target_hours": 8, "target_bed_time": "22:30"},
+            },
+            "nutrition_target.set": {
+                "description": "Set daily nutrition targets",
+                "fields": {
+                    "target_calories": "number (optional)",
+                    "target_protein_g": "number (optional)",
+                    "target_carbs_g": "number (optional)",
+                    "target_fat_g": "number (optional)",
+                },
+                "example": {
+                    "target_calories": 2200,
+                    "target_protein_g": 160,
+                    "target_carbs_g": 220,
+                    "target_fat_g": 70,
+                },
+            },
         },
     }
 

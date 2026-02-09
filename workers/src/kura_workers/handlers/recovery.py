@@ -51,6 +51,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     "name": "recovery",
     "description": "Recovery signals: sleep, soreness, energy levels",
     "key_structure": "single overview per user",
+    "projection_key": "overview",
     "granularity": ["day", "week"],
     "relates_to": {
         "training_timeline": {"join": "day", "why": "training load vs recovery"},
@@ -136,8 +137,10 @@ async def update_recovery(
             }
             if "quality" in data:
                 entry["quality"] = data["quality"]
-            if "bedtime" in data:
-                entry["bedtime"] = data["bedtime"]
+            if "bed_time" in data:
+                entry["bed_time"] = data["bed_time"]
+            elif "bedtime" in data:
+                entry["bed_time"] = data["bedtime"]
             if "wake_time" in data:
                 entry["wake_time"] = data["wake_time"]
             sleep_entries.append(entry)

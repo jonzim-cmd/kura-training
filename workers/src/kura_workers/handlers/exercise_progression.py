@@ -57,6 +57,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     "name": "exercise_progression",
     "description": "Strength progression per exercise over time",
     "key_structure": "one per exercise (exercise_id as key)",
+    "projection_key": "<exercise_id>",
     "granularity": ["set", "week"],
     "relates_to": {
         "training_timeline": {"join": "week", "why": "frequency vs progression"},

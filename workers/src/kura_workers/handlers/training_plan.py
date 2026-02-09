@@ -50,6 +50,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "name": "training_plan",
         "description": "Prescribed training: what should happen when",
         "key_structure": "single overview per user",
+        "projection_key": "overview",
         "granularity": ["session", "week", "cycle"],
         "relates_to": {
             "training_timeline": {"join": "day", "why": "planned vs actual training"},

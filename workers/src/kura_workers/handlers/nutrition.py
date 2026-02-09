@@ -50,6 +50,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     "name": "nutrition",
     "description": "Nutritional intake: calories, macros, meal patterns",
     "key_structure": "single overview per user",
+    "projection_key": "overview",
     "granularity": ["meal", "day", "week"],
     "relates_to": {
         "training_timeline": {"join": "day", "why": "nutrition timing vs training days"},

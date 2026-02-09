@@ -48,6 +48,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     "name": "body_composition",
     "description": "Body weight and measurements over time",
     "key_structure": "single overview per user",
+    "projection_key": "overview",
     "granularity": ["day", "week", "all_time"],
     "relates_to": {
         "training_timeline": {"join": "week", "why": "weight changes vs training volume"},

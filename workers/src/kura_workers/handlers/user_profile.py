@@ -76,6 +76,7 @@ def _build_system_layer(dimension_metadata: dict[str, dict[str, Any]]) -> dict[s
         entry: dict[str, Any] = {
             "description": meta.get("description", ""),
             "key_structure": meta.get("key_structure", ""),
+            "projection_key": meta.get("projection_key", "overview"),
             "granularity": meta.get("granularity", []),
             "event_types": meta.get("event_types", []),
             "relates_to": meta.get("relates_to", {}),
