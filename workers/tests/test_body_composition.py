@@ -77,3 +77,29 @@ class TestManifestContribution:
         }]
         result = _manifest_contribution(rows)
         assert result == {}
+
+    def test_with_target(self):
+        rows = [{
+            "key": "overview",
+            "data": {
+                "current_weight_kg": 85.0,
+                "total_weigh_ins": 20,
+                "measurement_types": [],
+                "target": {"weight_kg": 80, "timeframe": "3 months"},
+            },
+        }]
+        result = _manifest_contribution(rows)
+        assert result["has_target"] is True
+        assert result["current_weight_kg"] == 85.0
+
+    def test_without_target(self):
+        rows = [{
+            "key": "overview",
+            "data": {
+                "current_weight_kg": 85.0,
+                "total_weigh_ins": 20,
+                "measurement_types": [],
+            },
+        }]
+        result = _manifest_contribution(rows)
+        assert "has_target" not in result
