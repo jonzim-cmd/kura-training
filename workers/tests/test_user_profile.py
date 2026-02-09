@@ -1,163 +1,22 @@
-"""Tests for user_profile three-layer structure (Decision 7 + Decision 8)."""
+"""Tests for user_profile dynamic context (Decision 7 + Decision 8).
+
+System layer tests are in test_system_config.py — user_profile only produces
+user + agenda (dynamic per-user data).
+"""
 
 from datetime import datetime, timezone
 
 from kura_workers.handlers.user_profile import (
     _build_agenda,
     _build_data_quality,
-    _build_system_layer,
     _build_user_dimensions,
     _compute_interview_coverage,
     _find_orphaned_event_types,
     _find_unconfirmed_aliases,
-    _get_conventions,
     _resolve_exercises,
     _should_suggest_onboarding,
     _should_suggest_refresh,
 )
-
-
-# --- TestBuildSystemLayer ---
-
-
-class TestBuildSystemLayer:
-    def test_builds_from_metadata(self):
-        meta = {
-            "exercise_progression": {
-                "name": "exercise_progression",
-                "description": "Strength progression",
-                "key_structure": "one per exercise",
-                "granularity": ["set", "week"],
-                "event_types": ["set.logged"],
-                "relates_to": {"training_timeline": {"join": "week", "why": "test"}},
-                "manifest_contribution": lambda rows: {},
-            },
-        }
-        result = _build_system_layer(meta)
-        dim = result["dimensions"]["exercise_progression"]
-        assert dim["description"] == "Strength progression"
-        assert dim["key_structure"] == "one per exercise"
-        assert dim["granularity"] == ["set", "week"]
-        assert dim["event_types"] == ["set.logged"]
-        assert dim["relates_to"] == {"training_timeline": {"join": "week", "why": "test"}}
-
-    def test_strips_non_serializable_fields(self):
-        meta = {
-            "test_dim": {
-                "name": "test_dim",
-                "description": "Test",
-                "manifest_contribution": lambda rows: {},
-                "event_types": ["a.b"],
-            },
-        }
-        result = _build_system_layer(meta)
-        dim = result["dimensions"]["test_dim"]
-        assert "manifest_contribution" not in dim
-        assert "name" not in dim
-
-    def test_includes_time_conventions(self):
-        result = _build_system_layer({})
-        assert "time_conventions" in result
-        assert result["time_conventions"]["week"] == "ISO 8601 (2026-W06)"
-
-    def test_includes_interview_guide(self):
-        result = _build_system_layer({})
-        assert "interview_guide" in result
-        guide = result["interview_guide"]
-        assert "philosophy" in guide
-        assert "phases" in guide
-        assert "coverage_areas" in guide
-
-    def test_includes_event_conventions_at_system_level(self):
-        result = _build_system_layer({})
-        assert "event_conventions" in result
-        conventions = result["event_conventions"]
-        assert "set.logged" in conventions
-        assert "bodyweight.logged" in conventions
-        assert "meal.logged" in conventions
-        assert len(conventions) == 18
-
-    def test_includes_context_seeds(self):
-        meta = {
-            "dim_a": {
-                "name": "dim_a",
-                "description": "A",
-                "event_types": ["x"],
-                "context_seeds": ["experience_level", "training_modality"],
-            },
-        }
-        result = _build_system_layer(meta)
-        dim = result["dimensions"]["dim_a"]
-        assert dim["context_seeds"] == ["experience_level", "training_modality"]
-
-    def test_omits_context_seeds_when_not_declared(self):
-        meta = {
-            "dim_a": {"name": "dim_a", "description": "A", "event_types": ["x"]},
-        }
-        result = _build_system_layer(meta)
-        assert "context_seeds" not in result["dimensions"]["dim_a"]
-
-    def test_includes_conventions(self):
-        result = _build_system_layer({})
-        assert "conventions" in result
-        assert "exercise_normalization" in result["conventions"]
-
-    def test_empty_metadata(self):
-        result = _build_system_layer({})
-        assert result["dimensions"] == {}
-
-    def test_multiple_dimensions(self):
-        meta = {
-            "dim_a": {"name": "dim_a", "description": "A", "event_types": ["x"]},
-            "dim_b": {"name": "dim_b", "description": "B", "event_types": ["y"]},
-        }
-        result = _build_system_layer(meta)
-        assert len(result["dimensions"]) == 2
-        assert "dim_a" in result["dimensions"]
-        assert "dim_b" in result["dimensions"]
-
-
-# --- TestConventions ---
-
-
-class TestConventions:
-    def test_has_exercise_normalization(self):
-        result = _get_conventions()
-        assert "exercise_normalization" in result
-
-    def test_exercise_normalization_has_rules(self):
-        result = _get_conventions()
-        rules = result["exercise_normalization"]["rules"]
-        assert isinstance(rules, list)
-        assert len(rules) >= 3
-
-    def test_exercise_normalization_has_example_batch(self):
-        result = _get_conventions()
-        batch = result["exercise_normalization"]["example_batch"]
-        assert isinstance(batch, list)
-        assert len(batch) == 2
-        event_types = [e["event_type"] for e in batch]
-        assert "set.logged" in event_types
-        assert "exercise.alias_created" in event_types
-
-    def test_example_batch_set_logged_has_exercise_id(self):
-        result = _get_conventions()
-        set_event = next(
-            e for e in result["exercise_normalization"]["example_batch"]
-            if e["event_type"] == "set.logged"
-        )
-        assert "exercise_id" in set_event["data"]
-        assert "exercise" in set_event["data"]
-
-    def test_rules_mention_exercise_id(self):
-        result = _get_conventions()
-        rules_text = " ".join(result["exercise_normalization"]["rules"]).lower()
-        assert "exercise_id" in rules_text
-
-    def test_rules_mention_aliases(self):
-        result = _get_conventions()
-        rules_text = " ".join(result["exercise_normalization"]["rules"]).lower()
-        assert "alias" in rules_text
 
 
 # --- TestAliasWithConfidence ---
@@ -406,17 +265,15 @@ class TestBuildAgenda:
 # --- TestThreeLayerOutput ---
 
 
-class TestThreeLayerOutput:
-    """Test that the assembled structure has the correct shape."""
+class TestProjectionOutput:
+    """Test that the assembled projection has the correct shape (user + agenda)."""
 
-    def test_structure_has_all_layers(self):
-        system = _build_system_layer({})
+    def test_structure_has_user_and_agenda(self):
         data_quality = _build_data_quality(0, 0, [], {}, [])
         dimensions = _build_user_dimensions({}, [], None)
         agenda = _build_agenda([], [])
 
         projection_data = {
-            "system": system,
             "user": {
                 "aliases": {},
                 "preferences": {},
@@ -431,11 +288,9 @@ class TestThreeLayerOutput:
             "agenda": agenda,
         }
 
-        assert "system" in projection_data
         assert "user" in projection_data
         assert "agenda" in projection_data
-        assert "dimensions" in projection_data["system"]
-        assert "time_conventions" in projection_data["system"]
+        assert "system" not in projection_data
         assert "aliases" in projection_data["user"]
         assert "dimensions" in projection_data["user"]
         assert "data_quality" in projection_data["user"]
@@ -453,8 +308,6 @@ class TestThreeLayerOutput:
                 "manifest_contribution": lambda rows: {"exercises": [r["key"] for r in rows]},
             },
         }
-        system = _build_system_layer(meta)
-        assert system["dimensions"]["exercise_progression"]["description"] == "Strength progression"
 
         projection_rows = [
             {

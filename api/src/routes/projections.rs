@@ -120,7 +120,6 @@ pub async fn get_projection(
                     projection_type: "user_profile".to_string(),
                     key: "me".to_string(),
                     data: serde_json::json!({
-                        "system": null,
                         "user": null,
                         "agenda": [{
                             "priority": "high",

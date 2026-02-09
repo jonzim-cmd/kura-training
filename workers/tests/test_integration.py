@@ -470,15 +470,10 @@ class TestUserProfileIntegration:
         assert proj is not None
         data = proj["data"]
 
-        # Three-layer structure
-        assert "system" in data
+        # user + agenda structure (system layer is in system_config table)
+        assert "system" not in data
         assert "user" in data
         assert "agenda" in data
-
-        # System layer
-        assert "dimensions" in data["system"]
-        assert "conventions" in data["system"]
-        assert "interview_guide" in data["system"]
 
         # User layer
         assert "profile" in data["user"]
@@ -555,7 +550,8 @@ class TestRouterIntegration:
         # user_profile should also exist (set.logged is in its event list)
         up = await get_projection(db, test_user_id, "user_profile", "me")
         assert up is not None
-        assert "system" in up["data"]
+        assert "user" in up["data"]
+        assert "agenda" in up["data"]
 
 
 # ---------------------------------------------------------------------------

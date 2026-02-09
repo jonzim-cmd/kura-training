@@ -33,6 +33,7 @@ mod state;
         routes::auth::token,
         routes::projections::get_projection,
         routes::projections::list_projections,
+        routes::system::get_system_config,
     ),
     components(schemas(
         HealthResponse,
@@ -49,6 +50,7 @@ mod state;
         kura_core::projections::Projection,
         kura_core::projections::ProjectionResponse,
         kura_core::projections::ProjectionMeta,
+        routes::system::SystemConfigResponse,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -123,6 +125,7 @@ async fn main() {
         .merge(routes::events::write_router().layer(middleware::rate_limit::events_write_layer()))
         .merge(routes::events::read_router().layer(middleware::rate_limit::events_read_layer()))
         .merge(routes::projections::router().layer(middleware::rate_limit::projections_layer()))
+        .merge(routes::system::router().layer(middleware::rate_limit::projections_layer()))
         .merge(routes::auth::register_router().layer(middleware::rate_limit::register_layer()))
         .merge(routes::auth::authorize_router().layer(middleware::rate_limit::authorize_layer()))
         .merge(routes::auth::token_router().layer(middleware::rate_limit::token_layer()))

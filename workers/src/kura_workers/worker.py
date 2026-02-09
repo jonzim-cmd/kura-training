@@ -9,6 +9,7 @@ from psycopg.rows import dict_row
 from .config import Config
 from .metrics import record_job_completed, record_job_dead, record_job_failed
 from .registry import get_handler
+from .system_config import ensure_system_config
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,13 @@ class Worker:
             self.config.poll_interval_seconds,
             self.config.batch_size,
         )
+
+        # Write system_config on startup (deployment-static, before processing jobs)
+        async with await psycopg.AsyncConnection.connect(
+            self.config.database_url
+        ) as conn:
+            await conn.execute("SET ROLE app_worker")
+            await ensure_system_config(conn)
 
         # Run LISTEN and poll concurrently
         async with asyncio.TaskGroup() as tg:

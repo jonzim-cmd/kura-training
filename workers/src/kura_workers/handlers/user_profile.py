@@ -1,9 +1,11 @@
-"""User Profile — Three-Layer Agent Entry Point (Decision 7).
+"""User Profile — Dynamic Agent Context (Decision 7).
 
-Builds the agent's complete context in one projection:
-- system: static capabilities from handler declarations
-- user: dynamic per-user identity, dimension coverage, actionable data quality
+Builds the per-user context in one projection:
+- user: dynamic identity, dimension coverage, actionable data quality
 - agenda: proactive items the agent should address
+
+The system layer (dimensions, event conventions, interview guide) lives in
+system_config — a separate, deployment-static table written at worker startup.
 
 Reacts to all relevant event types. Full recompute on every event — idempotent.
 """
@@ -22,80 +24,6 @@ logger = logging.getLogger(__name__)
 
 
 # --- Pure functions (testable without DB) ---
-
-
-def _get_conventions() -> dict[str, Any]:
-    """Return normalization conventions for the agent.
-
-    These tell the agent HOW to log data correctly, preventing
-    fragmentation issues like exercises without exercise_id.
-    """
-    return {
-        "exercise_normalization": {
-            "rules": [
-                "ALWAYS set exercise_id when you recognize the exercise.",
-                "When setting both exercise + exercise_id for a user term the first time, "
-                "also create exercise.alias_created in the same batch.",
-                "When uncertain about the canonical name, ask the user.",
-                "Only omit exercise_id when the exercise is truly unknown to you.",
-                "Check user.aliases for existing mappings before creating new ones.",
-            ],
-            "example_batch": [
-                {
-                    "event_type": "set.logged",
-                    "data": {
-                        "exercise": "Kniebeuge",
-                        "exercise_id": "barbell_back_squat",
-                        "weight_kg": 100,
-                        "reps": 5,
-                    },
-                },
-                {
-                    "event_type": "exercise.alias_created",
-                    "data": {
-                        "alias": "Kniebeuge",
-                        "exercise_id": "barbell_back_squat",
-                        "confidence": "confirmed",
-                    },
-                },
-            ],
-        },
-    }
-
-
-def _build_system_layer(dimension_metadata: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Build the system layer from registry declarations.
-
-    Strips non-serializable fields (manifest_contribution callable).
-    Includes context_seeds for interview guidance (Decision 8).
-    """
-    from ..event_conventions import get_event_conventions
-    from ..interview_guide import get_interview_guide
-
-    dimensions = {}
-    for name, meta in dimension_metadata.items():
-        entry: dict[str, Any] = {
-            "description": meta.get("description", ""),
-            "key_structure": meta.get("key_structure", ""),
-            "projection_key": meta.get("projection_key", "overview"),
-            "granularity": meta.get("granularity", []),
-            "event_types": meta.get("event_types", []),
-            "relates_to": meta.get("relates_to", {}),
-        }
-        if "context_seeds" in meta:
-            entry["context_seeds"] = meta["context_seeds"]
-        dimensions[name] = entry
-    return {
-        "dimensions": dimensions,
-        "event_conventions": get_event_conventions(),
-        "conventions": _get_conventions(),
-        "time_conventions": {
-            "week": "ISO 8601 (2026-W06)",
-            "date": "ISO 8601 (2026-02-08)",
-            "timestamp": "ISO 8601 with timezone",
-        },
-        "interview_guide": get_interview_guide(),
-    }
 
 
 def _resolve_exercises(
@@ -416,7 +344,7 @@ def _build_agenda(
 async def update_user_profile(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
 ) -> None:
-    """Full recompute of user_profile projection — three-layer structure."""
+    """Full recompute of user_profile projection — user + agenda."""
     user_id = payload["user_id"]
 
     # Fetch all relevant events for this user
@@ -534,13 +462,12 @@ async def update_user_profile(
         aliases, preferences, goals, profile_data, injuries,
     )
 
-    # --- Build three layers ---
+    # --- Build user + agenda layers ---
+    # System layer lives in system_config table (deployment-static, written at worker startup)
 
-    # Layer 1: system (from registry declarations)
     dimension_metadata = get_dimension_metadata()
-    system_layer = _build_system_layer(dimension_metadata)
 
-    # Layer 2: user (from events + projections)
+    # User layer (from events + projections)
     # Fetch all projections for this user (except user_profile) for dimension coverage
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -571,7 +498,7 @@ async def update_user_profile(
         orphaned_event_types,
     )
 
-    # Layer 3: agenda (pattern matching over user data)
+    # Agenda layer (pattern matching over user data)
     unresolved_items = [
         {"exercise": ex, "occurrences": exercise_occurrences.get(ex, 0)}
         for ex in unresolved_exercises
@@ -586,7 +513,6 @@ async def update_user_profile(
     )
 
     projection_data = {
-        "system": system_layer,
         "user": {
             "aliases": aliases,
             "preferences": preferences,
