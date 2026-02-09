@@ -69,6 +69,7 @@ def _build_system_layer(dimension_metadata: dict[str, dict[str, Any]]) -> dict[s
     Strips non-serializable fields (manifest_contribution callable).
     Includes context_seeds for interview guidance (Decision 8).
     """
+    from ..event_conventions import get_event_conventions
     from ..interview_guide import get_interview_guide
 
     dimensions = {}
@@ -86,6 +87,7 @@ def _build_system_layer(dimension_metadata: dict[str, dict[str, Any]]) -> dict[s
         dimensions[name] = entry
     return {
         "dimensions": dimensions,
+        "event_conventions": get_event_conventions(),
         "conventions": _get_conventions(),
         "time_conventions": {
             "week": "ISO 8601 (2026-W06)",

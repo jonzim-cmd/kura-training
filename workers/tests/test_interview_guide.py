@@ -1,5 +1,6 @@
 """Tests for interview guide structure (Decision 8)."""
 
+from kura_workers.event_conventions import get_event_conventions
 from kura_workers.interview_guide import COVERAGE_AREAS, get_interview_guide
 
 
@@ -10,7 +11,6 @@ class TestInterviewGuideStructure:
         assert "philosophy" in guide
         assert "phases" in guide
         assert "coverage_areas" in guide
-        assert "event_conventions" in guide
 
     def test_introduction_has_required_fields(self):
         guide = get_interview_guide()
@@ -75,60 +75,74 @@ class TestCoverageAreas:
 
     def test_all_produced_event_types_have_conventions(self):
         guide = get_interview_guide()
-        convention_types = set(guide["event_conventions"].keys())
+        conventions = get_event_conventions()
         for area in guide["coverage_areas"]:
             for event_type in area["produces"]:
                 # program.started is a valid event but not in conventions
                 if event_type != "program.started":
-                    assert event_type in convention_types, (
+                    assert event_type in conventions, (
                         f"Area '{area['area']}' produces '{event_type}' but no convention defined"
                     )
 
 
 class TestEventConventions:
     def test_conventions_have_required_fields(self):
-        guide = get_interview_guide()
-        for event_type, convention in guide["event_conventions"].items():
+        conventions = get_event_conventions()
+        for event_type, convention in conventions.items():
             assert "description" in convention, f"Convention {event_type} missing 'description'"
             assert "fields" in convention, f"Convention {event_type} missing 'fields'"
             assert "example" in convention, f"Convention {event_type} missing 'example'"
 
     def test_examples_are_dicts(self):
-        guide = get_interview_guide()
-        for event_type, convention in guide["event_conventions"].items():
+        conventions = get_event_conventions()
+        for event_type, convention in conventions.items():
             assert isinstance(convention["example"], dict), (
                 f"Convention {event_type} example should be a dict"
             )
 
     def test_preference_set_convention(self):
-        guide = get_interview_guide()
-        pref = guide["event_conventions"]["preference.set"]
+        conventions = get_event_conventions()
+        pref = conventions["preference.set"]
         assert "key" in pref["example"]
         assert "value" in pref["example"]
         assert "common_keys" in pref
 
     def test_profile_updated_convention(self):
-        guide = get_interview_guide()
-        prof = guide["event_conventions"]["profile.updated"]
+        conventions = get_event_conventions()
+        prof = conventions["profile.updated"]
         assert "experience_level" in prof["fields"]
         assert "training_modality" in prof["fields"]
 
     def test_injury_reported_convention(self):
-        guide = get_interview_guide()
-        inj = guide["event_conventions"]["injury.reported"]
+        conventions = get_event_conventions()
+        inj = conventions["injury.reported"]
         assert "description" in inj["fields"]
         assert "affected_area" in inj["fields"]
 
     def test_set_logged_convention(self):
-        guide = get_interview_guide()
-        assert "set.logged" in guide["event_conventions"]
-        sl = guide["event_conventions"]["set.logged"]
+        conventions = get_event_conventions()
+        assert "set.logged" in conventions
+        sl = conventions["set.logged"]
         assert "exercise" in sl["fields"]
         assert "exercise_id" in sl["fields"]
         assert "weight_kg" in sl["fields"]
         assert "reps" in sl["fields"]
         assert "exercise_id" in sl["example"]
         assert "normalization" in sl
+
+    def test_all_tracking_event_types_documented(self):
+        """Ensure all major tracking event types have conventions."""
+        conventions = get_event_conventions()
+        expected = {
+            "set.logged", "exercise.alias_created",
+            "bodyweight.logged", "measurement.logged",
+            "sleep.logged", "soreness.logged", "energy.logged",
+            "meal.logged",
+            "training_plan.created", "training_plan.updated", "training_plan.archived",
+            "weight_target.set", "sleep_target.set", "nutrition_target.set",
+            "profile.updated", "preference.set", "goal.set", "injury.reported",
+        }
+        assert set(conventions.keys()) == expected
 
 
 class TestCoverageAreasConstant:

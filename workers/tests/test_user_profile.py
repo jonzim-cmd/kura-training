@@ -67,7 +67,15 @@ class TestBuildSystemLayer:
         assert "philosophy" in guide
         assert "phases" in guide
         assert "coverage_areas" in guide
-        assert "event_conventions" in guide
+
+    def test_includes_event_conventions_at_system_level(self):
+        result = _build_system_layer({})
+        assert "event_conventions" in result
+        conventions = result["event_conventions"]
+        assert "set.logged" in conventions
+        assert "bodyweight.logged" in conventions
+        assert "meal.logged" in conventions
+        assert len(conventions) == 18
 
     def test_includes_context_seeds(self):
         meta = {
