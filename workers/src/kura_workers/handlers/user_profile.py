@@ -362,6 +362,10 @@ def _build_agenda(
     "sleep.logged",
     "soreness.logged",
     "energy.logged",
+    "meal.logged",
+    "training_plan.created",
+    "training_plan.updated",
+    "training_plan.archived",
 )
 async def update_user_profile(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]

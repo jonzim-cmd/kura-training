@@ -6,5 +6,7 @@ from . import exercise_progression  # noqa: F401
 from . import training_timeline  # noqa: F401
 from . import body_composition  # noqa: F401
 from . import recovery  # noqa: F401
+from . import nutrition  # noqa: F401
+from . import training_plan  # noqa: F401
 from . import user_profile  # noqa: F401
 from . import router  # noqa: F401

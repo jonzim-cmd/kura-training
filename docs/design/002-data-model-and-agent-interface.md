@@ -713,14 +713,11 @@ We should build those, and let the system tell us when new ones are needed.
 | `training_timeline` | overview | day, week | set.logged | Implemented |
 | `body_composition` | overview | day, week, all-time | bodyweight.logged, measurement.logged | Implemented |
 | `recovery` | overview | day, week | sleep.logged, soreness.logged, energy.logged | Implemented |
-| `training_plan` | per plan | session, week, cycle | training_plan.* | Needs Design |
-| `nutrition` | overview | meal, day, week | meal.logged | Needs Design |
+| `nutrition` | overview | meal, day, week | meal.logged | Implemented |
+| `training_plan` | overview | session, week, cycle | training_plan.created/updated/archived | Implemented |
 | `activity_progression` | per activity | session, week | activity.logged | When events exist |
 
-The first five dimensions cover all data an agent needs for informed coaching
-of strength-focused training. `training_plan` (prescriptive) and `nutrition`
-are distinct features that warrant their own design documents.
-
+Seven dimensions cover all data axes an agent needs for informed coaching.
 `activity_progression` follows when endurance/cardio events are conventionalized.
 
 ### Three Mechanisms for Dimension Discovery
@@ -853,6 +850,126 @@ dimensions from data, but from agent behavior.
 | `level` | Yes | 1-10 scale (1 = exhausted, 10 = peak) |
 | `time_of_day` | No | morning, afternoon, evening, pre_workout, post_workout |
 | `notes` | No | Free text |
+
+### Event Conventions: nutrition
+
+#### `meal.logged`
+
+```json
+{
+  "event_type": "meal.logged",
+  "data": {
+    "calories": 650,
+    "protein_g": 45,
+    "carbs_g": 60,
+    "fat_g": 25,
+    "meal_type": "lunch",
+    "description": "Chicken rice bowl with vegetables"
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `calories` | No* | Total calories |
+| `protein_g` | No | Protein in grams |
+| `carbs_g` | No | Carbohydrates in grams |
+| `fat_g` | No | Fat in grams |
+| `meal_type` | No | breakfast, lunch, dinner, snack, pre_workout, post_workout |
+| `description` | No | Free text description |
+
+*At least calories or one macro should be provided. Handlers are tolerant.
+
+### Event Conventions: training_plan
+
+The only **prescriptive** event family. All other events describe what happened;
+these describe what SHOULD happen.
+
+Plans are weekly templates with named sessions. The agent derives concrete
+loads from `exercise_progression` at conversation time — the plan says WHAT
+and HOW MUCH, not HOW HEAVY.
+
+#### `training_plan.created`
+
+```json
+{
+  "event_type": "training_plan.created",
+  "data": {
+    "plan_id": "plan_531_bbb",
+    "name": "5/3/1 Boring But Big",
+    "sessions": [
+      {
+        "name": "Squat Day",
+        "day_hint": "monday",
+        "exercises": [
+          {"exercise_id": "barbell_back_squat", "sets": 3, "rep_scheme": "5/3/1", "intensity": "program"},
+          {"exercise_id": "barbell_back_squat", "sets": 5, "reps": 10, "intensity": "50%"},
+          {"exercise_id": "leg_curl", "sets": 3, "reps": 12}
+        ]
+      },
+      {
+        "name": "Bench Day",
+        "day_hint": "wednesday",
+        "exercises": [
+          {"exercise_id": "barbell_bench_press", "sets": 3, "rep_scheme": "5/3/1", "intensity": "program"},
+          {"exercise_id": "barbell_bench_press", "sets": 5, "reps": 10, "intensity": "50%"},
+          {"exercise_id": "dumbbell_row", "sets": 5, "reps": 10}
+        ]
+      }
+    ],
+    "cycle_weeks": 3,
+    "notes": "Week 1: 5s, Week 2: 3s, Week 3: 5/3/1"
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `plan_id` | No | Unique plan identifier (defaults to "default") |
+| `name` | No | Human-readable plan name |
+| `sessions` | Yes | List of session templates |
+| `sessions[].name` | Yes | Session name ("Push Day", "Upper A") |
+| `sessions[].day_hint` | No | Suggested weekday (advisory, not binding) |
+| `sessions[].exercises` | Yes | List of prescribed exercises |
+| `sessions[].exercises[].exercise_id` | Yes | Canonical exercise ID |
+| `sessions[].exercises[].sets` | No | Number of sets |
+| `sessions[].exercises[].reps` | No | Reps per set (fixed) |
+| `sessions[].exercises[].rep_scheme` | No | Named scheme ("5/3/1", "5x5", "pyramid") |
+| `sessions[].exercises[].intensity` | No | "program", "50%", "RPE 8", etc. |
+| `cycle_weeks` | No | Weeks per cycle (for periodized programs) |
+| `notes` | No | Free text notes about the program |
+
+#### `training_plan.updated`
+
+Delta merge on the plan identified by `plan_id`. Only provided fields
+are updated; omitted fields remain unchanged.
+
+```json
+{
+  "event_type": "training_plan.updated",
+  "data": {
+    "plan_id": "plan_531_bbb",
+    "sessions": [...]
+  }
+}
+```
+
+#### `training_plan.archived`
+
+```json
+{
+  "event_type": "training_plan.archived",
+  "data": {
+    "plan_id": "plan_531_bbb",
+    "reason": "Switching to hypertrophy block"
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `plan_id` | No | Plan to archive (defaults to "default") |
+| `reason` | No | Why the plan was archived |
 
 ### Design Rules for New Dimensions
 
