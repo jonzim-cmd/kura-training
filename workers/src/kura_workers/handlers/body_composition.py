@@ -111,6 +111,10 @@ async def update_body_composition(
     # Process measurement entries
     measurements_by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
+    anomalies: list[dict[str, Any]] = []
+    prev_weight: float | None = None
+    prev_weight_date: date | None = None
+
     for row in rows:
         data = row["data"]
         ts = row["timestamp"]
@@ -123,6 +127,33 @@ async def update_body_composition(
             except (KeyError, ValueError, TypeError):
                 logger.warning("Skipping bodyweight event %s: invalid weight_kg", row["id"])
                 continue
+
+            # Anomaly detection: absolute bounds
+            if weight < 20 or weight > 300:
+                anomalies.append({
+                    "event_id": str(row["id"]),
+                    "field": "weight_kg",
+                    "value": weight,
+                    "expected_range": [20, 300],
+                    "message": f"Bodyweight {weight}kg outside plausible range on {d.isoformat()}",
+                })
+
+            # Anomaly detection: day-over-day change > 5kg
+            if prev_weight is not None and prev_weight_date is not None:
+                days_between = (d - prev_weight_date).days
+                if days_between <= 2 and abs(weight - prev_weight) > 5:
+                    anomalies.append({
+                        "event_id": str(row["id"]),
+                        "field": "weight_kg",
+                        "value": weight,
+                        "expected_range": [prev_weight - 5, prev_weight + 5],
+                        "message": (
+                            f"Weight changed {weight - prev_weight:+.1f}kg in "
+                            f"{days_between} day(s) ({prev_weight}kg → {weight}kg)"
+                        ),
+                    })
+            prev_weight = weight
+            prev_weight_date = d
 
             weight_by_week[_iso_week(d)].append(weight)
             entry: dict[str, Any] = {
@@ -144,6 +175,16 @@ async def update_body_composition(
                 continue
             if not mtype:
                 continue
+
+            # Anomaly detection: measurement bounds
+            if value < 1 or value > 300:
+                anomalies.append({
+                    "event_id": str(row["id"]),
+                    "field": "value_cm",
+                    "value": value,
+                    "expected_range": [1, 300],
+                    "message": f"Measurement {mtype} = {value}cm outside plausible range on {d.isoformat()}",
+                })
 
             mentry: dict[str, Any] = {
                 "date": d.isoformat(),
@@ -204,6 +245,9 @@ async def update_body_composition(
         "weight_trend": weight_trend,
         "measurements": measurements,
         "measurement_types": sorted(measurements_by_type.keys()),
+        "data_quality": {
+            "anomalies": anomalies,
+        },
     }
 
     if weight_target:

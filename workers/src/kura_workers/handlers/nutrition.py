@@ -133,6 +133,7 @@ async def update_nutrition(
     )
 
     all_meals: list[dict[str, Any]] = []
+    anomalies: list[dict[str, Any]] = []
 
     for row in rows:
         data = row["data"]
@@ -157,6 +158,25 @@ async def update_nutrition(
             fat = float(data.get("fat_g", 0))
         except (ValueError, TypeError):
             fat = 0.0
+
+        # Anomaly detection: single meal bounds
+        if calories < 0 or calories > 5000:
+            anomalies.append({
+                "event_id": str(row["id"]),
+                "field": "calories",
+                "value": calories,
+                "expected_range": [0, 5000],
+                "message": f"Single meal with {calories:.0f} kcal on {d.isoformat()}",
+            })
+        for macro_name, macro_val in [("protein_g", protein), ("carbs_g", carbs), ("fat_g", fat)]:
+            if macro_val < 0 or macro_val > 500:
+                anomalies.append({
+                    "event_id": str(row["id"]),
+                    "field": macro_name,
+                    "value": macro_val,
+                    "expected_range": [0, 500],
+                    "message": f"Single meal with {macro_val:.0f}g {macro_name.replace('_g', '')} on {d.isoformat()}",
+                })
 
         meal_type = data.get("meal_type", "").strip().lower()
 
@@ -235,6 +255,9 @@ async def update_nutrition(
         "daily_totals": daily_totals,
         "weekly_average": weekly_average,
         "recent_meals": recent_meals,
+        "data_quality": {
+            "anomalies": anomalies,
+        },
     }
 
     if target:

@@ -143,6 +143,8 @@ async def update_exercise_progression(
         lambda: {"estimated_1rm": 0.0, "total_sets": 0, "total_volume_kg": 0.0, "max_weight_kg": 0.0}
     )
 
+    anomalies: list[dict[str, Any]] = []
+
     for row in rows:
         data = row["data"]
         ts: datetime = row["timestamp"]
@@ -155,12 +157,44 @@ async def update_exercise_progression(
             logger.warning("Skipping event %s: invalid weight/reps data", row["id"])
             continue
 
+        # Anomaly detection: absolute bounds
+        if weight < 0 or weight > 500:
+            anomalies.append({
+                "event_id": str(row["id"]),
+                "field": "weight_kg",
+                "value": weight,
+                "expected_range": [0, 500],
+                "message": f"Weight {weight}kg outside plausible range on {ts.date().isoformat()}",
+            })
+        if reps < 0 or reps > 100:
+            anomalies.append({
+                "event_id": str(row["id"]),
+                "field": "reps",
+                "value": reps,
+                "expected_range": [0, 100],
+                "message": f"{reps} reps in a single set on {ts.date().isoformat()}",
+            })
+
         volume = weight * reps
         total_volume_kg += volume
 
         session_dates.add(ts.date().isoformat())
 
         e1rm = _epley_1rm(weight, reps)
+
+        # Anomaly detection: 1RM jump > 100% over previous best
+        if best_1rm > 0 and e1rm > best_1rm * 2:
+            anomalies.append({
+                "event_id": str(row["id"]),
+                "field": "estimated_1rm",
+                "value": round(e1rm, 1),
+                "expected_range": [0, round(best_1rm * 2, 1)],
+                "message": (
+                    f"1RM jumped from {best_1rm:.1f}kg to {e1rm:.1f}kg "
+                    f"({(e1rm / best_1rm - 1) * 100:.0f}% increase) on {ts.date().isoformat()}"
+                ),
+            })
+
         if e1rm > best_1rm:
             best_1rm = e1rm
             best_1rm_date = ts
@@ -212,7 +246,7 @@ async def update_exercise_progression(
         for wk in sorted_weeks
     ]
 
-    projection_data = {
+    projection_data: dict[str, Any] = {
         "exercise": canonical,
         "estimated_1rm": round(best_1rm, 1),
         "estimated_1rm_date": best_1rm_date.isoformat() if best_1rm_date else None,
@@ -221,6 +255,9 @@ async def update_exercise_progression(
         "total_volume_kg": round(total_volume_kg, 1),
         "recent_sessions": recent_sessions,
         "weekly_history": weekly_history,
+        "data_quality": {
+            "anomalies": anomalies,
+        },
     }
 
     # UPSERT canonical projection

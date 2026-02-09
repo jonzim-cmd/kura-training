@@ -721,3 +721,183 @@ class TestProjectionRetryIntegration:
         assert job["payload"]["handler_name"] == original_fn.__name__
         assert job["payload"]["event_type"] == "bodyweight.logged"
         assert job["status"] == "pending"
+
+
+# ---------------------------------------------------------------------------
+# Anomaly Detection
+# ---------------------------------------------------------------------------
+
+
+class TestAnomalyDetectionIntegration:
+    async def test_normal_data_has_empty_anomalies(self, db, test_user_id):
+        """Normal data should produce data_quality with empty anomalies."""
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "bodyweight.logged", {
+            "weight_kg": 82.5,
+        }, "TIMESTAMP '2026-02-01 08:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_body_composition(db, {
+            "user_id": test_user_id, "event_type": "bodyweight.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "body_composition")
+        data = proj["data"]
+        assert "data_quality" in data
+        assert data["data_quality"]["anomalies"] == []
+
+    async def test_bodyweight_out_of_range_flagged(self, db, test_user_id):
+        """Bodyweight of 500kg should be flagged as anomaly."""
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "bodyweight.logged", {
+            "weight_kg": 500,
+        }, "TIMESTAMP '2026-02-01 08:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_body_composition(db, {
+            "user_id": test_user_id, "event_type": "bodyweight.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "body_composition")
+        anomalies = proj["data"]["data_quality"]["anomalies"]
+        assert len(anomalies) == 1
+        assert anomalies[0]["field"] == "weight_kg"
+        assert anomalies[0]["value"] == 500
+
+    async def test_bodyweight_sudden_change_flagged(self, db, test_user_id):
+        """Weight change > 5kg in 1 day should be flagged."""
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "bodyweight.logged", {
+            "weight_kg": 80,
+        }, "TIMESTAMP '2026-02-01 08:00:00+01'")
+        await insert_event(db, test_user_id, "bodyweight.logged", {
+            "weight_kg": 150,
+        }, "TIMESTAMP '2026-02-02 08:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_body_composition(db, {
+            "user_id": test_user_id, "event_type": "bodyweight.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "body_composition")
+        anomalies = proj["data"]["data_quality"]["anomalies"]
+        # Should have at least the day-over-day change anomaly
+        change_anomalies = [a for a in anomalies if "changed" in a["message"]]
+        assert len(change_anomalies) >= 1
+
+    async def test_exercise_progression_has_data_quality(self, db, test_user_id):
+        """Exercise progression should include data_quality."""
+        await create_test_user(db, test_user_id)
+        event_id = await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "bench_press", "weight_kg": 80, "reps": 5,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_exercise_progression(db, {
+            "user_id": test_user_id, "event_type": "set.logged",
+            "event_id": event_id,
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "exercise_progression", "bench_press")
+        data = proj["data"]
+        assert "data_quality" in data
+        assert data["data_quality"]["anomalies"] == []
+
+    async def test_exercise_extreme_weight_flagged(self, db, test_user_id):
+        """600kg squat should be flagged."""
+        await create_test_user(db, test_user_id)
+        event_id = await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "squat", "weight_kg": 600, "reps": 1,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_exercise_progression(db, {
+            "user_id": test_user_id, "event_type": "set.logged",
+            "event_id": event_id,
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "exercise_progression", "squat")
+        anomalies = proj["data"]["data_quality"]["anomalies"]
+        assert len(anomalies) >= 1
+        assert anomalies[0]["field"] == "weight_kg"
+
+    async def test_nutrition_extreme_calories_flagged(self, db, test_user_id):
+        """Meal with 8000 kcal should be flagged."""
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "meal.logged", {
+            "calories": 8000, "protein_g": 50,
+        }, "TIMESTAMP '2026-02-01 12:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_nutrition(db, {
+            "user_id": test_user_id, "event_type": "meal.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "nutrition")
+        anomalies = proj["data"]["data_quality"]["anomalies"]
+        assert len(anomalies) >= 1
+        assert anomalies[0]["field"] == "calories"
+
+    async def test_recovery_normal_data_no_anomalies(self, db, test_user_id):
+        """Normal recovery data should not flag anomalies."""
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "sleep.logged", {
+            "duration_hours": 7.5, "quality": "good",
+        }, "TIMESTAMP '2026-02-01 08:00:00+01'")
+        await insert_event(db, test_user_id, "energy.logged", {
+            "level": 7,
+        }, "TIMESTAMP '2026-02-01 09:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_recovery(db, {
+            "user_id": test_user_id, "event_type": "sleep.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "recovery")
+        assert proj["data"]["data_quality"]["anomalies"] == []
+
+    async def test_recovery_extreme_sleep_flagged(self, db, test_user_id):
+        """25 hours of sleep should be flagged."""
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "sleep.logged", {
+            "duration_hours": 25,
+        }, "TIMESTAMP '2026-02-01 08:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_recovery(db, {
+            "user_id": test_user_id, "event_type": "sleep.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "recovery")
+        anomalies = proj["data"]["data_quality"]["anomalies"]
+        assert len(anomalies) >= 1
+        assert anomalies[0]["field"] == "duration_hours"
+
+    async def test_anomaly_still_processes_event(self, db, test_user_id):
+        """Anomalous events should still be included in the projection — anomalies are warnings."""
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "bodyweight.logged", {
+            "weight_kg": 500,
+        }, "TIMESTAMP '2026-02-01 08:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_body_composition(db, {
+            "user_id": test_user_id, "event_type": "bodyweight.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "body_composition")
+        data = proj["data"]
+        # Event is processed despite being anomalous
+        assert data["current_weight_kg"] == 500
+        assert data["total_weigh_ins"] == 1
+        # But anomaly is flagged
+        assert len(data["data_quality"]["anomalies"]) == 1

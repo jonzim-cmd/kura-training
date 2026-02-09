@@ -141,8 +141,27 @@ class TestEventConventions:
             "training_plan.created", "training_plan.updated", "training_plan.archived",
             "weight_target.set", "sleep_target.set", "nutrition_target.set",
             "profile.updated", "preference.set", "goal.set", "injury.reported",
+            "event.retracted",
         }
         assert set(conventions.keys()) == expected
+
+    def test_event_retracted_convention(self):
+        """event.retracted has required fields and usage guidance."""
+        conventions = get_event_conventions()
+        retracted = conventions["event.retracted"]
+        assert "retracted_event_id" in retracted["fields"]
+        assert "retracted_event_type" in retracted["fields"]
+        assert "reason" in retracted["fields"]
+        assert "usage" in retracted
+        assert "retracted_event_id" in retracted["example"]
+        assert "retracted_event_type" in retracted["example"]
+
+    def test_profile_updated_null_semantics(self):
+        """profile.updated documents how to clear fields."""
+        conventions = get_event_conventions()
+        prof = conventions["profile.updated"]
+        assert "null_semantics" in prof
+        assert "null" in prof["null_semantics"]
 
 
 class TestCoverageAreasConstant:

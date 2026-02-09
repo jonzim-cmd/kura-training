@@ -34,6 +34,11 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "training_modality": "strength",
                 "training_frequency_per_week": 4,
             },
+            "null_semantics": (
+                "Set any field to null to clear it. The field remains in the "
+                "profile with null value, indicating 'no longer set'. "
+                "Example: {\"date_of_birth\": null} clears the birth date."
+            ),
         },
         "preference.set": {
             "description": "User preference (latest per key wins)",
@@ -254,5 +259,31 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "target_carbs_g": 220,
                 "target_fat_g": 70,
             },
+        },
+        # --- Data corrections ---
+        "event.retracted": {
+            "description": (
+                "Retracts a previously logged event. The retracted event "
+                "will be excluded from all projection computations. "
+                "This is the universal correction mechanism — works for any event type."
+            ),
+            "fields": {
+                "retracted_event_id": "string (required, UUID of the event being retracted)",
+                "retracted_event_type": (
+                    "string (recommended, event_type of the retracted event "
+                    "— enables efficient processing without DB lookup)"
+                ),
+                "reason": "string (optional, why the retraction is being made)",
+            },
+            "example": {
+                "retracted_event_id": "01956abc-def0-7000-8000-000000000001",
+                "retracted_event_type": "bodyweight.logged",
+                "reason": "Typo: entered 150kg instead of 85kg",
+            },
+            "usage": (
+                "To correct a wrong event: retract it and log the correct "
+                "replacement event in the same batch. This is the standard "
+                "correction pattern. Never try to 'update' an existing event."
+            ),
         },
     }

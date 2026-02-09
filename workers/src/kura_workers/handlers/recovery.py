@@ -118,6 +118,8 @@ async def update_recovery(
     energy_entries: list[dict[str, Any]] = []
     energy_by_week: dict[str, list[float]] = defaultdict(list)
 
+    anomalies: list[dict[str, Any]] = []
+
     for row in rows:
         data = row["data"]
         ts = row["timestamp"]
@@ -130,6 +132,16 @@ async def update_recovery(
             except (KeyError, ValueError, TypeError):
                 logger.warning("Skipping sleep event %s: invalid duration_hours", row["id"])
                 continue
+
+            # Anomaly detection: sleep bounds
+            if duration < 0 or duration > 20:
+                anomalies.append({
+                    "event_id": str(row["id"]),
+                    "field": "duration_hours",
+                    "value": duration,
+                    "expected_range": [0, 20],
+                    "message": f"Sleep duration {duration}h outside plausible range on {d.isoformat()}",
+                })
 
             entry: dict[str, Any] = {
                 "date": d.isoformat(),
@@ -156,6 +168,16 @@ async def update_recovery(
             if not area:
                 continue
 
+            # Anomaly detection: severity bounds
+            if severity < 1 or severity > 5:
+                anomalies.append({
+                    "event_id": str(row["id"]),
+                    "field": "severity",
+                    "value": severity,
+                    "expected_range": [1, 5],
+                    "message": f"Soreness severity {severity} outside 1-5 scale on {d.isoformat()}",
+                })
+
             sentry: dict[str, Any] = {
                 "date": d.isoformat(),
                 "area": area,
@@ -171,6 +193,16 @@ async def update_recovery(
             except (KeyError, ValueError, TypeError):
                 logger.warning("Skipping energy event %s: invalid level", row["id"])
                 continue
+
+            # Anomaly detection: energy bounds
+            if level < 1 or level > 10:
+                anomalies.append({
+                    "event_id": str(row["id"]),
+                    "field": "level",
+                    "value": level,
+                    "expected_range": [1, 10],
+                    "message": f"Energy level {level} outside 1-10 scale on {d.isoformat()}",
+                })
 
             eentry: dict[str, Any] = {
                 "date": d.isoformat(),
@@ -239,6 +271,9 @@ async def update_recovery(
         "sleep": sleep_data,
         "soreness": soreness_data,
         "energy": energy_data,
+        "data_quality": {
+            "anomalies": anomalies,
+        },
     }
 
     if sleep_target:

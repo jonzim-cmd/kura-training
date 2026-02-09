@@ -121,7 +121,7 @@ class TestBuildSystemConfig:
 
     def test_event_conventions_count(self):
         result = build_system_config()
-        assert len(result["event_conventions"]) == 18
+        assert len(result["event_conventions"]) == 19
 
     def test_interview_guide_structure(self):
         result = build_system_config()
@@ -176,3 +176,30 @@ class TestConventions:
         result = _get_conventions()
         rules_text = " ".join(result["exercise_normalization"]["rules"]).lower()
         assert "alias" in rules_text
+
+    def test_has_data_correction(self):
+        result = _get_conventions()
+        assert "data_correction" in result
+
+    def test_data_correction_has_rules(self):
+        result = _get_conventions()
+        rules = result["data_correction"]["rules"]
+        assert isinstance(rules, list)
+        assert len(rules) >= 2
+
+    def test_data_correction_has_example_batch(self):
+        result = _get_conventions()
+        batch = result["data_correction"]["example_batch"]
+        assert isinstance(batch, list)
+        assert len(batch) == 2
+        event_types = [e["event_type"] for e in batch]
+        assert "event.retracted" in event_types
+
+    def test_data_correction_example_has_retracted_fields(self):
+        result = _get_conventions()
+        retracted_event = next(
+            e for e in result["data_correction"]["example_batch"]
+            if e["event_type"] == "event.retracted"
+        )
+        assert "retracted_event_id" in retracted_event["data"]
+        assert "retracted_event_type" in retracted_event["data"]

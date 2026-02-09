@@ -59,6 +59,33 @@ def _get_conventions() -> dict[str, Any]:
                 },
             ],
         },
+        "data_correction": {
+            "rules": [
+                "To correct a wrong event: retract it with event.retracted and "
+                "log the correct replacement in the same batch.",
+                "Always include retracted_event_type so the system can process "
+                "the retraction efficiently.",
+                "To clear a profile field, send profile.updated with the field "
+                "set to null.",
+            ],
+            "example_batch": [
+                {
+                    "event_type": "event.retracted",
+                    "data": {
+                        "retracted_event_id": "01956abc-def0-7000-8000-000000000001",
+                        "retracted_event_type": "bodyweight.logged",
+                        "reason": "Typo: entered 150kg instead of 85kg",
+                    },
+                },
+                {
+                    "event_type": "bodyweight.logged",
+                    "data": {
+                        "weight_kg": 85.0,
+                        "time_of_day": "morning",
+                    },
+                },
+            ],
+        },
     }
 
 
