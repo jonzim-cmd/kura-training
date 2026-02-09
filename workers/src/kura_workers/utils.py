@@ -29,6 +29,8 @@ async def get_alias_map(
     """Build alias → canonical target map from exercise.alias_created events.
 
     Returns {alias_lower: target_lower}. Direct event query, no cross-projection dependency.
+    Confidence field intentionally omitted — this is for resolution only.
+    See user_profile projection for full alias metadata (target + confidence).
     """
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
