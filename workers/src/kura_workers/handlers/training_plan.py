@@ -20,6 +20,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
+from ..utils import get_retracted_event_ids
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,7 @@ async def update_training_plan(
 ) -> None:
     """Full recompute of training_plan projection."""
     user_id = payload["user_id"]
+    retracted_ids = await get_retracted_event_ids(conn, user_id)
 
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -87,7 +89,16 @@ async def update_training_plan(
         )
         rows = await cur.fetchall()
 
+    # Filter retracted events
+    rows = [r for r in rows if str(r["id"]) not in retracted_ids]
+
     if not rows:
+        # Clean up: delete any existing projection (all events retracted)
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM projections WHERE user_id = %s AND projection_type = 'training_plan' AND key = 'overview'",
+                (user_id,),
+            )
         return
 
     last_event_id = rows[-1]["id"]

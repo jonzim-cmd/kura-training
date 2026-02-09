@@ -19,7 +19,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
-from ..utils import get_alias_map, resolve_exercise_key, resolve_through_aliases
+from ..utils import get_alias_map, get_retracted_event_ids, resolve_exercise_key, resolve_through_aliases
 
 logger = logging.getLogger(__name__)
 
@@ -174,9 +174,10 @@ async def update_training_timeline(
 ) -> None:
     """Full recompute of training_timeline projection."""
     user_id = payload["user_id"]
+    retracted_ids = await get_retracted_event_ids(conn, user_id)
 
-    # Load alias map for resolving exercise names
-    alias_map = await get_alias_map(conn, user_id)
+    # Load alias map for resolving exercise names (retraction-aware)
+    alias_map = await get_alias_map(conn, user_id, retracted_ids=retracted_ids)
 
     # Fetch ALL set.logged events for this user
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -192,7 +193,16 @@ async def update_training_timeline(
         )
         rows = await cur.fetchall()
 
+    # Filter retracted events
+    rows = [r for r in rows if str(r["id"]) not in retracted_ids]
+
     if not rows:
+        # Clean up: delete any existing projection (all events retracted)
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM projections WHERE user_id = %s AND projection_type = 'training_timeline' AND key = 'overview'",
+                (user_id,),
+            )
         return
 
     last_event_id = rows[-1]["id"]

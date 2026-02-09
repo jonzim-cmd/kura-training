@@ -16,6 +16,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
+from ..utils import get_retracted_event_ids
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ async def update_body_composition(
 ) -> None:
     """Full recompute of body_composition projection."""
     user_id = payload["user_id"]
+    retracted_ids = await get_retracted_event_ids(conn, user_id)
 
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -80,7 +82,10 @@ async def update_body_composition(
         )
         rows = await cur.fetchall()
 
-    # Fetch latest weight target (latest event wins)
+    # Filter retracted events
+    rows = [r for r in rows if str(r["id"]) not in retracted_ids]
+
+    # Fetch latest non-retracted weight target (latest event wins)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
@@ -89,20 +94,32 @@ async def update_body_composition(
             WHERE user_id = %s
               AND event_type = 'weight_target.set'
             ORDER BY timestamp DESC
-            LIMIT 1
             """,
             (user_id,),
         )
-        target_row = await cur.fetchone()
+        target_rows = await cur.fetchall()
 
     weight_target: dict[str, Any] | None = None
-    if target_row:
-        weight_target = target_row["data"]
+    for tr in target_rows:
+        if str(tr["id"]) not in retracted_ids:
+            weight_target = tr["data"]
+            break
 
     if not rows and not weight_target:
+        # Clean up: delete any existing projection (all events retracted)
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM projections WHERE user_id = %s AND projection_type = 'body_composition' AND key = 'overview'",
+                (user_id,),
+            )
         return
 
-    last_event_id = rows[-1]["id"] if rows else target_row["id"]
+    # Determine last_event_id: latest non-retracted event or target
+    if rows:
+        last_event_id = rows[-1]["id"]
+    else:
+        # Only target remains — use first non-retracted target row
+        last_event_id = next(tr["id"] for tr in target_rows if str(tr["id"]) not in retracted_ids)
 
     # Process bodyweight entries
     weight_by_week: dict[str, list[float]] = defaultdict(list)

@@ -18,6 +18,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
+from ..utils import get_retracted_event_ids
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,7 @@ async def update_nutrition(
 ) -> None:
     """Full recompute of nutrition projection."""
     user_id = payload["user_id"]
+    retracted_ids = await get_retracted_event_ids(conn, user_id)
 
     # Fetch meal events
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -84,7 +86,10 @@ async def update_nutrition(
         )
         rows = await cur.fetchall()
 
-    # Fetch latest nutrition target (latest event wins)
+    # Filter retracted events
+    rows = [r for r in rows if str(r["id"]) not in retracted_ids]
+
+    # Fetch latest non-retracted nutrition target
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
@@ -93,20 +98,30 @@ async def update_nutrition(
             WHERE user_id = %s
               AND event_type = 'nutrition_target.set'
             ORDER BY timestamp DESC
-            LIMIT 1
             """,
             (user_id,),
         )
-        target_row = await cur.fetchone()
+        target_rows = await cur.fetchall()
 
     target: dict[str, Any] | None = None
-    if target_row:
-        target = target_row["data"]
+    for tr in target_rows:
+        if str(tr["id"]) not in retracted_ids:
+            target = tr["data"]
+            break
 
     if not rows and not target:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM projections WHERE user_id = %s AND projection_type = 'nutrition' AND key = 'overview'",
+                (user_id,),
+            )
         return
 
-    last_event_id = rows[-1]["id"] if rows else target_row["id"]
+    if rows:
+        last_event_id = rows[-1]["id"]
+    else:
+        # Only target remains
+        last_event_id = next(tr["id"] for tr in target_rows if str(tr["id"]) not in retracted_ids)
 
     # Per-day aggregation
     day_data: dict[date, dict[str, Any]] = defaultdict(

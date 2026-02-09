@@ -26,6 +26,7 @@ from ..registry import projection_handler
 from ..utils import (
     find_all_keys_for_canonical,
     get_alias_map,
+    get_retracted_event_ids,
     resolve_exercise_key,
     resolve_through_aliases,
 )
@@ -79,8 +80,9 @@ async def update_exercise_progression(
     event_id = payload["event_id"]
     event_type = payload.get("event_type", "")
 
-    # Load alias map for this user
-    alias_map = await get_alias_map(conn, user_id)
+    # Load retracted event IDs and alias map (retraction-aware)
+    retracted_ids = await get_retracted_event_ids(conn, user_id)
+    alias_map = await get_alias_map(conn, user_id, retracted_ids=retracted_ids)
 
     # Determine which canonical exercise to recompute
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -126,7 +128,25 @@ async def update_exercise_progression(
         )
         rows = await cur.fetchall()
 
+    # Filter retracted events
+    rows = [r for r in rows if str(r["id"]) not in retracted_ids]
+
     if not rows:
+        # All events for this exercise were retracted — clean up projection
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                DELETE FROM projections
+                WHERE user_id = %s
+                  AND projection_type = 'exercise_progression'
+                  AND key = %s
+                """,
+                (user_id, canonical),
+            )
+        logger.info(
+            "Deleted exercise_progression for user=%s exercise=%s (all events retracted)",
+            user_id, canonical,
+        )
         return
 
     # Compute statistics

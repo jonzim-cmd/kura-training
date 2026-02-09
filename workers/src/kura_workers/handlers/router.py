@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 import psycopg
+from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from ..metrics import record_handler_invocation
@@ -26,6 +27,52 @@ from ..registry import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _resolve_retraction(
+    conn: psycopg.AsyncConnection[Any], event_id: str
+) -> dict[str, str] | None:
+    """Resolve an event.retracted event to the retracted event's info.
+
+    Returns {"event_id": retracted_event_id, "event_type": retracted_event_type}
+    or None if the retraction cannot be resolved.
+
+    Uses retracted_event_type from event data if available (recommended field),
+    falls back to looking up the original event if not.
+    """
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT data FROM events WHERE id = %s", (event_id,))
+        row = await cur.fetchone()
+
+    if not row:
+        logger.warning("Retraction event %s not found", event_id)
+        return None
+
+    data = row["data"]
+    retracted_event_id = data.get("retracted_event_id")
+    if not retracted_event_id:
+        logger.warning("Retraction event %s has no retracted_event_id", event_id)
+        return None
+
+    retracted_event_type = data.get("retracted_event_type")
+
+    # Fall back to looking up the original event if type wasn't provided
+    if not retracted_event_type:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT event_type FROM events WHERE id = %s",
+                (retracted_event_id,),
+            )
+            orig = await cur.fetchone()
+        if not orig:
+            logger.warning(
+                "Retracted event %s not found (referenced by retraction %s)",
+                retracted_event_id, event_id,
+            )
+            return None
+        retracted_event_type = orig["event_type"]
+
+    return {"event_id": retracted_event_id, "event_type": retracted_event_type}
 
 
 async def _acquire_user_lock(
@@ -42,11 +89,29 @@ async def _acquire_user_lock(
 async def handle_projection_update(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
 ) -> None:
-    """Route projection.update jobs to all registered handlers for the event_type."""
+    """Route projection.update jobs to all registered handlers for the event_type.
+
+    Special case: event.retracted events are resolved to the retracted event's
+    type and re-routed to handlers for that type. This way handlers don't need
+    retraction-specific logic — they just do their normal full replay with
+    retraction filtering (via get_retracted_event_ids in each handler).
+    """
     event_type = payload.get("event_type", "")
     user_id = payload.get("user_id")
     if not user_id:
         raise ValueError(f"Missing user_id in projection.update payload (event_type={event_type})")
+
+    # Resolve retraction: re-route to the retracted event's handlers
+    if event_type == "event.retracted":
+        resolved = await _resolve_retraction(conn, payload["event_id"])
+        if not resolved:
+            return
+        logger.info(
+            "Retraction resolved: event %s (type=%s) — routing to handlers",
+            resolved["event_id"], resolved["event_type"],
+        )
+        event_type = resolved["event_type"]
+        payload = {**payload, "event_id": resolved["event_id"], "event_type": event_type}
 
     handlers = get_projection_handlers(event_type)
     if not handlers:

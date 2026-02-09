@@ -19,6 +19,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import get_dimension_metadata, projection_handler, registered_event_types
+from ..utils import get_retracted_event_ids
 
 logger = logging.getLogger(__name__)
 
@@ -346,6 +347,7 @@ async def update_user_profile(
 ) -> None:
     """Full recompute of user_profile projection — user + agenda."""
     user_id = payload["user_id"]
+    retracted_ids = await get_retracted_event_ids(conn, user_id)
 
     # Fetch all relevant events for this user
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -364,7 +366,16 @@ async def update_user_profile(
         )
         rows = await cur.fetchall()
 
+    # Filter retracted events
+    rows = [r for r in rows if str(r["id"]) not in retracted_ids]
+
     if not rows:
+        # Clean up: delete any existing projection
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM projections WHERE user_id = %s AND projection_type = 'user_profile' AND key = 'me'",
+                (user_id,),
+            )
         return
 
     # --- Event loop: extract identity + data quality ---

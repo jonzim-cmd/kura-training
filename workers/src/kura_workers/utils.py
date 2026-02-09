@@ -1,9 +1,37 @@
 """Shared utility functions for Kura workers."""
 
+import logging
 from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
+
+logger = logging.getLogger(__name__)
+
+
+async def get_retracted_event_ids(
+    conn: psycopg.AsyncConnection[Any], user_id: str
+) -> set[str]:
+    """Return set of event IDs that have been retracted by event.retracted events.
+
+    Called once per handler invocation. Every handler uses this to filter
+    retracted events from its full replay. Retractions are rare, so the
+    set is typically empty — but filtering must happen on every call to
+    handle the case where a retraction occurred between normal events.
+    """
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT data->>'retracted_event_id' AS retracted_id
+            FROM events
+            WHERE user_id = %s
+              AND event_type = 'event.retracted'
+            """,
+            (user_id,),
+        )
+        rows = await cur.fetchall()
+
+    return {row["retracted_id"] for row in rows if row["retracted_id"]}
 
 
 def resolve_exercise_key(data: dict[str, Any]) -> str | None:
@@ -24,18 +52,22 @@ def resolve_exercise_key(data: dict[str, Any]) -> str | None:
 
 
 async def get_alias_map(
-    conn: psycopg.AsyncConnection[Any], user_id: str
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+    retracted_ids: set[str] | None = None,
 ) -> dict[str, str]:
     """Build alias → canonical target map from exercise.alias_created events.
 
     Returns {alias_lower: target_lower}. Direct event query, no cross-projection dependency.
     Confidence field intentionally omitted — this is for resolution only.
     See user_profile projection for full alias metadata (target + confidence).
+
+    If retracted_ids is provided, excludes those events from the map.
     """
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
-            SELECT data
+            SELECT id, data
             FROM events
             WHERE user_id = %s
               AND event_type = 'exercise.alias_created'
@@ -47,6 +79,8 @@ async def get_alias_map(
 
     alias_map: dict[str, str] = {}
     for row in rows:
+        if retracted_ids and str(row["id"]) in retracted_ids:
+            continue
         data = row["data"]
         alias = data.get("alias", "").strip().lower()
         target = data.get("exercise_id", "").strip().lower()
