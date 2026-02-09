@@ -16,10 +16,14 @@ use crate::auth::AuthenticatedUser;
 use crate::error::AppError;
 use crate::state::AppState;
 
-pub fn router() -> Router<AppState> {
+pub fn write_router() -> Router<AppState> {
     Router::new()
-        .route("/v1/events", get(list_events).post(create_event))
+        .route("/v1/events", post(create_event))
         .route("/v1/events/batch", post(create_events_batch))
+}
+
+pub fn read_router() -> Router<AppState> {
+    Router::new().route("/v1/events", get(list_events))
 }
 
 /// Validate a single event request

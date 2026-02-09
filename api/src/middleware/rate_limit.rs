@@ -45,6 +45,45 @@ pub fn token_layer() -> RateLimitLayer {
     .error_handler(json_error_handler)
 }
 
+/// Rate limit for POST /v1/events and /v1/events/batch: 60 requests/minute per IP.
+pub fn events_write_layer() -> RateLimitLayer {
+    GovernorLayer::new(
+        GovernorConfigBuilder::default()
+            .per_second(1) // 60 per minute = 1 per second replenish
+            .burst_size(20)
+            .key_extractor(SmartIpKeyExtractor)
+            .finish()
+            .expect("invalid governor config for events_write"),
+    )
+    .error_handler(json_error_handler)
+}
+
+/// Rate limit for GET /v1/events: 120 requests/minute per IP.
+pub fn events_read_layer() -> RateLimitLayer {
+    GovernorLayer::new(
+        GovernorConfigBuilder::default()
+            .per_millisecond(500) // 120 per minute = 2 per second replenish
+            .burst_size(30)
+            .key_extractor(SmartIpKeyExtractor)
+            .finish()
+            .expect("invalid governor config for events_read"),
+    )
+    .error_handler(json_error_handler)
+}
+
+/// Rate limit for GET /v1/projections: 120 requests/minute per IP.
+pub fn projections_layer() -> RateLimitLayer {
+    GovernorLayer::new(
+        GovernorConfigBuilder::default()
+            .per_millisecond(500) // 120 per minute = 2 per second replenish
+            .burst_size(30)
+            .key_extractor(SmartIpKeyExtractor)
+            .finish()
+            .expect("invalid governor config for projections"),
+    )
+    .error_handler(json_error_handler)
+}
+
 /// Custom error handler that returns JSON in ApiError format with Retry-After header.
 fn json_error_handler(err: GovernorError) -> Response<axum::body::Body> {
     let (status, retry_after, message) = match err {

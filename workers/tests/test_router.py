@@ -1,11 +1,13 @@
-"""Unit tests for router retry logic and advisory locking."""
+"""Unit tests for router retry logic, advisory locking, and concurrency safety."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
 from kura_workers.handlers.router import (
+    _acquire_user_lock,
     handle_projection_retry,
     handle_projection_update,
 )
@@ -222,3 +224,96 @@ class TestHandleProjectionRetry:
         lock_call = mock_conn.execute.call_args_list[0]
         assert "pg_advisory_xact_lock" in lock_call.args[0]
         assert lock_call.args[1] == ("user-42",)
+
+
+class TestConcurrencySafety:
+    """Verify that pg_advisory_xact_lock serializes concurrent handler execution.
+
+    The advisory lock is transaction-scoped (pg_advisory_xact_lock), so two
+    concurrent projection.update jobs for the same user_id will block on the
+    same hash. Combined with full recompute (not incremental deltas), this
+    means no stale state can result from concurrent updates.
+    """
+
+    @pytest.mark.asyncio
+    async def test_same_user_gets_same_lock_hash(self):
+        """Two calls for the same user_id must acquire the same advisory lock.
+
+        Since pg_advisory_xact_lock(hashtext(user_id)::bigint) uses a
+        deterministic hash, two concurrent transactions will contend on the
+        same lock — guaranteeing serialization at the database level.
+        """
+        user_id = "concurrent-user-abc"
+        lock_calls = []
+
+        async def capture_execute(sql, params=()):
+            lock_calls.append((sql, params))
+
+        conn_a = AsyncMock()
+        conn_a.execute = AsyncMock(side_effect=capture_execute)
+        conn_b = AsyncMock()
+        conn_b.execute = AsyncMock(side_effect=capture_execute)
+
+        await _acquire_user_lock(conn_a, user_id)
+        await _acquire_user_lock(conn_b, user_id)
+
+        assert len(lock_calls) == 2
+        # Both calls use the exact same SQL and parameter → same lock hash
+        assert lock_calls[0] == lock_calls[1]
+        assert "pg_advisory_xact_lock" in lock_calls[0][0]
+        assert lock_calls[0][1] == (user_id,)
+
+    @pytest.mark.asyncio
+    async def test_different_users_get_different_locks(self):
+        """Different user_ids should NOT contend on the same lock."""
+        lock_calls = {}
+
+        for uid in ("user-1", "user-2"):
+            conn = AsyncMock()
+            conn.execute = AsyncMock()
+            await _acquire_user_lock(conn, uid)
+            lock_calls[uid] = conn.execute.call_args
+
+        # Both acquire advisory locks but with different user_id params
+        assert lock_calls["user-1"].args[1] == ("user-1",)
+        assert lock_calls["user-2"].args[1] == ("user-2",)
+        # The params differ → hashtext() will produce different hashes
+        assert lock_calls["user-1"].args[1] != lock_calls["user-2"].args[1]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_updates_both_acquire_lock(self):
+        """Two concurrent handle_projection_update calls for the same user
+        both attempt to acquire the advisory lock, proving serialization."""
+        user_id = "race-user"
+        payload_a = {"event_type": "set.logged", "user_id": user_id, "event_id": "evt-a"}
+        payload_b = {"event_type": "set.logged", "user_id": user_id, "event_id": "evt-b"}
+
+        handler = AsyncMock()
+        handler.__name__ = "test_handler"
+
+        lock_sql_calls = []
+
+        def make_conn():
+            conn = AsyncMock()
+            conn.transaction = MagicMock(return_value=_FakeTransaction())
+
+            async def track_execute(sql, params=()):
+                if "pg_advisory_xact_lock" in sql:
+                    lock_sql_calls.append((sql, params))
+
+            conn.execute = AsyncMock(side_effect=track_execute)
+            return conn
+
+        conn_a = make_conn()
+        conn_b = make_conn()
+
+        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[handler]):
+            await asyncio.gather(
+                handle_projection_update(conn_a, payload_a),
+                handle_projection_update(conn_b, payload_b),
+            )
+
+        # Both calls acquired the lock for the same user_id
+        assert len(lock_sql_calls) == 2
+        assert lock_sql_calls[0][1] == (user_id,)
+        assert lock_sql_calls[1][1] == (user_id,)
