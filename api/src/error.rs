@@ -24,6 +24,11 @@ pub enum AppError {
     Database(sqlx::Error),
     /// Rate limited (429)
     RateLimited { retry_after_secs: u64 },
+    /// Forbidden (403) — authenticated but not authorized
+    Forbidden {
+        message: String,
+        docs_hint: Option<String>,
+    },
     /// Not found (404)
     NotFound { resource: String },
     /// Internal error (500)
@@ -103,6 +108,17 @@ impl IntoResponse for AppError {
                 );
                 return response;
             }
+            AppError::Forbidden { message, docs_hint } => (
+                StatusCode::FORBIDDEN,
+                ApiError {
+                    error: error::codes::FORBIDDEN.to_string(),
+                    message,
+                    field: None,
+                    received: None,
+                    request_id,
+                    docs_hint,
+                },
+            ),
             AppError::NotFound { resource } => (
                 StatusCode::NOT_FOUND,
                 ApiError {

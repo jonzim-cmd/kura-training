@@ -34,9 +34,12 @@ mod state;
         routes::projections::get_projection,
         routes::projections::list_projections,
         routes::system::get_system_config,
+        routes::account::delete_own_account,
+        routes::account::admin_delete_user,
     ),
     components(schemas(
         HealthResponse,
+        routes::account::AccountDeletedResponse,
         kura_core::error::ApiError,
         kura_core::events::Event,
         kura_core::events::EventMetadata,
@@ -133,6 +136,8 @@ async fn main() {
         .merge(routes::auth::register_router().layer(middleware::rate_limit::register_layer()))
         .merge(routes::auth::authorize_router().layer(middleware::rate_limit::authorize_layer()))
         .merge(routes::auth::token_router().layer(middleware::rate_limit::token_layer()))
+        .merge(routes::account::self_router())
+        .merge(routes::account::admin_router())
         .layer(middleware::access_log::AccessLogLayer::new(
             app_state.db.clone(),
         ))
