@@ -1,12 +1,23 @@
-use axum::extract::FromRequestParts;
+use std::convert::Infallible;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use axum::extract::{FromRequestParts, Request};
 use axum::http::request::Parts;
+use axum::response::{IntoResponse, Response};
 use chrono::Utc;
+use tower::{Layer, Service, ServiceExt};
 use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::state::AppState;
 
 /// Authenticated user extracted from the `Authorization: Bearer <token>` header.
+///
+/// Two-phase resolution:
+/// 1. Auth middleware (`InjectAuthLayer`) runs first — validates token, injects into extensions
+/// 2. Handler extractor reads from extensions (no DB hit) — or falls back to full auth
 #[derive(Debug, Clone)]
 pub struct AuthenticatedUser {
     pub user_id: Uuid,
@@ -19,6 +30,89 @@ pub enum AuthMethod {
     AccessToken { token_id: Uuid, client_id: String },
 }
 
+// --- Tower Layer/Service for auth injection ---
+
+/// Tower Layer that injects `AuthenticatedUser` into request extensions.
+/// Silently continues on auth failure (unauthenticated endpoints like health, auth).
+#[derive(Clone)]
+pub struct InjectAuthLayer {
+    pool: sqlx::PgPool,
+}
+
+impl InjectAuthLayer {
+    pub fn new(pool: sqlx::PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+impl<S> Layer<S> for InjectAuthLayer {
+    type Service = InjectAuthService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        InjectAuthService {
+            inner,
+            pool: self.pool.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct InjectAuthService<S> {
+    inner: S,
+    pool: sqlx::PgPool,
+}
+
+impl<S> Service<Request> for InjectAuthService<S>
+where
+    S: Service<Request, Response = Response, Error = Infallible> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+{
+    type Response = Response;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<Response, Infallible>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, mut req: Request) -> Self::Future {
+        let not_ready = self.inner.clone();
+        let ready = std::mem::replace(&mut self.inner, not_ready);
+        let pool = self.pool.clone();
+
+        // Extract token synchronously (headers are Send-safe, Body is not)
+        let token = extract_bearer_token(&req);
+
+        Box::pin(async move {
+            if let Some(token) = token {
+                if let Some(auth_user) = authenticate_token(&token, &pool).await {
+                    req.extensions_mut().insert(auth_user);
+                }
+            }
+            Ok(ready.oneshot(req).await.into_response())
+        })
+    }
+}
+
+/// Extract bearer token from Authorization header (synchronous, no body access).
+fn extract_bearer_token(req: &Request) -> Option<String> {
+    let auth_header = req.headers().get("authorization")?.to_str().ok()?;
+    auth_header.strip_prefix("Bearer ").map(|s| s.to_owned())
+}
+
+/// Authenticate a bearer token. Returns None on any failure.
+async fn authenticate_token(token: &str, pool: &sqlx::PgPool) -> Option<AuthenticatedUser> {
+    if token.starts_with("kura_sk_") {
+        authenticate_api_key(token, pool).await.ok()
+    } else if token.starts_with("kura_at_") {
+        authenticate_access_token(token, pool).await.ok()
+    } else {
+        None
+    }
+}
+
+// --- Extractor (used by handlers) ---
+
 impl FromRequestParts<AppState> for AuthenticatedUser {
     type Rejection = AppError;
 
@@ -26,6 +120,12 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        // Fast path: auth middleware already validated the token
+        if let Some(user) = parts.extensions.get::<AuthenticatedUser>() {
+            return Ok(user.clone());
+        }
+
+        // Slow path: no middleware ran (shouldn't happen in normal flow)
         let auth_header = parts
             .headers
             .get("authorization")

@@ -133,6 +133,10 @@ async fn main() {
         .merge(routes::auth::register_router().layer(middleware::rate_limit::register_layer()))
         .merge(routes::auth::authorize_router().layer(middleware::rate_limit::authorize_layer()))
         .merge(routes::auth::token_router().layer(middleware::rate_limit::token_layer()))
+        .layer(middleware::access_log::AccessLogLayer::new(
+            app_state.db.clone(),
+        ))
+        .layer(auth::InjectAuthLayer::new(app_state.db.clone()))
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
