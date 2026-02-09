@@ -9,7 +9,8 @@ use uuid::Uuid;
 
 use kura_core::error::ApiError;
 use kura_core::events::{
-    BatchCreateEventsRequest, CreateEventRequest, Event, EventMetadata, PaginatedResponse,
+    BatchCreateEventsRequest, BatchCreateEventsResponse, BatchEventWarning, CreateEventRequest,
+    CreateEventResponse, Event, EventMetadata, EventWarning, PaginatedResponse,
 };
 
 use crate::auth::AuthenticatedUser;
@@ -54,6 +55,115 @@ fn validate_event(req: &CreateEventRequest) -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+/// Check event data for plausibility and return warnings.
+/// These are soft checks — events are always accepted.
+fn check_event_plausibility(event_type: &str, data: &serde_json::Value) -> Vec<EventWarning> {
+    let mut warnings = Vec::new();
+
+    match event_type {
+        "set.logged" => {
+            if let Some(w) = data.get("weight_kg").and_then(|v| v.as_f64()) {
+                if w < 0.0 || w > 500.0 {
+                    warnings.push(EventWarning {
+                        field: "weight_kg".to_string(),
+                        message: format!("weight_kg={w} outside plausible range [0, 500]"),
+                        severity: "warning".to_string(),
+                    });
+                }
+            }
+            if let Some(r) = data.get("reps").and_then(|v| v.as_i64()) {
+                if r < 0 || r > 100 {
+                    warnings.push(EventWarning {
+                        field: "reps".to_string(),
+                        message: format!("reps={r} outside plausible range [0, 100]"),
+                        severity: "warning".to_string(),
+                    });
+                }
+            }
+        }
+        "bodyweight.logged" => {
+            if let Some(w) = data.get("weight_kg").and_then(|v| v.as_f64()) {
+                if w < 20.0 || w > 300.0 {
+                    warnings.push(EventWarning {
+                        field: "weight_kg".to_string(),
+                        message: format!("weight_kg={w} outside plausible range [20, 300]"),
+                        severity: "warning".to_string(),
+                    });
+                }
+            }
+        }
+        "meal.logged" => {
+            if let Some(c) = data.get("calories").and_then(|v| v.as_f64()) {
+                if c < 0.0 || c > 5000.0 {
+                    warnings.push(EventWarning {
+                        field: "calories".to_string(),
+                        message: format!("calories={c} outside plausible range [0, 5000]"),
+                        severity: "warning".to_string(),
+                    });
+                }
+            }
+            for macro_field in &["protein_g", "carbs_g", "fat_g"] {
+                if let Some(v) = data.get(*macro_field).and_then(|v| v.as_f64()) {
+                    if v < 0.0 || v > 500.0 {
+                        warnings.push(EventWarning {
+                            field: macro_field.to_string(),
+                            message: format!("{macro_field}={v} outside plausible range [0, 500]"),
+                            severity: "warning".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        "sleep.logged" => {
+            if let Some(d) = data.get("duration_hours").and_then(|v| v.as_f64()) {
+                if d < 0.0 || d > 20.0 {
+                    warnings.push(EventWarning {
+                        field: "duration_hours".to_string(),
+                        message: format!("duration_hours={d} outside plausible range [0, 20]"),
+                        severity: "warning".to_string(),
+                    });
+                }
+            }
+        }
+        "soreness.logged" => {
+            if let Some(s) = data.get("severity").and_then(|v| v.as_i64()) {
+                if s < 1 || s > 5 {
+                    warnings.push(EventWarning {
+                        field: "severity".to_string(),
+                        message: format!("severity={s} outside plausible range [1, 5]"),
+                        severity: "warning".to_string(),
+                    });
+                }
+            }
+        }
+        "energy.logged" => {
+            if let Some(l) = data.get("level").and_then(|v| v.as_f64()) {
+                if l < 1.0 || l > 10.0 {
+                    warnings.push(EventWarning {
+                        field: "level".to_string(),
+                        message: format!("level={l} outside plausible range [1, 10]"),
+                        severity: "warning".to_string(),
+                    });
+                }
+            }
+        }
+        "measurement.logged" => {
+            if let Some(v) = data.get("value_cm").and_then(|v| v.as_f64()) {
+                if v < 1.0 || v > 300.0 {
+                    warnings.push(EventWarning {
+                        field: "value_cm".to_string(),
+                        message: format!("value_cm={v} outside plausible range [1, 300]"),
+                        severity: "warning".to_string(),
+                    });
+                }
+            }
+        }
+        _ => {} // Unknown event types: no plausibility checks
+    }
+
+    warnings
 }
 
 /// Insert a single event into the database within a transaction that sets RLS context.
@@ -112,12 +222,15 @@ async fn insert_event(
 ///
 /// Accepts an event and stores it immutably. The event_type is free-form —
 /// new types emerge from usage, not from a hardcoded schema.
+///
+/// Response includes plausibility warnings when values look unusual.
+/// Warnings are informational — the event is always accepted.
 #[utoipa::path(
     post,
     path = "/v1/events",
     request_body = CreateEventRequest,
     responses(
-        (status = 201, description = "Event created", body = Event),
+        (status = 201, description = "Event created", body = CreateEventResponse),
         (status = 400, description = "Validation error", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 409, description = "Idempotency conflict", body = ApiError)
@@ -133,9 +246,10 @@ pub async fn create_event(
     let user_id = auth.user_id;
     validate_event(&req)?;
 
+    let warnings = check_event_plausibility(&req.event_type, &req.data);
     let event = insert_event(&state.db, user_id, req).await?;
 
-    Ok((StatusCode::CREATED, Json(event)))
+    Ok((StatusCode::CREATED, Json(CreateEventResponse { event, warnings })))
 }
 
 /// Create multiple events atomically
@@ -143,12 +257,15 @@ pub async fn create_event(
 /// All events in the batch are written in a single transaction.
 /// If any event fails validation or conflicts, the entire batch is rolled back.
 /// Use this for complete training sessions (session.started + sets + session.ended).
+///
+/// Response includes plausibility warnings (with event_index) when values look unusual.
+/// Warnings are informational — events are always accepted.
 #[utoipa::path(
     post,
     path = "/v1/events/batch",
     request_body = BatchCreateEventsRequest,
     responses(
-        (status = 201, description = "All events created", body = Vec<Event>),
+        (status = 201, description = "All events created", body = BatchCreateEventsResponse),
         (status = 400, description = "Validation error", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 409, description = "Idempotency conflict", body = ApiError)
@@ -182,6 +299,7 @@ pub async fn create_events_batch(
     }
 
     // Validate all events before writing any
+    let mut all_warnings: Vec<BatchEventWarning> = Vec::new();
     for (i, event) in req.events.iter().enumerate() {
         validate_event(event).map_err(|e| match e {
             AppError::Validation {
@@ -197,6 +315,16 @@ pub async fn create_events_batch(
             },
             other => other,
         })?;
+
+        // Collect plausibility warnings per event
+        for w in check_event_plausibility(&event.event_type, &event.data) {
+            all_warnings.push(BatchEventWarning {
+                event_index: i,
+                field: w.field,
+                message: w.message,
+                severity: w.severity,
+            });
+        }
     }
 
     let mut tx = state.db.begin().await?;
@@ -266,7 +394,13 @@ pub async fn create_events_batch(
 
     let created_events: Vec<Event> = rows.into_iter().map(|r| r.into_event()).collect();
 
-    Ok((StatusCode::CREATED, Json(created_events)))
+    Ok((
+        StatusCode::CREATED,
+        Json(BatchCreateEventsResponse {
+            events: created_events,
+            warnings: all_warnings,
+        }),
+    ))
 }
 
 /// Query parameters for listing events
@@ -536,5 +670,149 @@ impl EventRow {
             data: self.data,
             metadata,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_normal_set_no_warnings() {
+        let w = check_event_plausibility("set.logged", &json!({"weight_kg": 80, "reps": 5}));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_set_extreme_weight_warns() {
+        let w = check_event_plausibility("set.logged", &json!({"weight_kg": 600, "reps": 5}));
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].field, "weight_kg");
+        assert_eq!(w[0].severity, "warning");
+    }
+
+    #[test]
+    fn test_set_negative_reps_warns() {
+        let w = check_event_plausibility("set.logged", &json!({"weight_kg": 80, "reps": -1}));
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].field, "reps");
+    }
+
+    #[test]
+    fn test_set_multiple_warnings() {
+        let w = check_event_plausibility("set.logged", &json!({"weight_kg": -5, "reps": 200}));
+        assert_eq!(w.len(), 2);
+    }
+
+    #[test]
+    fn test_bodyweight_normal() {
+        let w = check_event_plausibility("bodyweight.logged", &json!({"weight_kg": 82.5}));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_bodyweight_extreme() {
+        let w = check_event_plausibility("bodyweight.logged", &json!({"weight_kg": 500}));
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].field, "weight_kg");
+    }
+
+    #[test]
+    fn test_bodyweight_too_low() {
+        let w = check_event_plausibility("bodyweight.logged", &json!({"weight_kg": 10}));
+        assert_eq!(w.len(), 1);
+    }
+
+    #[test]
+    fn test_meal_normal() {
+        let w = check_event_plausibility("meal.logged", &json!({
+            "calories": 600, "protein_g": 40, "carbs_g": 70, "fat_g": 20
+        }));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_meal_extreme_calories() {
+        let w = check_event_plausibility("meal.logged", &json!({"calories": 8000}));
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].field, "calories");
+    }
+
+    #[test]
+    fn test_meal_negative_macro() {
+        let w = check_event_plausibility("meal.logged", &json!({"protein_g": -10}));
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].field, "protein_g");
+    }
+
+    #[test]
+    fn test_sleep_normal() {
+        let w = check_event_plausibility("sleep.logged", &json!({"duration_hours": 7.5}));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_sleep_extreme() {
+        let w = check_event_plausibility("sleep.logged", &json!({"duration_hours": 25}));
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].field, "duration_hours");
+    }
+
+    #[test]
+    fn test_soreness_normal() {
+        let w = check_event_plausibility("soreness.logged", &json!({"severity": 3}));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_soreness_out_of_range() {
+        let w = check_event_plausibility("soreness.logged", &json!({"severity": 0}));
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].field, "severity");
+    }
+
+    #[test]
+    fn test_energy_normal() {
+        let w = check_event_plausibility("energy.logged", &json!({"level": 7}));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_energy_out_of_range() {
+        let w = check_event_plausibility("energy.logged", &json!({"level": 15}));
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].field, "level");
+    }
+
+    #[test]
+    fn test_measurement_normal() {
+        let w = check_event_plausibility("measurement.logged", &json!({"value_cm": 85.0}));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_measurement_extreme() {
+        let w = check_event_plausibility("measurement.logged", &json!({"value_cm": 500}));
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].field, "value_cm");
+    }
+
+    #[test]
+    fn test_unknown_event_type_no_warnings() {
+        let w = check_event_plausibility("custom.event", &json!({"anything": 999999}));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_missing_fields_no_warnings() {
+        let w = check_event_plausibility("set.logged", &json!({"notes": "just a note"}));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_warning_severity_is_always_warning() {
+        let w = check_event_plausibility("set.logged", &json!({"weight_kg": 999}));
+        assert!(w.iter().all(|w| w.severity == "warning"));
     }
 }

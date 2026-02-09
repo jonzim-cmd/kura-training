@@ -63,6 +63,54 @@ pub struct BatchCreateEventsRequest {
     pub events: Vec<CreateEventRequest>,
 }
 
+/// A plausibility warning on an event. Not an error — the event is still stored.
+/// Signals that a value looks unusual and the agent should verify.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct EventWarning {
+    /// Which field triggered the warning
+    pub field: String,
+    /// Human/agent-readable description
+    pub message: String,
+    /// Always "warning" — events are never rejected
+    pub severity: String,
+}
+
+/// Response for single event creation — event + optional plausibility warnings.
+/// When warnings is empty, the field is omitted (backward compatible).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CreateEventResponse {
+    /// The created event
+    #[serde(flatten)]
+    pub event: Event,
+    /// Plausibility warnings (empty = omitted from JSON)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<EventWarning>,
+}
+
+/// Response for batch event creation — events + optional plausibility warnings.
+/// Each warning includes event_index to identify which event it belongs to.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BatchCreateEventsResponse {
+    /// The created events
+    pub events: Vec<Event>,
+    /// Plausibility warnings across all events (empty = omitted)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<BatchEventWarning>,
+}
+
+/// A warning for a specific event in a batch.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct BatchEventWarning {
+    /// Index of the event in the batch (0-based)
+    pub event_index: usize,
+    /// Which field triggered the warning
+    pub field: String,
+    /// Human/agent-readable description
+    pub message: String,
+    /// Always "warning"
+    pub severity: String,
+}
+
 /// Cursor-based pagination
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PaginatedResponse<T: Serialize> {
