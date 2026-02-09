@@ -18,9 +18,14 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
-from ..utils import get_retracted_event_ids
+from ..utils import get_retracted_event_ids, merge_observed_attributes, separate_known_unknown
 
 logger = logging.getLogger(__name__)
+
+_KNOWN_FIELDS: set[str] = {
+    "calories", "protein_g", "carbs_g", "fat_g",
+    "meal_type", "description",
+}
 
 
 def _iso_week(d: date) -> str:
@@ -149,12 +154,17 @@ async def update_nutrition(
 
     all_meals: list[dict[str, Any]] = []
     anomalies: list[dict[str, Any]] = []
+    observed_attr_counts: dict[str, int] = {}
 
     for row in rows:
         data = row["data"]
         ts = row["timestamp"]
         d = ts.date()
         w = _iso_week(d)
+
+        # Decision 10: track unknown fields
+        _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS)
+        merge_observed_attributes(observed_attr_counts, unknown)
 
         # Extract nutritional values (all optional, tolerant parsing)
         try:
@@ -272,6 +282,7 @@ async def update_nutrition(
         "recent_meals": recent_meals,
         "data_quality": {
             "anomalies": anomalies,
+            "observed_attributes": observed_attr_counts,
         },
     }
 

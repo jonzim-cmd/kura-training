@@ -16,9 +16,13 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
-from ..utils import get_retracted_event_ids
+from ..utils import get_retracted_event_ids, merge_observed_attributes, separate_known_unknown
 
 logger = logging.getLogger(__name__)
+
+_KNOWN_FIELDS_SLEEP: set[str] = {"duration_hours", "quality", "bed_time", "bedtime", "wake_time"}
+_KNOWN_FIELDS_SORENESS: set[str] = {"area", "severity", "notes"}
+_KNOWN_FIELDS_ENERGY: set[str] = {"level", "time_of_day"}
 
 
 def _iso_week(d: date) -> str:
@@ -135,6 +139,7 @@ async def update_recovery(
     energy_by_week: dict[str, list[float]] = defaultdict(list)
 
     anomalies: list[dict[str, Any]] = []
+    observed_attr_counts: dict[str, int] = {}
 
     for row in rows:
         data = row["data"]
@@ -143,6 +148,8 @@ async def update_recovery(
         event_type = row["event_type"]
 
         if event_type == "sleep.logged":
+            _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS_SLEEP)
+            merge_observed_attributes(observed_attr_counts, unknown)
             try:
                 duration = float(data["duration_hours"])
             except (KeyError, ValueError, TypeError):
@@ -175,6 +182,8 @@ async def update_recovery(
             sleep_by_week[_iso_week(d)].append(duration)
 
         elif event_type == "soreness.logged":
+            _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS_SORENESS)
+            merge_observed_attributes(observed_attr_counts, unknown)
             area = data.get("area", "").strip().lower()
             try:
                 severity = int(data["severity"])
@@ -204,6 +213,8 @@ async def update_recovery(
             soreness_entries.append(sentry)
 
         elif event_type == "energy.logged":
+            _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS_ENERGY)
+            merge_observed_attributes(observed_attr_counts, unknown)
             try:
                 level = float(data["level"])
             except (KeyError, ValueError, TypeError):
@@ -289,6 +300,7 @@ async def update_recovery(
         "energy": energy_data,
         "data_quality": {
             "anomalies": anomalies,
+            "observed_attributes": observed_attr_counts,
         },
     }
 

@@ -19,9 +19,22 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
-from ..utils import get_alias_map, get_retracted_event_ids, resolve_exercise_key, resolve_through_aliases
+from ..utils import (
+    get_alias_map,
+    get_retracted_event_ids,
+    merge_observed_attributes,
+    resolve_exercise_key,
+    resolve_through_aliases,
+    separate_known_unknown,
+)
 
 logger = logging.getLogger(__name__)
+
+# Fields actively processed by this handler for set.logged events.
+_KNOWN_FIELDS: set[str] = {
+    "exercise", "exercise_id", "weight_kg", "weight", "reps",
+    "rpe", "set_type", "set_number",
+}
 
 
 def _iso_week(d: date) -> str:
@@ -214,12 +227,17 @@ async def update_training_timeline(
     week_data: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"training_days": set(), "total_sets": 0, "total_volume_kg": 0.0, "exercises": set()}
     )
+    observed_attr_counts: dict[str, int] = {}
 
     for row in rows:
         data = row["data"]
         ts: datetime = row["timestamp"]
         d = ts.date()
         w = _iso_week(d)
+
+        # Decision 10: track unknown fields
+        _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS)
+        merge_observed_attributes(observed_attr_counts, unknown)
 
         raw_key = resolve_exercise_key(data) or "unknown"
         exercise_key = resolve_through_aliases(raw_key, alias_map)
@@ -259,6 +277,9 @@ async def update_training_timeline(
         "last_training": reference_date.isoformat(),
         "total_training_days": len(training_dates),
         "streak": _compute_streak(training_dates, reference_date),
+        "data_quality": {
+            "observed_attributes": observed_attr_counts,
+        },
     }
 
     async with conn.cursor() as cur:

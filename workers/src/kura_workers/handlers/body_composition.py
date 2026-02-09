@@ -16,9 +16,12 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
-from ..utils import get_retracted_event_ids
+from ..utils import get_retracted_event_ids, merge_observed_attributes, separate_known_unknown
 
 logger = logging.getLogger(__name__)
+
+_KNOWN_FIELDS_BODYWEIGHT: set[str] = {"weight_kg", "time_of_day", "conditions"}
+_KNOWN_FIELDS_MEASUREMENT: set[str] = {"type", "value_cm", "side"}
 
 
 def _iso_week(d: date) -> str:
@@ -129,6 +132,7 @@ async def update_body_composition(
     measurements_by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     anomalies: list[dict[str, Any]] = []
+    observed_attr_counts: dict[str, int] = {}
     prev_weight: float | None = None
     prev_weight_date: date | None = None
 
@@ -139,6 +143,8 @@ async def update_body_composition(
         event_type = row["event_type"]
 
         if event_type == "bodyweight.logged":
+            _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS_BODYWEIGHT)
+            merge_observed_attributes(observed_attr_counts, unknown)
             try:
                 weight = float(data["weight_kg"])
             except (KeyError, ValueError, TypeError):
@@ -184,6 +190,8 @@ async def update_body_composition(
             all_weights.append(entry)
 
         elif event_type == "measurement.logged":
+            _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS_MEASUREMENT)
+            merge_observed_attributes(observed_attr_counts, unknown)
             mtype = data.get("type", "").strip().lower()
             try:
                 value = float(data["value_cm"])
@@ -264,6 +272,7 @@ async def update_body_composition(
         "measurement_types": sorted(measurements_by_type.keys()),
         "data_quality": {
             "anomalies": anomalies,
+            "observed_attributes": observed_attr_counts,
         },
     }
 

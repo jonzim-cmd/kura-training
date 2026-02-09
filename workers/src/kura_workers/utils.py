@@ -9,6 +9,52 @@ from psycopg.rows import dict_row
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Adaptive Projection helpers (Decision 10, Phase 1: Graceful Degradation)
+# ---------------------------------------------------------------------------
+
+
+def separate_known_unknown(
+    data: dict[str, Any], known_fields: set[str]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split event data into known (handler-processed) and unknown (passthrough) fields.
+
+    Returns (known, unknown). Unknown fields are preserved in projections
+    so the agent can access them even if no handler logic exists yet.
+    """
+    known: dict[str, Any] = {}
+    unknown: dict[str, Any] = {}
+    for key, value in data.items():
+        if key in known_fields:
+            known[key] = value
+        else:
+            unknown[key] = value
+    return known, unknown
+
+
+def merge_observed_attributes(
+    accumulator: dict[str, int], new_unknown: dict[str, Any]
+) -> None:
+    """Track frequency of unknown fields across events (mutates accumulator)."""
+    for key in new_unknown:
+        accumulator[key] = accumulator.get(key, 0) + 1
+
+
+def check_expected_fields(
+    data: dict[str, Any], expected: dict[str, str]
+) -> list[dict[str, Any]]:
+    """Return data_quality hints for missing expected fields.
+
+    ``expected`` maps field names to human-readable hint messages, e.g.
+    {"weight_kg": "No weight — bodyweight exercise?"}.
+    """
+    return [
+        {"type": "missing_expected_field", "field": field, "hint": hint}
+        for field, hint in expected.items()
+        if field not in data
+    ]
+
+
 async def get_retracted_event_ids(
     conn: psycopg.AsyncConnection[Any], user_id: str
 ) -> set[str]:

@@ -24,14 +24,30 @@ from psycopg.rows import dict_row
 
 from ..registry import projection_handler
 from ..utils import (
+    check_expected_fields,
     find_all_keys_for_canonical,
     get_alias_map,
     get_retracted_event_ids,
+    merge_observed_attributes,
     resolve_exercise_key,
     resolve_through_aliases,
+    separate_known_unknown,
 )
 
 logger = logging.getLogger(__name__)
+
+# Fields that this handler actively processes for set.logged events.
+# Everything else is passed through as observed_attributes (Decision 10).
+_KNOWN_FIELDS: set[str] = {
+    "exercise", "exercise_id", "weight_kg", "weight", "reps",
+    "rpe", "set_type", "set_number",
+}
+
+# Fields we *expect* for typical strength sets. Missing = data_quality hint.
+_EXPECTED_FIELDS: dict[str, str] = {
+    "weight_kg": "No weight — bodyweight or assisted exercise?",
+    "reps": "No reps — time-based or isometric exercise?",
+}
 
 
 def _epley_1rm(weight_kg: float, reps: int) -> float:
@@ -164,10 +180,16 @@ async def update_exercise_progression(
     )
 
     anomalies: list[dict[str, Any]] = []
+    field_hints: list[dict[str, Any]] = []
+    observed_attr_counts: dict[str, int] = {}
 
     for row in rows:
         data = row["data"]
         ts: datetime = row["timestamp"]
+
+        # Decision 10: separate known from unknown fields
+        _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS)
+        merge_observed_attributes(observed_attr_counts, unknown)
 
         # Support both weight_kg (convention) and weight (legacy)
         try:
@@ -235,7 +257,7 @@ async def update_exercise_progression(
             "reps": reps,
             "estimated_1rm": round(e1rm, 1),
         }
-        # Include optional fields if present
+        # Include optional known fields if present
         if "rpe" in data:
             try:
                 set_entry["rpe"] = float(data["rpe"])
@@ -243,6 +265,10 @@ async def update_exercise_progression(
                 pass
         if "set_type" in data:
             set_entry["set_type"] = data["set_type"]
+
+        # Decision 10: pass through unknown fields per set
+        if unknown:
+            set_entry["extra"] = unknown
 
         recent_sets.append(set_entry)
 
@@ -266,6 +292,11 @@ async def update_exercise_progression(
         for wk in sorted_weeks
     ]
 
+    # Decision 10: check for missing expected fields across all events
+    # We only flag once per projection rebuild, using the last event as sample
+    if rows:
+        field_hints = check_expected_fields(rows[-1]["data"], _EXPECTED_FIELDS)
+
     projection_data: dict[str, Any] = {
         "exercise": canonical,
         "estimated_1rm": round(best_1rm, 1),
@@ -277,6 +308,8 @@ async def update_exercise_progression(
         "weekly_history": weekly_history,
         "data_quality": {
             "anomalies": anomalies,
+            "field_hints": field_hints,
+            "observed_attributes": observed_attr_counts,
         },
     }
 
