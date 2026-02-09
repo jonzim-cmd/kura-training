@@ -1,11 +1,13 @@
-"""Tests for registry dimension metadata (Decision 7)."""
+"""Tests for registry dimension metadata (Decision 7) and handler name lookup."""
 
 import pytest
 
 from kura_workers.registry import (
     _dimension_metadata,
+    _handler_by_name,
     _projection_handlers,
     get_dimension_metadata,
+    get_projection_handler_by_name,
     projection_handler,
 )
 
@@ -15,11 +17,14 @@ def _clean_registry():
     """Remove test-registered handlers/metadata after each test."""
     snapshot_handlers = {k: list(v) for k, v in _projection_handlers.items()}
     snapshot_meta = dict(_dimension_metadata)
+    snapshot_names = dict(_handler_by_name)
     yield
     _projection_handlers.clear()
     _projection_handlers.update(snapshot_handlers)
     _dimension_metadata.clear()
     _dimension_metadata.update(snapshot_meta)
+    _handler_by_name.clear()
+    _handler_by_name.update(snapshot_names)
 
 
 class TestDimensionMeta:
@@ -102,3 +107,23 @@ class TestDimensionMeta:
         meta2 = get_dimension_metadata()
         assert meta1 is not meta2
         assert meta1 == meta2
+
+
+class TestHandlerByName:
+    def test_lookup_registered_handler(self):
+        @projection_handler("name.test")
+        async def my_test_handler(conn, payload):
+            pass
+
+        found = get_projection_handler_by_name("my_test_handler")
+        assert found is my_test_handler
+
+    def test_lookup_unknown_returns_none(self):
+        assert get_projection_handler_by_name("nonexistent_handler") is None
+
+    def test_handler_with_dimension_meta_also_registered_by_name(self):
+        @projection_handler("dim.name", dimension_meta={"name": "named_dim"})
+        async def named_dim_handler(conn, payload):
+            pass
+
+        assert get_projection_handler_by_name("named_dim_handler") is named_dim_handler

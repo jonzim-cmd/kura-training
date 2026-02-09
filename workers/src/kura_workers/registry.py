@@ -16,6 +16,9 @@ _registry: dict[str, HandlerFn] = {}
 # Each handler updates one projection type for a given event_type
 _projection_handlers: dict[str, list[HandlerFn]] = {}
 
+# Projection handler by function name: for targeted retry dispatch
+_handler_by_name: dict[str, HandlerFn] = {}
+
 # Dimension metadata: declared by handlers at registration time (Decision 7)
 # Maps dimension name → metadata dict (description, granularity, relates_to, etc.)
 _dimension_metadata: dict[str, dict[str, Any]] = {}
@@ -61,6 +64,8 @@ def projection_handler(
             _projection_handlers.setdefault(et, []).append(fn)
             logger.info("Registered projection handler %s for event_type=%s", fn.__name__, et)
 
+        _handler_by_name[fn.__name__] = fn
+
         if dimension_meta is not None:
             name = dimension_meta.get("name")
             if not name:
@@ -86,6 +91,11 @@ def get_handler(job_type: str) -> HandlerFn | None:
 
 def get_projection_handlers(event_type: str) -> list[HandlerFn]:
     return _projection_handlers.get(event_type, [])
+
+
+def get_projection_handler_by_name(name: str) -> HandlerFn | None:
+    """Look up a projection handler by function name (for targeted retry)."""
+    return _handler_by_name.get(name)
 
 
 def registered_types() -> list[str]:

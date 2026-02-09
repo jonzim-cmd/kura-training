@@ -24,7 +24,7 @@ from kura_workers.handlers.body_composition import update_body_composition
 from kura_workers.handlers.exercise_progression import update_exercise_progression
 from kura_workers.handlers.nutrition import update_nutrition
 from kura_workers.handlers.recovery import update_recovery
-from kura_workers.handlers.router import handle_projection_update
+from kura_workers.handlers.router import handle_projection_retry, handle_projection_update
 from kura_workers.handlers.training_plan import update_training_plan
 from kura_workers.handlers.training_timeline import update_training_timeline
 from kura_workers.handlers.user_profile import update_user_profile
@@ -644,3 +644,84 @@ class TestEdgeCases:
 
         proj = await get_projection(db, test_user_id, "body_composition")
         assert proj is None
+
+
+# ---------------------------------------------------------------------------
+# Projection Retry
+# ---------------------------------------------------------------------------
+
+
+class TestProjectionRetryIntegration:
+    async def test_retry_calls_handler_successfully(self, db, test_user_id):
+        """projection.retry should call the named handler and produce a projection."""
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "bodyweight.logged", {
+            "weight_kg": 80.0,
+        }, "TIMESTAMP '2026-02-01 08:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await handle_projection_retry(db, {
+            "handler_name": "update_body_composition",
+            "event_type": "bodyweight.logged",
+            "user_id": test_user_id,
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "body_composition")
+        assert proj is not None
+        assert proj["data"]["current_weight_kg"] == 80.0
+
+    async def test_router_failure_creates_retry_job(self, db, test_user_id):
+        """When a handler fails during routing, a retry job should be created."""
+        await create_test_user(db, test_user_id)
+        event_id = await insert_event(db, test_user_id, "bodyweight.logged", {
+            "weight_kg": 80.0,
+        }, "TIMESTAMP '2026-02-01 08:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+
+        # Monkeypatch body_composition handler to fail
+        original_handler = update_body_composition.__wrapped__ if hasattr(update_body_composition, '__wrapped__') else None
+
+        from unittest.mock import patch
+        from kura_workers.registry import get_projection_handlers
+
+        # Get the actual handlers for bodyweight.logged
+        handlers = get_projection_handlers("bodyweight.logged")
+        # Replace the first handler (body_composition) with one that fails
+        failing_handler = handlers[0]
+        original_fn = failing_handler
+
+        async def always_fail(conn, payload):
+            raise RuntimeError("Simulated handler failure")
+        always_fail.__name__ = original_fn.__name__
+
+        # Patch at registry level
+        from kura_workers.registry import _projection_handlers
+        old_handlers = _projection_handlers["bodyweight.logged"]
+        _projection_handlers["bodyweight.logged"] = [always_fail] + old_handlers[1:]
+
+        try:
+            await handle_projection_update(db, {
+                "event_type": "bodyweight.logged",
+                "user_id": test_user_id,
+                "event_id": event_id,
+            })
+        finally:
+            _projection_handlers["bodyweight.logged"] = old_handlers
+
+        await db.execute("RESET ROLE")
+
+        # Check that a retry job was created
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT * FROM background_jobs WHERE user_id = %s AND job_type = 'projection.retry'",
+                (test_user_id,),
+            )
+            retry_jobs = await cur.fetchall()
+
+        assert len(retry_jobs) == 1
+        job = retry_jobs[0]
+        assert job["payload"]["handler_name"] == original_fn.__name__
+        assert job["payload"]["event_type"] == "bodyweight.logged"
+        assert job["status"] == "pending"
