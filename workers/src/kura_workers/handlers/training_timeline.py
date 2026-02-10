@@ -265,7 +265,7 @@ async def update_training_timeline(
     session_data: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"date": None, "session_id": None, "exercises": set(), "total_sets": 0, "total_volume_kg": 0.0, "total_reps": 0, "top_sets": {}}
     )
-    observed_attr_counts: dict[str, int] = {}
+    observed_attr_counts: dict[str, dict[str, int]] = {}
 
     for row in rows:
         data = row["data"]
@@ -280,7 +280,7 @@ async def update_training_timeline(
 
         # Decision 10: track unknown fields
         _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS)
-        merge_observed_attributes(observed_attr_counts, unknown)
+        merge_observed_attributes(observed_attr_counts, "set.logged", unknown)
 
         raw_key = resolve_exercise_key(data) or "unknown"
         exercise_key = resolve_through_aliases(raw_key, alias_map)

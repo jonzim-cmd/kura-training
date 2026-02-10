@@ -132,7 +132,7 @@ async def update_body_composition(
     measurements_by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     anomalies: list[dict[str, Any]] = []
-    observed_attr_counts: dict[str, int] = {}
+    observed_attr_counts: dict[str, dict[str, int]] = {}
     prev_weight: float | None = None
     prev_weight_date: date | None = None
 
@@ -144,7 +144,7 @@ async def update_body_composition(
 
         if event_type == "bodyweight.logged":
             _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS_BODYWEIGHT)
-            merge_observed_attributes(observed_attr_counts, unknown)
+            merge_observed_attributes(observed_attr_counts, event_type, unknown)
             try:
                 weight = float(data["weight_kg"])
             except (KeyError, ValueError, TypeError):
@@ -191,7 +191,7 @@ async def update_body_composition(
 
         elif event_type == "measurement.logged":
             _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS_MEASUREMENT)
-            merge_observed_attributes(observed_attr_counts, unknown)
+            merge_observed_attributes(observed_attr_counts, event_type, unknown)
             mtype = data.get("type", "").strip().lower()
             try:
                 value = float(data["value_cm"])

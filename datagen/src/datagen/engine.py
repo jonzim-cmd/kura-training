@@ -37,8 +37,9 @@ from datagen.models import AthleteProfile, AthleteState
 class SimulationEngine:
     """Day-by-day simulation engine that generates Kura-compatible events."""
 
-    def __init__(self, profile: AthleteProfile):
+    def __init__(self, profile: AthleteProfile, *, novel_fields: bool = False):
         self.profile = profile
+        self.novel_fields = novel_fields
         self.rng = random.Random(profile.seed)
 
     def run(self, days: int) -> list[dict]:
@@ -66,7 +67,10 @@ class SimulationEngine:
             is_training = self._is_training_day(state)
 
             # 1. Sleep (from last night)
-            sleep_events = generate_sleep(self.profile, state, self.rng, day_offset)
+            sleep_events = generate_sleep(
+                self.profile, state, self.rng, day_offset,
+                novel_fields=self.novel_fields,
+            )
             events.extend(sleep_events)
 
             # Update sleep debt from generated sleep
@@ -84,7 +88,10 @@ class SimulationEngine:
 
             # 3. Energy
             events.extend(
-                generate_energy(self.profile, state, self.rng, day_offset, is_training)
+                generate_energy(
+                    self.profile, state, self.rng, day_offset, is_training,
+                    novel_fields=self.novel_fields,
+                )
             )
 
             # 4. Bodyweight (daily)
@@ -99,6 +106,7 @@ class SimulationEngine:
                 session_exercises = get_session_exercises(self.profile, state)
                 training_events = generate_training_session(
                     self.profile, state, fatigue_snap, self.rng, day_offset,
+                    novel_fields=self.novel_fields,
                 )
                 events.extend(training_events)
 
@@ -112,11 +120,28 @@ class SimulationEngine:
                 update_fatigue_rest_day(state)
                 yesterdays_exercises = None
 
+                # 6b. Cardio on rest days (orphaned event type — no handler)
+                if self.novel_fields:
+                    from datagen.generators.novel_fields import generate_cardio
+
+                    events.extend(
+                        generate_cardio(self.profile, state, self.rng, day_offset)
+                    )
+
             # 7. Nutrition (every day)
             nutrition_events, total_cals = generate_nutrition(
                 self.profile, state, self.rng, day_offset, is_training,
+                novel_fields=self.novel_fields,
             )
             events.extend(nutrition_events)
+
+            # 7b. Supplements (orphaned event type — no handler)
+            if self.novel_fields:
+                from datagen.generators.novel_fields import generate_supplements
+
+                events.extend(
+                    generate_supplements(self.profile, state, self.rng, day_offset)
+                )
 
             # 8. Update bodyweight trend from nutrition
             update_bodyweight_trend(state, self.profile.calorie_target, total_cals)

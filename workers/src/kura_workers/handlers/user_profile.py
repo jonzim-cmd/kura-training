@@ -101,6 +101,80 @@ def _find_orphaned_event_types(
     return orphaned
 
 
+def _build_observed_patterns(
+    projection_rows: list[dict[str, Any]],
+    orphaned_event_types: list[dict[str, Any]],
+    orphaned_field_samples: dict[str, list[str]],
+) -> dict[str, Any]:
+    """Build observation landscape from projection data (Phase 2, Decision 10).
+
+    Extracts observed_attributes from all projections and merges them into
+    a unified view. No thresholds — everything is surfaced immediately.
+    Frequency is metadata, not a gate. The agent decides what's relevant.
+    """
+    # Per dimension: aggregate observed_attributes across all rows
+    # (handles multi-key projections like exercise_progression)
+    per_dimension: dict[str, dict[str, dict[str, int]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(int))
+    )
+
+    for row in projection_rows:
+        dimension = row["projection_type"]
+        data = row.get("data") or {}
+        dq = data.get("data_quality", {})
+        observed = dq.get("observed_attributes", {})
+
+        for event_type, fields in observed.items():
+            if not isinstance(fields, dict):
+                continue  # Guard against old flat format
+            for field, count in fields.items():
+                per_dimension[dimension][event_type][field] += count
+
+    # Merge across dimensions: max count (avoids double-counting same events
+    # processed by multiple handlers), collect all observing dimension names
+    merged: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+
+    for dimension, et_fields in per_dimension.items():
+        for event_type, fields in et_fields.items():
+            for field, count in fields.items():
+                if field not in merged[event_type]:
+                    merged[event_type][field] = {"count": count, "dimensions": [dimension]}
+                else:
+                    existing = merged[event_type][field]
+                    if count > existing["count"]:
+                        existing["count"] = count
+                    if dimension not in existing["dimensions"]:
+                        existing["dimensions"].append(dimension)
+
+    # Deterministic output
+    observed_fields: dict[str, Any] = {}
+    for event_type in sorted(merged):
+        observed_fields[event_type] = {
+            field: {
+                "count": info["count"],
+                "dimensions": sorted(info["dimensions"]),
+            }
+            for field, info in sorted(merged[event_type].items())
+        }
+
+    # Orphaned event types with field analysis
+    orphaned_types: dict[str, Any] = {}
+    for orphaned in orphaned_event_types:
+        et = orphaned["event_type"]
+        orphaned_types[et] = {
+            "count": orphaned["count"],
+            "common_fields": orphaned_field_samples.get(et, []),
+        }
+
+    result: dict[str, Any] = {}
+    if observed_fields:
+        result["observed_fields"] = observed_fields
+    if orphaned_types:
+        result["orphaned_event_types"] = orphaned_types
+
+    return result
+
+
 def _build_data_quality(
     total_set_logged: int,
     events_without_exercise_id: int,
@@ -264,6 +338,7 @@ def _build_agenda(
     total_events: int = 0,
     has_goals: bool = False,
     has_preferences: bool = False,
+    observed_patterns: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Build proactive agenda items for the agent.
 
@@ -315,6 +390,35 @@ def _build_agenda(
             ),
             "dimensions": ["user_profile"],
         })
+
+    # Observation landscape (Phase 2, Decision 10)
+    # No thresholds — everything is surfaced. Frequency is metadata.
+    if observed_patterns:
+        for event_type, fields in sorted(observed_patterns.get("observed_fields", {}).items()):
+            for field, info in sorted(fields.items()):
+                agenda.append({
+                    "priority": "info",
+                    "type": "field_observed",
+                    "event_type": event_type,
+                    "field": field,
+                    "count": info["count"],
+                    "dimensions": info["dimensions"],
+                    "detail": f"Field '{field}' observed {info['count']} times in {event_type}",
+                })
+
+        for event_type, info in sorted(observed_patterns.get("orphaned_event_types", {}).items()):
+            fields_str = ", ".join(info["common_fields"]) if info["common_fields"] else "unknown"
+            agenda.append({
+                "priority": "info",
+                "type": "orphaned_event_type",
+                "event_type": event_type,
+                "count": info["count"],
+                "common_fields": info["common_fields"],
+                "detail": (
+                    f"{info['count']} events of type '{event_type}' (no handler). "
+                    f"Common fields: {fields_str}"
+                ),
+            })
 
     return agenda
 
@@ -468,6 +572,21 @@ async def update_user_profile(
         event_type_counts = {r["event_type"]: r["count"] for r in await cur.fetchall()}
     orphaned_event_types = _find_orphaned_event_types(event_type_counts)
 
+    # Field sampling for orphaned event types (Phase 2, Decision 10)
+    orphaned_field_samples: dict[str, list[str]] = {}
+    for orphaned in orphaned_event_types[:10]:
+        et = orphaned["event_type"]
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT DISTINCT k AS field
+                FROM (SELECT data FROM events WHERE user_id = %s AND event_type = %s LIMIT 50) sub,
+                jsonb_object_keys(sub.data) AS k
+                """,
+                (user_id, et),
+            )
+            orphaned_field_samples[et] = sorted(r["field"] for r in await cur.fetchall())
+
     # Compute interview coverage (Decision 8)
     interview_coverage = _compute_interview_coverage(
         aliases, preferences, goals, profile_data, injuries,
@@ -500,6 +619,11 @@ async def update_user_profile(
         dimension_metadata, projection_rows, set_logged_range
     )
 
+    # Observation landscape (Phase 2, Decision 10)
+    observed_patterns = _build_observed_patterns(
+        projection_rows, orphaned_event_types, orphaned_field_samples,
+    )
+
     data_quality = _build_data_quality(
         total_set_logged,
         events_without_exercise_id,
@@ -521,6 +645,7 @@ async def update_user_profile(
         total_events=total_events,
         has_goals=bool(goals),
         has_preferences=bool(preferences),
+        observed_patterns=observed_patterns,
     )
 
     projection_data = {
@@ -535,6 +660,7 @@ async def update_user_profile(
             "first_event": first_event.isoformat(),
             "last_event": last_event.isoformat(),
             "dimensions": user_dimensions,
+            "observed_patterns": observed_patterns or None,
             "data_quality": data_quality,
             "interview_coverage": interview_coverage,
         },

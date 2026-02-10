@@ -34,6 +34,7 @@ def main():
 @click.option("--output", "-o", type=click.Path(path_type=Path), help="Write events to JSON file.")
 @click.option("--api", type=str, help="API base URL for injection (e.g. http://localhost:3000).")
 @click.option("--api-key", type=str, help="API key for authentication (kura_sk_...).")
+@click.option("--novel-fields", is_flag=True, default=False, help="Inject novel/unknown fields for Phase 2 testing.")
 def generate(
     profile_name: str | None,
     profile_file: Path | None,
@@ -41,6 +42,7 @@ def generate(
     output: Path | None,
     api: str | None,
     api_key: str | None,
+    novel_fields: bool,
 ):
     """Generate synthetic training data."""
     if profile_name and profile_file:
@@ -67,9 +69,12 @@ def generate(
     else:
         profile = PRESETS[profile_name]
 
-    click.echo(f"Simulating {profile.name} ({profile.experience_level}) for {days} days...")
+    if novel_fields:
+        click.echo(f"Simulating {profile.name} ({profile.experience_level}) for {days} days (novel fields enabled)...")
+    else:
+        click.echo(f"Simulating {profile.name} ({profile.experience_level}) for {days} days...")
 
-    engine = SimulationEngine(profile)
+    engine = SimulationEngine(profile, novel_fields=novel_fields)
     events = engine.run(days)
 
     click.echo(f"Generated {len(events)} events.")

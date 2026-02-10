@@ -47,11 +47,23 @@ def separate_known_unknown(
 
 
 def merge_observed_attributes(
-    accumulator: dict[str, int], new_unknown: dict[str, Any]
+    accumulator: dict[str, dict[str, int]],
+    event_type: str,
+    new_unknown: dict[str, Any],
 ) -> None:
-    """Track frequency of unknown fields across events (mutates accumulator)."""
+    """Track frequency of unknown fields per event type (mutates accumulator).
+
+    Structure: {event_type: {field: count}}. This allows Phase 2 pattern
+    detection to know exactly which event type a novel field came from —
+    critical for multi-event-type handlers like recovery (sleep + soreness + energy).
+    """
+    if not new_unknown:
+        return
+    if event_type not in accumulator:
+        accumulator[event_type] = {}
+    bucket = accumulator[event_type]
     for key in new_unknown:
-        accumulator[key] = accumulator.get(key, 0) + 1
+        bucket[key] = bucket.get(key, 0) + 1
 
 
 def check_expected_fields(

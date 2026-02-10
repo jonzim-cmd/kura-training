@@ -26,6 +26,8 @@ def generate_nutrition(
     rng: random.Random,
     day_offset: int,
     is_training_day: bool,
+    *,
+    novel_fields: bool = False,
 ) -> tuple[list[dict], int]:
     """Generate meal.logged events for the day.
 
@@ -89,16 +91,25 @@ def generate_nutrition(
 
         minute = rng.choice([0, 15, 30, 45])
 
+        data: dict = {
+            "calories": meal_cals,
+            "protein_g": protein,
+            "carbs_g": carbs,
+            "fat_g": fat,
+            "meal_type": meal_type,
+        }
+
+        if novel_fields:
+            from datagen.generators.novel_fields import novel_meal_fields
+
+            extra = novel_meal_fields(profile, rng, meal_cals)
+            if extra:
+                data.update(extra)
+
         events.append(
             {
                 "event_type": "meal.logged",
-                "data": {
-                    "calories": meal_cals,
-                    "protein_g": protein,
-                    "carbs_g": carbs,
-                    "fat_g": fat,
-                    "meal_type": meal_type,
-                },
+                "data": data,
                 "occurred_at": datetime.combine(
                     state.day, time(hour, minute), tzinfo=timezone.utc,
                 ).isoformat(),

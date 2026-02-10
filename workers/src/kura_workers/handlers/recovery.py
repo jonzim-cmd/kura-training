@@ -139,7 +139,7 @@ async def update_recovery(
     energy_by_week: dict[str, list[float]] = defaultdict(list)
 
     anomalies: list[dict[str, Any]] = []
-    observed_attr_counts: dict[str, int] = {}
+    observed_attr_counts: dict[str, dict[str, int]] = {}
 
     for row in rows:
         data = row["data"]
@@ -149,7 +149,7 @@ async def update_recovery(
 
         if event_type == "sleep.logged":
             _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS_SLEEP)
-            merge_observed_attributes(observed_attr_counts, unknown)
+            merge_observed_attributes(observed_attr_counts, event_type, unknown)
             try:
                 duration = float(data["duration_hours"])
             except (KeyError, ValueError, TypeError):
@@ -183,7 +183,7 @@ async def update_recovery(
 
         elif event_type == "soreness.logged":
             _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS_SORENESS)
-            merge_observed_attributes(observed_attr_counts, unknown)
+            merge_observed_attributes(observed_attr_counts, event_type, unknown)
             area = data.get("area", "").strip().lower()
             try:
                 severity = int(data["severity"])
@@ -214,7 +214,7 @@ async def update_recovery(
 
         elif event_type == "energy.logged":
             _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS_ENERGY)
-            merge_observed_attributes(observed_attr_counts, unknown)
+            merge_observed_attributes(observed_attr_counts, event_type, unknown)
             try:
                 level = float(data["level"])
             except (KeyError, ValueError, TypeError):

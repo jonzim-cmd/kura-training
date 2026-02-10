@@ -154,7 +154,7 @@ async def update_nutrition(
 
     all_meals: list[dict[str, Any]] = []
     anomalies: list[dict[str, Any]] = []
-    observed_attr_counts: dict[str, int] = {}
+    observed_attr_counts: dict[str, dict[str, int]] = {}
 
     for row in rows:
         data = row["data"]
@@ -164,7 +164,7 @@ async def update_nutrition(
 
         # Decision 10: track unknown fields
         _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS)
-        merge_observed_attributes(observed_attr_counts, unknown)
+        merge_observed_attributes(observed_attr_counts, "meal.logged", unknown)
 
         # Extract nutritional values (all optional, tolerant parsing)
         try:

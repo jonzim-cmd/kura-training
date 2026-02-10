@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from kura_workers.handlers.user_profile import (
     _build_agenda,
     _build_data_quality,
+    _build_observed_patterns,
     _build_user_dimensions,
     _compute_interview_coverage,
     _find_orphaned_event_types,
@@ -645,3 +646,312 @@ class TestDataQualityWithOrphans:
             unconfirmed_aliases=[],
         )
         assert "orphaned_event_types" not in result
+
+
+# --- TestBuildObservedPatterns (Phase 2, Decision 10) ---
+
+
+class TestBuildObservedPatterns:
+    def _make_projection(self, ptype, key, observed_attributes=None, data=None):
+        d = data or {}
+        if observed_attributes is not None:
+            d["data_quality"] = {"observed_attributes": observed_attributes}
+        return {
+            "projection_type": ptype,
+            "key": key,
+            "data": d,
+            "updated_at": datetime(2026, 2, 10, 14, 0, tzinfo=timezone.utc),
+        }
+
+    def test_empty_projections(self):
+        result = _build_observed_patterns([], [], {})
+        assert result == {}
+
+    def test_single_dimension_single_field(self):
+        rows = [
+            self._make_projection(
+                "training_timeline", "overview",
+                observed_attributes={"set.logged": {"tempo": 12}},
+            ),
+        ]
+        result = _build_observed_patterns(rows, [], {})
+        assert "observed_fields" in result
+        assert result["observed_fields"]["set.logged"]["tempo"] == {
+            "count": 12,
+            "dimensions": ["training_timeline"],
+        }
+
+    def test_multi_key_dimension_sums_counts(self):
+        """exercise_progression has one projection per exercise — counts should sum."""
+        rows = [
+            self._make_projection(
+                "exercise_progression", "squat",
+                observed_attributes={"set.logged": {"tempo": 5, "rest_seconds": 10}},
+            ),
+            self._make_projection(
+                "exercise_progression", "bench",
+                observed_attributes={"set.logged": {"tempo": 3, "rest_seconds": 8}},
+            ),
+        ]
+        result = _build_observed_patterns(rows, [], {})
+        fields = result["observed_fields"]["set.logged"]
+        # Sum within same dimension
+        assert fields["tempo"]["count"] == 8
+        assert fields["tempo"]["dimensions"] == ["exercise_progression"]
+        assert fields["rest_seconds"]["count"] == 18
+        assert fields["rest_seconds"]["dimensions"] == ["exercise_progression"]
+
+    def test_cross_dimension_max_count(self):
+        """Same event_type+field from different handlers → max count, both dimensions listed."""
+        rows = [
+            self._make_projection(
+                "exercise_progression", "squat",
+                observed_attributes={"set.logged": {"tempo": 5}},
+            ),
+            self._make_projection(
+                "exercise_progression", "bench",
+                observed_attributes={"set.logged": {"tempo": 3}},
+            ),
+            self._make_projection(
+                "training_timeline", "overview",
+                observed_attributes={"set.logged": {"tempo": 12}},
+            ),
+        ]
+        result = _build_observed_patterns(rows, [], {})
+        tempo = result["observed_fields"]["set.logged"]["tempo"]
+        # exercise_progression: 5+3=8, training_timeline: 12 → max is 12
+        assert tempo["count"] == 12
+        assert sorted(tempo["dimensions"]) == ["exercise_progression", "training_timeline"]
+
+    def test_multiple_event_types(self):
+        rows = [
+            self._make_projection(
+                "recovery", "overview",
+                observed_attributes={
+                    "sleep.logged": {"hrv_rmssd": 90, "deep_sleep_pct": 90},
+                    "energy.logged": {"stress_level": 45},
+                },
+            ),
+        ]
+        result = _build_observed_patterns(rows, [], {})
+        fields = result["observed_fields"]
+        assert "sleep.logged" in fields
+        assert "energy.logged" in fields
+        assert fields["sleep.logged"]["hrv_rmssd"]["count"] == 90
+        assert fields["energy.logged"]["stress_level"]["count"] == 45
+
+    def test_orphaned_event_types_included(self):
+        orphaned = [
+            {"event_type": "supplement.logged", "count": 180},
+            {"event_type": "cardio.logged", "count": 24},
+        ]
+        field_samples = {
+            "supplement.logged": ["dose_mg", "name", "timing"],
+            "cardio.logged": ["avg_heart_rate", "duration_minutes", "type"],
+        }
+        result = _build_observed_patterns([], orphaned, field_samples)
+        assert "orphaned_event_types" in result
+        assert result["orphaned_event_types"]["supplement.logged"] == {
+            "count": 180,
+            "common_fields": ["dose_mg", "name", "timing"],
+        }
+        assert result["orphaned_event_types"]["cardio.logged"] == {
+            "count": 24,
+            "common_fields": ["avg_heart_rate", "duration_minutes", "type"],
+        }
+
+    def test_orphaned_without_field_samples(self):
+        orphaned = [{"event_type": "unknown.event", "count": 5}]
+        result = _build_observed_patterns([], orphaned, {})
+        assert result["orphaned_event_types"]["unknown.event"]["common_fields"] == []
+
+    def test_combined_observed_and_orphaned(self):
+        rows = [
+            self._make_projection(
+                "nutrition", "overview",
+                observed_attributes={"meal.logged": {"fiber_g": 63}},
+            ),
+        ]
+        orphaned = [{"event_type": "supplement.logged", "count": 180}]
+        field_samples = {"supplement.logged": ["dose_mg", "name"]}
+        result = _build_observed_patterns(rows, orphaned, field_samples)
+        assert "observed_fields" in result
+        assert "orphaned_event_types" in result
+
+    def test_no_observed_attributes_key_when_projections_have_no_unknown_fields(self):
+        rows = [
+            self._make_projection(
+                "training_timeline", "overview",
+                observed_attributes={},
+            ),
+        ]
+        result = _build_observed_patterns(rows, [], {})
+        assert "observed_fields" not in result
+
+    def test_guards_against_old_flat_format(self):
+        """Old observed_attributes format was {field: count} without event_type key."""
+        rows = [
+            self._make_projection(
+                "training_timeline", "overview",
+                observed_attributes={"tempo": 12},  # Old flat format: value is int, not dict
+            ),
+        ]
+        result = _build_observed_patterns(rows, [], {})
+        # Should not crash, just skip non-dict values
+        assert result == {}
+
+    def test_deterministic_output_order(self):
+        """Output is sorted by event_type, then field, then dimension."""
+        rows = [
+            self._make_projection(
+                "recovery", "overview",
+                observed_attributes={
+                    "energy.logged": {"stress_level": 10},
+                    "sleep.logged": {"hrv_rmssd": 20, "awakenings": 5},
+                },
+            ),
+            self._make_projection(
+                "training_timeline", "overview",
+                observed_attributes={"set.logged": {"tempo": 30}},
+            ),
+        ]
+        result = _build_observed_patterns(rows, [], {})
+        event_types = list(result["observed_fields"].keys())
+        assert event_types == ["energy.logged", "set.logged", "sleep.logged"]
+        sleep_fields = list(result["observed_fields"]["sleep.logged"].keys())
+        assert sleep_fields == ["awakenings", "hrv_rmssd"]
+
+
+# --- TestAgendaWithObservedPatterns (Phase 2) ---
+
+
+class TestAgendaWithObservedPatterns:
+    def test_field_observed_items(self):
+        patterns = {
+            "observed_fields": {
+                "set.logged": {
+                    "tempo": {"count": 47, "dimensions": ["exercise_progression", "training_timeline"]},
+                },
+            },
+        }
+        result = _build_agenda([], [], observed_patterns=patterns)
+        assert len(result) == 1
+        item = result[0]
+        assert item["priority"] == "info"
+        assert item["type"] == "field_observed"
+        assert item["event_type"] == "set.logged"
+        assert item["field"] == "tempo"
+        assert item["count"] == 47
+        assert item["dimensions"] == ["exercise_progression", "training_timeline"]
+        assert "tempo" in item["detail"]
+        assert "47" in item["detail"]
+
+    def test_orphaned_event_type_items(self):
+        patterns = {
+            "orphaned_event_types": {
+                "supplement.logged": {
+                    "count": 180,
+                    "common_fields": ["dose_mg", "name", "timing"],
+                },
+            },
+        }
+        result = _build_agenda([], [], observed_patterns=patterns)
+        assert len(result) == 1
+        item = result[0]
+        assert item["priority"] == "info"
+        assert item["type"] == "orphaned_event_type"
+        assert item["event_type"] == "supplement.logged"
+        assert item["count"] == 180
+        assert item["common_fields"] == ["dose_mg", "name", "timing"]
+        assert "180" in item["detail"]
+        assert "supplement.logged" in item["detail"]
+        assert "dose_mg" in item["detail"]
+
+    def test_orphaned_with_no_fields(self):
+        patterns = {
+            "orphaned_event_types": {
+                "mystery.event": {"count": 5, "common_fields": []},
+            },
+        }
+        result = _build_agenda([], [], observed_patterns=patterns)
+        assert "unknown" in result[0]["detail"]
+
+    def test_info_items_come_after_actionable_items(self):
+        """Info items should be at the end, after medium/low priority items."""
+        patterns = {
+            "observed_fields": {
+                "set.logged": {
+                    "tempo": {"count": 10, "dimensions": ["training_timeline"]},
+                },
+            },
+        }
+        result = _build_agenda(
+            unresolved_exercises=[{"exercise": "cable thing", "occurrences": 5}],
+            unconfirmed_aliases=[{"alias": "SQ", "target": "squat", "confidence": "inferred"}],
+            observed_patterns=patterns,
+        )
+        priorities = [a["priority"] for a in result]
+        # medium → low → info
+        assert priorities == ["medium", "low", "info"]
+
+    def test_info_items_after_interview_items(self):
+        coverage = [{"area": f"a{i}", "status": "uncovered"} for i in range(9)]
+        patterns = {
+            "observed_fields": {
+                "set.logged": {
+                    "tempo": {"count": 10, "dimensions": ["training_timeline"]},
+                },
+            },
+        }
+        result = _build_agenda(
+            [], [],
+            interview_coverage=coverage,
+            total_events=0,
+            has_goals=False,
+            has_preferences=False,
+            observed_patterns=patterns,
+        )
+        types = [a["type"] for a in result]
+        assert types[0] == "onboarding_needed"
+        assert types[-1] == "field_observed"
+
+    def test_no_observed_patterns_no_info_items(self):
+        result = _build_agenda([], [], observed_patterns=None)
+        assert all(a["priority"] != "info" for a in result)
+
+    def test_empty_observed_patterns_no_info_items(self):
+        result = _build_agenda([], [], observed_patterns={})
+        assert all(a["priority"] != "info" for a in result)
+
+    def test_multiple_fields_and_orphans(self):
+        patterns = {
+            "observed_fields": {
+                "set.logged": {
+                    "bar_speed": {"count": 18, "dimensions": ["exercise_progression"]},
+                    "tempo": {"count": 47, "dimensions": ["exercise_progression", "training_timeline"]},
+                },
+                "sleep.logged": {
+                    "hrv_rmssd": {"count": 90, "dimensions": ["recovery"]},
+                },
+            },
+            "orphaned_event_types": {
+                "cardio.logged": {"count": 24, "common_fields": ["type", "duration_minutes"]},
+                "supplement.logged": {"count": 180, "common_fields": ["name", "dose_mg"]},
+            },
+        }
+        result = _build_agenda([], [], observed_patterns=patterns)
+        info_items = [a for a in result if a["priority"] == "info"]
+        assert len(info_items) == 5  # 3 fields + 2 orphaned types
+        field_items = [a for a in info_items if a["type"] == "field_observed"]
+        orphan_items = [a for a in info_items if a["type"] == "orphaned_event_type"]
+        assert len(field_items) == 3
+        assert len(orphan_items) == 2
+
+    def test_backwards_compatible_without_observed_patterns(self):
+        """_build_agenda still works when called without observed_patterns."""
+        result = _build_agenda(
+            [{"exercise": "x", "occurrences": 1}],
+            [],
+        )
+        assert len(result) == 1
+        assert result[0]["type"] == "resolve_exercises"

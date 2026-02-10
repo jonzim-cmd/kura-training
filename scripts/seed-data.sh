@@ -8,11 +8,20 @@
 # Usage:
 #   ./scripts/seed-data.sh              # 90 days per profile (default)
 #   ./scripts/seed-data.sh 30           # 30 days per profile
+#   ./scripts/seed-data.sh --novel-fields   # include novel fields + orphaned event types
 #   KURA_API_URL=http://host:3000 ./scripts/seed-data.sh
 
 set -euo pipefail
 
-DAYS="${1:-90}"
+# Parse arguments: [days] [--novel-fields]
+DAYS="90"
+NOVEL_FLAGS=""
+for arg in "$@"; do
+    case "$arg" in
+        --novel-fields) NOVEL_FLAGS="--novel-fields" ;;
+        [0-9]*)         DAYS="$arg" ;;
+    esac
+done
 API_URL="${KURA_API_URL:-http://localhost:3000}"
 DB_URL="${DATABASE_URL:-postgres://kura:kura_dev_password@localhost:5432/kura}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -109,12 +118,13 @@ echo ""
 for profile in "${PROFILES[@]}"; do
     api_key="${API_KEYS[$profile]}"
 
-    info "Injecting ${profile} (${DAYS} days)..."
+    info "Injecting ${profile} (${DAYS} days${NOVEL_FLAGS:+, novel fields})..."
     (cd "${ROOT_DIR}/datagen" && uv run datagen generate \
         --profile "${profile}" \
         --days "${DAYS}" \
         --api "${API_URL}" \
-        --api-key "${api_key}")
+        --api-key "${api_key}" \
+        ${NOVEL_FLAGS})
     echo ""
 done
 

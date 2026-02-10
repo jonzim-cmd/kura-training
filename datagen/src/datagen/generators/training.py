@@ -76,6 +76,8 @@ def generate_training_session(
     fatigue_snap: FatigueSnapshot,
     rng: random.Random,
     day_offset: int,
+    *,
+    novel_fields: bool = False,
 ) -> list[dict]:
     """Generate all events for a single training session.
 
@@ -185,6 +187,21 @@ def generate_training_session(
     for event in events:
         if event["event_type"] == "set.logged":
             event["session_id"] = session_id
+
+    # Phase 2: inject novel fields into set.logged events (post-processing)
+    if novel_fields:
+        from datagen.generators.novel_fields import novel_set_fields
+
+        for event in events:
+            if event["event_type"] == "set.logged":
+                ex_id = event["data"].get("exercise_id", "")
+                ex = EXERCISES.get(ex_id)
+                if ex:
+                    extra = novel_set_fields(
+                        profile, ex, event["data"].get("set_type", ""), rng,
+                    )
+                    if extra:
+                        event["data"].update(extra)
 
     state.training_day_index += 1
     return events

@@ -19,6 +19,8 @@ def generate_sleep(
     state: AthleteState,
     rng: random.Random,
     day_offset: int,
+    *,
+    novel_fields: bool = False,
 ) -> list[dict]:
     """Generate sleep.logged event (last night's sleep, logged this morning)."""
     # Duration: normal distribution around profile baseline
@@ -50,15 +52,24 @@ def generate_sleep(
     wake_minutes = int(duration * 60)
     wake_time_dt = bed_time_dt + timedelta(minutes=wake_minutes)
 
+    data: dict = {
+        "duration_hours": duration,
+        "quality": quality,
+        "bed_time": bed_time_dt.isoformat(),
+        "wake_time": wake_time_dt.isoformat(),
+    }
+
+    if novel_fields:
+        from datagen.generators.novel_fields import novel_sleep_fields
+
+        extra = novel_sleep_fields(profile, rng, duration)
+        if extra:
+            data.update(extra)
+
     return [
         {
             "event_type": "sleep.logged",
-            "data": {
-                "duration_hours": duration,
-                "quality": quality,
-                "bed_time": bed_time_dt.isoformat(),
-                "wake_time": wake_time_dt.isoformat(),
-            },
+            "data": data,
             "occurred_at": datetime.combine(
                 state.day, time(7, 30), tzinfo=timezone.utc,
             ).isoformat(),
@@ -126,6 +137,8 @@ def generate_energy(
     rng: random.Random,
     day_offset: int,
     is_training_day: bool,
+    *,
+    novel_fields: bool = False,
 ) -> list[dict]:
     """Generate energy.logged event.
 
@@ -140,13 +153,22 @@ def generate_energy(
     log_hour = 17 if is_training_day else 8
     log_minute = 0
 
+    data: dict = {
+        "level": energy_level,
+        "time_of_day": time_of_day,
+    }
+
+    if novel_fields:
+        from datagen.generators.novel_fields import novel_energy_fields
+
+        extra = novel_energy_fields(profile, rng)
+        if extra:
+            data.update(extra)
+
     return [
         {
             "event_type": "energy.logged",
-            "data": {
-                "level": energy_level,
-                "time_of_day": time_of_day,
-            },
+            "data": data,
             "occurred_at": datetime.combine(
                 state.day, time(log_hour, log_minute), tzinfo=timezone.utc,
             ).isoformat(),
