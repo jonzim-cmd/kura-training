@@ -5,6 +5,7 @@ These were previously in test_user_profile.py (TestBuildSystemLayer, TestConvent
 """
 
 from kura_workers.system_config import (
+    _get_agent_behavior,
     _get_conventions,
     build_dimensions,
     build_system_config,
@@ -113,6 +114,7 @@ class TestBuildSystemConfig:
         assert "conventions" in result
         assert "time_conventions" in result
         assert "interview_guide" in result
+        assert "agent_behavior" in result
 
     def test_time_conventions(self):
         result = build_system_config()
@@ -203,3 +205,32 @@ class TestConventions:
         )
         assert "retracted_event_id" in retracted_event["data"]
         assert "retracted_event_type" in retracted_event["data"]
+
+
+# --- TestAgentBehavior ---
+
+
+class TestAgentBehavior:
+    def test_has_vision_and_operational(self):
+        result = _get_agent_behavior()
+        assert "vision" in result
+        assert "operational" in result
+
+    def test_vision_has_principles(self):
+        result = _get_agent_behavior()
+        principles = result["vision"]["principles"]
+        assert isinstance(principles, list)
+        assert len(principles) >= 3
+
+    def test_operational_has_scope(self):
+        result = _get_agent_behavior()
+        scope = result["operational"]["scope"]
+        assert "default" in scope
+        assert "levels" in scope
+        assert scope["default"] in scope["levels"]
+
+    def test_operational_has_rules(self):
+        result = _get_agent_behavior()
+        rules = result["operational"]["rules"]
+        assert isinstance(rules, list)
+        assert len(rules) >= 3
