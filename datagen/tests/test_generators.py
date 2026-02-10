@@ -10,6 +10,7 @@ from datagen.generators.training import (
     get_session_exercises,
 )
 from datagen.models import AthleteProfile, AthleteState
+from datagen.output import to_api_format
 
 
 def _make_profile(**overrides) -> AthleteProfile:
@@ -106,6 +107,14 @@ class TestGenerateTrainingSession:
             assert "exercise_id" in event["data"]
             assert "reps" in event["data"]
             assert "set_type" in event["data"]
+            # session_id present on all set.logged events
+            assert "session_id" in event
+            assert event["session_id"].startswith(str(state.day))
+
+        # alias events should NOT have session_id
+        alias_events = [e for e in events if e["event_type"] == "exercise.alias_created"]
+        for event in alias_events:
+            assert "session_id" not in event
 
     def test_alias_events_created(self):
         profile = _make_profile()
@@ -226,3 +235,29 @@ class TestGenerateTrainingSession:
         )
 
         assert events1 == events2
+
+
+class TestToApiFormat:
+    def test_set_event_includes_session_id_in_metadata(self):
+        event = {
+            "event_type": "set.logged",
+            "data": {"exercise": "Squat", "exercise_id": "squat", "reps": 5, "weight_kg": 100},
+            "occurred_at": "2026-02-09T18:00:00+00:00",
+            "idempotency_key": "test-key-1",
+            "session_id": "2026-02-09-training",
+        }
+        result = to_api_format(event)
+        assert result["metadata"]["session_id"] == "2026-02-09-training"
+        assert result["metadata"]["idempotency_key"] == "test-key-1"
+        assert result["metadata"]["source"] == "datagen"
+        assert "session_id" not in result["data"]
+
+    def test_alias_event_no_session_id_in_metadata(self):
+        event = {
+            "event_type": "exercise.alias_created",
+            "data": {"alias": "Kniebeuge", "exercise_id": "squat", "confidence": "confirmed"},
+            "occurred_at": "2026-02-09T18:00:00+00:00",
+            "idempotency_key": "test-key-2",
+        }
+        result = to_api_format(event)
+        assert "session_id" not in result["metadata"]

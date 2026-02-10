@@ -130,7 +130,7 @@ async def update_exercise_progression(
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
-            SELECT id, timestamp, data
+            SELECT id, timestamp, data, metadata
             FROM events
             WHERE user_id = %s
               AND event_type = 'set.logged'
@@ -170,7 +170,7 @@ async def update_exercise_progression(
     total_volume_kg = 0.0
     best_1rm = 0.0
     best_1rm_date: datetime | None = None
-    session_dates: set[str] = set()
+    session_keys: set[str] = set()  # session_id or date string (fallback)
     recent_sets: list[dict[str, Any]] = []
     last_event_id = rows[-1]["id"]
 
@@ -185,7 +185,12 @@ async def update_exercise_progression(
 
     for row in rows:
         data = row["data"]
+        metadata = row.get("metadata") or {}
         ts: datetime = row["timestamp"]
+
+        # Session key: use metadata.session_id if present, fallback to date
+        session_id = metadata.get("session_id")
+        session_key = session_id or ts.date().isoformat()
 
         # Decision 10: separate known from unknown fields
         _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS)
@@ -220,7 +225,7 @@ async def update_exercise_progression(
         volume = weight * reps
         total_volume_kg += volume
 
-        session_dates.add(ts.date().isoformat())
+        session_keys.add(session_key)
 
         e1rm = _epley_1rm(weight, reps)
 
@@ -256,6 +261,7 @@ async def update_exercise_progression(
             "weight_kg": weight,
             "reps": reps,
             "estimated_1rm": round(e1rm, 1),
+            "_session_key": session_key,  # internal, stripped before output
         }
         # Include optional known fields if present
         if "rpe" in data:
@@ -265,6 +271,8 @@ async def update_exercise_progression(
                 pass
         if "set_type" in data:
             set_entry["set_type"] = data["set_type"]
+        if session_id is not None:
+            set_entry["session_id"] = session_id
 
         # Decision 10: pass through unknown fields per set
         if unknown:
@@ -272,10 +280,20 @@ async def update_exercise_progression(
 
         recent_sets.append(set_entry)
 
-    # Last 5 sessions worth of sets (by date)
-    sorted_dates = sorted(session_dates, reverse=True)[:5]
-    recent_date_set = set(sorted_dates)
-    recent_sessions = [s for s in recent_sets if s["timestamp"][:10] in recent_date_set]
+    # Last 5 sessions worth of sets (by session_key: session_id or date)
+    # Determine last 5 session keys by their latest timestamp
+    session_last_ts: dict[str, str] = {}
+    for s in recent_sets:
+        sk = s["_session_key"]
+        if sk not in session_last_ts or s["timestamp"] > session_last_ts[sk]:
+            session_last_ts[sk] = s["timestamp"]
+    sorted_session_keys = sorted(session_last_ts, key=lambda k: session_last_ts[k], reverse=True)[:5]
+    recent_session_set = set(sorted_session_keys)
+    recent_sessions = [
+        {k: v for k, v in s.items() if k != "_session_key"}
+        for s in recent_sets
+        if s["_session_key"] in recent_session_set
+    ]
     recent_sessions.reverse()
 
     # Build weekly_history: last 26 weeks, chronological
@@ -301,7 +319,7 @@ async def update_exercise_progression(
         "exercise": canonical,
         "estimated_1rm": round(best_1rm, 1),
         "estimated_1rm_date": best_1rm_date.isoformat() if best_1rm_date else None,
-        "total_sessions": len(session_dates),
+        "total_sessions": len(session_keys),
         "total_sets": total_sets,
         "total_volume_kg": round(total_volume_kg, 1),
         "recent_sessions": recent_sessions,

@@ -99,6 +99,15 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "If this is the first time the user uses a term, also create "
                 "exercise.alias_created in the same batch. Check user.aliases first."
             ),
+            "metadata_fields": {
+                "session_id": (
+                    "string (recommended). Groups sets into a logical training session. "
+                    "Format is free — e.g. '2026-02-09-upper-a', a UUID, or any string. "
+                    "When multiple sessions happen on the same day, session_id is the "
+                    "only way to separate them. If omitted, the system falls back to "
+                    "grouping by date (one session per day)."
+                ),
+            },
         },
         "exercise.alias_created": {
             "description": "Maps user term to canonical exercise ID",

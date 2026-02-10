@@ -63,6 +63,34 @@ def _compute_recent_days(
     return result
 
 
+def _compute_recent_sessions(
+    session_data: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Compute recent_sessions: last 30 training sessions, chronological."""
+    # Sort by date, then session_key for stable ordering
+    sorted_keys = sorted(
+        session_data.keys(),
+        key=lambda k: (session_data[k]["date"], k),
+        reverse=True,
+    )[:30]
+    sorted_keys.reverse()
+
+    result = []
+    for key in sorted_keys:
+        entry = session_data[key]
+        session_entry: dict[str, Any] = {
+            "date": entry["date"],
+            "exercises": sorted(entry["exercises"]),
+            "total_sets": entry["total_sets"],
+            "total_volume_kg": round(entry["total_volume_kg"], 1),
+            "total_reps": entry["total_reps"],
+        }
+        if entry["session_id"] is not None:
+            session_entry["session_id"] = entry["session_id"]
+        result.append(session_entry)
+    return result
+
+
 def _compute_weekly_summary(
     week_data: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -192,11 +220,11 @@ async def update_training_timeline(
     # Load alias map for resolving exercise names (retraction-aware)
     alias_map = await get_alias_map(conn, user_id, retracted_ids=retracted_ids)
 
-    # Fetch ALL set.logged events for this user
+    # Fetch ALL set.logged events for this user (including metadata for session_id)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
-            SELECT id, timestamp, data
+            SELECT id, timestamp, data, metadata
             FROM events
             WHERE user_id = %s
               AND event_type = 'set.logged'
@@ -220,20 +248,29 @@ async def update_training_timeline(
 
     last_event_id = rows[-1]["id"]
 
-    # Aggregate by day and week
+    # Aggregate by day, week, and session
     day_data: dict[date, dict[str, Any]] = defaultdict(
         lambda: {"exercises": set(), "total_sets": 0, "total_volume_kg": 0.0, "total_reps": 0}
     )
     week_data: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"training_days": set(), "total_sets": 0, "total_volume_kg": 0.0, "exercises": set()}
     )
+    # Session grouping: key = session_id or date string (fallback)
+    session_data: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"date": None, "session_id": None, "exercises": set(), "total_sets": 0, "total_volume_kg": 0.0, "total_reps": 0}
+    )
     observed_attr_counts: dict[str, int] = {}
 
     for row in rows:
         data = row["data"]
+        metadata = row.get("metadata") or {}
         ts: datetime = row["timestamp"]
         d = ts.date()
         w = _iso_week(d)
+
+        # Session key: use metadata.session_id if present, fallback to date
+        session_id = metadata.get("session_id")
+        session_key = session_id or d.isoformat()
 
         # Decision 10: track unknown fields
         _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS)
@@ -263,6 +300,14 @@ async def update_training_timeline(
         week_data[w]["total_volume_kg"] += volume
         week_data[w]["exercises"].add(exercise_key)
 
+        # Session aggregation
+        session_data[session_key]["date"] = d.isoformat()
+        session_data[session_key]["session_id"] = session_id
+        session_data[session_key]["exercises"].add(exercise_key)
+        session_data[session_key]["total_sets"] += 1
+        session_data[session_key]["total_volume_kg"] += volume
+        session_data[session_key]["total_reps"] += reps
+
     # Finalize week_data: convert training_days sets to counts
     for w_entry in week_data.values():
         w_entry["training_days"] = len(w_entry["training_days"])
@@ -272,6 +317,7 @@ async def update_training_timeline(
 
     projection_data = {
         "recent_days": _compute_recent_days(day_data),
+        "recent_sessions": _compute_recent_sessions(session_data),
         "weekly_summary": _compute_weekly_summary(week_data),
         "current_frequency": _compute_frequency(training_dates, reference_date),
         "last_training": reference_date.isoformat(),

@@ -20,14 +20,17 @@ import httpx
 
 def to_api_format(event: dict) -> dict:
     """Convert generator event format to Kura API format."""
+    metadata: dict = {
+        "idempotency_key": event["idempotency_key"],
+        "source": "datagen",
+    }
+    if "session_id" in event:
+        metadata["session_id"] = event["session_id"]
     return {
         "timestamp": event["occurred_at"],
         "event_type": event["event_type"],
         "data": event["data"],
-        "metadata": {
-            "idempotency_key": event["idempotency_key"],
-            "source": "datagen",
-        },
+        "metadata": metadata,
     }
 
 

@@ -5,6 +5,7 @@ from datetime import date
 from kura_workers.handlers.training_timeline import (
     _compute_frequency,
     _compute_recent_days,
+    _compute_recent_sessions,
     _compute_streak,
     _compute_weekly_summary,
     _iso_week,
@@ -236,6 +237,94 @@ class TestComputeStreak:
         result = _compute_streak(training_dates, ref)
         assert result["current_weeks"] == 2
         assert result["longest_weeks"] == 10
+
+
+class TestComputeRecentSessions:
+    def test_single_session_with_id(self):
+        session_data = {
+            "morning-upper": {
+                "date": "2026-02-08",
+                "session_id": "morning-upper",
+                "exercises": {"bench", "overhead_press"},
+                "total_sets": 6,
+                "total_volume_kg": 1800.0,
+                "total_reps": 30,
+            }
+        }
+        result = _compute_recent_sessions(session_data)
+        assert len(result) == 1
+        assert result[0]["session_id"] == "morning-upper"
+        assert result[0]["date"] == "2026-02-08"
+        assert result[0]["exercises"] == ["bench", "overhead_press"]
+
+    def test_fallback_to_date_when_no_session_id(self):
+        session_data = {
+            "2026-02-08": {
+                "date": "2026-02-08",
+                "session_id": None,
+                "exercises": {"squat"},
+                "total_sets": 3,
+                "total_volume_kg": 900.0,
+                "total_reps": 15,
+            }
+        }
+        result = _compute_recent_sessions(session_data)
+        assert len(result) == 1
+        assert "session_id" not in result[0]
+        assert result[0]["date"] == "2026-02-08"
+
+    def test_two_sessions_same_day(self):
+        session_data = {
+            "morning-upper": {
+                "date": "2026-02-08",
+                "session_id": "morning-upper",
+                "exercises": {"bench"},
+                "total_sets": 3,
+                "total_volume_kg": 600.0,
+                "total_reps": 15,
+            },
+            "evening-cardio": {
+                "date": "2026-02-08",
+                "session_id": "evening-cardio",
+                "exercises": {"rowing"},
+                "total_sets": 1,
+                "total_volume_kg": 0.0,
+                "total_reps": 0,
+            },
+        }
+        result = _compute_recent_sessions(session_data)
+        assert len(result) == 2
+        assert result[0]["session_id"] == "evening-cardio"
+        assert result[1]["session_id"] == "morning-upper"
+
+    def test_chronological_order(self):
+        session_data = {
+            "s3": {"date": "2026-02-08", "session_id": "s3", "exercises": {"bench"}, "total_sets": 1, "total_volume_kg": 0.0, "total_reps": 5},
+            "s1": {"date": "2026-02-06", "session_id": "s1", "exercises": {"squat"}, "total_sets": 1, "total_volume_kg": 0.0, "total_reps": 5},
+            "s2": {"date": "2026-02-07", "session_id": "s2", "exercises": {"deadlift"}, "total_sets": 1, "total_volume_kg": 0.0, "total_reps": 5},
+        }
+        result = _compute_recent_sessions(session_data)
+        dates = [r["date"] for r in result]
+        assert dates == ["2026-02-06", "2026-02-07", "2026-02-08"]
+
+    def test_max_30_sessions(self):
+        session_data = {}
+        for i in range(35):
+            key = f"session-{i:03d}"
+            d = f"2026-01-{(i % 28) + 1:02d}"
+            session_data[key] = {
+                "date": d,
+                "session_id": key,
+                "exercises": {"squat"},
+                "total_sets": 1,
+                "total_volume_kg": 100.0,
+                "total_reps": 5,
+            }
+        result = _compute_recent_sessions(session_data)
+        assert len(result) == 30
+
+    def test_empty(self):
+        assert _compute_recent_sessions({}) == []
 
 
 class TestManifestContribution:

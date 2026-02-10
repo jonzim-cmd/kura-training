@@ -180,6 +180,12 @@ def generate_training_session(
     state._session_total_sets = total_sets  # type: ignore[attr-defined]
     state._session_avg_intensity = avg_intensity  # type: ignore[attr-defined]
 
+    # Tag set.logged events with session_id for session grouping
+    session_id = f"{state.day.isoformat()}-training"
+    for event in events:
+        if event["event_type"] == "set.logged":
+            event["session_id"] = session_id
+
     state.training_day_index += 1
     return events
 
