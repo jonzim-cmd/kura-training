@@ -70,7 +70,11 @@ enum EventCommands {
         /// Event timestamp (RFC3339). Defaults to now.
         #[arg(long)]
         timestamp: Option<String>,
-        /// Event data as JSON string
+        /// Event data as JSON string.
+        // TODO: Add --data-file / stdin support for JSON input.
+        // Shell special chars in exercise names (e.g. "Clean & Push Press")
+        // break --data when passed directly. File/stdin input avoids this.
+        // See: kura-training-hj7
         #[arg(long)]
         data: String,
         /// Idempotency key (auto-generated if omitted)
