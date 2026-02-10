@@ -122,7 +122,7 @@ async def update_exercise_progression(
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
-            SELECT id, timestamp, data, metadata
+            SELECT id, event_type, timestamp, data, metadata
             FROM events
             WHERE user_id = %s
               AND event_type = 'set.logged'
