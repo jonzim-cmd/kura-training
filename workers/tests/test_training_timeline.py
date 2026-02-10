@@ -82,6 +82,50 @@ class TestComputeRecentDays:
         result = _compute_recent_days(day_data)
         assert result[0]["total_volume_kg"] == 123.5
 
+    def test_top_sets_included(self):
+        day_data = {
+            date(2026, 2, 8): {
+                "exercises": {"squat", "bench"},
+                "total_sets": 6,
+                "total_volume_kg": 2400.0,
+                "total_reps": 30,
+                "top_sets": {
+                    "squat": {"weight_kg": 100, "reps": 5, "estimated_1rm": 116.7},
+                    "bench": {"weight_kg": 80, "reps": 5, "estimated_1rm": 93.3},
+                },
+            }
+        }
+        result = _compute_recent_days(day_data)
+        assert "top_sets" in result[0]
+        assert result[0]["top_sets"]["squat"]["weight_kg"] == 100
+        assert result[0]["top_sets"]["bench"]["estimated_1rm"] == 93.3
+
+    def test_no_top_sets_when_empty(self):
+        day_data = {
+            date(2026, 2, 8): {
+                "exercises": {"squat"},
+                "total_sets": 1,
+                "total_volume_kg": 0.0,
+                "total_reps": 0,
+                "top_sets": {},
+            }
+        }
+        result = _compute_recent_days(day_data)
+        assert "top_sets" not in result[0]
+
+    def test_no_top_sets_when_missing(self):
+        """Backward compat: old data without top_sets key."""
+        day_data = {
+            date(2026, 2, 8): {
+                "exercises": {"squat"},
+                "total_sets": 1,
+                "total_volume_kg": 100.0,
+                "total_reps": 5,
+            }
+        }
+        result = _compute_recent_days(day_data)
+        assert "top_sets" not in result[0]
+
 
 class TestComputeWeeklySummary:
     def test_single_week(self):
@@ -325,6 +369,40 @@ class TestComputeRecentSessions:
 
     def test_empty(self):
         assert _compute_recent_sessions({}) == []
+
+    def test_top_sets_included(self):
+        session_data = {
+            "morning-upper": {
+                "date": "2026-02-08",
+                "session_id": "morning-upper",
+                "exercises": {"bench", "overhead_press"},
+                "total_sets": 6,
+                "total_volume_kg": 1800.0,
+                "total_reps": 30,
+                "top_sets": {
+                    "bench": {"weight_kg": 80, "reps": 5, "estimated_1rm": 93.3},
+                    "overhead_press": {"weight_kg": 50, "reps": 8, "estimated_1rm": 63.3},
+                },
+            }
+        }
+        result = _compute_recent_sessions(session_data)
+        assert "top_sets" in result[0]
+        assert result[0]["top_sets"]["bench"]["weight_kg"] == 80
+
+    def test_no_top_sets_when_empty(self):
+        session_data = {
+            "s1": {
+                "date": "2026-02-08",
+                "session_id": "s1",
+                "exercises": {"stretching"},
+                "total_sets": 1,
+                "total_volume_kg": 0.0,
+                "total_reps": 0,
+                "top_sets": {},
+            }
+        }
+        result = _compute_recent_sessions(session_data)
+        assert "top_sets" not in result[0]
 
 
 class TestManifestContribution:

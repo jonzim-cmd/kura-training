@@ -10,6 +10,20 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Strength estimation
+# ---------------------------------------------------------------------------
+
+
+def epley_1rm(weight_kg: float, reps: int) -> float:
+    """Estimate 1RM using the Epley formula. Returns 0 for invalid inputs."""
+    if reps <= 0 or weight_kg <= 0:
+        return 0.0
+    if reps == 1:
+        return weight_kg
+    return weight_kg * (1 + reps / 30)
+
+
+# ---------------------------------------------------------------------------
 # Adaptive Projection helpers (Decision 10, Phase 1: Graceful Degradation)
 # ---------------------------------------------------------------------------
 

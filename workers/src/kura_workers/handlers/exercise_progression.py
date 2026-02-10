@@ -25,6 +25,7 @@ from psycopg.rows import dict_row
 from ..registry import projection_handler
 from ..utils import (
     check_expected_fields,
+    epley_1rm,
     find_all_keys_for_canonical,
     get_alias_map,
     get_retracted_event_ids,
@@ -48,15 +49,6 @@ _EXPECTED_FIELDS: dict[str, str] = {
     "weight_kg": "No weight — bodyweight or assisted exercise?",
     "reps": "No reps — time-based or isometric exercise?",
 }
-
-
-def _epley_1rm(weight_kg: float, reps: int) -> float:
-    """Estimate 1RM using the Epley formula. Returns 0 for invalid inputs."""
-    if reps <= 0 or weight_kg <= 0:
-        return 0.0
-    if reps == 1:
-        return weight_kg
-    return weight_kg * (1 + reps / 30)
 
 
 def _iso_week(d) -> str:
@@ -227,7 +219,7 @@ async def update_exercise_progression(
 
         session_keys.add(session_key)
 
-        e1rm = _epley_1rm(weight, reps)
+        e1rm = epley_1rm(weight, reps)
 
         # Anomaly detection: 1RM jump > 100% over previous best
         if best_1rm > 0 and e1rm > best_1rm * 2:

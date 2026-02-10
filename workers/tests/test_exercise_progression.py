@@ -3,11 +3,11 @@
 import pytest
 
 from kura_workers.handlers.exercise_progression import (
-    _epley_1rm,
     _iso_week,
     _manifest_contribution,
 )
 from kura_workers.utils import (
+    epley_1rm,
     find_all_keys_for_canonical,
     resolve_exercise_key,
     resolve_through_aliases,
@@ -17,27 +17,27 @@ from datetime import date
 
 class TestEpley1RM:
     def test_single_rep(self):
-        assert _epley_1rm(100.0, 1) == 100.0
+        assert epley_1rm(100.0, 1) == 100.0
 
     def test_five_reps(self):
         # 100 * (1 + 5/30) = 100 * 1.1667 = 116.67
-        assert round(_epley_1rm(100.0, 5), 2) == 116.67
+        assert round(epley_1rm(100.0, 5), 2) == 116.67
 
     def test_ten_reps(self):
         # 80 * (1 + 10/30) = 80 * 1.3333 = 106.67
-        assert round(_epley_1rm(80.0, 10), 2) == 106.67
+        assert round(epley_1rm(80.0, 10), 2) == 106.67
 
     def test_zero_reps(self):
-        assert _epley_1rm(100.0, 0) == 0.0
+        assert epley_1rm(100.0, 0) == 0.0
 
     def test_negative_reps(self):
-        assert _epley_1rm(100.0, -1) == 0.0
+        assert epley_1rm(100.0, -1) == 0.0
 
     def test_zero_weight(self):
-        assert _epley_1rm(0.0, 5) == 0.0
+        assert epley_1rm(0.0, 5) == 0.0
 
     def test_negative_weight(self):
-        assert _epley_1rm(-10.0, 5) == 0.0
+        assert epley_1rm(-10.0, 5) == 0.0
 
 
 class TestResolveExerciseKey:

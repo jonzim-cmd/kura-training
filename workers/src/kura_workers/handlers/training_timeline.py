@@ -20,6 +20,7 @@ from psycopg.rows import dict_row
 
 from ..registry import projection_handler
 from ..utils import (
+    epley_1rm,
     get_alias_map,
     get_retracted_event_ids,
     merge_observed_attributes,
@@ -53,13 +54,16 @@ def _compute_recent_days(
     result = []
     for d in sorted_dates:
         entry = day_data[d]
-        result.append({
+        day_entry: dict[str, Any] = {
             "date": d.isoformat(),
             "exercises": sorted(entry["exercises"]),
             "total_sets": entry["total_sets"],
             "total_volume_kg": round(entry["total_volume_kg"], 1),
             "total_reps": entry["total_reps"],
-        })
+        }
+        if entry.get("top_sets"):
+            day_entry["top_sets"] = entry["top_sets"]
+        result.append(day_entry)
     return result
 
 
@@ -87,6 +91,8 @@ def _compute_recent_sessions(
         }
         if entry["session_id"] is not None:
             session_entry["session_id"] = entry["session_id"]
+        if entry.get("top_sets"):
+            session_entry["top_sets"] = entry["top_sets"]
         result.append(session_entry)
     return result
 
@@ -250,14 +256,14 @@ async def update_training_timeline(
 
     # Aggregate by day, week, and session
     day_data: dict[date, dict[str, Any]] = defaultdict(
-        lambda: {"exercises": set(), "total_sets": 0, "total_volume_kg": 0.0, "total_reps": 0}
+        lambda: {"exercises": set(), "total_sets": 0, "total_volume_kg": 0.0, "total_reps": 0, "top_sets": {}}
     )
     week_data: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"training_days": set(), "total_sets": 0, "total_volume_kg": 0.0, "exercises": set()}
     )
     # Session grouping: key = session_id or date string (fallback)
     session_data: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"date": None, "session_id": None, "exercises": set(), "total_sets": 0, "total_volume_kg": 0.0, "total_reps": 0}
+        lambda: {"date": None, "session_id": None, "exercises": set(), "total_sets": 0, "total_volume_kg": 0.0, "total_reps": 0, "top_sets": {}}
     )
     observed_attr_counts: dict[str, int] = {}
 
@@ -287,12 +293,20 @@ async def update_training_timeline(
             reps = 0
 
         volume = weight * reps
+        e1rm = epley_1rm(weight, reps)
 
         # Day aggregation
         day_data[d]["exercises"].add(exercise_key)
         day_data[d]["total_sets"] += 1
         day_data[d]["total_volume_kg"] += volume
         day_data[d]["total_reps"] += reps
+
+        # Top set per exercise per day (best estimated 1RM wins)
+        current_top = day_data[d]["top_sets"].get(exercise_key)
+        if current_top is None or e1rm > current_top["estimated_1rm"]:
+            day_data[d]["top_sets"][exercise_key] = {
+                "weight_kg": weight, "reps": reps, "estimated_1rm": round(e1rm, 1),
+            }
 
         # Week aggregation
         week_data[w]["training_days"].add(d)
@@ -307,6 +321,13 @@ async def update_training_timeline(
         session_data[session_key]["total_sets"] += 1
         session_data[session_key]["total_volume_kg"] += volume
         session_data[session_key]["total_reps"] += reps
+
+        # Top set per exercise per session
+        s_top = session_data[session_key]["top_sets"].get(exercise_key)
+        if s_top is None or e1rm > s_top["estimated_1rm"]:
+            session_data[session_key]["top_sets"][exercise_key] = {
+                "weight_kg": weight, "reps": reps, "estimated_1rm": round(e1rm, 1),
+            }
 
     # Finalize week_data: convert training_days sets to counts
     for w_entry in week_data.values():
