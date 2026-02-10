@@ -270,6 +270,44 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "target_fat_g": 70,
             },
         },
+        # --- Adaptive Projections (Phase 3, Decision 10) ---
+        "projection_rule.created": {
+            "description": (
+                "Agent creates a custom projection rule. The system builds "
+                "a pre-computed projection from matching events. Rules are "
+                "declarative — the agent says WHAT to track, the system does the work."
+            ),
+            "fields": {
+                "name": "string (required) — unique rule identifier per user",
+                "type": (
+                    "string (required: field_tracking, categorized_tracking) — "
+                    "field_tracking extracts numeric fields as time series, "
+                    "categorized_tracking groups events by a category field"
+                ),
+                "source_events": "list[string] (required) — event types to process",
+                "fields": "list[string] (required) — data fields to extract/aggregate",
+                "group_by": (
+                    "string (required for categorized_tracking) — "
+                    "field to group events by (must be in fields list)"
+                ),
+            },
+            "example": {
+                "name": "hrv_tracking",
+                "type": "field_tracking",
+                "source_events": ["sleep.logged"],
+                "fields": ["hrv_rmssd", "deep_sleep_pct"],
+            },
+        },
+        "projection_rule.archived": {
+            "description": (
+                "Deactivate a custom projection rule. The corresponding "
+                "custom projection will be deleted."
+            ),
+            "fields": {
+                "name": "string (required) — rule name to archive",
+            },
+            "example": {"name": "hrv_tracking"},
+        },
         # --- Data corrections ---
         "event.retracted": {
             "description": (

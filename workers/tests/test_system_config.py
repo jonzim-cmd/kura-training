@@ -123,7 +123,7 @@ class TestBuildSystemConfig:
 
     def test_event_conventions_count(self):
         result = build_system_config()
-        assert len(result["event_conventions"]) == 19
+        assert len(result["event_conventions"]) == 21
 
     def test_interview_guide_structure(self):
         result = build_system_config()

@@ -36,6 +36,15 @@ def mock_conn():
     return conn
 
 
+def _no_custom_rules():
+    """Patch context: no custom projection rules exist."""
+    return patch(
+        "kura_workers.handlers.custom_projection.has_matching_custom_rules",
+        new_callable=AsyncMock,
+        return_value=False,
+    )
+
+
 class TestHandleProjectionUpdate:
     @pytest.mark.asyncio
     async def test_advisory_lock_acquired(self, mock_conn):
@@ -43,13 +52,15 @@ class TestHandleProjectionUpdate:
         user_id = "test-user-123"
         payload = {"event_type": "bodyweight.logged", "user_id": user_id}
 
-        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[]):
+        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[]), \
+             _no_custom_rules():
             await handle_projection_update(mock_conn, payload)
 
         # No handlers → no lock needed (early return before lock)
         # Let's test with a handler instead
         handler = AsyncMock()
-        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[handler]):
+        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[handler]), \
+             _no_custom_rules():
             await handle_projection_update(mock_conn, payload)
 
         # First execute call should be the advisory lock
@@ -64,7 +75,8 @@ class TestHandleProjectionUpdate:
         handler.__name__ = "test_handler"
         payload = {"event_type": "test.event", "user_id": "user-1", "event_id": "evt-1"}
 
-        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[handler]):
+        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[handler]), \
+             _no_custom_rules():
             await handle_projection_update(mock_conn, payload)
 
         # Should only have the advisory lock call, no INSERT
@@ -85,7 +97,8 @@ class TestHandleProjectionUpdate:
         txn_cm.__aexit__ = AsyncMock(return_value=False)  # don't suppress
         mock_conn.transaction.return_value = txn_cm
 
-        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[handler]):
+        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[handler]), \
+             _no_custom_rules():
             await handle_projection_update(mock_conn, payload)
 
         # Find the INSERT call
@@ -117,7 +130,8 @@ class TestHandleProjectionUpdate:
         txn_cm.__aexit__ = AsyncMock(return_value=False)
         mock_conn.transaction.return_value = txn_cm
 
-        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[handler_a, handler_b]):
+        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[handler_a, handler_b]), \
+             _no_custom_rules():
             await handle_projection_update(mock_conn, payload)
 
         # Both handlers called
@@ -137,7 +151,8 @@ class TestHandleProjectionUpdate:
         """No handlers for event_type should return without acquiring lock."""
         payload = {"event_type": "unknown.event", "user_id": "user-1"}
 
-        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[]):
+        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[]), \
+             _no_custom_rules():
             await handle_projection_update(mock_conn, payload)
 
         # No execute calls at all (no lock, no insert)
@@ -176,7 +191,8 @@ class TestHandleProjectionUpdate:
 
         mock_conn.execute = AsyncMock(side_effect=execute_side_effect)
 
-        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[handler_a, handler_b]):
+        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[handler_a, handler_b]), \
+             _no_custom_rules():
             await handle_projection_update(mock_conn, payload)
 
         # handler_b should still have been called despite retry INSERT failure
@@ -307,7 +323,8 @@ class TestConcurrencySafety:
         conn_a = make_conn()
         conn_b = make_conn()
 
-        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[handler]):
+        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[handler]), \
+             _no_custom_rules():
             await asyncio.gather(
                 handle_projection_update(conn_a, payload_a),
                 handle_projection_update(conn_b, payload_b),

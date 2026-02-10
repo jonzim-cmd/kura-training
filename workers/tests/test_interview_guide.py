@@ -142,6 +142,7 @@ class TestEventConventions:
             "weight_target.set", "sleep_target.set", "nutrition_target.set",
             "profile.updated", "preference.set", "goal.set", "injury.reported",
             "event.retracted",
+            "projection_rule.created", "projection_rule.archived",
         }
         assert set(conventions.keys()) == expected
 

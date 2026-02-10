@@ -114,8 +114,15 @@ async def handle_projection_update(
         payload = {**payload, "event_id": resolved["event_id"], "event_type": event_type}
 
     handlers = get_projection_handlers(event_type)
-    if not handlers:
-        logger.debug("No projection handlers for event_type=%s, skipping", event_type)
+
+    # Phase 3: Check for matching custom projection rules.
+    # Import here to avoid circular imports (custom_projection imports from registry).
+    from .custom_projection import has_matching_custom_rules, recompute_matching_rules
+
+    has_custom = await has_matching_custom_rules(conn, user_id, event_type)
+
+    if not handlers and not has_custom:
+        logger.debug("No handlers or custom rules for event_type=%s, skipping", event_type)
         return
 
     await _acquire_user_lock(conn, user_id)
@@ -153,6 +160,22 @@ async def handle_projection_update(
                     "CRITICAL: Failed to enqueue retry job for handler %s — failure will be lost",
                     handler.__name__,
                 )
+
+    # Phase 3: Recompute custom projections matching this event_type
+    if has_custom:
+        t0 = time.monotonic()
+        try:
+            async with conn.transaction():
+                await recompute_matching_rules(conn, user_id, event_type, payload.get("event_id", ""))
+            duration_ms = (time.monotonic() - t0) * 1000
+            record_handler_invocation("custom_projection_rules", duration_ms, success=True)
+        except Exception:
+            duration_ms = (time.monotonic() - t0) * 1000
+            record_handler_invocation("custom_projection_rules", duration_ms, success=False)
+            logger.exception(
+                "Custom projection rule recompute failed for event_type=%s user=%s",
+                event_type, user_id,
+            )
 
 
 @register("projection.retry")
