@@ -12,6 +12,7 @@ use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/v1/projections", get(snapshot))
         .route(
             "/v1/projections/{projection_type}/{key}",
             get(get_projection),
@@ -55,6 +56,51 @@ impl ProjectionRow {
             meta,
         }
     }
+}
+
+/// Get all projections for the authenticated user (snapshot)
+///
+/// Returns every projection across all dimension types in a single call.
+/// Designed for agent bootstrap: one request gives the full picture.
+#[utoipa::path(
+    get,
+    path = "/v1/projections",
+    responses(
+        (status = 200, description = "All projections for this user", body = Vec<ProjectionResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "projections"
+)]
+pub async fn snapshot(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+) -> Result<Json<Vec<ProjectionResponse>>, AppError> {
+    let user_id = auth.user_id;
+
+    let mut tx = state.db.begin().await?;
+
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+    let rows = sqlx::query_as::<_, ProjectionRow>(
+        r#"
+        SELECT id, user_id, projection_type, key, data, version, last_event_id, updated_at
+        FROM projections
+        WHERE user_id = $1
+        ORDER BY projection_type, key
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    let responses: Vec<ProjectionResponse> = rows.into_iter().map(|r| r.into_response()).collect();
+    Ok(Json(responses))
 }
 
 /// Get a single projection by type and key

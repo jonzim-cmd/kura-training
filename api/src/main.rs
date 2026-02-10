@@ -31,6 +31,7 @@ mod state;
         routes::auth::authorize_form,
         routes::auth::authorize_submit,
         routes::auth::token,
+        routes::projections::snapshot,
         routes::projections::get_projection,
         routes::projections::list_projections,
         routes::system::get_system_config,
