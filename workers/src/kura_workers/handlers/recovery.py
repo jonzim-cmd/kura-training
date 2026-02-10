@@ -67,6 +67,28 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "recovery_priorities",
         "stress_factors",
     ],
+    "output_schema": {
+        "sleep": {
+            "recent_entries": [{"date": "ISO 8601 date", "duration_hours": "number", "quality": "string (optional)", "bed_time": "string (optional)", "wake_time": "string (optional)"}],
+            "weekly_average": [{"week": "ISO 8601 week", "avg_duration_hours": "number", "entries": "integer"}],
+            "overall": {"avg_duration_hours": "number", "total_entries": "integer"},
+        },
+        "soreness": {
+            "total_entries": "integer",
+            "current": [{"area": "string", "severity": "integer (1-5)", "date": "ISO 8601 date", "notes": "string (optional)"}],
+            "recent_entries": [{"date": "ISO 8601 date", "area": "string", "severity": "integer (1-5)", "notes": "string (optional)"}],
+        },
+        "energy": {
+            "recent_entries": [{"date": "ISO 8601 date", "level": "number (1-10)", "time_of_day": "string (optional)"}],
+            "weekly_average": [{"week": "ISO 8601 week", "avg_level": "number", "entries": "integer"}],
+            "overall": {"avg_level": "number", "total_entries": "integer"},
+        },
+        "targets": {"sleep": "object — from sleep_target.set event data (optional)"},
+        "data_quality": {
+            "anomalies": [{"event_id": "string", "field": "string", "value": "any", "expected_range": "[min, max]", "message": "string"}],
+            "observed_attributes": {"<event_type>": {"<field>": "integer — count"}},
+        },
+    },
     "manifest_contribution": _manifest_contribution,
 })
 async def update_recovery(

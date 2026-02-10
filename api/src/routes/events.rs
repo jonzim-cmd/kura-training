@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -166,6 +168,72 @@ fn check_event_plausibility(event_type: &str, data: &serde_json::Value) -> Vec<E
     warnings
 }
 
+/// Fetch all distinct exercise_ids for a user from the events table.
+async fn fetch_user_exercise_ids(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+) -> Result<HashSet<String>, AppError> {
+    let rows = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT DISTINCT lower(trim(data->>'exercise_id'))
+        FROM events
+        WHERE user_id = $1
+          AND data->>'exercise_id' IS NOT NULL
+          AND trim(data->>'exercise_id') != ''
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().collect())
+}
+
+/// Check if an exercise_id is new and similar to existing ones.
+/// Returns a warning if close matches are found (Jaro-Winkler >= 0.8).
+fn check_exercise_id_similarity(
+    event_type: &str,
+    data: &serde_json::Value,
+    known_ids: &HashSet<String>,
+) -> Vec<EventWarning> {
+    // Only check relevant event types
+    if event_type != "set.logged" && event_type != "exercise.alias_created" {
+        return Vec::new();
+    }
+
+    let exercise_id = match data.get("exercise_id").and_then(|v| v.as_str()) {
+        Some(id) if !id.trim().is_empty() => id.trim().to_lowercase(),
+        _ => return Vec::new(),
+    };
+
+    // If already known, no warning needed
+    if known_ids.contains(&exercise_id) {
+        return Vec::new();
+    }
+
+    // Find similar existing exercise_ids
+    let mut similar: Vec<&String> = known_ids
+        .iter()
+        .filter(|existing| strsim::jaro_winkler(&exercise_id, existing) >= 0.8)
+        .collect();
+
+    if similar.is_empty() {
+        return Vec::new();
+    }
+
+    similar.sort();
+    let similar_str: Vec<&str> = similar.iter().map(|s| s.as_str()).collect();
+    vec![EventWarning {
+        field: "exercise_id".to_string(),
+        message: format!(
+            "New exercise_id '{}'. Similar existing: {}",
+            exercise_id,
+            similar_str.join(", ")
+        ),
+        severity: "warning".to_string(),
+    }]
+}
+
 /// Insert a single event into the database within a transaction that sets RLS context.
 async fn insert_event(
     pool: &sqlx::PgPool,
@@ -246,7 +314,16 @@ pub async fn create_event(
     let user_id = auth.user_id;
     validate_event(&req)?;
 
-    let warnings = check_event_plausibility(&req.event_type, &req.data);
+    let mut warnings = check_event_plausibility(&req.event_type, &req.data);
+
+    // Exercise-ID similarity check (needs DB to fetch known IDs)
+    let known_ids = fetch_user_exercise_ids(&state.db, user_id).await?;
+    warnings.extend(check_exercise_id_similarity(
+        &req.event_type,
+        &req.data,
+        &known_ids,
+    ));
+
     let event = insert_event(&state.db, user_id, req).await?;
 
     Ok((StatusCode::CREATED, Json(CreateEventResponse { event, warnings })))
@@ -298,6 +375,9 @@ pub async fn create_events_batch(
         });
     }
 
+    // Fetch known exercise_ids once for the entire batch
+    let mut known_ids = fetch_user_exercise_ids(&state.db, user_id).await?;
+
     // Validate all events before writing any
     let mut all_warnings: Vec<BatchEventWarning> = Vec::new();
     for (i, event) in req.events.iter().enumerate() {
@@ -324,6 +404,24 @@ pub async fn create_events_batch(
                 message: w.message,
                 severity: w.severity,
             });
+        }
+
+        // Exercise-ID similarity check
+        for w in check_exercise_id_similarity(&event.event_type, &event.data, &known_ids) {
+            all_warnings.push(BatchEventWarning {
+                event_index: i,
+                field: w.field,
+                message: w.message,
+                severity: w.severity,
+            });
+        }
+
+        // Track new exercise_id from this event for subsequent events in batch
+        if let Some(eid) = event.data.get("exercise_id").and_then(|v| v.as_str()) {
+            let normalized = eid.trim().to_lowercase();
+            if !normalized.is_empty() {
+                known_ids.insert(normalized);
+            }
         }
     }
 
@@ -814,5 +912,134 @@ mod tests {
     fn test_warning_severity_is_always_warning() {
         let w = check_event_plausibility("set.logged", &json!({"weight_kg": 999}));
         assert!(w.iter().all(|w| w.severity == "warning"));
+    }
+
+    // --- Exercise-ID similarity tests ---
+
+    fn known_ids(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn test_similarity_no_similar() {
+        let ids = known_ids(&["barbell_back_squat", "bench_press", "deadlift"]);
+        let w = check_exercise_id_similarity(
+            "set.logged",
+            &json!({"exercise_id": "overhead_press"}),
+            &ids,
+        );
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_similarity_match_found() {
+        let ids = known_ids(&["lateral_raise", "bench_press"]);
+        let w = check_exercise_id_similarity(
+            "set.logged",
+            &json!({"exercise_id": "lu_raise"}),
+            &ids,
+        );
+        // "lu_raise" is not similar enough to "lateral_raise" (jaro_winkler ~0.72)
+        // so let's use a closer match
+        let ids2 = known_ids(&["lateral_raise", "bench_press"]);
+        let w2 = check_exercise_id_similarity(
+            "set.logged",
+            &json!({"exercise_id": "laterl_raise"}),
+            &ids2,
+        );
+        assert_eq!(w2.len(), 1);
+        assert_eq!(w2[0].field, "exercise_id");
+        assert!(w2[0].message.contains("lateral_raise"));
+    }
+
+    #[test]
+    fn test_similarity_existing_no_warning() {
+        let ids = known_ids(&["bench_press", "deadlift"]);
+        let w = check_exercise_id_similarity(
+            "set.logged",
+            &json!({"exercise_id": "bench_press"}),
+            &ids,
+        );
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_similarity_case_insensitive() {
+        let ids = known_ids(&["bench_press"]);
+        let w = check_exercise_id_similarity(
+            "set.logged",
+            &json!({"exercise_id": "Bench_Press"}),
+            &ids,
+        );
+        assert!(w.is_empty()); // normalized to lowercase, matches
+    }
+
+    #[test]
+    fn test_similarity_irrelevant_event_type() {
+        let ids = known_ids(&["bench_press"]);
+        let w = check_exercise_id_similarity(
+            "meal.logged",
+            &json!({"exercise_id": "bench_pres"}),
+            &ids,
+        );
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_similarity_alias_created_event_type() {
+        let ids = known_ids(&["bench_press"]);
+        let w = check_exercise_id_similarity(
+            "exercise.alias_created",
+            &json!({"exercise_id": "bench_pres"}),
+            &ids,
+        );
+        assert_eq!(w.len(), 1);
+        assert!(w[0].message.contains("bench_press"));
+    }
+
+    #[test]
+    fn test_similarity_empty_exercise_id() {
+        let ids = known_ids(&["bench_press"]);
+        let w = check_exercise_id_similarity(
+            "set.logged",
+            &json!({"exercise_id": ""}),
+            &ids,
+        );
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_similarity_missing_exercise_id() {
+        let ids = known_ids(&["bench_press"]);
+        let w = check_exercise_id_similarity(
+            "set.logged",
+            &json!({"weight_kg": 80}),
+            &ids,
+        );
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_similarity_empty_known_ids() {
+        let ids = known_ids(&[]);
+        let w = check_exercise_id_similarity(
+            "set.logged",
+            &json!({"exercise_id": "bench_press"}),
+            &ids,
+        );
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_similarity_message_format() {
+        let ids = known_ids(&["bench_press", "bench_presse"]);
+        let w = check_exercise_id_similarity(
+            "set.logged",
+            &json!({"exercise_id": "bench_pres"}),
+            &ids,
+        );
+        assert_eq!(w.len(), 1);
+        assert!(w[0].message.starts_with("New exercise_id 'bench_pres'. Similar existing:"));
+        assert_eq!(w[0].severity, "warning");
     }
 }

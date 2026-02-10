@@ -78,6 +78,36 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "experience_level",
         "typical_rep_ranges",
     ],
+    "output_schema": {
+        "exercise": "string — canonical exercise name (exercise_id)",
+        "estimated_1rm": "number — current best Epley 1RM in kg",
+        "estimated_1rm_date": "ISO 8601 datetime — when best 1RM was achieved",
+        "total_sessions": "integer — distinct training sessions",
+        "total_sets": "integer",
+        "total_volume_kg": "number — sum(weight_kg * reps)",
+        "recent_sessions": [{
+            "timestamp": "ISO 8601 datetime",
+            "weight_kg": "number",
+            "reps": "integer",
+            "estimated_1rm": "number — Epley formula",
+            "rpe": "number (optional)",
+            "set_type": "string (optional)",
+            "session_id": "string (optional)",
+            "extra": "object — unknown fields passed through (optional)",
+        }],
+        "weekly_history": [{
+            "week": "ISO 8601 week (e.g. 2026-W06)",
+            "estimated_1rm": "number — best of week",
+            "total_sets": "integer",
+            "total_volume_kg": "number",
+            "max_weight_kg": "number",
+        }],
+        "data_quality": {
+            "anomalies": [{"event_id": "string", "field": "string", "value": "any", "expected_range": "[min, max]", "message": "string"}],
+            "field_hints": [{"field": "string", "hint": "string"}],
+            "observed_attributes": {"<event_type>": {"<field>": "integer — count"}},
+        },
+    },
     "manifest_contribution": _manifest_contribution,
 })
 async def update_exercise_progression(

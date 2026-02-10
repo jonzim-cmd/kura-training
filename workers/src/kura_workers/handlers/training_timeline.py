@@ -214,6 +214,45 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "current_program",
         "training_schedule",
     ],
+    "output_schema": {
+        "recent_days": [{
+            "date": "ISO 8601 date",
+            "exercises": ["string — canonical exercise names"],
+            "total_sets": "integer",
+            "total_volume_kg": "number",
+            "total_reps": "integer",
+            "top_sets": {"<exercise_id>": {"weight_kg": "number", "reps": "integer", "estimated_1rm": "number"}},
+        }],
+        "recent_sessions": [{
+            "date": "ISO 8601 date",
+            "exercises": ["string"],
+            "total_sets": "integer",
+            "total_volume_kg": "number",
+            "total_reps": "integer",
+            "session_id": "string (optional)",
+            "top_sets": {"<exercise_id>": {"weight_kg": "number", "reps": "integer", "estimated_1rm": "number"}},
+        }],
+        "weekly_summary": [{
+            "week": "ISO 8601 week (e.g. 2026-W06)",
+            "training_days": "integer",
+            "total_sets": "integer",
+            "total_volume_kg": "number",
+            "exercises": ["string"],
+        }],
+        "current_frequency": {
+            "last_4_weeks": "number — avg training days/week",
+            "last_12_weeks": "number — avg training days/week",
+        },
+        "last_training": "ISO 8601 date",
+        "total_training_days": "integer",
+        "streak": {
+            "current_weeks": "integer — consecutive weeks with training",
+            "longest_weeks": "integer",
+        },
+        "data_quality": {
+            "observed_attributes": {"<event_type>": {"<field>": "integer — count"}},
+        },
+    },
     "manifest_contribution": _manifest_contribution,
 })
 async def update_training_timeline(

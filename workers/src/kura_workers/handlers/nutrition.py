@@ -68,6 +68,42 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "dietary_preferences",
         "meal_schedule",
     ],
+    "output_schema": {
+        "total_meals": "integer",
+        "tracking_days": "integer",
+        "latest_date": "ISO 8601 date or null",
+        "daily_totals": [{
+            "date": "ISO 8601 date",
+            "calories": "number",
+            "protein_g": "number",
+            "carbs_g": "number",
+            "fat_g": "number",
+            "meals": "integer",
+        }],
+        "weekly_average": [{
+            "week": "ISO 8601 week",
+            "avg_calories": "number",
+            "avg_protein_g": "number",
+            "avg_carbs_g": "number",
+            "avg_fat_g": "number",
+            "tracking_days": "integer",
+            "total_meals": "integer",
+        }],
+        "recent_meals": [{
+            "date": "ISO 8601 date",
+            "calories": "number",
+            "protein_g": "number (optional)",
+            "carbs_g": "number (optional)",
+            "fat_g": "number (optional)",
+            "meal_type": "string (optional)",
+            "description": "string (optional)",
+        }],
+        "target": "object — from nutrition_target.set event data (optional)",
+        "data_quality": {
+            "anomalies": [{"event_id": "string", "field": "string", "value": "any", "expected_range": "[min, max]", "message": "string"}],
+            "observed_attributes": {"<event_type>": {"<field>": "integer — count"}},
+        },
+    },
     "manifest_contribution": _manifest_contribution,
 })
 async def update_nutrition(

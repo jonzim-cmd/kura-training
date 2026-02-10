@@ -63,6 +63,29 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "weigh_in_habits",
         "measurement_preferences",
     ],
+    "output_schema": {
+        "current_weight_kg": "number or null",
+        "total_weigh_ins": "integer",
+        "weight_trend": {
+            "recent_entries": [{"date": "ISO 8601 date", "weight_kg": "number", "time_of_day": "string (optional)", "conditions": "string (optional)"}],
+            "weekly_average": [{"week": "ISO 8601 week", "avg_weight_kg": "number", "measurements": "integer"}],
+            "all_time": {"min_kg": "number", "max_kg": "number", "first_date": "ISO 8601 date", "latest_date": "ISO 8601 date", "total_entries": "integer"},
+        },
+        "measurements": {
+            "<measurement_type>": {
+                "current_cm": "number",
+                "latest_date": "ISO 8601 date",
+                "history": [{"date": "ISO 8601 date", "value_cm": "number", "side": "string (optional)"}],
+                "all_time": {"min_cm": "number", "max_cm": "number", "total_entries": "integer"},
+            },
+        },
+        "measurement_types": ["string"],
+        "target": "object — from weight_target.set event data (optional)",
+        "data_quality": {
+            "anomalies": [{"event_id": "string", "field": "string", "value": "any", "expected_range": "[min, max]", "message": "string"}],
+            "observed_attributes": {"<event_type>": {"<field>": "integer — count"}},
+        },
+    },
     "manifest_contribution": _manifest_contribution,
 })
 async def update_body_composition(

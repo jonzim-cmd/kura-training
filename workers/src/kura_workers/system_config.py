@@ -147,8 +147,86 @@ def build_dimensions(dimension_metadata: dict[str, dict[str, Any]]) -> dict[str,
         }
         if "context_seeds" in meta:
             entry["context_seeds"] = meta["context_seeds"]
+        if "output_schema" in meta:
+            entry["output_schema"] = meta["output_schema"]
         dimensions[name] = entry
     return dimensions
+
+
+def _get_projection_schemas() -> dict[str, Any]:
+    """Output schemas for non-dimension projections (user_profile, custom).
+
+    Domain dimensions declare output_schema in their dimension_meta and appear
+    in the 'dimensions' section. These projections don't have dimension_meta
+    but agents still need to know their structure.
+    """
+    return {
+        "user_profile": {
+            "projection_key": "me",
+            "description": "User identity, preferences, data quality, and agent agenda",
+            "output_schema": {
+                "user": {
+                    "aliases": {"<alias>": {"target": "string — canonical exercise_id", "confidence": "string — confirmed|inferred"}},
+                    "preferences": {"<key>": "any"},
+                    "goals": ["object — goal-specific fields"],
+                    "profile": "object or null — accumulated profile.updated fields",
+                    "injuries": ["object — injury reports (optional)"],
+                    "dimensions": {
+                        "<dimension_name>": {
+                            "status": "string — active|no_data",
+                            "freshness": "ISO 8601 datetime (if active)",
+                            "coverage": {"from": "ISO 8601 date", "to": "ISO 8601 date"},
+                        },
+                    },
+                    "observed_patterns": {
+                        "observed_fields": {"<event_type>": {"<field>": {"count": "integer", "dimensions": ["string"]}}},
+                        "orphaned_event_types": {"<event_type>": {"count": "integer", "common_fields": ["string"]}},
+                    },
+                    "data_quality": {
+                        "total_set_logged_events": "integer",
+                        "events_without_exercise_id": "integer",
+                        "actionable": [{"type": "string — unresolved_exercise|unconfirmed_alias", "exercise": "string", "occurrences": "integer"}],
+                        "orphaned_event_types": [{"event_type": "string", "count": "integer"}],
+                    },
+                    "interview_coverage": [{"area": "string", "status": "string — covered|uncovered|needs_depth"}],
+                },
+                "agenda": [{
+                    "priority": "string — high|medium|low|info",
+                    "type": "string — onboarding_needed|profile_refresh_suggested|resolve_exercises|confirm_alias|field_observed|orphaned_event_type",
+                    "detail": "string",
+                    "dimensions": ["string"],
+                }],
+            },
+        },
+        "custom": {
+            "description": "Agent-created custom projections (Decision 10, Phase 3)",
+            "projection_key": "<rule_name>",
+            "patterns": {
+                "field_tracking": {
+                    "output_schema": {
+                        "rule": "object — the projection_rule.created event data",
+                        "recent_entries": [{"date": "ISO 8601 date", "<field>": "number — daily average"}],
+                        "weekly_summary": [{"week": "ISO 8601 week", "entries": "integer", "<field>_avg": "number"}],
+                        "all_time": {"<field>": {"avg": "number", "min": "number", "max": "number", "count": "integer"}},
+                        "data_quality": {"total_events_processed": "integer", "fields_present": {"<field>": "integer"}},
+                    },
+                },
+                "categorized_tracking": {
+                    "output_schema": {
+                        "rule": "object — the projection_rule.created event data",
+                        "categories": {
+                            "<category>": {
+                                "count": "integer",
+                                "recent_entries": [{"timestamp": "ISO 8601 datetime", "<field>": "any"}],
+                                "fields": {"<field>": {"avg": "number", "min": "number", "max": "number"}},
+                            },
+                        },
+                        "data_quality": {"total_events_processed": "integer", "categories_found": "integer"},
+                    },
+                },
+            },
+        },
+    }
 
 
 def build_system_config() -> dict[str, Any]:
@@ -168,6 +246,7 @@ def build_system_config() -> dict[str, Any]:
         },
         "interview_guide": get_interview_guide(),
         "agent_behavior": _get_agent_behavior(),
+        "projection_schemas": _get_projection_schemas(),
     }
 
 

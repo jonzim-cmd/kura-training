@@ -60,6 +60,9 @@ governor = "0.10"
 # URL handling
 url = "2"
 
+# String similarity
+strsim = "0.11"
+
 # CLI extras
 open = "5"
 dirs = "6"

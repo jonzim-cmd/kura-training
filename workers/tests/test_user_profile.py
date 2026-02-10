@@ -4,7 +4,7 @@ System layer tests are in test_system_config.py — user_profile only produces
 user + agenda (dynamic per-user data).
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from kura_workers.handlers.user_profile import (
     _build_agenda,
@@ -12,6 +12,7 @@ from kura_workers.handlers.user_profile import (
     _build_observed_patterns,
     _build_user_dimensions,
     _compute_interview_coverage,
+    _escalate_priority,
     _find_orphaned_event_types,
     _find_unconfirmed_aliases,
     _resolve_exercises,
@@ -837,7 +838,7 @@ class TestAgendaWithObservedPatterns:
         result = _build_agenda([], [], observed_patterns=patterns)
         assert len(result) == 1
         item = result[0]
-        assert item["priority"] == "info"
+        assert item["priority"] == "low"  # 47 > 20 → escalated from info to low
         assert item["type"] == "field_observed"
         assert item["event_type"] == "set.logged"
         assert item["field"] == "tempo"
@@ -858,7 +859,7 @@ class TestAgendaWithObservedPatterns:
         result = _build_agenda([], [], observed_patterns=patterns)
         assert len(result) == 1
         item = result[0]
-        assert item["priority"] == "info"
+        assert item["priority"] == "high"  # 180 > 100 → escalated to high
         assert item["type"] == "orphaned_event_type"
         assert item["event_type"] == "supplement.logged"
         assert item["count"] == 180
@@ -924,6 +925,10 @@ class TestAgendaWithObservedPatterns:
         assert all(a["priority"] != "info" for a in result)
 
     def test_multiple_fields_and_orphans(self):
+        """With escalation: counts determine priorities.
+        bar_speed=18 → info, tempo=47 → low, hrv_rmssd=90 → medium,
+        cardio=24 → low, supplement=180 → high.
+        """
         patterns = {
             "observed_fields": {
                 "set.logged": {
@@ -940,12 +945,13 @@ class TestAgendaWithObservedPatterns:
             },
         }
         result = _build_agenda([], [], observed_patterns=patterns)
-        info_items = [a for a in result if a["priority"] == "info"]
-        assert len(info_items) == 5  # 3 fields + 2 orphaned types
-        field_items = [a for a in info_items if a["type"] == "field_observed"]
-        orphan_items = [a for a in info_items if a["type"] == "orphaned_event_type"]
-        assert len(field_items) == 3
-        assert len(orphan_items) == 2
+        assert len(result) == 5  # 3 fields + 2 orphaned types
+        # Sorted by priority: high, medium, low, low, info
+        priorities = [a["priority"] for a in result]
+        assert priorities == ["high", "medium", "low", "low", "info"]
+        # Verify the high item is supplement.logged (count=180)
+        assert result[0]["type"] == "orphaned_event_type"
+        assert result[0]["event_type"] == "supplement.logged"
 
     def test_backwards_compatible_without_observed_patterns(self):
         """_build_agenda still works when called without observed_patterns."""
@@ -955,3 +961,144 @@ class TestAgendaWithObservedPatterns:
         )
         assert len(result) == 1
         assert result[0]["type"] == "resolve_exercises"
+
+    def test_first_seen_included_in_agenda_items(self):
+        """first_seen propagates from observed_patterns into agenda items."""
+        fs = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+        patterns = {
+            "observed_fields": {
+                "set.logged": {
+                    "tempo": {"count": 5, "dimensions": ["training_timeline"], "first_seen": fs},
+                },
+            },
+            "orphaned_event_types": {
+                "cardio.logged": {"count": 3, "common_fields": ["type"], "first_seen": fs},
+            },
+        }
+        result = _build_agenda([], [], observed_patterns=patterns)
+        assert len(result) == 2
+        for item in result:
+            assert "first_seen" in item
+            assert item["first_seen"] == fs
+
+    def test_escalation_by_age_in_agenda(self):
+        """Old fields escalate priority even with low counts."""
+        fs = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        patterns = {
+            "observed_fields": {
+                "set.logged": {
+                    "tempo": {"count": 5, "dimensions": ["training_timeline"], "first_seen": fs},
+                },
+            },
+        }
+        result = _build_agenda([], [], observed_patterns=patterns)
+        assert result[0]["priority"] == "high"  # >28 days old
+
+    def test_agenda_sorted_by_priority(self):
+        """Agenda items are sorted: high → medium → low → info."""
+        patterns = {
+            "observed_fields": {
+                "set.logged": {
+                    "new_field": {"count": 5, "dimensions": ["training_timeline"]},  # info
+                },
+            },
+            "orphaned_event_types": {
+                "supplement.logged": {"count": 200, "common_fields": ["name"]},  # high
+            },
+        }
+        result = _build_agenda(
+            unresolved_exercises=[{"exercise": "thing", "occurrences": 3}],
+            unconfirmed_aliases=[],
+            observed_patterns=patterns,
+        )
+        priorities = [a["priority"] for a in result]
+        assert priorities == ["high", "medium", "info"]
+
+
+# --- TestEscalatePriority ---
+
+
+class TestEscalatePriority:
+    def test_default_info(self):
+        assert _escalate_priority(5, None) == "info"
+
+    def test_low_by_count(self):
+        assert _escalate_priority(25, None) == "low"
+
+    def test_low_by_age(self):
+        fs = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+        assert _escalate_priority(5, fs) == "low"
+
+    def test_medium_by_count(self):
+        assert _escalate_priority(60, None) == "medium"
+
+    def test_medium_by_age(self):
+        fs = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat()
+        assert _escalate_priority(5, fs) == "medium"
+
+    def test_high_by_count(self):
+        assert _escalate_priority(150, None) == "high"
+
+    def test_high_by_age(self):
+        fs = (datetime.now(timezone.utc) - timedelta(days=35)).isoformat()
+        assert _escalate_priority(5, fs) == "high"
+
+    def test_or_semantics_count_wins(self):
+        """Recent but many events — count determines priority."""
+        fs = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        assert _escalate_priority(60, fs) == "medium"
+
+    def test_or_semantics_age_wins(self):
+        """Old but few events — age determines priority."""
+        fs = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        assert _escalate_priority(5, fs) == "high"
+
+    def test_boundary_20_is_info(self):
+        assert _escalate_priority(20, None) == "info"  # >20, not >=20
+
+    def test_boundary_21_is_low(self):
+        assert _escalate_priority(21, None) == "low"
+
+    def test_boundary_50_is_low(self):
+        assert _escalate_priority(50, None) == "low"  # >50, not >=50
+
+    def test_boundary_51_is_medium(self):
+        assert _escalate_priority(51, None) == "medium"
+
+    def test_boundary_100_is_medium(self):
+        assert _escalate_priority(100, None) == "medium"  # >100, not >=100
+
+    def test_boundary_101_is_high(self):
+        assert _escalate_priority(101, None) == "high"
+
+    def test_none_first_seen(self):
+        assert _escalate_priority(5, None) == "info"
+
+    def test_invalid_first_seen_ignored(self):
+        assert _escalate_priority(5, "not-a-date") == "info"
+
+
+# --- TestBuildObservedPatternsWithFirstSeen ---
+
+
+class TestBuildObservedPatternsWithFirstSeen:
+    def test_orphaned_first_seen_included(self):
+        orphaned = [{"event_type": "cardio.logged", "count": 10}]
+        fs = {"cardio.logged": "2026-01-15T10:00:00+00:00"}
+        result = _build_observed_patterns([], orphaned, {}, orphaned_first_seen=fs)
+        assert result["orphaned_event_types"]["cardio.logged"]["first_seen"] == "2026-01-15T10:00:00+00:00"
+
+    def test_observed_field_first_seen_included(self):
+        rows = [{
+            "projection_type": "exercise_progression",
+            "data": {"data_quality": {"observed_attributes": {"set.logged": {"tempo": 5}}}},
+        }]
+        fs = {"set.logged": {"tempo": "2026-01-20T08:00:00+00:00"}}
+        result = _build_observed_patterns(rows, [], {}, observed_field_first_seen=fs)
+        assert result["observed_fields"]["set.logged"]["tempo"]["first_seen"] == "2026-01-20T08:00:00+00:00"
+
+    def test_backwards_compatible_without_first_seen(self):
+        """Old-style call without first_seen params still works."""
+        orphaned = [{"event_type": "cardio.logged", "count": 10}]
+        result = _build_observed_patterns([], orphaned, {})
+        assert "first_seen" not in result["orphaned_event_types"]["cardio.logged"]

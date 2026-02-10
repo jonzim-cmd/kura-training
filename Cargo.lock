@@ -1217,6 +1217,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
+ "strsim",
  "thiserror 2.0.18",
  "tokio",
  "tower",

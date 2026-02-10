@@ -62,6 +62,27 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "available_days",
             "program_preference",
         ],
+        "output_schema": {
+            "active_plan": {
+                "plan_id": "string",
+                "name": "string",
+                "created_at": "ISO 8601 datetime",
+                "updated_at": "ISO 8601 datetime",
+                "status": "string — active|inactive",
+                "sessions": [{"name": "string", "exercises": ["object — plan-specific"]}],
+                "cycle_weeks": "integer or null",
+                "notes": "string or null",
+            },
+            "total_plans": "integer — active + archived",
+            "plan_history": [{
+                "plan_id": "string",
+                "name": "string",
+                "status": "string — archived",
+                "created_at": "ISO 8601 datetime",
+                "archived_at": "ISO 8601 datetime",
+                "archive_reason": "string (optional)",
+            }],
+        },
         "manifest_contribution": _manifest_contribution,
     },
 )

@@ -88,6 +88,26 @@ class TestBuildDimensions:
         result = build_dimensions(meta)
         assert result["dim_a"]["projection_key"] == "<exercise_id>"
 
+    def test_includes_output_schema(self):
+        meta = {
+            "dim_a": {
+                "name": "dim_a",
+                "description": "A",
+                "event_types": ["x"],
+                "output_schema": {"field_a": "number", "field_b": "string"},
+            },
+        }
+        result = build_dimensions(meta)
+        assert "output_schema" in result["dim_a"]
+        assert result["dim_a"]["output_schema"]["field_a"] == "number"
+
+    def test_omits_output_schema_when_not_declared(self):
+        meta = {
+            "dim_a": {"name": "dim_a", "description": "A", "event_types": ["x"]},
+        }
+        result = build_dimensions(meta)
+        assert "output_schema" not in result["dim_a"]
+
     def test_empty_metadata(self):
         result = build_dimensions({})
         assert result == {}
@@ -115,6 +135,7 @@ class TestBuildSystemConfig:
         assert "time_conventions" in result
         assert "interview_guide" in result
         assert "agent_behavior" in result
+        assert "projection_schemas" in result
 
     def test_time_conventions(self):
         result = build_system_config()
@@ -135,6 +156,28 @@ class TestBuildSystemConfig:
     def test_conventions_present(self):
         result = build_system_config()
         assert "exercise_normalization" in result["conventions"]
+
+    def test_all_domain_dimensions_have_output_schema(self):
+        result = build_system_config()
+        dimensions = result["dimensions"]
+        for name, dim in dimensions.items():
+            assert "output_schema" in dim, f"Dimension '{name}' missing output_schema"
+            assert isinstance(dim["output_schema"], dict), f"Dimension '{name}' output_schema not a dict"
+
+    def test_projection_schemas_has_user_profile(self):
+        result = build_system_config()
+        schemas = result["projection_schemas"]
+        assert "user_profile" in schemas
+        assert schemas["user_profile"]["projection_key"] == "me"
+        assert "output_schema" in schemas["user_profile"]
+
+    def test_projection_schemas_has_custom_patterns(self):
+        result = build_system_config()
+        schemas = result["projection_schemas"]
+        assert "custom" in schemas
+        assert "patterns" in schemas["custom"]
+        assert "field_tracking" in schemas["custom"]["patterns"]
+        assert "categorized_tracking" in schemas["custom"]["patterns"]
 
 
 # --- TestConventions ---

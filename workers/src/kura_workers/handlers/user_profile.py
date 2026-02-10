@@ -13,6 +13,7 @@ Reacts to all relevant event types. Full recompute on every event — idempotent
 import json
 import logging
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any
 
 import psycopg
@@ -101,10 +102,40 @@ def _find_orphaned_event_types(
     return orphaned
 
 
+def _escalate_priority(count: int, first_seen: str | None) -> str:
+    """Compute escalated priority based on event count and age.
+
+    Thresholds (OR-based — either criterion triggers):
+    - info: default
+    - low: >20 events OR >7 days old
+    - medium: >50 events OR >14 days old
+    - high: >100 events OR >28 days old
+    """
+    age_days = 0
+    if first_seen:
+        try:
+            fs = datetime.fromisoformat(first_seen)
+            if fs.tzinfo is None:
+                fs = fs.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - fs).days
+        except (ValueError, TypeError):
+            pass
+
+    if count > 100 or age_days > 28:
+        return "high"
+    if count > 50 or age_days > 14:
+        return "medium"
+    if count > 20 or age_days > 7:
+        return "low"
+    return "info"
+
+
 def _build_observed_patterns(
     projection_rows: list[dict[str, Any]],
     orphaned_event_types: list[dict[str, Any]],
     orphaned_field_samples: dict[str, list[str]],
+    orphaned_first_seen: dict[str, str] | None = None,
+    observed_field_first_seen: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Build observation landscape from projection data (Phase 2, Decision 10).
 
@@ -149,22 +180,29 @@ def _build_observed_patterns(
     # Deterministic output
     observed_fields: dict[str, Any] = {}
     for event_type in sorted(merged):
-        observed_fields[event_type] = {
-            field: {
+        observed_fields[event_type] = {}
+        for field, info in sorted(merged[event_type].items()):
+            entry = {
                 "count": info["count"],
                 "dimensions": sorted(info["dimensions"]),
             }
-            for field, info in sorted(merged[event_type].items())
-        }
+            if observed_field_first_seen and event_type in observed_field_first_seen:
+                fs = observed_field_first_seen[event_type].get(field)
+                if fs:
+                    entry["first_seen"] = fs
+            observed_fields[event_type][field] = entry
 
     # Orphaned event types with field analysis
     orphaned_types: dict[str, Any] = {}
     for orphaned in orphaned_event_types:
         et = orphaned["event_type"]
-        orphaned_types[et] = {
+        entry = {
             "count": orphaned["count"],
             "common_fields": orphaned_field_samples.get(et, []),
         }
+        if orphaned_first_seen and et in orphaned_first_seen:
+            entry["first_seen"] = orphaned_first_seen[et]
+        orphaned_types[et] = entry
 
     result: dict[str, Any] = {}
     if observed_fields:
@@ -392,24 +430,31 @@ def _build_agenda(
         })
 
     # Observation landscape (Phase 2, Decision 10)
-    # No thresholds — everything is surfaced. Frequency is metadata.
+    # Priority escalates based on event count + age (aok).
     if observed_patterns:
         for event_type, fields in sorted(observed_patterns.get("observed_fields", {}).items()):
             for field, info in sorted(fields.items()):
-                agenda.append({
-                    "priority": "info",
+                first_seen = info.get("first_seen")
+                priority = _escalate_priority(info["count"], first_seen)
+                item: dict[str, Any] = {
+                    "priority": priority,
                     "type": "field_observed",
                     "event_type": event_type,
                     "field": field,
                     "count": info["count"],
                     "dimensions": info["dimensions"],
                     "detail": f"Field '{field}' observed {info['count']} times in {event_type}",
-                })
+                }
+                if first_seen:
+                    item["first_seen"] = first_seen
+                agenda.append(item)
 
         for event_type, info in sorted(observed_patterns.get("orphaned_event_types", {}).items()):
             fields_str = ", ".join(info["common_fields"]) if info["common_fields"] else "unknown"
-            agenda.append({
-                "priority": "info",
+            first_seen = info.get("first_seen")
+            priority = _escalate_priority(info["count"], first_seen)
+            item = {
+                "priority": priority,
                 "type": "orphaned_event_type",
                 "event_type": event_type,
                 "count": info["count"],
@@ -418,7 +463,14 @@ def _build_agenda(
                     f"{info['count']} events of type '{event_type}' (no handler). "
                     f"Common fields: {fields_str}"
                 ),
-            })
+            }
+            if first_seen:
+                item["first_seen"] = first_seen
+            agenda.append(item)
+
+    # Sort by priority (most urgent first)
+    priority_order = {"high": 0, "medium": 1, "low": 2, "info": 3}
+    agenda.sort(key=lambda a: priority_order.get(a["priority"], 99))
 
     return agenda
 
@@ -619,10 +671,57 @@ async def update_user_profile(
         dimension_metadata, projection_rows, set_logged_range
     )
 
+    # First-seen timestamps for escalation (aok)
+    orphaned_first_seen: dict[str, str] = {}
+    if orphaned_event_types:
+        orphaned_type_names = [o["event_type"] for o in orphaned_event_types]
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT event_type, MIN(timestamp) as first_seen
+                FROM events
+                WHERE user_id = %s AND event_type = ANY(%s)
+                GROUP BY event_type
+                """,
+                (user_id, orphaned_type_names),
+            )
+            for r in await cur.fetchall():
+                orphaned_first_seen[r["event_type"]] = r["first_seen"].isoformat()
+
     # Observation landscape (Phase 2, Decision 10)
     observed_patterns = _build_observed_patterns(
         projection_rows, orphaned_event_types, orphaned_field_samples,
+        orphaned_first_seen=orphaned_first_seen,
     )
+
+    # First-seen for observed unknown fields (query after patterns are built)
+    observed_field_first_seen: dict[str, dict[str, str]] = {}
+    if observed_patterns and "observed_fields" in observed_patterns:
+        for et, fields in observed_patterns["observed_fields"].items():
+            field_names = list(fields.keys())
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT k AS field, MIN(e.timestamp) AS first_seen
+                    FROM events e,
+                         jsonb_object_keys(e.data) AS k
+                    WHERE e.user_id = %s
+                      AND e.event_type = %s
+                      AND k = ANY(%s)
+                    GROUP BY k
+                    """,
+                    (user_id, et, field_names),
+                )
+                for r in await cur.fetchall():
+                    observed_field_first_seen.setdefault(et, {})[r["field"]] = r["first_seen"].isoformat()
+
+    # Rebuild with first_seen enrichment if we have any
+    if observed_field_first_seen:
+        observed_patterns = _build_observed_patterns(
+            projection_rows, orphaned_event_types, orphaned_field_samples,
+            orphaned_first_seen=orphaned_first_seen,
+            observed_field_first_seen=observed_field_first_seen,
+        )
 
     data_quality = _build_data_quality(
         total_set_logged,
