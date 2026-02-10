@@ -25,60 +25,94 @@ The key insight: the agent is the **epigenetic signal**. It determines what gets
 
 ## Phased Implementation
 
-### Phase 1: Graceful Degradation (Innate Immunity)
+### Phase 1: Graceful Degradation (Innate Immunity) ✅
 
 **Goal:** Nothing gets silently dropped. Handlers become tolerant.
 
-Each handler defines `KNOWN_FIELDS` — the fields it actively processes. All other fields from the event are stored as `observed_attributes` in the projection. When expected fields are missing (e.g., no `weight_kg` on a set), `data_quality` signals this as a question, not an error.
+**Implemented (2026-02-09):**
+- `separate_known_unknown(data, known_fields)` utility in `utils.py`
+- `merge_observed_attributes(accumulator, event_type, unknown)` for frequency tracking
+- `check_expected_fields(data, expected)` for missing field hints
+- All 5 data handlers (exercise_progression, training_timeline, body_composition, recovery, nutrition) split known/unknown
+- Unknown fields stored as `observed_attributes` in each handler's `data_quality`
+- Backward compatible: existing projections gained `observed_attributes`, nothing else changed
 
-**Implementation:**
-- Utility function `separate_known_unknown(data, known_fields)` in `utils.py`
-- Each handler calls this; unknown fields stored per-set/per-event in projection
-- `data_quality` gets new hint type: `missing_expected_field` with message like "weight_kg missing — bodyweight exercise?"
-- Backward compatible: existing projections gain `observed_attributes`, nothing else changes
+### Phase 2: Pattern Detection (Adaptive Immunity) ✅
 
-**Scope:** Modify all 7 handlers + add utility function.
+**Goal:** System observes — no thresholds, everything surfaced immediately.
 
-### Phase 2: Pattern Detection (Adaptive Immunity)
+**Implemented (2026-02-10):**
+- `observed_attributes` event_type-aware: `{event_type: {field: count}}` in every handler's `data_quality`
+- `observed_patterns` in user_profile/me: cross-dimension merge of observed fields + orphaned event type field analysis
+- Agenda items with priority `info`: `field_observed` and `orphaned_event_type`
+- Datagen `--novel-fields` flag: profile-specific novel fields + orphaned event types (supplement.logged, cardio.logged)
+- No thresholds — frequency is metadata, not a gate. The agent decides what's relevant.
 
-**Goal:** System observes and suggests.
-
-Extend `orphaned_event_types` (already in user_profile) to also track:
-- **Recurring unknown fields:** If `duration_sec` appears 5+ times across events, flag it
-- **Agent query patterns:** If the agent repeatedly calls `GET /v1/events` with type filters (because projections don't cover it), log this as a signal
-- Surface in `agenda`: "Recurring field `band_strength` detected in pull_up sets. Consider creating a tracking rule."
-
-**Implementation:**
-- New section in user_profile projection: `observed_patterns`
-- Worker tracks field frequency across events per user
-- Agenda item generation when patterns cross threshold
+**Key insight from implementation:** The observation landscape revealed three distinct patterns that Phase 3 must handle:
+1. **Simple numeric tracking** — standalone fields (hrv_rmssd, fiber_g, stress_level) → "show me the trend over time"
+2. **Categorized tracking** — orphaned event types with a natural grouping key (supplements by name, cardio by type)
+3. **Contextual fields** — fields meaningful only within their parent event's context (tempo, rest_seconds, bar_speed in set.logged need exercise + weight context)
 
 ### Phase 3: Agent-Mediated Evolution (Epigenetics)
 
 **Goal:** Agent creates projection rules. System adapts to each user.
 
-The agent writes declarative projection rules — not code, not SQL:
+**Key design insight (from Phase 2 implementation):** Rules are simple declarations, not a DSL. The intelligence is in the agent's DECISION to create a rule, not in the rule itself. Like epigenetics: the signal says "express this gene," the cell does the complex work.
 
+**Agent autonomy:** The agent decides autonomously to create rules based on observed_patterns. It informs the user naturally ("I've started tracking your HRV trends") instead of asking technical questions ("Should I build a trend?"). Rules are inspectable and revocable — cheap to undo if wrong. Agent behavior scope levels (strict/moderate/proactive) govern how autonomous the agent acts.
+
+#### Three Rule Patterns
+
+**Pattern 1: Field Tracking** — standalone numeric fields from known event types.
+Agent sees `hrv_rmssd` 90× in sleep.logged → creates rule → engine builds time series.
 ```json
 {
-  "name": "band_progression",
-  "source_events": ["set.logged"],
-  "filter": {"exercise_id": "pull_up", "has_field": "band_strength"},
-  "extract": ["band_strength", "reps", "set_number"],
-  "group_by": "week",
-  "track": "latest_per_group"
+  "name": "hrv_tracking",
+  "type": "field_tracking",
+  "source_events": ["sleep.logged"],
+  "fields": ["hrv_rmssd", "deep_sleep_pct"]
 }
 ```
+Engine applies standard projection logic: recent values (30), daily, weekly averages, all-time stats, anomaly detection. Same patterns as core handlers — no new algorithms needed.
 
-A sandboxed execution engine processes these rules. The agent writes config, the engine executes only allowed operations (filter, extract, group, simple aggregation). Complex logic (Epley 1RM, alias resolution) stays in coded core handlers.
+**Pattern 2: Categorized Tracking** — orphaned event types with a natural grouping key.
+Agent sees 360 supplement.logged events → creates rule → engine builds per-category projection.
+```json
+{
+  "name": "supplement_tracking",
+  "type": "categorized_tracking",
+  "source_events": ["supplement.logged"],
+  "fields": ["name", "dose_mg", "timing"],
+  "group_by": "name"
+}
+```
+Engine groups events by the group_by field, then builds per-group time series.
 
-**Implementation:**
-- New event type: `projection_rule.created`, `projection_rule.updated`, `projection_rule.archived`
-- New handler: `custom_projection` — reads rules, applies them to events
-- API: `POST /v1/projection-rules` (agent-facing)
-- Sandboxed engine with whitelist of operations
-- Core handlers remain for complex logic (~30% of cases)
-- Declarative rules cover simple extraction + aggregation (~70% of cases)
+**Pattern 3: Contextual Fields** — fields meaningful only within their parent event's context (tempo, rest_seconds, bar_speed within set.logged need exercise + session context). **Deferred** — these are best handled by extending existing core handlers, not by standalone rules. Design TBD after Pattern 1+2 validation.
+
+#### Implementation
+
+**Events (event-sourced rules):**
+- `projection_rule.created` — rule data as event payload
+- `projection_rule.archived` — deactivates a rule
+
+**New handler:** `custom_projection` in workers
+- Subscribes to `projection_rule.created`, `projection_rule.archived`
+- On rule event: reads all active rules for user, recomputes matching projections
+- Full replay per rule (idempotent, same as core handlers)
+
+**Router extension:** After normal handler dispatch, router checks for active custom projection rules matching the event_type. Covers two cases:
+- Known event types (sleep.logged) where a field_tracking rule extracts novel fields
+- Orphaned event types (supplement.logged) that previously had no handler at all
+
+**Projection output:**
+- projection_type: `custom`
+- key: rule name (e.g., `hrv_tracking`)
+- data: standard structure (recent_entries, weekly_average, all_time, data_quality)
+
+**API:** Agent posts rule events via normal `POST /v1/events`. No dedicated endpoint needed initially — the events API is the universal interface.
+
+**Core handlers remain** for complex logic: Epley 1RM, alias resolution, session grouping, anomaly detection. Custom rules cover simple extraction + aggregation.
 
 ### Phase 4: Cross-Pollination (Immune Memory)
 
