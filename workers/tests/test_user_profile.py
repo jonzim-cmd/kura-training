@@ -345,7 +345,7 @@ class TestInterviewCoverage:
         result = _compute_interview_coverage(
             aliases={}, preferences={}, goals=[], profile_data={}, injuries=[],
         )
-        assert len(result) == 9  # All coverage areas
+        assert len(result) == 10  # All coverage areas
         for item in result:
             assert item["status"] == "uncovered"
 

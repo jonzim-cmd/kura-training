@@ -144,6 +144,16 @@ def get_interview_guide() -> dict[str, Any]:
                 "produces": ["profile.updated", "program.started"],
                 "examples": ["Folgst du einem Programm? Welchem?"],
             },
+            {
+                "area": "communication_preferences",
+                "description": "How the user wants to be addressed — tone, detail level, directness",
+                "approach": "conversational",
+                "produces": ["profile.updated"],
+                "examples": [
+                    "Emerges naturally from conversation style. Store as free text.",
+                    "Soll ich eher kurz und direkt sein, oder lieber mehr erklären?",
+                ],
+            },
         ],
     }
 
@@ -159,4 +169,5 @@ COVERAGE_AREAS = [
     "schedule",
     "nutrition_interest",
     "current_program",
+    "communication_preferences",
 ]

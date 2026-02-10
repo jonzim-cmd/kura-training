@@ -28,6 +28,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "available_equipment": "list[string] (optional)",
                 "primary_location": "string (optional: commercial_gym, home_gym, outdoor)",
                 "current_program": "string (optional)",
+                "communication_style": "string (optional, free text — how the user wants to be addressed)",
             },
             "example": {
                 "experience_level": "intermediate",
