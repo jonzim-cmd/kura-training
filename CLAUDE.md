@@ -75,6 +75,10 @@ Rust Workspace: api/ cli/ core/
 
 **Worker-Pipeline:** Event INSERT → PostgreSQL Trigger → background_jobs + NOTIFY → Python Worker (SKIP LOCKED) → UPSERT Projection
 
+**Worker-Debugging:**
+- Zombie-Worker-Falle: Immer `ps aux | grep kura` statt `pgrep -f "kura_workers.main"` — das `kura-worker` Binary hat einen anderen Prozessnamen als `python -m kura_workers.main`. Stale Worker stehlen Jobs lautlos.
+- Immer Worker-Logs prüfen, ob Handler tatsächlich geloggt werden (z.B. `Updated recovery for user=...`). Wenn nur "Listening on kura_jobs channel" kommt, verarbeitet ein anderer Prozess die Jobs.
+
 **CLI-Commands:** `kura health`, `kura event create/list`, `kura projection get/list`, `kura admin create-user/create-key`, `kura login/logout`
 
 ### Dimension Design Conventions
