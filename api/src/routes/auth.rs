@@ -706,7 +706,9 @@ struct RefreshTokenRow {
 
 #[cfg(test)]
 mod tests {
-    use super::is_valid_loopback_redirect;
+    use super::{is_valid_loopback_redirect, validate_oauth_client, AppError};
+    use sqlx::postgres::PgPoolOptions;
+    use uuid::Uuid;
 
     #[test]
     fn loopback_redirect_accepts_valid_localhost_callback() {
@@ -729,5 +731,82 @@ mod tests {
         assert!(!is_valid_loopback_redirect(
             "http://127.0.0.1:3000/wrong"
         ));
+    }
+
+    async fn db_pool_if_available() -> Option<sqlx::PgPool> {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            return None;
+        };
+
+        PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .ok()
+    }
+
+    #[tokio::test]
+    async fn validate_oauth_client_unknown_client_is_rejected() {
+        let Some(pool) = db_pool_if_available().await else {
+            return;
+        };
+
+        sqlx::migrate!("../migrations")
+            .run(&pool)
+            .await
+            .expect("migrations should run");
+
+        let random_client = format!("missing-client-{}", Uuid::now_v7());
+        let err = validate_oauth_client(
+            &pool,
+            &random_client,
+            "http://127.0.0.1:31337/callback",
+        )
+        .await
+        .expect_err("unknown client must fail");
+
+        match err {
+            AppError::Validation { field, .. } => {
+                assert_eq!(field.as_deref(), Some("client_id"));
+            }
+            other => panic!("unexpected error variant: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_oauth_client_inactive_client_is_rejected() {
+        let Some(pool) = db_pool_if_available().await else {
+            return;
+        };
+
+        sqlx::migrate!("../migrations")
+            .run(&pool)
+            .await
+            .expect("migrations should run");
+
+        let client_id = format!("inactive-client-{}", Uuid::now_v7());
+        sqlx::query(
+            "INSERT INTO oauth_clients \
+             (client_id, allowed_redirect_uris, allow_loopback_redirect, is_active) \
+             VALUES ($1, $2, FALSE, FALSE)",
+        )
+        .bind(&client_id)
+        .bind(vec!["http://127.0.0.1:3000/callback"])
+        .execute(&pool)
+        .await
+        .expect("insert inactive oauth client");
+
+        let err = validate_oauth_client(
+            &pool,
+            &client_id,
+            "http://127.0.0.1:3000/callback",
+        )
+        .await
+        .expect_err("inactive client must fail");
+
+        match err {
+            AppError::Unauthorized { .. } => {}
+            other => panic!("unexpected error variant: {:?}", other),
+        }
     }
 }
