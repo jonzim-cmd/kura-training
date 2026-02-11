@@ -465,7 +465,9 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                     "save_handshake_verified, save_handshake_pending, "
                     "save_claim_mismatch_attempt, correction_applied, correction_undone, "
                     "clarification_requested, workflow_violation, "
-                    "workflow_phase_transition_closed, workflow_override_used"
+                    "workflow_phase_transition_closed, workflow_override_used, "
+                    "viz_shown, viz_skipped, viz_source_bound, viz_fallback_used, "
+                    "viz_confusion_signal"
                 ),
                 "category": "string (required: quality_signal|friction_signal|outcome_signal|correction_signal)",
                 "captured_at": "string (required, ISO datetime)",

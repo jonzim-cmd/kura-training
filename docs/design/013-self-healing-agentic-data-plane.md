@@ -114,6 +114,7 @@ No invariant = no guaranteed data quality.
 | `INV-005` | Goal must have measurable tracking path (native dimension or custom projection rule) | medium | propose tracking rule or explicit "not trackable yet" status |
 | `INV-006` | Profile fields that influence programming (age/body metrics) must be explicit known/unknown/deferred | medium | create deferred markers instead of silent omission |
 | `INV-007` | Plan writes must include idempotency key + post-write projection check | high | enforce write wrapper |
+| `INV-009` | Visualization output requires intent trigger + bound projection sources + deterministic fallback | medium | skip or fallback to ASCII, emit confusion telemetry |
 
 ## Decision 13.3: Self-Healing Loop (Continuous Housekeeping)
 

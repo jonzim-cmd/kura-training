@@ -17,6 +17,8 @@ def test_core_signal_catalog_is_versioned_and_sufficiently_rich():
     assert "save_handshake_verified" in signal_types
     assert "save_claim_mismatch_attempt" in signal_types
     assert "repair_auto_applied" in signal_types
+    assert "workflow_violation" in signal_types
+    assert "viz_source_bound" in signal_types
 
 
 def test_pseudonymize_user_id_is_stable_and_non_reversible_in_payload():
@@ -57,4 +59,3 @@ def test_build_learning_signal_event_emits_stable_contract():
 def test_unknown_signal_type_is_rejected():
     with pytest.raises(ValueError):
         signal_category("not_a_real_signal")
-

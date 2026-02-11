@@ -26,6 +26,7 @@ mod state;
         routes::health::health_check,
         routes::agent::get_agent_capabilities,
         routes::agent::get_agent_context,
+        routes::agent::resolve_visualization,
         routes::agent::write_with_proof,
         routes::semantic::resolve_semantic_terms,
         routes::events::create_event,

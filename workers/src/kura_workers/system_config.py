@@ -71,6 +71,31 @@ def _get_conventions() -> dict[str, Any]:
                 "Quality checks flag mention-present/field-missing mismatches with remediation hints."
             ),
         },
+        "visualization_policy": {
+            "rules": [
+                "Only visualize when policy triggers are present or the user explicitly asks.",
+                "Before rendering, provide a visualization_spec with format, purpose, and bound data_sources.",
+                "Each data source must resolve to an existing projection reference and optional json_path.",
+                "When rich rendering is unavailable, return deterministic ASCII fallback with equivalent meaning.",
+                "If quality status is monitor/degraded, label output uncertainty explicitly.",
+            ],
+            "policy_triggers": [
+                "trend",
+                "compare",
+                "plan_vs_actual",
+                "multi_week_scheduling",
+            ],
+            "preference_override_values": ["auto", "always", "never"],
+            "supported_formats": ["chart", "table", "timeline", "ascii", "mermaid"],
+            "resolve_endpoint": "/v1/agent/visualization/resolve",
+            "telemetry_signal_types": [
+                "viz_shown",
+                "viz_skipped",
+                "viz_source_bound",
+                "viz_fallback_used",
+                "viz_confusion_signal",
+            ],
+        },
         "data_correction": {
             "rules": [
                 "To correct a wrong event: retract it with event.retracted and "

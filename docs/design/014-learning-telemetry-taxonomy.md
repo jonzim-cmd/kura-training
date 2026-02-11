@@ -57,9 +57,17 @@ consistently clusterable across users, sessions, and agent/runtime versions.
 8. `save_handshake_verified`
 9. `save_handshake_pending`
 10. `save_claim_mismatch_attempt`
-11. `correction_applied`
-12. `correction_undone`
-13. `clarification_requested`
+11. `workflow_violation`
+12. `workflow_phase_transition_closed`
+13. `workflow_override_used`
+14. `viz_shown`
+15. `viz_skipped`
+16. `viz_source_bound`
+17. `viz_fallback_used`
+18. `viz_confusion_signal`
+19. `correction_applied`
+20. `correction_undone`
+21. `clarification_requested`
 
 ## Privacy and Pseudonymization
 
@@ -72,4 +80,3 @@ consistently clusterable across users, sessions, and agent/runtime versions.
 - API save handshake (`/v1/agent/write-with-proof`)
 - Quality health detection/proposal/simulation/apply/verify cycle
 - Future correction + clarification flows (same schema, same categories)
-
