@@ -145,6 +145,35 @@ class TestHandleProjectionUpdate:
         assert len(insert_calls) == 1
 
     @pytest.mark.asyncio
+    async def test_failed_causal_inference_handler_records_failed_run(self, mock_conn):
+        """Causal inference handler failures should persist failed telemetry runs."""
+        handler = AsyncMock(side_effect=RuntimeError("numeric overflow"))
+        handler.__name__ = "update_causal_inference"
+        payload = {"event_type": "meal.logged", "user_id": "user-1", "event_id": "evt-1"}
+
+        txn_cm = AsyncMock()
+        txn_cm.__aenter__ = AsyncMock()
+        txn_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_conn.transaction.return_value = txn_cm
+
+        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[handler]), \
+             _no_custom_rules(), \
+             patch("kura_workers.handlers.router.safe_record_inference_run", new_callable=AsyncMock) as telemetry:
+            await handle_projection_update(mock_conn, payload)
+
+        telemetry.assert_awaited_once()
+        kwargs = telemetry.await_args.kwargs
+        assert kwargs["projection_type"] == "causal_inference"
+        assert kwargs["key"] == "overview"
+        assert kwargs["status"] == "failed"
+
+        insert_calls = [
+            c for c in mock_conn.execute.call_args_list
+            if "INSERT INTO background_jobs" in c.args[0]
+        ]
+        assert len(insert_calls) == 1
+
+    @pytest.mark.asyncio
     async def test_partial_failure_continues_other_handlers(self, mock_conn):
         """If handler A fails, handler B should still run."""
         handler_a = AsyncMock(side_effect=RuntimeError("crash"))

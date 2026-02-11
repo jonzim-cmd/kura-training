@@ -34,6 +34,8 @@ def _inference_target_for_handler(handler_name: str) -> tuple[str, str] | None:
         return ("strength_inference", "unknown")
     if handler_name == "update_readiness_inference":
         return ("readiness_inference", "overview")
+    if handler_name == "update_causal_inference":
+        return ("causal_inference", "overview")
     return None
 
 

@@ -464,6 +464,14 @@ fn add_standard_projection_targets(
                 false,
                 false,
             );
+            add_projection_target(
+                candidates,
+                "causal_inference",
+                "overview",
+                "set.logged contributes intervention context for causal inference".to_string(),
+                false,
+                false,
+            );
 
             add_projection_target(
                 candidates,
@@ -589,6 +597,14 @@ fn add_standard_projection_targets(
                 false,
                 false,
             );
+            add_projection_target(
+                candidates,
+                "causal_inference",
+                "overview",
+                format!("event_type '{}' contributes causal inference signals", event_type),
+                false,
+                false,
+            );
         }
         "meal.logged" | "nutrition_target.set" => {
             mapped = true;
@@ -611,6 +627,14 @@ fn add_standard_projection_targets(
                     false,
                 );
             }
+            add_projection_target(
+                candidates,
+                "causal_inference",
+                "overview",
+                format!("event_type '{}' contributes causal nutrition effects", event_type),
+                false,
+                false,
+            );
         }
         "training_plan.created"
         | "training_plan.updated"
@@ -622,6 +646,14 @@ fn add_standard_projection_targets(
                 "training_plan",
                 "overview",
                 format!("event_type '{}' updates training plan state", event_type),
+                false,
+                false,
+            );
+            add_projection_target(
+                candidates,
+                "causal_inference",
+                "overview",
+                format!("event_type '{}' marks causal program intervention timing", event_type),
                 false,
                 false,
             );
@@ -1924,6 +1956,10 @@ mod tests {
         assert!(candidates.contains_key(&ProjectionTargetKey {
             projection_type: "strength_inference".to_string(),
             key: "bench_press".to_string(),
+        }));
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "causal_inference".to_string(),
+            key: "overview".to_string(),
         }));
         assert!(candidates.contains_key(&ProjectionTargetKey {
             projection_type: "semantic_memory".to_string(),

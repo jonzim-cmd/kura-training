@@ -66,6 +66,8 @@ pub struct AgentContextResponse {
     pub semantic_memory: Option<ProjectionResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub readiness_inference: Option<ProjectionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub causal_inference: Option<ProjectionResponse>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub exercise_progression: Vec<ProjectionResponse>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -698,6 +700,8 @@ pub async fn get_agent_context(
     let semantic_memory = fetch_projection(&mut tx, user_id, "semantic_memory", "overview").await?;
     let readiness_inference =
         fetch_projection(&mut tx, user_id, "readiness_inference", "overview").await?;
+    let causal_inference =
+        fetch_projection(&mut tx, user_id, "causal_inference", "overview").await?;
 
     let ranking_context =
         RankingContext::from_task_intent(task_intent.clone(), semantic_memory.as_ref());
@@ -742,6 +746,7 @@ pub async fn get_agent_context(
         training_plan,
         semantic_memory,
         readiness_inference,
+        causal_inference,
         exercise_progression,
         strength_inference,
         custom,
