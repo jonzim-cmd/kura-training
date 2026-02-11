@@ -20,6 +20,7 @@ from ..inference_telemetry import (
     classify_inference_error,
     safe_record_inference_run,
 )
+from ..population_priors import resolve_population_prior
 from ..registry import projection_handler
 from ..utils import (
     epley_1rm,
@@ -90,6 +91,15 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                 "angle_deg": "number|null",
                 "bucket_index": "integer|null",
             },
+        },
+        "population_prior": {
+            "applied": "boolean",
+            "cohort_key": "string (optional)",
+            "target_key": "string (optional)",
+            "participants_count": "integer (optional)",
+            "sample_size": "integer (optional)",
+            "blend_weight": "number (optional)",
+            "computed_at": "ISO 8601 datetime (optional)",
         },
         "diagnostics": "object",
         "data_quality": {
@@ -272,7 +282,14 @@ async def update_strength_inference(
             day_offset = (ts - start_ts).total_seconds() / 86400.0
             model_points.append((day_offset, e1rm))
 
-        inference = run_strength_inference(model_points)
+        population_prior = await resolve_population_prior(
+            conn,
+            user_id=user_id,
+            projection_type="strength_inference",
+            target_key=canonical,
+            retracted_ids=retracted_ids,
+        )
+        inference = run_strength_inference(model_points, population_prior=population_prior)
         telemetry_engine = str(inference.get("engine", "none") or "none")
         history = [
             {"date": d, "estimated_1rm": round(v, 2)}
@@ -297,11 +314,14 @@ async def update_strength_inference(
             },
             "diagnostics": inference.get("diagnostics", {}),
             "engine": inference.get("engine"),
+            "population_prior": inference.get("population_prior", {"applied": False}),
         }
 
         telemetry_status = "success"
         telemetry_error_taxonomy: str | None = None
         telemetry_diagnostics = dict(inference.get("diagnostics", {}))
+        if isinstance(inference.get("population_prior"), dict):
+            telemetry_diagnostics["population_prior"] = inference["population_prior"]
         if inference.get("status") == "insufficient_data":
             projection_data["status"] = "insufficient_data"
             projection_data["required_points"] = inference.get("required_points", 3)

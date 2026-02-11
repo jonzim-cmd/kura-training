@@ -40,6 +40,26 @@ def test_strength_inference_returns_trend():
     assert "direction" in result["dynamics"]
 
 
+def test_strength_inference_applies_population_prior():
+    points = [(0.0, 100.0), (7.0, 101.0), (14.0, 102.0), (21.0, 103.0)]
+    result = run_strength_inference(
+        points,
+        population_prior={
+            "mean": 0.2,
+            "var": 0.01,
+            "blend_weight": 0.4,
+            "cohort_key": "tm:strength|el:intermediate",
+            "target_key": "bench_press",
+            "participants_count": 30,
+            "sample_size": 40,
+            "computed_at": "2026-02-11T00:00:00Z",
+        },
+    )
+    assert result["engine"] in {"closed_form", "pymc"}
+    assert result["population_prior"]["applied"] is True
+    assert result["population_prior"]["cohort_key"] == "tm:strength|el:intermediate"
+
+
 def test_readiness_inference_insufficient_data():
     result = run_readiness_inference([0.6, 0.55, 0.62])
     assert result["status"] == "insufficient_data"
@@ -58,6 +78,26 @@ def test_readiness_inference_ok():
     assert "dynamics" in result
     assert result["dynamics"]["samples"] == len(observations)
     assert result["dynamics"]["state"] == result["readiness_today"]["state"]
+
+
+def test_readiness_inference_applies_population_prior():
+    observations = [0.51, 0.53, 0.55, 0.57, 0.58, 0.6, 0.61]
+    result = run_readiness_inference(
+        observations,
+        population_prior={
+            "mean": 0.7,
+            "var": 0.02,
+            "blend_weight": 0.5,
+            "cohort_key": "tm:strength|el:intermediate",
+            "target_key": "overview",
+            "participants_count": 40,
+            "sample_size": 50,
+            "computed_at": "2026-02-11T00:00:00Z",
+        },
+    )
+    assert result["status"] == "ok"
+    assert result["population_prior"]["applied"] is True
+    assert result["population_prior"]["target_key"] == "overview"
 
 
 def test_weekly_phase_from_date():

@@ -9,7 +9,6 @@ to understand: what dimensions exist, what events are available, how to log
 data correctly, and how to conduct onboarding interviews.
 """
 
-import json
 import logging
 from typing import Any
 
@@ -105,10 +104,20 @@ def _get_conventions() -> dict[str, Any]:
                 "When data is sparse, communicate uncertainty and request more observations.",
                 "Use readiness_inference for day-level decision framing, not medical conclusions.",
                 "When strength_inference indicates plateau risk, suggest interventions as hypotheses.",
+                "Population priors are used only when privacy thresholds are met.",
+                "Population prior contribution and usage require explicit user opt-in.",
             ],
             "minimum_data": {
                 "strength_inference_points": 3,
                 "readiness_inference_days": 5,
+            },
+            "population_priors": {
+                "opt_in_preference_key": "population_priors_opt_in",
+                "privacy_gates": {
+                    "min_cohort_size": "configurable (default 25)",
+                    "window_days": "configurable (default 180)",
+                    "storage": "aggregated cohorts only, no per-user artifacts",
+                },
             },
         },
     }

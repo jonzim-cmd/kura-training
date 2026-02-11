@@ -45,7 +45,12 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             "description": "User preference (latest per key wins)",
             "fields": {"key": "string (required)", "value": "any (required)"},
             "example": {"key": "unit_system", "value": "metric"},
-            "common_keys": ["unit_system", "language", "nutrition_tracking"],
+            "common_keys": [
+                "unit_system",
+                "language",
+                "nutrition_tracking",
+                "population_priors_opt_in",
+            ],
         },
         "goal.set": {
             "description": "Training or health goal",

@@ -131,6 +131,23 @@ This is retrieval orchestration only. It intentionally stays separate from
 the semantic resolve endpoint contract and does not change canonical
 resolution behavior.
 
+### D12.9 Population Priors Engine (Privacy-Gated)
+
+Population priors are computed as anonymized cohort aggregates and stored in
+separate population artifacts (`population_prior_profiles`), never mixed with
+individual projection rows.
+
+Policy:
+- explicit opt-in via `preference.set` (`population_priors_opt_in`)
+- cohort privacy gate (`min_cohort_size`) before any prior is published
+- only aggregated parameters are persisted (no per-user identifiers)
+
+Usage:
+- nightly inference maintenance refreshes cohort priors
+- strength/readiness inference may blend local priors with cohort priors when
+  opt-in and privacy gates are satisfied
+- blending is bounded by a configurable weight to preserve user-specific signals
+
 ## Design Principles
 
 1. **No black boxes**: projections include diagnostics + uncertainty metadata
@@ -142,4 +159,4 @@ resolution behavior.
 
 - Scheduled nightly refit orchestration (job-level lifecycle)
 - Calibration/eval harness and shadow-mode rollout checks
-- Population priors (privacy-gated, opt-in) and causal layer
+- Causal layer

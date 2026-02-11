@@ -251,11 +251,77 @@ def _ci95(mu: float, sigma: float) -> list[float]:
     return [round(mu - delta, 2), round(mu + delta, 2)]
 
 
+def _resolve_strength_beta_prior(population_prior: dict[str, Any] | None) -> tuple[float, float, dict[str, Any]]:
+    base_mean = 0.0
+    base_var = 4.0
+    meta = {"applied": False}
+    if not isinstance(population_prior, dict):
+        return base_mean, base_var, meta
+
+    pop_mean = _as_float(population_prior.get("mean"))
+    pop_var = _as_float(population_prior.get("var"))
+    blend = _as_float(population_prior.get("blend_weight"))
+    if pop_mean is None or pop_var is None or pop_var <= 0.0:
+        return base_mean, base_var, meta
+    if blend is None:
+        blend = 0.35
+    blend = min(0.95, max(0.0, blend))
+
+    prior_mean = ((1.0 - blend) * base_mean) + (blend * pop_mean)
+    prior_var = ((1.0 - blend) * base_var) + (blend * max(pop_var, 1e-6))
+    meta = {
+        "applied": True,
+        "blend_weight": round(blend, 4),
+        "cohort_key": population_prior.get("cohort_key"),
+        "target_key": population_prior.get("target_key"),
+        "participants_count": population_prior.get("participants_count"),
+        "sample_size": population_prior.get("sample_size"),
+        "computed_at": population_prior.get("computed_at"),
+    }
+    return prior_mean, max(prior_var, 1e-6), meta
+
+
+def _resolve_readiness_prior(
+    population_prior: dict[str, Any] | None,
+    *,
+    default_mean: float,
+    default_var: float,
+) -> tuple[float, float, dict[str, Any]]:
+    meta = {"applied": False}
+    if not isinstance(population_prior, dict):
+        return default_mean, default_var, meta
+
+    pop_mean = _as_float(population_prior.get("mean"))
+    pop_var = _as_float(population_prior.get("var"))
+    blend = _as_float(population_prior.get("blend_weight"))
+    if pop_mean is None or pop_var is None or pop_var <= 0.0:
+        return default_mean, default_var, meta
+    if blend is None:
+        blend = 0.35
+    blend = min(0.95, max(0.0, blend))
+
+    prior_mean = ((1.0 - blend) * default_mean) + (blend * pop_mean)
+    prior_var = ((1.0 - blend) * default_var) + (blend * max(pop_var, 1e-6))
+    meta = {
+        "applied": True,
+        "blend_weight": round(blend, 4),
+        "cohort_key": population_prior.get("cohort_key"),
+        "target_key": population_prior.get("target_key"),
+        "participants_count": population_prior.get("participants_count"),
+        "sample_size": population_prior.get("sample_size"),
+        "computed_at": population_prior.get("computed_at"),
+    }
+    return prior_mean, max(prior_var, 1e-6), meta
+
+
 def _closed_form_strength(
     x: list[float],
     y: list[float],
     horizon_days: float,
     slope_plateau_threshold: float,
+    *,
+    prior_beta_mean: float = 0.0,
+    prior_beta_var: float = 4.0,
 ) -> dict:
     """Closed-form Bayesian linear regression with known-noise approximation."""
     x_mean = sum(x) / len(x)
@@ -263,8 +329,8 @@ def _closed_form_strength(
 
     # Model: y = alpha + beta*x + eps
     # Prior
-    prior_mean = [mean(y), 0.0]  # alpha, beta
-    prior_cov = [[400.0, 0.0], [0.0, 4.0]]  # broad prior
+    prior_mean = [mean(y), prior_beta_mean]  # alpha, beta
+    prior_cov = [[400.0, 0.0], [0.0, max(1e-6, prior_beta_var)]]
     prior_prec = _inv2(prior_cov)
 
     # Empirical noise estimate with floor.
@@ -336,6 +402,9 @@ def _pymc_strength(
     y: list[float],
     horizon_days: float,
     slope_plateau_threshold: float,
+    *,
+    prior_beta_mean: float = 0.0,
+    prior_beta_var: float = 4.0,
 ) -> dict | None:
     """PyMC posterior sampling path. Returns None on unavailable/runtime failure."""
     try:
@@ -354,7 +423,7 @@ def _pymc_strength(
 
         with pm.Model():
             alpha = pm.Normal("alpha", mu=float(ya.mean()), sigma=30.0)
-            beta = pm.Normal("beta", mu=0.0, sigma=2.0)
+            beta = pm.Normal("beta", mu=prior_beta_mean, sigma=math.sqrt(max(1e-6, prior_beta_var)))
             sigma = pm.HalfNormal("sigma", sigma=10.0)
             mu = alpha + beta * xc
             pm.Normal("obs", mu=mu, sigma=sigma, observed=ya)
@@ -418,8 +487,16 @@ def _pymc_strength(
         return None
 
 
-def run_strength_inference(points: list[tuple[float, float]]) -> dict:
+def run_strength_inference(
+    points: list[tuple[float, float]],
+    *,
+    population_prior: dict[str, Any] | None = None,
+) -> dict:
     """Run strength inference over (day_offset, estimated_1rm) points."""
+    prior_beta_mean, prior_beta_var, population_prior_meta = _resolve_strength_beta_prior(
+        population_prior
+    )
+
     dynamics = summarize_signal_dynamics(
         points,
         velocity_epsilon=float(os.environ.get("KURA_STRENGTH_DERIVATIVE_VELOCITY_EPS", "0.03")),
@@ -435,6 +512,7 @@ def run_strength_inference(points: list[tuple[float, float]]) -> dict:
             "required_points": 3,
             "observed_points": len(points),
             "dynamics": dynamics,
+            "population_prior": population_prior_meta,
         }
 
     x = [p[0] for p in points]
@@ -445,13 +523,34 @@ def run_strength_inference(points: list[tuple[float, float]]) -> dict:
 
     result: dict[str, Any]
     if preferred_engine == "pymc":
-        pymc_result = _pymc_strength(x, y, horizon_days, slope_plateau_threshold)
+        pymc_result = _pymc_strength(
+            x,
+            y,
+            horizon_days,
+            slope_plateau_threshold,
+            prior_beta_mean=prior_beta_mean,
+            prior_beta_var=prior_beta_var,
+        )
         if pymc_result is not None:
             result = pymc_result
         else:
-            result = _closed_form_strength(x, y, horizon_days, slope_plateau_threshold)
+            result = _closed_form_strength(
+                x,
+                y,
+                horizon_days,
+                slope_plateau_threshold,
+                prior_beta_mean=prior_beta_mean,
+                prior_beta_var=prior_beta_var,
+            )
     else:
-        result = _closed_form_strength(x, y, horizon_days, slope_plateau_threshold)
+        result = _closed_form_strength(
+            x,
+            y,
+            horizon_days,
+            slope_plateau_threshold,
+            prior_beta_mean=prior_beta_mean,
+            prior_beta_var=prior_beta_var,
+        )
 
     trend = result.get("trend") or {}
     slope_ci95 = trend.get("slope_ci95")
@@ -467,10 +566,15 @@ def run_strength_inference(points: list[tuple[float, float]]) -> dict:
         dynamics["model_velocity_per_week"] = round(modeled_velocity * 7.0, 6)
 
     result["dynamics"] = dynamics
+    result["population_prior"] = population_prior_meta
     return result
 
 
-def run_readiness_inference(observations: list[float]) -> dict:
+def run_readiness_inference(
+    observations: list[float],
+    *,
+    population_prior: dict[str, Any] | None = None,
+) -> dict:
     """Normal-Normal Bayesian update for readiness score [0, 1]."""
     points = [(float(idx), float(value)) for idx, value in enumerate(observations)]
     dynamics = summarize_signal_dynamics(
@@ -488,10 +592,16 @@ def run_readiness_inference(observations: list[float]) -> dict:
             "required_points": 5,
             "observed_points": len(observations),
             "dynamics": dynamics,
+            "population_prior": {"applied": False},
         }
 
-    prior_mean = float(os.environ.get("KURA_READINESS_PRIOR_MEAN", "0.6"))
-    prior_var = float(os.environ.get("KURA_READINESS_PRIOR_VAR", "0.04"))  # sd ~0.2
+    default_prior_mean = float(os.environ.get("KURA_READINESS_PRIOR_MEAN", "0.6"))
+    default_prior_var = float(os.environ.get("KURA_READINESS_PRIOR_VAR", "0.04"))  # sd ~0.2
+    prior_mean, prior_var, population_prior_meta = _resolve_readiness_prior(
+        population_prior,
+        default_mean=default_prior_mean,
+        default_var=default_prior_var,
+    )
 
     obs_mean = sum(observations) / len(observations)
     obs_var = sum((x - obs_mean) ** 2 for x in observations) / max(1, len(observations) - 1)
@@ -540,4 +650,5 @@ def run_readiness_inference(observations: list[float]) -> dict:
         dynamics["state"] = state
 
     result["dynamics"] = dynamics
+    result["population_prior"] = population_prior_meta
     return result

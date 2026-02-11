@@ -1185,7 +1185,7 @@ async def _fetch_active_semantic_label_rows(
     *,
     user_id: str,
 ) -> list[dict[str, Any]]:
-    event_types = ("set.logged", "exercise.alias_created", "event.retracted")
+    event_types = ["set.logged", "exercise.alias_created", "event.retracted"]
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """

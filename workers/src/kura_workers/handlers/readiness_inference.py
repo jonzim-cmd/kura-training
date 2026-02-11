@@ -20,6 +20,7 @@ from ..inference_telemetry import (
     classify_inference_error,
     safe_record_inference_run,
 )
+from ..population_priors import resolve_population_prior
 from ..registry import projection_handler
 from ..utils import get_retracted_event_ids
 
@@ -100,6 +101,15 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                 "angle_deg": "number|null",
                 "bucket_index": "integer|null",
             },
+        },
+        "population_prior": {
+            "applied": "boolean",
+            "cohort_key": "string (optional)",
+            "target_key": "string (optional)",
+            "participants_count": "integer (optional)",
+            "sample_size": "integer (optional)",
+            "blend_weight": "number (optional)",
+            "computed_at": "ISO 8601 datetime (optional)",
         },
         "daily_scores": [{
             "date": "ISO 8601 date",
@@ -272,7 +282,14 @@ async def update_readiness_inference(
                 }
             )
 
-        inference = run_readiness_inference(observations)
+        population_prior = await resolve_population_prior(
+            conn,
+            user_id=user_id,
+            projection_type="readiness_inference",
+            target_key="overview",
+            retracted_ids=retracted_ids,
+        )
+        inference = run_readiness_inference(observations, population_prior=population_prior)
         telemetry_engine = str(inference.get("engine", "none") or "none")
         dynamics_snapshot = dict(inference.get("dynamics", {}))
         projection_phase = str(dynamics_snapshot.get("phase") or "unknown")
@@ -287,6 +304,7 @@ async def update_readiness_inference(
             },
             "engine": inference.get("engine"),
             "diagnostics": inference.get("diagnostics", {}),
+            "population_prior": inference.get("population_prior", {"applied": False}),
             "data_quality": {
                 "days_with_observations": len(observations),
                 "insufficient_data": inference.get("status") == "insufficient_data",
@@ -296,6 +314,8 @@ async def update_readiness_inference(
         telemetry_status = "success"
         telemetry_error_taxonomy: str | None = None
         telemetry_diagnostics = dict(inference.get("diagnostics", {}))
+        if isinstance(inference.get("population_prior"), dict):
+            telemetry_diagnostics["population_prior"] = inference["population_prior"]
         if inference.get("status") == "insufficient_data":
             projection_data["status"] = "insufficient_data"
             projection_data["required_points"] = inference.get("required_points", 5)
