@@ -1,11 +1,14 @@
 use axum::extract::{Query, State};
-use axum::routing::get;
+use axum::http::StatusCode;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
+use kura_core::events::{BatchEventWarning, CreateEventRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use kura_core::error::ApiError;
@@ -13,11 +16,14 @@ use kura_core::projections::{Projection, ProjectionFreshness, ProjectionMeta, Pr
 
 use crate::auth::AuthenticatedUser;
 use crate::error::AppError;
+use crate::routes::events::create_events_batch_internal;
 use crate::routes::system::SystemConfigResponse;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/v1/agent/context", get(get_agent_context))
+    Router::new()
+        .route("/v1/agent/context", get(get_agent_context))
+        .route("/v1/agent/write-with-proof", post(write_with_proof))
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
@@ -75,6 +81,73 @@ pub struct AgentContextResponse {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub custom: Vec<ProjectionResponse>,
     pub meta: AgentContextMeta,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct AgentReadAfterWriteTarget {
+    pub projection_type: String,
+    pub key: String,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct AgentWriteWithProofRequest {
+    pub events: Vec<CreateEventRequest>,
+    /// Projection targets that must prove read-after-write before "saved" claims.
+    pub read_after_write_targets: Vec<AgentReadAfterWriteTarget>,
+    /// Max verification wait (default 1200ms, clamped to 100..10000).
+    #[serde(default)]
+    pub verify_timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct AgentWriteReceipt {
+    pub event_id: Uuid,
+    pub event_type: String,
+    pub idempotency_key: String,
+    pub event_timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct AgentReadAfterWriteCheck {
+    pub projection_type: String,
+    pub key: String,
+    /// verified | pending
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_projection_version: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_last_event_id: Option<Uuid>,
+    pub detail: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct AgentWriteVerificationSummary {
+    /// verified | pending
+    pub status: String,
+    pub checked_at: DateTime<Utc>,
+    pub waited_ms: u64,
+    pub required_checks: usize,
+    pub verified_checks: usize,
+    pub checks: Vec<AgentReadAfterWriteCheck>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct AgentWriteClaimGuard {
+    pub allow_saved_claim: bool,
+    /// verified | deferred
+    pub claim_status: String,
+    pub uncertainty_markers: Vec<String>,
+    pub deferred_markers: Vec<String>,
+    pub recommended_user_phrase: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct AgentWriteWithProofResponse {
+    pub receipts: Vec<AgentWriteReceipt>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<BatchEventWarning>,
+    pub verification: AgentWriteVerificationSummary,
+    pub claim_guard: AgentWriteClaimGuard,
 }
 
 #[derive(sqlx::FromRow)]
@@ -635,6 +708,263 @@ async fn fetch_projection_list(
     Ok(rows.into_iter().map(|r| r.into_response(now)).collect())
 }
 
+fn clamp_verify_timeout_ms(value: Option<u64>) -> u64 {
+    value.unwrap_or(1200).clamp(100, 10_000)
+}
+
+fn normalize_read_after_write_targets(
+    targets: Vec<AgentReadAfterWriteTarget>,
+) -> Vec<(String, String)> {
+    let mut dedup = HashSet::new();
+    let mut normalized = Vec::new();
+    for target in targets {
+        let projection_type = target.projection_type.trim().to_lowercase();
+        let key = target.key.trim().to_lowercase();
+        if projection_type.is_empty() || key.is_empty() {
+            continue;
+        }
+        if dedup.insert((projection_type.clone(), key.clone())) {
+            normalized.push((projection_type, key));
+        }
+    }
+    normalized
+}
+
+fn all_read_after_write_verified(checks: &[AgentReadAfterWriteCheck]) -> bool {
+    checks.iter().all(|check| check.status == "verified")
+}
+
+fn build_claim_guard(
+    receipts: &[AgentWriteReceipt],
+    requested_event_count: usize,
+    checks: &[AgentReadAfterWriteCheck],
+    warnings: &[BatchEventWarning],
+) -> AgentWriteClaimGuard {
+    let mut uncertainty_markers = Vec::new();
+    let mut deferred_markers = Vec::new();
+
+    let receipts_complete = receipts.len() == requested_event_count
+        && receipts
+            .iter()
+            .all(|r| !r.idempotency_key.trim().is_empty());
+    if !receipts_complete {
+        uncertainty_markers.push("write_receipt_incomplete".to_string());
+        deferred_markers.push("defer_saved_claim_until_receipt_complete".to_string());
+    }
+
+    let read_after_write_ok = all_read_after_write_verified(checks);
+    if !read_after_write_ok {
+        uncertainty_markers.push("read_after_write_unverified".to_string());
+        deferred_markers.push("defer_saved_claim_until_projection_readback".to_string());
+    }
+
+    if !warnings.is_empty() {
+        uncertainty_markers.push("plausibility_warnings_present".to_string());
+    }
+
+    let allow_saved_claim = receipts_complete && read_after_write_ok;
+    let (claim_status, recommended_user_phrase) = if allow_saved_claim {
+        (
+            "verified".to_string(),
+            "Saved and verified in the read model.".to_string(),
+        )
+    } else {
+        (
+            "deferred".to_string(),
+            "Write accepted; verification still pending, so avoid a definitive 'saved' claim."
+                .to_string(),
+        )
+    };
+
+    AgentWriteClaimGuard {
+        allow_saved_claim,
+        claim_status,
+        uncertainty_markers,
+        deferred_markers,
+        recommended_user_phrase,
+    }
+}
+
+async fn evaluate_read_after_write_checks(
+    state: &AppState,
+    user_id: Uuid,
+    targets: &[(String, String)],
+    event_ids: &HashSet<Uuid>,
+) -> Result<Vec<AgentReadAfterWriteCheck>, AppError> {
+    let mut tx = state.db.begin().await?;
+
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+    let mut checks = Vec::with_capacity(targets.len());
+    for (projection_type, key) in targets {
+        let projection = fetch_projection(&mut tx, user_id, projection_type, key).await?;
+        match projection {
+            Some(response) => {
+                let observed_last_event_id = response.projection.last_event_id;
+                let verified = observed_last_event_id
+                    .map(|id| event_ids.contains(&id))
+                    .unwrap_or(false);
+
+                let detail = if verified {
+                    "Projection read-after-write verified via matching last_event_id.".to_string()
+                } else if observed_last_event_id.is_some() {
+                    "Projection found but last_event_id does not match current write receipts yet."
+                        .to_string()
+                } else {
+                    "Projection found but has no last_event_id; cannot verify this write yet."
+                        .to_string()
+                };
+
+                checks.push(AgentReadAfterWriteCheck {
+                    projection_type: projection_type.clone(),
+                    key: key.clone(),
+                    status: if verified {
+                        "verified".to_string()
+                    } else {
+                        "pending".to_string()
+                    },
+                    observed_projection_version: Some(response.projection.version),
+                    observed_last_event_id,
+                    detail,
+                });
+            }
+            None => checks.push(AgentReadAfterWriteCheck {
+                projection_type: projection_type.clone(),
+                key: key.clone(),
+                status: "pending".to_string(),
+                observed_projection_version: None,
+                observed_last_event_id: None,
+                detail: "Projection row not found yet for this target.".to_string(),
+            }),
+        }
+    }
+
+    tx.commit().await?;
+    Ok(checks)
+}
+
+async fn verify_read_after_write_until_timeout(
+    state: &AppState,
+    user_id: Uuid,
+    targets: &[(String, String)],
+    event_ids: &HashSet<Uuid>,
+    verify_timeout_ms: u64,
+) -> Result<(Vec<AgentReadAfterWriteCheck>, u64), AppError> {
+    let started = Instant::now();
+    let timeout = Duration::from_millis(verify_timeout_ms);
+    let poll_interval = Duration::from_millis(100);
+
+    let mut checks = evaluate_read_after_write_checks(state, user_id, targets, event_ids).await?;
+    while !all_read_after_write_verified(&checks) && started.elapsed() < timeout {
+        tokio::time::sleep(poll_interval).await;
+        checks = evaluate_read_after_write_checks(state, user_id, targets, event_ids).await?;
+    }
+
+    let waited_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    Ok((checks, waited_ms))
+}
+
+/// Write events with durable receipts and read-after-write verification.
+///
+/// This endpoint enforces Decision 13.5 protocol semantics:
+/// - write-with-proof (event ids + idempotency keys)
+/// - read-after-write check against required projection targets
+/// - explicit deferred/uncertainty markers when proof is incomplete
+#[utoipa::path(
+    post,
+    path = "/v1/agent/write-with-proof",
+    request_body = AgentWriteWithProofRequest,
+    responses(
+        (status = 201, description = "Events written with verification result", body = AgentWriteWithProofResponse),
+        (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 409, description = "Idempotency conflict", body = ApiError)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "system"
+)]
+pub async fn write_with_proof(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Json(req): Json<AgentWriteWithProofRequest>,
+) -> Result<impl axum::response::IntoResponse, AppError> {
+    let user_id = auth.user_id;
+    let requested_event_count = req.events.len();
+    let verify_timeout_ms = clamp_verify_timeout_ms(req.verify_timeout_ms);
+    let read_after_write_targets = normalize_read_after_write_targets(req.read_after_write_targets);
+
+    if read_after_write_targets.is_empty() {
+        return Err(AppError::Validation {
+            message: "read_after_write_targets must not be empty".to_string(),
+            field: Some("read_after_write_targets".to_string()),
+            received: None,
+            docs_hint: Some(
+                "Provide at least one projection_type/key target for read-after-write verification."
+                    .to_string(),
+            ),
+        });
+    }
+
+    let batch_result = create_events_batch_internal(&state, user_id, &req.events).await?;
+    let receipts: Vec<AgentWriteReceipt> = batch_result
+        .events
+        .iter()
+        .map(|event| AgentWriteReceipt {
+            event_id: event.id,
+            event_type: event.event_type.clone(),
+            idempotency_key: event.metadata.idempotency_key.clone(),
+            event_timestamp: event.timestamp,
+        })
+        .collect();
+    let event_ids: HashSet<Uuid> = receipts.iter().map(|receipt| receipt.event_id).collect();
+
+    let (checks, waited_ms) = verify_read_after_write_until_timeout(
+        &state,
+        user_id,
+        &read_after_write_targets,
+        &event_ids,
+        verify_timeout_ms,
+    )
+    .await?;
+
+    let verified_checks = checks
+        .iter()
+        .filter(|check| check.status == "verified")
+        .count();
+    let verification_status = if verified_checks == checks.len() {
+        "verified".to_string()
+    } else {
+        "pending".to_string()
+    };
+
+    let claim_guard = build_claim_guard(
+        &receipts,
+        requested_event_count,
+        &checks,
+        &batch_result.warnings,
+    );
+
+    Ok((
+        StatusCode::CREATED,
+        Json(AgentWriteWithProofResponse {
+            receipts,
+            warnings: batch_result.warnings,
+            verification: AgentWriteVerificationSummary {
+                status: verification_status,
+                checked_at: Utc::now(),
+                waited_ms,
+                required_checks: checks.len(),
+                verified_checks,
+                checks,
+            },
+            claim_guard,
+        }),
+    ))
+}
+
 /// Get agent context bundle in a single read call.
 ///
 /// Returns the deployment-static system config, user profile, and key
@@ -765,10 +1095,13 @@ pub async fn get_agent_context(
 #[cfg(test)]
 mod tests {
     use super::{
-        bootstrap_user_profile, clamp_limit, rank_projection_list, ranking_candidate_limit,
-        IntentClass, ProjectionResponse, RankingContext,
+        AgentReadAfterWriteCheck, AgentReadAfterWriteTarget, AgentWriteReceipt, IntentClass,
+        ProjectionResponse, RankingContext, bootstrap_user_profile, build_claim_guard, clamp_limit,
+        clamp_verify_timeout_ms, normalize_read_after_write_targets, rank_projection_list,
+        ranking_candidate_limit,
     };
     use chrono::{Duration, Utc};
+    use kura_core::events::BatchEventWarning;
     use kura_core::projections::{Projection, ProjectionFreshness, ProjectionMeta};
     use serde_json::json;
     use uuid::Uuid;
@@ -913,5 +1246,104 @@ mod tests {
 
         let ranked = rank_projection_list(candidates, 2, &context);
         assert_eq!(ranked[0].projection.key, "squat");
+    }
+
+    #[test]
+    fn clamp_verify_timeout_ms_applies_bounds() {
+        assert_eq!(clamp_verify_timeout_ms(None), 1200);
+        assert_eq!(clamp_verify_timeout_ms(Some(5)), 100);
+        assert_eq!(clamp_verify_timeout_ms(Some(25_000)), 10_000);
+    }
+
+    #[test]
+    fn normalize_read_after_write_targets_deduplicates_and_normalizes() {
+        let normalized = normalize_read_after_write_targets(vec![
+            AgentReadAfterWriteTarget {
+                projection_type: " User_Profile ".to_string(),
+                key: " Me ".to_string(),
+            },
+            AgentReadAfterWriteTarget {
+                projection_type: "user_profile".to_string(),
+                key: "me".to_string(),
+            },
+            AgentReadAfterWriteTarget {
+                projection_type: "".to_string(),
+                key: "ignored".to_string(),
+            },
+        ]);
+        assert_eq!(
+            normalized,
+            vec![("user_profile".to_string(), "me".to_string())]
+        );
+    }
+
+    #[test]
+    fn claim_guard_is_verified_only_when_receipts_and_readback_complete() {
+        let event_id = Uuid::now_v7();
+        let receipts = vec![AgentWriteReceipt {
+            event_id,
+            event_type: "set.logged".to_string(),
+            idempotency_key: "abc-123".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "user_profile".to_string(),
+            key: "me".to_string(),
+            status: "verified".to_string(),
+            observed_projection_version: Some(4),
+            observed_last_event_id: Some(event_id),
+            detail: "ok".to_string(),
+        }];
+
+        let guard = build_claim_guard(&receipts, 1, &checks, &[]);
+        assert!(guard.allow_saved_claim);
+        assert_eq!(guard.claim_status, "verified");
+        assert!(guard.uncertainty_markers.is_empty());
+    }
+
+    #[test]
+    fn claim_guard_returns_deferred_markers_when_verification_pending() {
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.logged".to_string(),
+            idempotency_key: "abc-123".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "user_profile".to_string(),
+            key: "me".to_string(),
+            status: "pending".to_string(),
+            observed_projection_version: None,
+            observed_last_event_id: None,
+            detail: "pending".to_string(),
+        }];
+        let warnings = vec![BatchEventWarning {
+            event_index: 0,
+            field: "weight_kg".to_string(),
+            message: "warning".to_string(),
+            severity: "warning".to_string(),
+        }];
+
+        let guard = build_claim_guard(&receipts, 1, &checks, &warnings);
+        assert!(!guard.allow_saved_claim);
+        assert_eq!(guard.claim_status, "deferred");
+        assert!(
+            guard
+                .uncertainty_markers
+                .iter()
+                .any(|marker| marker == "read_after_write_unverified")
+        );
+        assert!(
+            guard
+                .deferred_markers
+                .iter()
+                .any(|marker| marker == "defer_saved_claim_until_projection_readback")
+        );
+        assert!(
+            guard
+                .uncertainty_markers
+                .iter()
+                .any(|marker| marker == "plausibility_warnings_present")
+        );
     }
 }

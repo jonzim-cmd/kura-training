@@ -194,6 +194,31 @@ def _get_agent_behavior() -> dict[str, Any]:
                 "When data is missing, ask follow-up questions — don't guess.",
                 "When suggesting something beyond the request, frame it as a suggestion, not an action.",
             ],
+            "write_protocol": {
+                "required_steps": [
+                    "write_with_proof: include idempotency_key per event",
+                    "capture durable receipt: event_id + idempotency_key",
+                    "read-after-write: verify projection targets before final saved claim",
+                ],
+                "saved_claim_policy": {
+                    "allow_saved_claim_only_if": (
+                        "receipt_complete AND read_after_write_verified"
+                    ),
+                    "otherwise": (
+                        "Use deferred language and explicitly state verification is pending."
+                    ),
+                },
+            },
+            "uncertainty": {
+                "low_confidence_fact_policy": (
+                    "Use explicit uncertainty markers and deferred labels when confidence or proof is incomplete."
+                ),
+                "required_markers": [
+                    "uncertain",
+                    "deferred",
+                    "pending_verification",
+                ],
+            },
         },
     }
 

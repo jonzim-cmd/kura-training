@@ -253,9 +253,8 @@ async fn insert_event(
     req: CreateEventRequest,
 ) -> Result<Event, AppError> {
     let event_id = Uuid::now_v7();
-    let metadata_json = serde_json::to_value(&req.metadata).map_err(|e| {
-        AppError::Internal(format!("Failed to serialize metadata: {}", e))
-    })?;
+    let metadata_json = serde_json::to_value(&req.metadata)
+        .map_err(|e| AppError::Internal(format!("Failed to serialize metadata: {}", e)))?;
 
     let mut tx = pool.begin().await?;
 
@@ -417,7 +416,10 @@ fn add_standard_projection_targets(
             candidates,
             "user_profile",
             "me",
-            format!("event_type '{}' triggers user_profile recompute", event_type),
+            format!(
+                "event_type '{}' triggers user_profile recompute",
+                event_type
+            ),
             false,
             false,
         );
@@ -509,8 +511,7 @@ fn add_standard_projection_targets(
                 candidates,
                 "training_timeline",
                 "overview",
-                "exercise.alias_created can remap historical exercise keys in timeline"
-                    .to_string(),
+                "exercise.alias_created can remap historical exercise keys in timeline".to_string(),
                 false,
                 false,
             );
@@ -584,16 +585,19 @@ fn add_standard_projection_targets(
                 candidates,
                 "recovery",
                 "overview",
-                    format!("event_type '{}' updates recovery", event_type),
-                    false,
-                    false,
-                );
+                format!("event_type '{}' updates recovery", event_type),
+                false,
+                false,
+            );
 
             add_projection_target(
                 candidates,
                 "readiness_inference",
                 "overview",
-                format!("event_type '{}' contributes readiness inference signals", event_type),
+                format!(
+                    "event_type '{}' contributes readiness inference signals",
+                    event_type
+                ),
                 false,
                 false,
             );
@@ -601,7 +605,10 @@ fn add_standard_projection_targets(
                 candidates,
                 "causal_inference",
                 "overview",
-                format!("event_type '{}' contributes causal inference signals", event_type),
+                format!(
+                    "event_type '{}' contributes causal inference signals",
+                    event_type
+                ),
                 false,
                 false,
             );
@@ -612,10 +619,10 @@ fn add_standard_projection_targets(
                 candidates,
                 "nutrition",
                 "overview",
-                    format!("event_type '{}' updates nutrition", event_type),
-                    false,
-                    false,
-                );
+                format!("event_type '{}' updates nutrition", event_type),
+                false,
+                false,
+            );
 
             if event_type == "meal.logged" {
                 add_projection_target(
@@ -631,7 +638,10 @@ fn add_standard_projection_targets(
                 candidates,
                 "causal_inference",
                 "overview",
-                format!("event_type '{}' contributes causal nutrition effects", event_type),
+                format!(
+                    "event_type '{}' contributes causal nutrition effects",
+                    event_type
+                ),
                 false,
                 false,
             );
@@ -653,7 +663,10 @@ fn add_standard_projection_targets(
                 candidates,
                 "causal_inference",
                 "overview",
-                format!("event_type '{}' marks causal program intervention timing", event_type),
+                format!(
+                    "event_type '{}' marks causal program intervention timing",
+                    event_type
+                ),
                 false,
                 false,
             );
@@ -971,38 +984,18 @@ pub async fn create_event(
 
     let event = insert_event(&state.db, user_id, req).await?;
 
-    Ok((StatusCode::CREATED, Json(CreateEventResponse { event, warnings })))
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateEventResponse { event, warnings }),
+    ))
 }
 
-/// Create multiple events atomically
-///
-/// All events in the batch are written in a single transaction.
-/// If any event fails validation or conflicts, the entire batch is rolled back.
-/// Use this for complete training sessions (session.started + sets + session.ended).
-///
-/// Response includes plausibility warnings (with event_index) when values look unusual.
-/// Warnings are informational — events are always accepted.
-#[utoipa::path(
-    post,
-    path = "/v1/events/batch",
-    request_body = BatchCreateEventsRequest,
-    responses(
-        (status = 201, description = "All events created", body = BatchCreateEventsResponse),
-        (status = 400, description = "Validation error", body = ApiError),
-        (status = 401, description = "Unauthorized", body = ApiError),
-        (status = 409, description = "Idempotency conflict", body = ApiError)
-    ),
-    security(("bearer_auth" = [])),
-    tag = "events"
-)]
-pub async fn create_events_batch(
-    State(state): State<AppState>,
-    auth: AuthenticatedUser,
-    Json(req): Json<BatchCreateEventsRequest>,
-) -> Result<impl IntoResponse, AppError> {
-    let user_id = auth.user_id;
-
-    if req.events.is_empty() {
+pub(crate) async fn create_events_batch_internal(
+    state: &AppState,
+    user_id: Uuid,
+    events: &[CreateEventRequest],
+) -> Result<BatchCreateEventsResponse, AppError> {
+    if events.is_empty() {
         return Err(AppError::Validation {
             message: "events array must not be empty".to_string(),
             field: Some("events".to_string()),
@@ -1011,11 +1004,11 @@ pub async fn create_events_batch(
         });
     }
 
-    if req.events.len() > 100 {
+    if events.len() > 100 {
         return Err(AppError::Validation {
-            message: format!("Batch size {} exceeds maximum of 100", req.events.len()),
+            message: format!("Batch size {} exceeds maximum of 100", events.len()),
             field: Some("events".to_string()),
-            received: Some(serde_json::json!(req.events.len())),
+            received: Some(serde_json::json!(events.len())),
             docs_hint: Some("Split large batches into chunks of 100 or fewer".to_string()),
         });
     }
@@ -1025,7 +1018,7 @@ pub async fn create_events_batch(
 
     // Validate all events before writing any
     let mut all_warnings: Vec<BatchEventWarning> = Vec::new();
-    for (i, event) in req.events.iter().enumerate() {
+    for (i, event) in events.iter().enumerate() {
         validate_event(event).map_err(|e| match e {
             AppError::Validation {
                 message,
@@ -1079,23 +1072,24 @@ pub async fn create_events_batch(
         .await?;
 
     // Prepare arrays for multi-row INSERT (avoids N+1 queries)
-    let mut ids = Vec::with_capacity(req.events.len());
-    let mut user_ids = Vec::with_capacity(req.events.len());
-    let mut timestamps = Vec::with_capacity(req.events.len());
-    let mut event_types = Vec::with_capacity(req.events.len());
-    let mut data_values = Vec::with_capacity(req.events.len());
-    let mut metadata_values = Vec::with_capacity(req.events.len());
-    let mut idempotency_keys = Vec::with_capacity(req.events.len());
+    let mut ids = Vec::with_capacity(events.len());
+    let mut user_ids = Vec::with_capacity(events.len());
+    let mut timestamps = Vec::with_capacity(events.len());
+    let mut event_types = Vec::with_capacity(events.len());
+    let mut data_values = Vec::with_capacity(events.len());
+    let mut metadata_values = Vec::with_capacity(events.len());
+    let mut idempotency_keys = Vec::with_capacity(events.len());
 
-    for event_req in &req.events {
+    for event_req in events {
         ids.push(Uuid::now_v7());
         user_ids.push(user_id);
         timestamps.push(event_req.timestamp);
         event_types.push(event_req.event_type.clone());
         data_values.push(event_req.data.clone());
-        metadata_values.push(serde_json::to_value(&event_req.metadata).map_err(|e| {
-            AppError::Internal(format!("Failed to serialize metadata: {}", e))
-        })?);
+        metadata_values.push(
+            serde_json::to_value(&event_req.metadata)
+                .map_err(|e| AppError::Internal(format!("Failed to serialize metadata: {}", e)))?,
+        );
         idempotency_keys.push(event_req.metadata.idempotency_key.clone());
     }
 
@@ -1123,11 +1117,14 @@ pub async fn create_events_batch(
                     .and_then(|pg| pg.detail())
                     .unwrap_or_default();
                 let search_text = format!("{} {}", db_err.message(), pg_detail);
-                let key = idempotency_keys.iter()
+                let key = idempotency_keys
+                    .iter()
                     .find(|k| search_text.contains(k.as_str()))
                     .cloned()
                     .unwrap_or_else(|| "unknown".to_string());
-                return AppError::IdempotencyConflict { idempotency_key: key };
+                return AppError::IdempotencyConflict {
+                    idempotency_key: key,
+                };
             }
         }
         AppError::Database(e)
@@ -1136,14 +1133,40 @@ pub async fn create_events_batch(
     tx.commit().await?;
 
     let created_events: Vec<Event> = rows.into_iter().map(|r| r.into_event()).collect();
+    Ok(BatchCreateEventsResponse {
+        events: created_events,
+        warnings: all_warnings,
+    })
+}
 
-    Ok((
-        StatusCode::CREATED,
-        Json(BatchCreateEventsResponse {
-            events: created_events,
-            warnings: all_warnings,
-        }),
-    ))
+/// Create multiple events atomically
+///
+/// All events in the batch are written in a single transaction.
+/// If any event fails validation or conflicts, the entire batch is rolled back.
+/// Use this for complete training sessions (session.started + sets + session.ended).
+///
+/// Response includes plausibility warnings (with event_index) when values look unusual.
+/// Warnings are informational — events are always accepted.
+#[utoipa::path(
+    post,
+    path = "/v1/events/batch",
+    request_body = BatchCreateEventsRequest,
+    responses(
+        (status = 201, description = "All events created", body = BatchCreateEventsResponse),
+        (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 409, description = "Idempotency conflict", body = ApiError)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "events"
+)]
+pub async fn create_events_batch(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Json(req): Json<BatchCreateEventsRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let batch_result = create_events_batch_internal(&state, auth.user_id, &req.events).await?;
+    Ok((StatusCode::CREATED, Json(batch_result)))
 }
 
 /// Simulate a batch of events without writing to the database.
@@ -1185,7 +1208,9 @@ pub async fn simulate_events(
             message: format!("Batch size {} exceeds maximum of 100", req.events.len()),
             field: Some("events".to_string()),
             received: Some(serde_json::json!(req.events.len())),
-            docs_hint: Some("Split large simulation batches into chunks of 100 or fewer".to_string()),
+            docs_hint: Some(
+                "Split large simulation batches into chunks of 100 or fewer".to_string(),
+            ),
         });
     }
 
@@ -1244,26 +1269,21 @@ pub async fn simulate_events(
             }
         }
 
-        let (resolved_event_type, resolved_data, resolution_note) = if event.event_type == "event.retracted" {
-            resolve_retracted_event_for_simulation(&mut tx, user_id, &event.data).await?
-        } else {
-            (event.event_type.clone(), event.data.clone(), None)
-        };
+        let (resolved_event_type, resolved_data, resolution_note) =
+            if event.event_type == "event.retracted" {
+                resolve_retracted_event_for_simulation(&mut tx, user_id, &event.data).await?
+            } else {
+                (event.event_type.clone(), event.data.clone(), None)
+            };
 
         if let Some(note) = resolution_note {
             notes.push(note);
         }
 
-        let mut mapped = add_standard_projection_targets(
-            &mut candidates,
-            &resolved_event_type,
-            &resolved_data,
-        );
-        mapped |= add_custom_rule_targets(
-            &mut candidates,
-            &active_custom_rules,
-            &resolved_event_type,
-        );
+        let mut mapped =
+            add_standard_projection_targets(&mut candidates, &resolved_event_type, &resolved_data);
+        mapped |=
+            add_custom_rule_targets(&mut candidates, &active_custom_rules, &resolved_event_type);
 
         if !mapped {
             notes.push(format!(
@@ -1324,14 +1344,12 @@ pub async fn simulate_events(
 
             let (change, predicted_version, mut reasons) = if candidate.delete_hint {
                 match current_version {
-                    Some(_) => (
-                        ProjectionImpactChange::Delete,
-                        None,
-                        candidate.reasons,
-                    ),
+                    Some(_) => (ProjectionImpactChange::Delete, None, candidate.reasons),
                     None => {
                         let mut reasons = candidate.reasons;
-                        reasons.push("Projection does not exist yet; archive would be a no-op.".to_string());
+                        reasons.push(
+                            "Projection does not exist yet; archive would be a no-op.".to_string(),
+                        );
                         (ProjectionImpactChange::Noop, None, reasons)
                     }
                 }
@@ -1342,11 +1360,7 @@ pub async fn simulate_events(
                         Some(v + 1),
                         candidate.reasons,
                     ),
-                    None => (
-                        ProjectionImpactChange::Create,
-                        Some(1),
-                        candidate.reasons,
-                    ),
+                    None => (ProjectionImpactChange::Create, Some(1), candidate.reasons),
                 }
             };
 
@@ -1705,9 +1719,12 @@ mod tests {
 
     #[test]
     fn test_meal_normal() {
-        let w = check_event_plausibility("meal.logged", &json!({
-            "calories": 600, "protein_g": 40, "carbs_g": 70, "fat_g": 20
-        }));
+        let w = check_event_plausibility(
+            "meal.logged",
+            &json!({
+                "calories": 600, "protein_g": 40, "carbs_g": 70, "fat_g": 20
+            }),
+        );
         assert!(w.is_empty());
     }
 
@@ -1875,22 +1892,14 @@ mod tests {
     #[test]
     fn test_similarity_empty_exercise_id() {
         let ids = known_ids(&["bench_press"]);
-        let w = check_exercise_id_similarity(
-            "set.logged",
-            &json!({"exercise_id": ""}),
-            &ids,
-        );
+        let w = check_exercise_id_similarity("set.logged", &json!({"exercise_id": ""}), &ids);
         assert!(w.is_empty());
     }
 
     #[test]
     fn test_similarity_missing_exercise_id() {
         let ids = known_ids(&["bench_press"]);
-        let w = check_exercise_id_similarity(
-            "set.logged",
-            &json!({"weight_kg": 80}),
-            &ids,
-        );
+        let w = check_exercise_id_similarity("set.logged", &json!({"weight_kg": 80}), &ids);
         assert!(w.is_empty());
     }
 
@@ -1908,13 +1917,13 @@ mod tests {
     #[test]
     fn test_similarity_message_format() {
         let ids = known_ids(&["bench_press", "bench_presse"]);
-        let w = check_exercise_id_similarity(
-            "set.logged",
-            &json!({"exercise_id": "bench_pres"}),
-            &ids,
-        );
+        let w =
+            check_exercise_id_similarity("set.logged", &json!({"exercise_id": "bench_pres"}), &ids);
         assert_eq!(w.len(), 1);
-        assert!(w[0].message.starts_with("New exercise_id 'bench_pres'. Similar existing:"));
+        assert!(
+            w[0].message
+                .starts_with("New exercise_id 'bench_pres'. Similar existing:")
+        );
         assert_eq!(w[0].severity, "warning");
     }
 
@@ -1929,7 +1938,8 @@ mod tests {
 
     #[test]
     fn test_add_standard_projection_targets_for_set_logged() {
-        let mut candidates: HashMap<ProjectionTargetKey, ProjectionTargetCandidate> = HashMap::new();
+        let mut candidates: HashMap<ProjectionTargetKey, ProjectionTargetCandidate> =
+            HashMap::new();
         let mapped = add_standard_projection_targets(
             &mut candidates,
             "set.logged",
@@ -1969,7 +1979,8 @@ mod tests {
 
     #[test]
     fn test_add_standard_projection_targets_for_rule_archive_sets_delete_hint() {
-        let mut candidates: HashMap<ProjectionTargetKey, ProjectionTargetCandidate> = HashMap::new();
+        let mut candidates: HashMap<ProjectionTargetKey, ProjectionTargetCandidate> =
+            HashMap::new();
         let mapped = add_standard_projection_targets(
             &mut candidates,
             "projection_rule.archived",

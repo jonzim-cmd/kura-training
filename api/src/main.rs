@@ -25,6 +25,7 @@ mod state;
     paths(
         routes::health::health_check,
         routes::agent::get_agent_context,
+        routes::agent::write_with_proof,
         routes::semantic::resolve_semantic_terms,
         routes::events::create_event,
         routes::events::create_events_batch,
@@ -51,6 +52,13 @@ mod state;
         routes::account::AccountDeletedResponse,
         routes::agent::AgentContextMeta,
         routes::agent::AgentContextResponse,
+        routes::agent::AgentReadAfterWriteTarget,
+        routes::agent::AgentWriteWithProofRequest,
+        routes::agent::AgentWriteReceipt,
+        routes::agent::AgentReadAfterWriteCheck,
+        routes::agent::AgentWriteVerificationSummary,
+        routes::agent::AgentWriteClaimGuard,
+        routes::agent::AgentWriteWithProofResponse,
         routes::semantic::SemanticDomain,
         routes::semantic::SemanticConfidenceBand,
         routes::semantic::SemanticProviderInfo,
@@ -110,11 +118,9 @@ impl utoipa::Modify for SecurityAddon {
         let components = openapi.components.get_or_insert_with(Default::default);
         components.add_security_scheme(
             "bearer_auth",
-            utoipa::openapi::security::SecurityScheme::Http(
-                utoipa::openapi::security::Http::new(
-                    utoipa::openapi::security::HttpAuthScheme::Bearer,
-                ),
-            ),
+            utoipa::openapi::security::SecurityScheme::Http(utoipa::openapi::security::Http::new(
+                utoipa::openapi::security::HttpAuthScheme::Bearer,
+            )),
         );
     }
 }
@@ -140,8 +146,7 @@ async fn main() {
         .init();
 
     // Database connection
-    let database_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set");
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
     let pool = PgPoolOptions::new()
         .max_connections(20)
@@ -190,9 +195,10 @@ async fn main() {
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
-                .option_layer(require_https.then(|| {
-                    axum::middleware::from_fn(middleware::https::require_https)
-                }))
+                .option_layer(
+                    require_https
+                        .then(|| axum::middleware::from_fn(middleware::https::require_https)),
+                )
                 .layer(cors_layer),
         )
         .with_state(app_state);

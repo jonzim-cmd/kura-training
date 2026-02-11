@@ -297,3 +297,18 @@ class TestAgentBehavior:
         rules = result["operational"]["rules"]
         assert isinstance(rules, list)
         assert len(rules) >= 3
+
+    def test_operational_has_write_protocol(self):
+        result = _get_agent_behavior()
+        write_protocol = result["operational"]["write_protocol"]
+        assert "required_steps" in write_protocol
+        assert "saved_claim_policy" in write_protocol
+        assert len(write_protocol["required_steps"]) >= 3
+
+    def test_operational_has_uncertainty_markers(self):
+        result = _get_agent_behavior()
+        uncertainty = result["operational"]["uncertainty"]
+        assert "required_markers" in uncertainty
+        markers = uncertainty["required_markers"]
+        assert "uncertain" in markers
+        assert "deferred" in markers
