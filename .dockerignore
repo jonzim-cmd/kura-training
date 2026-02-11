@@ -1,0 +1,28 @@
+target/
+.git/
+.gitignore
+.github/
+.beads/
+.claude/
+.env
+.env.*
+!.env.production.example
+
+# Python
+workers/__pycache__/
+workers/.venv/
+workers/.pytest_cache/
+datagen/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Docs (not needed in image)
+docs/
+*.md
+!migrations/*.sql
+
+# OS
+.DS_Store
