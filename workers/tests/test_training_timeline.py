@@ -1,6 +1,6 @@
 """Tests for training_timeline handler pure functions."""
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from kura_workers.handlers.training_timeline import (
     _compute_frequency,
@@ -9,7 +9,10 @@ from kura_workers.handlers.training_timeline import (
     _compute_streak,
     _compute_weekly_summary,
     _iso_week,
+    _local_date_for_timezone,
     _manifest_contribution,
+    _normalize_timezone_name,
+    _resolve_timezone_context,
 )
 
 
@@ -24,6 +27,42 @@ class TestIsoWeek:
     def test_year_boundary(self):
         # 2025-12-29 is a Monday → ISO week 1 of 2026
         assert _iso_week(date(2025, 12, 29)) == "2026-W01"
+
+
+class TestTimezoneResolution:
+    def test_valid_timezone_is_normalized(self):
+        assert _normalize_timezone_name(" Europe/Berlin ") == "Europe/Berlin"
+        assert _normalize_timezone_name("utc") == "UTC"
+
+    def test_invalid_timezone_returns_none(self):
+        assert _normalize_timezone_name("not/a_timezone") is None
+        assert _normalize_timezone_name("") is None
+        assert _normalize_timezone_name(None) is None
+
+    def test_resolve_timezone_context_from_preference(self):
+        context = _resolve_timezone_context("America/Los_Angeles")
+        assert context["timezone"] == "America/Los_Angeles"
+        assert context["source"] == "preference"
+        assert context["assumed"] is False
+        assert context["assumption_disclosure"] is None
+
+    def test_resolve_timezone_context_falls_back_to_utc(self):
+        context = _resolve_timezone_context(None)
+        assert context["timezone"] == "UTC"
+        assert context["source"] == "assumed_default"
+        assert context["assumed"] is True
+        assert "UTC" in context["assumption_disclosure"]
+
+    def test_local_date_uses_user_timezone_across_dst_boundary(self):
+        # Europe/Berlin DST starts on 2026-03-29. 2026-03-28 23:30 UTC is already
+        # 2026-03-29 local time and must be grouped into the local day.
+        ts_utc = datetime(2026, 3, 28, 23, 30, tzinfo=timezone.utc)
+        assert _local_date_for_timezone(ts_utc, "Europe/Berlin") == date(2026, 3, 29)
+
+    def test_local_date_prevents_utc_day_mismatch_regression(self):
+        # 23:30 local in Los Angeles is next UTC day. Grouping must stay on local day.
+        ts_utc = datetime(2026, 2, 8, 7, 30, tzinfo=timezone.utc)
+        assert _local_date_for_timezone(ts_utc, "America/Los_Angeles") == date(2026, 2, 7)
 
 
 class TestComputeRecentDays:

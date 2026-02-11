@@ -119,10 +119,10 @@ def get_interview_guide() -> dict[str, Any]:
             },
             {
                 "area": "unit_preferences",
-                "description": "Measurement system (kg/lbs, km/miles)",
+                "description": "Measurement system (kg/lbs, km/miles) and timezone preference",
                 "approach": "categorical",
                 "produces": ["preference.set"],
-                "examples": ["Kg oder Lbs?"],
+                "examples": ["Kg oder Lbs?", "In welcher Zeitzone bist du normalerweise?"],
             },
             {
                 "area": "injuries",

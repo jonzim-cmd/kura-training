@@ -12,8 +12,9 @@ Full recompute on every event — idempotent by design.
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import psycopg
 from psycopg.rows import dict_row
@@ -37,6 +38,48 @@ _KNOWN_FIELDS: set[str] = {
     "exercise", "exercise_id", "weight_kg", "weight", "reps",
     "rpe", "rir", "rest_seconds", "tempo", "set_type", "set_number",
 }
+_DEFAULT_ASSUMED_TIMEZONE = "UTC"
+_TIMEZONE_ASSUMPTION_DISCLOSURE = (
+    "No explicit timezone preference found; using UTC until the user confirms one."
+)
+
+
+def _normalize_timezone_name(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    if raw.upper() == "UTC":
+        return "UTC"
+    try:
+        ZoneInfo(raw)
+    except ZoneInfoNotFoundError:
+        return None
+    return raw
+
+
+def _resolve_timezone_context(timezone_pref: Any) -> dict[str, Any]:
+    normalized = _normalize_timezone_name(timezone_pref)
+    if normalized:
+        return {
+            "timezone": normalized,
+            "source": "preference",
+            "assumed": False,
+            "assumption_disclosure": None,
+        }
+    return {
+        "timezone": _DEFAULT_ASSUMED_TIMEZONE,
+        "source": "assumed_default",
+        "assumed": True,
+        "assumption_disclosure": _TIMEZONE_ASSUMPTION_DISCLOSURE,
+    }
+
+
+def _local_date_for_timezone(ts: datetime, timezone_name: str) -> date:
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(ZoneInfo(timezone_name)).date()
 
 
 def _iso_week(d: date) -> str:
@@ -201,6 +244,37 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     }
 
 
+async def _load_timezone_preference(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+    retracted_ids: set[str],
+) -> str | None:
+    """Load latest valid timezone preference (Decision 13 INV-003)."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT id, data
+            FROM events
+            WHERE user_id = %s
+              AND event_type = 'preference.set'
+              AND data->>'key' IN ('timezone', 'time_zone')
+            ORDER BY timestamp DESC, id DESC
+            LIMIT 64
+            """,
+            (user_id,),
+        )
+        pref_rows = await cur.fetchall()
+
+    for row in pref_rows:
+        if str(row["id"]) in retracted_ids:
+            continue
+        data = row.get("data") or {}
+        normalized = _normalize_timezone_name(data.get("value"))
+        if normalized:
+            return normalized
+    return None
+
+
 @projection_handler("set.logged", "set.corrected", "exercise.alias_created", dimension_meta={
     "name": "training_timeline",
     "description": "Training patterns: when, what, how much",
@@ -216,6 +290,12 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "training_schedule",
     ],
     "output_schema": {
+        "timezone_context": {
+            "timezone": "IANA timezone used for day/week grouping (e.g. Europe/Berlin)",
+            "source": "preference|assumed_default",
+            "assumed": "boolean",
+            "assumption_disclosure": "string|null",
+        },
         "recent_days": [{
             "date": "ISO 8601 date",
             "exercises": ["string — canonical exercise names"],
@@ -266,6 +346,9 @@ async def update_training_timeline(
 
     # Load alias map for resolving exercise names (retraction-aware)
     alias_map = await get_alias_map(conn, user_id, retracted_ids=retracted_ids)
+    timezone_pref = await _load_timezone_preference(conn, user_id, retracted_ids)
+    timezone_context = _resolve_timezone_context(timezone_pref)
+    timezone_name = timezone_context["timezone"]
 
     # Fetch ALL set.logged events for this user (including metadata for session_id)
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -335,7 +418,7 @@ async def update_training_timeline(
         if row.get("correction_history"):
             corrected_rows += 1
         ts: datetime = row["timestamp"]
-        d = ts.date()
+        d = _local_date_for_timezone(ts, timezone_name)
         w = _iso_week(d)
 
         # Session key: use metadata.session_id if present, fallback to date
@@ -401,6 +484,7 @@ async def update_training_timeline(
     reference_date = max(training_dates)
 
     projection_data = {
+        "timezone_context": timezone_context,
         "recent_days": _compute_recent_days(day_data),
         "recent_sessions": _compute_recent_sessions(session_data),
         "weekly_summary": _compute_weekly_summary(week_data),
@@ -429,6 +513,6 @@ async def update_training_timeline(
         )
 
     logger.info(
-        "Updated training_timeline for user=%s (days=%d, weeks=%d)",
-        user_id, len(training_dates), len(week_data),
+        "Updated training_timeline for user=%s (days=%d, weeks=%d, timezone=%s, assumed=%s)",
+        user_id, len(training_dates), len(week_data), timezone_name, timezone_context["assumed"],
     )

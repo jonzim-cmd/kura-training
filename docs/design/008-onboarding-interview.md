@@ -80,7 +80,7 @@ Each area has an `approach` that guides the agent's questioning style:
 | Baseline profile completeness | categorical → narrative | `profile.updated`, `bodyweight.logged` |
 | Goals | narrative | `goal.set` |
 | Exercise vocabulary | conversational | `exercise.alias_created` |
-| Unit preferences | categorical | `preference.set` |
+| Unit + timezone preferences | categorical | `preference.set` |
 | Injuries/limitations | categorical → narrative | `injury.reported` |
 | Equipment | categorical | `profile.updated` |
 | Schedule/frequency | categorical | `profile.updated` |
@@ -148,6 +148,7 @@ chronologically (last event per field wins).
 | `primary_location` | string | `"commercial_gym"`, `"home_gym"`, `"outdoor"` |
 | `current_program` | string | `"5/3/1"`, `"PPL"`, `"custom"` |
 | `nutrition_tracking` | string | `"active"`, `"not_interested"`, `"later"` |
+| `timezone` (via `preference.set`) | string (IANA) | `"Europe/Berlin"` |
 | `age` | number | `34` |
 | `date_of_birth` | string (ISO date) | `"1992-04-17"` |
 | `age_deferred` / `date_of_birth_deferred` | boolean | `true` |
@@ -167,7 +168,7 @@ Pure-function logic determines which coverage areas are filled:
 | Baseline profile completeness | Required slots (`age` or `date_of_birth`, plus bodyweight via `profile.updated.bodyweight_kg` or `bodyweight.logged`) are known or explicitly deferred |
 | Goals | Any `goal.set` event |
 | Exercise vocabulary | 3+ `exercise.alias_created` events |
-| Unit preferences | `preference.set` with key `unit_system` |
+| Unit preferences | `preference.set` with key `unit_system`, and timezone should be captured via `timezone`/`time_zone` before schedule/date claims |
 | Injuries | Any `injury.reported` event, or `profile.updated` with `injuries_none: true` |
 | Equipment | `profile.updated` with `available_equipment` |
 | Schedule | `profile.updated` with `training_frequency_per_week` |

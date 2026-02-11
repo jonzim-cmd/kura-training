@@ -106,6 +106,7 @@ class TestEventConventions:
         assert "key" in pref["example"]
         assert "value" in pref["example"]
         assert "common_keys" in pref
+        assert "timezone" in pref["common_keys"]
 
     def test_profile_updated_convention(self):
         conventions = get_event_conventions()

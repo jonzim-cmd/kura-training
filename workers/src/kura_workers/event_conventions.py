@@ -80,6 +80,8 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             "common_keys": [
                 "unit_system",
                 "language",
+                "timezone",
+                "time_zone",
                 "nutrition_tracking",
                 "population_priors_opt_in",
             ],

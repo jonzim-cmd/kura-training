@@ -384,6 +384,53 @@ class TestTrainingTimelineIntegration:
         assert data["total_training_days"] == 3
         assert len(data["recent_days"]) == 3
 
+    async def test_timezone_preference_controls_day_grouping(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "preference.set", {
+            "key": "timezone", "value": "America/Los_Angeles",
+        }, "TIMESTAMP '2026-02-08 07:00:00+00'")
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "squat", "weight_kg": 100, "reps": 5,
+        }, "TIMESTAMP '2026-02-08 07:30:00+00'")  # 2026-02-07 23:30 local
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "squat", "weight_kg": 102, "reps": 5,
+        }, "TIMESTAMP '2026-02-08 08:30:00+00'")  # 2026-02-08 00:30 local
+
+        await db.execute("SET ROLE app_worker")
+        await update_training_timeline(db, {
+            "user_id": test_user_id, "event_type": "set.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "training_timeline")
+        assert proj is not None
+        data = proj["data"]
+        assert data["timezone_context"]["timezone"] == "America/Los_Angeles"
+        assert data["timezone_context"]["source"] == "preference"
+        assert data["timezone_context"]["assumed"] is False
+        assert data["total_training_days"] == 2
+        assert [d["date"] for d in data["recent_days"]] == ["2026-02-07", "2026-02-08"]
+
+    async def test_missing_timezone_uses_explicit_utc_assumption(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "bench_press", "weight_kg": 80, "reps": 5,
+        }, "TIMESTAMP '2026-02-01 10:00:00+00'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_training_timeline(db, {
+            "user_id": test_user_id, "event_type": "set.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "training_timeline")
+        assert proj is not None
+        context = proj["data"]["timezone_context"]
+        assert context["timezone"] == "UTC"
+        assert context["source"] == "assumed_default"
+        assert context["assumed"] is True
+        assert "UTC" in context["assumption_disclosure"]
+
 
 # ---------------------------------------------------------------------------
 # Recovery
