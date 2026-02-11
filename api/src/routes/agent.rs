@@ -2281,7 +2281,11 @@ fn parse_tempo_from_text(text: &str) -> Option<String> {
         .captures(text)
         .or_else(|| TEMPO_BARE_RE.captures(text))?;
     let raw = caps.get(1)?.as_str().trim().to_lowercase();
-    if raw.is_empty() { None } else { Some(raw) }
+    if raw.is_empty() {
+        None
+    } else {
+        Some(raw)
+    }
 }
 
 fn normalize_set_type(value: &str) -> Option<String> {
@@ -4078,25 +4082,30 @@ pub async fn get_agent_context(
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentReadAfterWriteCheck, AgentReadAfterWriteTarget, AgentVisualizationDataSource,
-        AgentVisualizationResolvedSource, AgentVisualizationSpec,
+        bind_visualization_source, bootstrap_user_profile, build_agent_capabilities,
+        build_auto_onboarding_close_event, build_claim_guard, build_repair_feedback,
+        build_save_handshake_learning_signal_events, build_session_audit_artifacts,
+        build_visualization_outputs, clamp_limit, clamp_verify_timeout_ms, default_autonomy_policy,
+        extract_set_context_mentions_from_text, missing_onboarding_close_requirements,
+        normalize_read_after_write_targets, normalize_set_type, normalize_visualization_spec,
+        parse_rest_seconds_from_text, parse_rir_from_text, parse_tempo_from_text,
+        rank_projection_list, ranking_candidate_limit, recover_receipts_for_idempotent_retry,
+        resolve_visualization, visualization_policy_decision, workflow_gate_from_request,
+        AgentReadAfterWriteCheck, AgentReadAfterWriteTarget, AgentResolveVisualizationRequest,
+        AgentVisualizationDataSource, AgentVisualizationResolvedSource, AgentVisualizationSpec,
         AgentVisualizationTimezoneContext, AgentWorkflowState, AgentWriteReceipt, IntentClass,
         ProjectionResponse, RankingContext, WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE,
-        WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE, bind_visualization_source, bootstrap_user_profile,
-        build_agent_capabilities, build_auto_onboarding_close_event, build_claim_guard,
-        build_repair_feedback, build_save_handshake_learning_signal_events,
-        build_session_audit_artifacts, build_visualization_outputs, clamp_limit,
-        clamp_verify_timeout_ms, default_autonomy_policy, extract_set_context_mentions_from_text,
-        missing_onboarding_close_requirements, normalize_read_after_write_targets,
-        normalize_set_type, normalize_visualization_spec, parse_rest_seconds_from_text,
-        parse_rir_from_text, parse_tempo_from_text, rank_projection_list, ranking_candidate_limit,
-        recover_receipts_for_idempotent_retry, visualization_policy_decision,
-        workflow_gate_from_request,
+        WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE,
     };
+    use crate::auth::{AuthMethod, AuthenticatedUser};
+    use crate::error::AppError;
+    use crate::state::AppState;
+    use axum::{extract::State, Json};
     use chrono::{Duration, Utc};
     use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
     use kura_core::projections::{Projection, ProjectionFreshness, ProjectionMeta};
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
+    use sqlx::postgres::PgPoolOptions;
     use uuid::Uuid;
 
     fn make_projection_response(
@@ -4180,6 +4189,84 @@ mod tests {
             verified_checks,
             checks,
         }
+    }
+
+    async fn integration_state_if_available() -> Option<(AppState, AuthenticatedUser, Uuid)> {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            return None;
+        };
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .ok()?;
+
+        sqlx::migrate!("../migrations").run(&pool).await.ok()?;
+
+        let user_id = Uuid::now_v7();
+        let email = format!("viz-e2e-{}@test.local", user_id);
+        sqlx::query(
+            "INSERT INTO users (id, email, password_hash, display_name) VALUES ($1, $2, 'h', 'Viz Test')",
+        )
+        .bind(user_id)
+        .bind(email)
+        .execute(&pool)
+        .await
+        .ok()?;
+
+        let auth = AuthenticatedUser {
+            user_id,
+            auth_method: AuthMethod::ApiKey {
+                key_id: Uuid::now_v7(),
+            },
+        };
+        Some((AppState { db: pool }, auth, user_id))
+    }
+
+    async fn upsert_test_projection(
+        pool: &sqlx::PgPool,
+        user_id: Uuid,
+        projection_type: &str,
+        key: &str,
+        data: Value,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO projections (id, user_id, projection_type, key, data, version, last_event_id, updated_at)
+            VALUES ($1, $2, $3, $4, $5, 1, NULL, NOW())
+            ON CONFLICT (user_id, projection_type, key) DO UPDATE SET
+                data = EXCLUDED.data,
+                version = projections.version + 1,
+                updated_at = NOW()
+            "#,
+        )
+        .bind(Uuid::now_v7())
+        .bind(user_id)
+        .bind(projection_type)
+        .bind(key)
+        .bind(data)
+        .execute(pool)
+        .await
+        .expect("upsert test projection");
+    }
+
+    async fn load_learning_signal_types(pool: &sqlx::PgPool, user_id: Uuid) -> Vec<String> {
+        sqlx::query_scalar::<_, Option<String>>(
+            r#"
+            SELECT data->>'signal_type' AS signal_type
+            FROM events
+            WHERE user_id = $1
+              AND event_type = 'learning.signal.logged'
+            ORDER BY timestamp ASC, id ASC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await
+        .expect("load learning signals")
+        .into_iter()
+        .flatten()
+        .collect()
     }
 
     #[test]
@@ -4447,11 +4534,9 @@ mod tests {
             }),
         );
         let missing = missing_onboarding_close_requirements(Some(&profile));
-        assert!(
-            missing
-                .iter()
-                .any(|item| item == "preference.timezone.missing")
-        );
+        assert!(missing
+            .iter()
+            .any(|item| item == "preference.timezone.missing"));
     }
 
     #[test]
@@ -4471,11 +4556,10 @@ mod tests {
         assert_eq!(gate.status, "blocked");
         assert_eq!(gate.phase, "onboarding");
         assert_eq!(gate.transition, "none");
-        assert!(
-            gate.planning_event_types
-                .iter()
-                .any(|event_type| event_type == "training_plan.created")
-        );
+        assert!(gate
+            .planning_event_types
+            .iter()
+            .any(|event_type| event_type == "training_plan.created"));
     }
 
     #[test]
@@ -4550,10 +4634,9 @@ mod tests {
         assert_eq!(gate.transition, "onboarding_closed");
         assert_eq!(gate.phase, "planning");
         assert!(gate.onboarding_closed);
-        assert!(
-            gate.message
-                .contains("legacy compatibility; onboarding close marker will be auto-recorded")
-        );
+        assert!(gate
+            .message
+            .contains("legacy compatibility; onboarding close marker will be auto-recorded"));
     }
 
     #[test]
@@ -4652,11 +4735,292 @@ mod tests {
         assert_eq!(status, "fallback");
         assert_eq!(output.format, "ascii");
         assert!(fallback_output.is_none());
-        assert!(
-            warnings
-                .iter()
-                .any(|warning| warning.contains("UTC fallback"))
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("UTC fallback")));
+    }
+
+    #[tokio::test]
+    async fn visualization_resolve_e2e_visualize_returns_resolved_sources_and_telemetry() {
+        let Some((state, auth, user_id)) = integration_state_if_available().await else {
+            return;
+        };
+
+        upsert_test_projection(
+            &state.db,
+            user_id,
+            "user_profile",
+            "me",
+            json!({
+                "user": {
+                    "preferences": {
+                        "timezone": "Europe/Berlin"
+                    }
+                }
+            }),
+        )
+        .await;
+        upsert_test_projection(
+            &state.db,
+            user_id,
+            "training_timeline",
+            "overview",
+            json!({
+                "weekly_summary": [
+                    {"week": "2026-W06", "total_volume_kg": 1200.0},
+                    {"week": "2026-W07", "total_volume_kg": 1320.0}
+                ]
+            }),
+        )
+        .await;
+
+        let req = AgentResolveVisualizationRequest {
+            task_intent: "compare last 4 weeks volume vs plan".to_string(),
+            user_preference_override: None,
+            complexity_hint: None,
+            allow_rich_rendering: true,
+            visualization_spec: Some(AgentVisualizationSpec {
+                format: "chart".to_string(),
+                purpose: "4-week volume trend".to_string(),
+                title: Some("Volume vs plan".to_string()),
+                timezone: None,
+                data_sources: vec![
+                    AgentVisualizationDataSource {
+                        projection_type: "training_timeline".to_string(),
+                        key: "overview".to_string(),
+                        json_path: Some("weekly_summary.0.total_volume_kg".to_string()),
+                    },
+                    AgentVisualizationDataSource {
+                        projection_type: "training_timeline".to_string(),
+                        key: "overview".to_string(),
+                        json_path: Some("weekly_summary.1.total_volume_kg".to_string()),
+                    },
+                ],
+            }),
+            telemetry_session_id: Some("viz-e2e-visualize".to_string()),
+        };
+
+        let response = resolve_visualization(State(state.clone()), auth.clone(), Json(req))
+            .await
+            .expect("resolve visualization should succeed")
+            .0;
+
+        assert_eq!(response.policy.status, "visualize");
+        assert_eq!(response.resolved_sources.len(), 2);
+        assert_eq!(response.resolved_sources[0].value, json!(1200.0));
+        assert_eq!(response.resolved_sources[1].value, json!(1320.0));
+        assert_eq!(response.output.format, "chart");
+        assert!(response
+            .fallback_output
+            .as_ref()
+            .is_some_and(|output| output.format == "ascii"));
+        assert_eq!(
+            response
+                .timezone_context
+                .as_ref()
+                .map(|context| context.source.as_str()),
+            Some("user_profile.preference")
         );
+        assert!(response
+            .telemetry_signal_types
+            .iter()
+            .any(|signal| signal == "viz_source_bound"));
+        assert!(response
+            .telemetry_signal_types
+            .iter()
+            .any(|signal| signal == "viz_shown"));
+
+        let signal_types = load_learning_signal_types(&state.db, user_id).await;
+        assert!(signal_types
+            .iter()
+            .any(|signal| signal == "viz_source_bound"));
+        assert!(signal_types.iter().any(|signal| signal == "viz_shown"));
+    }
+
+    #[tokio::test]
+    async fn visualization_resolve_e2e_invalid_json_path_returns_validation_with_docs_hint() {
+        let Some((state, auth, user_id)) = integration_state_if_available().await else {
+            return;
+        };
+
+        upsert_test_projection(
+            &state.db,
+            user_id,
+            "training_timeline",
+            "overview",
+            json!({
+                "weekly_summary": [
+                    {"week": "2026-W06", "total_volume_kg": 1200.0}
+                ]
+            }),
+        )
+        .await;
+
+        let req = AgentResolveVisualizationRequest {
+            task_intent: "compare training trend".to_string(),
+            user_preference_override: None,
+            complexity_hint: None,
+            allow_rich_rendering: true,
+            visualization_spec: Some(AgentVisualizationSpec {
+                format: "table".to_string(),
+                purpose: "Weekly comparison".to_string(),
+                title: None,
+                timezone: None,
+                data_sources: vec![AgentVisualizationDataSource {
+                    projection_type: "training_timeline".to_string(),
+                    key: "overview".to_string(),
+                    json_path: Some("weekly_summary.0.missing_field".to_string()),
+                }],
+            }),
+            telemetry_session_id: Some("viz-e2e-invalid".to_string()),
+        };
+
+        let error = resolve_visualization(State(state), auth, Json(req))
+            .await
+            .expect_err("invalid json_path must fail");
+
+        match error {
+            AppError::Validation {
+                field, docs_hint, ..
+            } => {
+                assert_eq!(field.as_deref(), Some("visualization_spec.data_sources"));
+                let hint = docs_hint.unwrap_or_default();
+                assert!(hint.contains("json_path"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn visualization_resolve_e2e_allow_rich_false_returns_ascii_equivalent_and_fallback_signal(
+    ) {
+        let Some((state, auth, user_id)) = integration_state_if_available().await else {
+            return;
+        };
+
+        upsert_test_projection(
+            &state.db,
+            user_id,
+            "user_profile",
+            "me",
+            json!({
+                "user": {
+                    "preferences": {
+                        "timezone": "Europe/Berlin"
+                    }
+                }
+            }),
+        )
+        .await;
+        upsert_test_projection(
+            &state.db,
+            user_id,
+            "training_timeline",
+            "overview",
+            json!({
+                "weekly_summary": [
+                    {"week": "2026-W06", "total_volume_kg": 1200.0}
+                ]
+            }),
+        )
+        .await;
+
+        let base_spec = AgentVisualizationSpec {
+            format: "mermaid".to_string(),
+            purpose: "Compare weekly training load".to_string(),
+            title: None,
+            timezone: None,
+            data_sources: vec![AgentVisualizationDataSource {
+                projection_type: "training_timeline".to_string(),
+                key: "overview".to_string(),
+                json_path: Some("weekly_summary".to_string()),
+            }],
+        };
+
+        let rich_response = resolve_visualization(
+            State(state.clone()),
+            auth.clone(),
+            Json(AgentResolveVisualizationRequest {
+                task_intent: "compare weekly trend".to_string(),
+                user_preference_override: None,
+                complexity_hint: None,
+                allow_rich_rendering: true,
+                visualization_spec: Some(base_spec.clone()),
+                telemetry_session_id: Some("viz-e2e-rich".to_string()),
+            }),
+        )
+        .await
+        .expect("rich rendering should succeed")
+        .0;
+        let rich_ascii = rich_response
+            .fallback_output
+            .as_ref()
+            .map(|output| output.content.clone())
+            .expect("rich output must include deterministic ascii fallback");
+
+        let fallback_response = resolve_visualization(
+            State(state.clone()),
+            auth.clone(),
+            Json(AgentResolveVisualizationRequest {
+                task_intent: "compare weekly trend".to_string(),
+                user_preference_override: None,
+                complexity_hint: None,
+                allow_rich_rendering: false,
+                visualization_spec: Some(base_spec),
+                telemetry_session_id: Some("viz-e2e-fallback".to_string()),
+            }),
+        )
+        .await
+        .expect("fallback rendering should succeed")
+        .0;
+
+        assert_eq!(fallback_response.policy.status, "fallback");
+        assert_eq!(fallback_response.output.format, "ascii");
+        assert!(fallback_response.fallback_output.is_none());
+        assert_eq!(fallback_response.output.content, rich_ascii);
+        assert!(fallback_response
+            .telemetry_signal_types
+            .iter()
+            .any(|signal| signal == "viz_fallback_used"));
+
+        let signal_types = load_learning_signal_types(&state.db, user_id).await;
+        assert!(signal_types
+            .iter()
+            .any(|signal| signal == "viz_fallback_used"));
+    }
+
+    #[tokio::test]
+    async fn visualization_resolve_e2e_policy_skip_emits_viz_skipped_signal() {
+        let Some((state, auth, user_id)) = integration_state_if_available().await else {
+            return;
+        };
+
+        let response = resolve_visualization(
+            State(state.clone()),
+            auth.clone(),
+            Json(AgentResolveVisualizationRequest {
+                task_intent: "what is my latest bodyweight entry".to_string(),
+                user_preference_override: None,
+                complexity_hint: None,
+                allow_rich_rendering: true,
+                visualization_spec: None,
+                telemetry_session_id: Some("viz-e2e-skipped".to_string()),
+            }),
+        )
+        .await
+        .expect("skip path should succeed")
+        .0;
+
+        assert_eq!(response.policy.status, "skipped");
+        assert!(response.resolved_sources.is_empty());
+        assert_eq!(response.output.format, "text");
+        assert!(response
+            .telemetry_signal_types
+            .iter()
+            .any(|signal| signal == "viz_skipped"));
+
+        let signal_types = load_learning_signal_types(&state.db, user_id).await;
+        assert!(signal_types.iter().any(|signal| signal == "viz_skipped"));
     }
 
     #[test]
@@ -4943,12 +5307,10 @@ mod tests {
             .expect("technical details expected for power-user view");
         assert!(!technical.repair_event_ids.is_empty());
         assert!(!technical.field_diffs.is_empty());
-        assert!(
-            technical
-                .command_trace
-                .iter()
-                .any(|step| step == "session_audit.apply_set_corrected")
-        );
+        assert!(technical
+            .command_trace
+            .iter()
+            .any(|step| step == "session_audit.apply_set_corrected"));
     }
 
     #[test]
@@ -5048,24 +5410,18 @@ mod tests {
         let guard = build_claim_guard(&receipts, 1, &checks, &warnings, default_autonomy_policy());
         assert!(!guard.allow_saved_claim);
         assert_eq!(guard.claim_status, "pending");
-        assert!(
-            guard
-                .uncertainty_markers
-                .iter()
-                .any(|marker| marker == "read_after_write_unverified")
-        );
-        assert!(
-            guard
-                .deferred_markers
-                .iter()
-                .any(|marker| marker == "defer_saved_claim_until_projection_readback")
-        );
-        assert!(
-            guard
-                .uncertainty_markers
-                .iter()
-                .any(|marker| marker == "plausibility_warnings_present")
-        );
+        assert!(guard
+            .uncertainty_markers
+            .iter()
+            .any(|marker| marker == "read_after_write_unverified"));
+        assert!(guard
+            .deferred_markers
+            .iter()
+            .any(|marker| marker == "defer_saved_claim_until_projection_readback"));
+        assert!(guard
+            .uncertainty_markers
+            .iter()
+            .any(|marker| marker == "plausibility_warnings_present"));
     }
 
     #[test]
@@ -5103,12 +5459,10 @@ mod tests {
                 .len()
                 > 10
         );
-        assert!(
-            guard
-                .uncertainty_markers
-                .iter()
-                .any(|marker| marker == "autonomy_throttled_by_integrity_slo")
-        );
+        assert!(guard
+            .uncertainty_markers
+            .iter()
+            .any(|marker| marker == "autonomy_throttled_by_integrity_slo"));
     }
 
     #[test]
@@ -5125,12 +5479,10 @@ mod tests {
         let guard = build_claim_guard(&[], 1, &checks, &[], default_autonomy_policy());
         assert!(!guard.allow_saved_claim);
         assert_eq!(guard.claim_status, "failed");
-        assert!(
-            guard
-                .deferred_markers
-                .iter()
-                .any(|marker| marker == "defer_saved_claim_until_receipt_complete")
-        );
+        assert!(guard
+            .deferred_markers
+            .iter()
+            .any(|marker| marker == "defer_saved_claim_until_receipt_complete"));
     }
 
     #[test]
@@ -5228,11 +5580,9 @@ mod tests {
             })
             .collect();
         assert!(signal_types.iter().any(|v| v == "save_handshake_pending"));
-        assert!(
-            signal_types
-                .iter()
-                .any(|v| v == "save_claim_mismatch_attempt")
-        );
+        assert!(signal_types
+            .iter()
+            .any(|v| v == "save_claim_mismatch_attempt"));
     }
 
     // -----------------------------------------------------------------------
@@ -5470,13 +5820,11 @@ mod tests {
             fallback.endpoint == "/v1/events"
                 && fallback.compatibility_status == "supported_with_upgrade_signal"
         }));
-        assert!(
-            manifest
-                .upgrade_policy
-                .phases
-                .iter()
-                .any(|phase| phase.compatibility_status == "deprecated")
-        );
+        assert!(manifest
+            .upgrade_policy
+            .phases
+            .iter()
+            .any(|phase| phase.compatibility_status == "deprecated"));
         assert_eq!(
             manifest.upgrade_policy.upgrade_signal_header,
             "x-kura-upgrade-signal"
