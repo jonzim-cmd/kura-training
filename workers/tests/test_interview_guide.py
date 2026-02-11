@@ -134,7 +134,7 @@ class TestEventConventions:
         """Ensure all major tracking event types have conventions."""
         conventions = get_event_conventions()
         expected = {
-            "set.logged", "exercise.alias_created",
+            "set.logged", "set.corrected", "exercise.alias_created",
             "bodyweight.logged", "measurement.logged",
             "sleep.logged", "soreness.logged", "energy.logged",
             "meal.logged",
@@ -142,6 +142,7 @@ class TestEventConventions:
             "program.started",
             "weight_target.set", "sleep_target.set", "nutrition_target.set",
             "profile.updated", "preference.set", "goal.set", "injury.reported",
+            "session.completed", "learning.signal.logged",
             "event.retracted",
             "projection_rule.created", "projection_rule.archived",
         }

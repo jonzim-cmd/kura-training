@@ -67,13 +67,16 @@ def apply_set_correction_chain(
             target_row["effective_data"][field_name] = value
             if isinstance(field_provenance, dict):
                 target_row["field_provenance"][field_name] = field_provenance
+            applied_at = correction.get("timestamp")
+            if hasattr(applied_at, "isoformat"):
+                applied_at = applied_at.isoformat()
             target_row["correction_history"].append(
                 {
                     "correction_event_id": str(correction.get("id", "")),
                     "target_event_id": target_event_id,
                     "field": field_name,
                     "value": value,
-                    "applied_at": correction.get("timestamp"),
+                    "applied_at": applied_at,
                     "reason": data.get("reason"),
                     "repair_provenance": field_provenance,
                 }

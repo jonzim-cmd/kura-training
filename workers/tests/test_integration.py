@@ -25,6 +25,7 @@ from kura_workers.handlers.exercise_progression import update_exercise_progressi
 from kura_workers.handlers.nutrition import update_nutrition
 from kura_workers.handlers.quality_health import update_quality_health
 from kura_workers.handlers.readiness_inference import update_readiness_inference
+from kura_workers.handlers.session_feedback import update_session_feedback
 from kura_workers.handlers.recovery import update_recovery
 from kura_workers.handlers.router import handle_projection_retry, handle_projection_update
 from kura_workers.handlers.semantic_memory import update_semantic_memory
@@ -1364,6 +1365,312 @@ class TestQualityHealthIntegration:
         assert mismatch["value"] == 50.0
         assert data["integrity_slo_status"] == "degraded"
         assert data["autonomy_policy"]["throttle_active"] is True
+
+
+# ---------------------------------------------------------------------------
+# Session Feedback (Decision 13 — PDC.8)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionFeedbackIntegration:
+    async def test_session_completed_creates_feedback_projection(self, db, test_user_id):
+        """session.completed events should produce a session_feedback projection."""
+        await create_test_user(db, test_user_id)
+
+        # Log training sets first (for load aggregation)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "bench_press", "weight_kg": 80, "reps": 5,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "bench_press", "weight_kg": 85, "reps": 3,
+        }, "TIMESTAMP '2026-02-01 10:10:00+01'")
+
+        # Now log session feedback
+        await insert_event(db, test_user_id, "session.completed", {
+            "enjoyment": 4, "perceived_quality": 3,
+            "perceived_exertion": 7, "notes": "Felt strong today",
+        }, "TIMESTAMP '2026-02-01 11:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_session_feedback(db, {
+            "user_id": test_user_id, "event_type": "session.completed",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "session_feedback")
+        assert proj is not None
+        data = proj["data"]
+        assert data["counts"]["sessions_with_feedback"] == 1
+        recent = data["recent_sessions"]
+        assert len(recent) == 1
+        assert recent[0]["enjoyment"] == 4.0
+        assert recent[0]["perceived_quality"] == 3.0
+        assert recent[0]["perceived_exertion"] == 7.0
+        assert recent[0]["context"] == "Felt strong today"
+        # Session load joined from set.logged by date
+        assert recent[0]["session_load"]["total_sets"] == 2
+        assert recent[0]["session_load"]["total_volume_kg"] > 0
+
+    async def test_session_completed_with_session_id_joins_load(self, db, test_user_id):
+        """session_id-based join between feedback and sets."""
+        await create_test_user(db, test_user_id)
+        session_id = "sess-abc-001"
+
+        # Two sets with explicit session_id
+        for i in range(2):
+            event_id = str(uuid.uuid4())
+            idem_key = str(uuid.uuid4())
+            async with db.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO events (id, user_id, event_type, data, metadata, timestamp)
+                    VALUES (%s, %s, 'set.logged', %s, %s, TIMESTAMP '2026-02-05 10:00:00+01' + make_interval(mins => %s))
+                    """,
+                    (
+                        event_id, test_user_id,
+                        psycopg.types.json.Json({"exercise_id": "squat", "weight_kg": 100 + i * 10, "reps": 5}),
+                        psycopg.types.json.Json({"idempotency_key": idem_key, "session_id": session_id}),
+                        i * 5,
+                    ),
+                )
+
+        # Feedback with matching session_id
+        fb_id = str(uuid.uuid4())
+        fb_idem = str(uuid.uuid4())
+        async with db.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO events (id, user_id, event_type, data, metadata, timestamp)
+                VALUES (%s, %s, 'session.completed', %s, %s, TIMESTAMP '2026-02-05 11:00:00+01')
+                """,
+                (
+                    fb_id, test_user_id,
+                    psycopg.types.json.Json({"enjoyment": 5}),
+                    psycopg.types.json.Json({"idempotency_key": fb_idem, "session_id": session_id}),
+                ),
+            )
+
+        await db.execute("SET ROLE app_worker")
+        await update_session_feedback(db, {
+            "user_id": test_user_id, "event_type": "session.completed",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "session_feedback")
+        assert proj is not None
+        recent = proj["data"]["recent_sessions"]
+        assert len(recent) == 1
+        assert recent[0]["session_id"] == session_id
+        assert recent[0]["session_load"]["total_sets"] == 2
+
+    async def test_legacy_text_infers_enjoyment(self, db, test_user_id):
+        """Free-text 'feeling' field without explicit scores should infer enjoyment."""
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "session.completed", {
+            "feeling": "Training war heute richtig schlecht und müde",
+        }, "TIMESTAMP '2026-02-03 18:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_session_feedback(db, {
+            "user_id": test_user_id, "event_type": "session.completed",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "session_feedback")
+        recent = proj["data"]["recent_sessions"]
+        assert len(recent) == 1
+        # "schlecht" and "müde" are negative hints → enjoyment = 2.0
+        assert recent[0]["enjoyment"] == 2.0
+        assert recent[0]["context"] == "Training war heute richtig schlecht und müde"
+
+
+class TestSetCorrectionIntegration:
+    async def test_set_corrected_updates_exercise_progression(self, db, test_user_id):
+        """set.corrected should modify effective data in exercise_progression."""
+        await create_test_user(db, test_user_id)
+        set_event_id = await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "bench_press", "weight_kg": 80, "reps": 5,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+
+        # Correction: weight was actually 85 kg
+        correction_event_id = await insert_event(db, test_user_id, "set.corrected", {
+            "target_event_id": set_event_id,
+            "changed_fields": {
+                "weight_kg": {
+                    "value": 85,
+                    "repair_provenance": {
+                        "source_type": "inferred",
+                        "confidence": 0.92,
+                        "confidence_band": "high",
+                        "applies_scope": "single_set",
+                        "reason": "mention-bound rest extraction",
+                    },
+                },
+            },
+            "reason": "weight misread",
+        }, "TIMESTAMP '2026-02-01 10:05:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        # event_id must be the correction event's ID (handler reads target_event_id from it)
+        await update_exercise_progression(db, {
+            "user_id": test_user_id, "event_type": "set.corrected",
+            "event_id": correction_event_id,
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "exercise_progression", "bench_press")
+        assert proj is not None
+        data = proj["data"]
+        # Volume should reflect corrected weight: 85 * 5 = 425
+        assert data["total_volume_kg"] == 425.0
+        # 1RM should be based on 85kg x 5 (Epley)
+        assert data["estimated_1rm"] > 0
+
+    async def test_set_corrected_affects_session_feedback_load(self, db, test_user_id):
+        """set.corrected should update the session load in session_feedback."""
+        await create_test_user(db, test_user_id)
+        set_event_id = await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "squat", "weight_kg": 100, "reps": 5,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+        await insert_event(db, test_user_id, "session.completed", {
+            "enjoyment": 4,
+        }, "TIMESTAMP '2026-02-01 11:00:00+01'")
+
+        # Correct weight upward
+        await insert_event(db, test_user_id, "set.corrected", {
+            "target_event_id": set_event_id,
+            "changed_fields": {"weight_kg": 120},
+            "reason": "typo fix",
+        }, "TIMESTAMP '2026-02-01 11:05:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_session_feedback(db, {
+            "user_id": test_user_id, "event_type": "set.corrected",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "session_feedback")
+        assert proj is not None
+        load = proj["data"]["recent_sessions"][0]["session_load"]
+        # Corrected: 120 * 5 = 600
+        assert load["total_volume_kg"] == 600.0
+
+
+class TestSessionFeedbackIdempotency:
+    async def test_double_handler_call_produces_same_data(self, db, test_user_id):
+        """Running session_feedback handler twice produces identical projection data."""
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "session.completed", {
+            "enjoyment": 3, "perceived_exertion": 6,
+        }, "TIMESTAMP '2026-02-01 18:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+
+        payload = {"user_id": test_user_id, "event_type": "session.completed"}
+        await update_session_feedback(db, payload)
+        proj1 = await get_projection(db, test_user_id, "session_feedback")
+
+        await update_session_feedback(db, payload)
+        proj2 = await get_projection(db, test_user_id, "session_feedback")
+
+        await db.execute("RESET ROLE")
+
+        assert proj1["data"] == proj2["data"]
+        assert proj2["version"] == proj1["version"] + 1
+
+
+class TestSessionFeedbackRetraction:
+    async def test_retract_session_completed_removes_projection(self, db, test_user_id):
+        """Retracting the only session.completed event should delete the projection."""
+        await create_test_user(db, test_user_id)
+        event_id = await insert_event(db, test_user_id, "session.completed", {
+            "enjoyment": 4, "notes": "Good session",
+        }, "TIMESTAMP '2026-02-01 18:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_session_feedback(db, {
+            "user_id": test_user_id, "event_type": "session.completed",
+        })
+        await db.execute("RESET ROLE")
+
+        # Verify projection exists
+        proj = await get_projection(db, test_user_id, "session_feedback")
+        assert proj is not None
+
+        # Retract the event
+        await retract_event(db, test_user_id, event_id, "session.completed",
+                            "TIMESTAMP '2026-02-02 08:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_session_feedback(db, {
+            "user_id": test_user_id, "event_type": "session.completed",
+        })
+        await db.execute("RESET ROLE")
+
+        # Projection should be deleted
+        proj = await get_projection(db, test_user_id, "session_feedback")
+        assert proj is None
+
+    async def test_retract_one_of_many_keeps_remaining(self, db, test_user_id):
+        """Retracting one session from several should keep the others."""
+        await create_test_user(db, test_user_id)
+        event_1 = await insert_event(db, test_user_id, "session.completed", {
+            "enjoyment": 3,
+        }, "TIMESTAMP '2026-02-01 18:00:00+01'")
+        await insert_event(db, test_user_id, "session.completed", {
+            "enjoyment": 5,
+        }, "TIMESTAMP '2026-02-02 18:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_session_feedback(db, {
+            "user_id": test_user_id, "event_type": "session.completed",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "session_feedback")
+        assert proj["data"]["counts"]["sessions_with_feedback"] == 2
+
+        # Retract first event
+        await retract_event(db, test_user_id, event_1, "session.completed",
+                            "TIMESTAMP '2026-02-03 08:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_session_feedback(db, {
+            "user_id": test_user_id, "event_type": "session.completed",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "session_feedback")
+        assert proj is not None
+        assert proj["data"]["counts"]["sessions_with_feedback"] == 1
+        assert proj["data"]["recent_sessions"][0]["enjoyment"] == 5.0
+
+
+class TestSessionCompletedNotOrphan:
+    async def test_session_completed_not_in_orphaned_event_types(self, db, test_user_id):
+        """session.completed is handled by session_feedback, so NOT an orphan."""
+        await create_test_user(db, test_user_id)
+        # Log a session.completed + a known event type
+        await insert_event(db, test_user_id, "session.completed", {
+            "enjoyment": 4,
+        }, "TIMESTAMP '2026-02-01 18:00:00+01'")
+        await insert_event(db, test_user_id, "profile.updated", {
+            "name": "Test",
+        }, "TIMESTAMP '2026-02-01 07:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_user_profile(db, {
+            "user_id": test_user_id, "event_type": "session.completed",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "user_profile", "me")
+        assert proj is not None
+        data = proj["data"]
+        data_quality = data["user"]["data_quality"]
+        orphans = data_quality.get("orphaned_event_types", [])
+        orphan_types = [o["event_type"] for o in orphans]
+        assert "session.completed" not in orphan_types
 
 
 # ---------------------------------------------------------------------------

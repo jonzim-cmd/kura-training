@@ -2441,13 +2441,15 @@ mod tests {
         ProjectionResponse, RankingContext, bootstrap_user_profile, build_claim_guard,
         build_repair_feedback, build_save_handshake_learning_signal_events,
         build_session_audit_artifacts, clamp_limit, clamp_verify_timeout_ms,
-        default_autonomy_policy, normalize_read_after_write_targets, rank_projection_list,
+        default_autonomy_policy, extract_set_context_mentions_from_text,
+        normalize_read_after_write_targets, normalize_set_type, parse_rest_seconds_from_text,
+        parse_rir_from_text, parse_tempo_from_text, rank_projection_list,
         ranking_candidate_limit, recover_receipts_for_idempotent_retry,
     };
     use chrono::{Duration, Utc};
     use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
     use kura_core::projections::{Projection, ProjectionFreshness, ProjectionMeta};
-    use serde_json::json;
+    use serde_json::{json, Value};
     use uuid::Uuid;
 
     fn make_projection_response(
@@ -3309,5 +3311,212 @@ mod tests {
                 .iter()
                 .any(|v| v == "save_claim_mismatch_attempt")
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Mention-bound field extraction (regex correctness)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_rest_seconds_from_bare_number() {
+        // "pause 90" → 90 seconds
+        assert_eq!(parse_rest_seconds_from_text("pause 90"), Some(90.0));
+        assert_eq!(parse_rest_seconds_from_text("rest 120"), Some(120.0));
+        assert_eq!(parse_rest_seconds_from_text("satzpause 60"), Some(60.0));
+    }
+
+    #[test]
+    fn parse_rest_seconds_with_unit() {
+        assert_eq!(parse_rest_seconds_from_text("rest 90 sec"), Some(90.0));
+        assert_eq!(parse_rest_seconds_from_text("pause 90s"), Some(90.0));
+        assert_eq!(
+            parse_rest_seconds_from_text("120 seconds rest"),
+            Some(120.0)
+        );
+    }
+
+    #[test]
+    fn parse_rest_minutes_converts_to_seconds() {
+        assert_eq!(parse_rest_seconds_from_text("rest 2 min"), Some(120.0));
+        assert_eq!(parse_rest_seconds_from_text("pause 3 minutes"), Some(180.0));
+    }
+
+    #[test]
+    fn parse_rest_mmss_format() {
+        assert_eq!(parse_rest_seconds_from_text("rest 1:30"), Some(90.0));
+        assert_eq!(parse_rest_seconds_from_text("pause 2:00"), Some(120.0));
+    }
+
+    #[test]
+    fn parse_rest_returns_none_for_no_mention() {
+        assert_eq!(parse_rest_seconds_from_text("heavy set today"), None);
+        assert_eq!(parse_rest_seconds_from_text(""), None);
+    }
+
+    #[test]
+    fn parse_rir_from_various_formats() {
+        assert_eq!(parse_rir_from_text("rir 2"), Some(2.0));
+        assert_eq!(parse_rir_from_text("rir: 3"), Some(3.0));
+        assert_eq!(parse_rir_from_text("2 rir"), Some(2.0));
+        assert_eq!(parse_rir_from_text("3 reps in reserve"), Some(3.0));
+    }
+
+    #[test]
+    fn parse_rir_clamps_to_range() {
+        assert_eq!(parse_rir_from_text("rir 15"), Some(10.0));
+    }
+
+    #[test]
+    fn parse_rir_returns_none_for_no_mention() {
+        assert_eq!(parse_rir_from_text("felt easy"), None);
+        assert_eq!(parse_rir_from_text(""), None);
+    }
+
+    #[test]
+    fn parse_tempo_from_labeled_and_bare() {
+        assert_eq!(
+            parse_tempo_from_text("tempo 3-1-x-0"),
+            Some("3-1-x-0".to_string())
+        );
+        assert_eq!(
+            parse_tempo_from_text("tempo: 2-0-2-0"),
+            Some("2-0-2-0".to_string())
+        );
+        // Bare pattern without "tempo" label
+        assert_eq!(
+            parse_tempo_from_text("did 3-1-x-0 today"),
+            Some("3-1-x-0".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_tempo_returns_none_for_no_mention() {
+        assert_eq!(parse_tempo_from_text("heavy singles"), None);
+    }
+
+    #[test]
+    fn normalize_set_type_maps_known_types() {
+        assert_eq!(normalize_set_type("warmup"), Some("warmup".to_string()));
+        assert_eq!(normalize_set_type("Warm-Up"), Some("warmup".to_string()));
+        assert_eq!(
+            normalize_set_type("backoff set"),
+            Some("backoff".to_string())
+        );
+        assert_eq!(normalize_set_type("AMRAP"), Some("amrap".to_string()));
+        assert_eq!(
+            normalize_set_type("working set"),
+            Some("working".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_set_type_returns_none_for_unknown() {
+        assert_eq!(normalize_set_type("heavy"), None);
+        assert_eq!(normalize_set_type(""), None);
+    }
+
+    #[test]
+    fn extract_set_context_mentions_combined_text() {
+        let mentions =
+            extract_set_context_mentions_from_text("rest 90 sec, rir 2, tempo 3-1-x-0, warmup");
+        assert_eq!(mentions.get("rest_seconds").and_then(Value::as_f64), Some(90.0));
+        assert_eq!(mentions.get("rir").and_then(Value::as_f64), Some(2.0));
+        assert_eq!(
+            mentions.get("tempo").and_then(Value::as_str),
+            Some("3-1-x-0")
+        );
+        assert_eq!(
+            mentions.get("set_type").and_then(Value::as_str),
+            Some("warmup")
+        );
+    }
+
+    #[test]
+    fn extract_set_context_mentions_empty_text_returns_empty() {
+        let mentions = extract_set_context_mentions_from_text("");
+        assert!(mentions.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // autonomy_policy_from_quality_health
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn autonomy_policy_returns_defaults_when_no_quality_health() {
+        let policy = super::autonomy_policy_from_quality_health(None);
+        assert_eq!(policy.slo_status, "healthy");
+        assert!(!policy.throttle_active);
+        assert_eq!(policy.max_scope_level, "moderate");
+        assert!(policy.repair_auto_apply_enabled);
+        assert!(!policy.require_confirmation_for_repairs);
+    }
+
+    #[test]
+    fn autonomy_policy_extracts_degraded_state_from_quality_health() {
+        let now = Utc::now();
+        let projection = make_projection_response(
+            "quality_health",
+            "overview",
+            now,
+            json!({
+                "autonomy_policy": {
+                    "policy_version": "phase_3_integrity_slo_v1",
+                    "slo_status": "degraded",
+                    "throttle_active": true,
+                    "max_scope_level": "strict",
+                    "require_confirmation_for_non_trivial_actions": true,
+                    "require_confirmation_for_plan_updates": true,
+                    "require_confirmation_for_repairs": true,
+                    "repair_auto_apply_enabled": false,
+                    "reason": "SLO breach: unresolved rate > monitor threshold"
+                }
+            }),
+        );
+
+        let policy = super::autonomy_policy_from_quality_health(Some(&projection));
+        assert_eq!(policy.slo_status, "degraded");
+        assert!(policy.throttle_active);
+        assert_eq!(policy.max_scope_level, "strict");
+        assert!(!policy.repair_auto_apply_enabled);
+        assert!(policy.require_confirmation_for_non_trivial_actions);
+        assert!(policy.require_confirmation_for_plan_updates);
+        assert!(policy.require_confirmation_for_repairs);
+    }
+
+    #[test]
+    fn autonomy_policy_falls_back_to_defaults_for_missing_fields() {
+        let now = Utc::now();
+        let projection = make_projection_response(
+            "quality_health",
+            "overview",
+            now,
+            json!({
+                "autonomy_policy": {
+                    "slo_status": "monitor"
+                }
+            }),
+        );
+
+        let policy = super::autonomy_policy_from_quality_health(Some(&projection));
+        assert_eq!(policy.slo_status, "monitor");
+        // All other fields should use defaults
+        assert!(!policy.throttle_active);
+        assert_eq!(policy.max_scope_level, "moderate");
+        assert!(policy.repair_auto_apply_enabled);
+    }
+
+    #[test]
+    fn autonomy_policy_uses_defaults_when_projection_has_no_policy_key() {
+        let now = Utc::now();
+        let projection = make_projection_response(
+            "quality_health",
+            "overview",
+            now,
+            json!({"score": 0.95, "issues_open": 1}),
+        );
+
+        let policy = super::autonomy_policy_from_quality_health(Some(&projection));
+        assert_eq!(policy.slo_status, "healthy");
+        assert!(!policy.throttle_active);
     }
 }
