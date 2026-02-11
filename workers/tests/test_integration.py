@@ -31,6 +31,7 @@ from kura_workers.handlers.strength_inference import update_strength_inference
 from kura_workers.handlers.training_plan import update_training_plan
 from kura_workers.handlers.training_timeline import update_training_timeline
 from kura_workers.handlers.user_profile import update_user_profile
+from kura_workers.scheduler import ensure_nightly_inference_scheduler
 from kura_workers.handlers.inference_nightly import handle_inference_nightly_refit
 from kura_workers.semantic_bootstrap import ensure_semantic_catalog
 
@@ -102,6 +103,39 @@ async def get_projection(conn, user_id, projection_type, key="overview"):
             (user_id, projection_type, key),
         )
         return await cur.fetchone()
+
+
+async def prepare_nightly_scheduler_for_test(conn) -> None:
+    """Normalize global scheduler state to avoid cross-test interference."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            UPDATE background_jobs
+            SET status = 'completed',
+                completed_at = NOW()
+            WHERE job_type = 'inference.nightly_refit'
+              AND status IN ('pending', 'processing')
+            """
+        )
+        await cur.execute(
+            """
+            INSERT INTO inference_scheduler_state (
+                scheduler_key, interval_hours, next_run_at, in_flight_job_id,
+                in_flight_started_at, last_run_status, updated_at
+            )
+            VALUES (
+                'nightly_inference_refit', 24, NOW() - make_interval(hours => 1),
+                NULL, NULL, 'idle', NOW()
+            )
+            ON CONFLICT (scheduler_key) DO UPDATE SET
+                interval_hours = EXCLUDED.interval_hours,
+                next_run_at = EXCLUDED.next_run_at,
+                in_flight_job_id = NULL,
+                in_flight_started_at = NULL,
+                last_run_status = 'idle',
+                updated_at = NOW()
+            """
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -590,6 +624,10 @@ class TestInferenceNightlyRefitIntegration:
             "duration_hours": 7.5,
         }, "TIMESTAMP '2026-02-01 07:00:00+01'")
 
+        await db.execute("SET ROLE app_worker")
+        await prepare_nightly_scheduler_for_test(db)
+        await db.execute("RESET ROLE")
+
         async with db.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
@@ -643,7 +681,162 @@ class TestInferenceNightlyRefitIntegration:
         assert "set.logged" in event_types
         assert "sleep.logged" in event_types
 
-        assert nightly_count_after - nightly_count_before == 1
+        assert nightly_count_after - nightly_count_before == 0
+
+    async def test_nightly_refit_deduplicates_projection_update_jobs(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "bench_press", "weight_kg": 90, "reps": 5,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+        await insert_event(db, test_user_id, "sleep.logged", {
+            "duration_hours": 7.5,
+        }, "TIMESTAMP '2026-02-01 07:00:00+01'")
+
+        payload = {"interval_hours": 12, "scheduler_key": "nightly_inference_refit"}
+
+        await db.execute("SET ROLE app_worker")
+        await prepare_nightly_scheduler_for_test(db)
+        await handle_inference_nightly_refit(db, payload)
+        await handle_inference_nightly_refit(db, payload)
+        await db.execute("RESET ROLE")
+
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT payload->>'event_type' AS event_type
+                FROM background_jobs
+                WHERE user_id = %s
+                  AND job_type = 'projection.update'
+                  AND payload->>'source' = 'inference.nightly_refit'
+                  AND status IN ('pending', 'processing')
+                """,
+                (test_user_id,),
+            )
+            rows = await cur.fetchall()
+
+        assert len(rows) == 2
+        event_types = {row["event_type"] for row in rows}
+        assert event_types == {"set.logged", "sleep.logged"}
+
+    async def test_durable_scheduler_recovers_after_failed_in_flight_job(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "bench_press", "weight_kg": 95, "reps": 5,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await prepare_nightly_scheduler_for_test(db)
+        await ensure_nightly_inference_scheduler(db)
+
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT in_flight_job_id, next_run_at
+                FROM inference_scheduler_state
+                WHERE scheduler_key = 'nightly_inference_refit'
+                """,
+            )
+            first_state = await cur.fetchone()
+        assert first_state is not None
+        first_job_id = int(first_state["in_flight_job_id"])
+
+        async with db.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE background_jobs
+                SET status = 'dead',
+                    error_message = 'simulated nightly failure',
+                    completed_at = NOW()
+                WHERE id = %s
+                """,
+                (first_job_id,),
+            )
+
+        await ensure_nightly_inference_scheduler(db)
+        await db.execute("RESET ROLE")
+
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT in_flight_job_id, last_run_status, last_error
+                FROM inference_scheduler_state
+                WHERE scheduler_key = 'nightly_inference_refit'
+                """,
+            )
+            recovered_state = await cur.fetchone()
+        assert recovered_state is not None
+        assert int(recovered_state["in_flight_job_id"]) != first_job_id
+        assert recovered_state["last_run_status"] == "running"
+
+    async def test_durable_scheduler_records_missed_run_catch_up(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "bench_press", "weight_kg": 100, "reps": 5,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await prepare_nightly_scheduler_for_test(db)
+        await ensure_nightly_inference_scheduler(db)
+
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT in_flight_job_id
+                FROM inference_scheduler_state
+                WHERE scheduler_key = 'nightly_inference_refit'
+                """,
+            )
+            initial_state = await cur.fetchone()
+        assert initial_state is not None
+        initial_job_id = int(initial_state["in_flight_job_id"])
+
+        async with db.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE background_jobs
+                SET status = 'completed', completed_at = NOW()
+                WHERE id = %s
+                """,
+                (initial_job_id,),
+            )
+
+            await cur.execute(
+                """
+                UPDATE inference_scheduler_state
+                SET next_run_at = NOW() - make_interval(hours => interval_hours * 3)
+                WHERE scheduler_key = 'nightly_inference_refit'
+                """
+            )
+
+        await ensure_nightly_inference_scheduler(db)
+        await db.execute("RESET ROLE")
+
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT in_flight_job_id, last_missed_runs
+                FROM inference_scheduler_state
+                WHERE scheduler_key = 'nightly_inference_refit'
+                """,
+            )
+            catch_up_state = await cur.fetchone()
+        assert catch_up_state is not None
+        catch_up_job_id = int(catch_up_state["in_flight_job_id"])
+        assert catch_up_job_id != initial_job_id
+        assert int(catch_up_state["last_missed_runs"]) >= 1
+
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT payload
+                FROM background_jobs
+                WHERE id = %s
+                """,
+                (catch_up_job_id,),
+            )
+            catch_up_job = await cur.fetchone()
+        assert catch_up_job is not None
+        assert int(catch_up_job["payload"]["missed_runs"]) >= 1
 
 
 # ---------------------------------------------------------------------------

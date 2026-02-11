@@ -38,12 +38,56 @@ async def _latest_event_id_for_type(
     return str(row["id"])
 
 
+async def _enqueue_projection_update_dedup(
+    conn: psycopg.AsyncConnection[Any],
+    *,
+    user_id: str,
+    event_type: str,
+    event_id: str,
+) -> bool:
+    """Enqueue nightly projection update once per user/event_type while in-flight."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            INSERT INTO background_jobs (user_id, job_type, payload)
+            SELECT %s, 'projection.update', %s
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM background_jobs
+                WHERE job_type = 'projection.update'
+                  AND status IN ('pending', 'processing')
+                  AND payload->>'source' = 'inference.nightly_refit'
+                  AND payload->>'user_id' = %s
+                  AND payload->>'event_type' = %s
+            )
+            RETURNING id
+            """,
+            (
+                user_id,
+                Json(
+                    {
+                        "event_id": event_id,
+                        "event_type": event_type,
+                        "user_id": user_id,
+                        "source": "inference.nightly_refit",
+                    }
+                ),
+                user_id,
+                event_type,
+            ),
+        )
+        row = await cur.fetchone()
+    return row is not None
+
+
 @register("inference.nightly_refit")
 async def handle_inference_nightly_refit(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
 ) -> None:
-    """Enqueue projection refresh jobs and schedule the next nightly run."""
+    """Enqueue projection refresh jobs for nightly inference maintenance."""
     interval_h = int(payload.get("interval_hours", nightly_interval_hours()))
+    scheduler_key = str(payload.get("scheduler_key") or "").strip()
+    missed_runs = int(payload.get("missed_runs") or 0)
     event_types = (
         "set.logged",
         "exercise.alias_created",
@@ -64,44 +108,36 @@ async def handle_inference_nightly_refit(
             latest_event_id = await _latest_event_id_for_type(conn, user_id, event_type)
             if latest_event_id is None:
                 continue
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    """
-                    INSERT INTO background_jobs (user_id, job_type, payload)
-                    VALUES (%s, 'projection.update', %s)
-                    """,
-                    (
-                        user_id,
-                        Json(
-                            {
-                                "event_id": latest_event_id,
-                                "event_type": event_type,
-                                "user_id": user_id,
-                                "source": "inference.nightly_refit",
-                            }
-                        ),
-                    ),
-                )
-            enqueued += 1
+            inserted = await _enqueue_projection_update_dedup(
+                conn,
+                user_id=user_id,
+                event_type=event_type,
+                event_id=latest_event_id,
+            )
+            if inserted:
+                enqueued += 1
 
-    # Re-schedule recurring job.
-    if user_ids:
+    if scheduler_key:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                INSERT INTO background_jobs (user_id, job_type, payload, scheduled_for)
-                VALUES (%s, 'inference.nightly_refit', %s, NOW() + make_interval(hours => %s))
+                UPDATE inference_scheduler_state
+                SET last_enqueued_projection_updates = %s,
+                    last_missed_runs = %s,
+                    updated_at = NOW()
+                WHERE scheduler_key = %s
                 """,
                 (
-                    user_ids[0],
-                    Json({"interval_hours": interval_h}),
-                    interval_h,
+                    enqueued,
+                    max(0, missed_runs),
+                    scheduler_key,
                 ),
             )
 
     logger.info(
-        "Nightly refit enqueued %d projection.update jobs across %d users (next in %dh)",
+        "Nightly refit enqueued %d projection.update jobs across %d users (interval_h=%d, missed_runs=%d)",
         enqueued,
         len(user_ids),
         interval_h,
+        max(0, missed_runs),
     )

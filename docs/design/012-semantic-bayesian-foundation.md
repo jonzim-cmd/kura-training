@@ -98,6 +98,21 @@ New projection: `readiness_inference/overview`
 - Event-driven updates for freshness on relevant events
 - Designed for scheduled nightly refit extension (same projection contract)
 
+### D12.7 Durable Nightly Scheduler
+
+Nightly refit orchestration uses a dedicated durable scheduler state
+(`inference_scheduler_state`) instead of self-rescheduling jobs.
+
+Properties:
+- single-flight: at most one in-flight `inference.nightly_refit` job
+- dedup: nightly `projection.update` jobs are de-duplicated while pending/processing
+- recovery: failed/dead in-flight runs are detected and re-scheduled immediately
+- telemetry: explicit `next_run_at`, `last_missed_runs`, catch-up counters, and run status
+
+Catch-up behavior:
+- If worker downtime causes missed slots, scheduler computes due run count and
+  records missed-run telemetry, while scheduling one catch-up execution cycle.
+
 ## Design Principles
 
 1. **No black boxes**: projections include diagnostics + uncertainty metadata

@@ -9,7 +9,7 @@ from psycopg.rows import dict_row
 from .config import Config
 from .metrics import record_job_completed, record_job_dead, record_job_failed
 from .registry import get_handler
-from .scheduler import ensure_nightly_inference_job
+from .scheduler import ensure_nightly_inference_scheduler
 from .semantic_bootstrap import ensure_semantic_catalog
 from .system_config import ensure_system_config
 
@@ -44,7 +44,7 @@ class Worker:
             except Exception as exc:
                 logger.warning("Semantic catalog bootstrap skipped: %s", exc)
             try:
-                await ensure_nightly_inference_job(conn)
+                await ensure_nightly_inference_scheduler(conn)
             except Exception as exc:
                 logger.warning("Nightly inference scheduler bootstrap skipped: %s", exc)
 
@@ -106,6 +106,12 @@ class Worker:
                 # Assume app_worker role for BYPASSRLS (cross-user event/projection access)
                 await conn.execute("SET ROLE app_worker")
                 await conn.commit()
+
+                try:
+                    await ensure_nightly_inference_scheduler(conn)
+                    await conn.commit()
+                except Exception as exc:
+                    logger.warning("Nightly inference scheduler tick skipped: %s", exc)
 
                 jobs = await self._claim_jobs(conn)
                 await conn.commit()  # Commit claims immediately so they survive crashes
