@@ -89,6 +89,21 @@ def get_interview_guide() -> dict[str, Any]:
                 "examples": ["Kraft/Ausdauer/Hybrid?", "Wie lange trainierst du schon?"],
             },
             {
+                "area": "baseline_profile",
+                "description": (
+                    "Baseline profile completeness with tri-state semantics for "
+                    "age/date_of_birth and bodyweight (known/unknown/deferred). "
+                    "Optional sex/body-composition context can be captured or deferred."
+                ),
+                "approach": "categorical_then_narrative",
+                "produces": ["profile.updated", "bodyweight.logged"],
+                "examples": [
+                    "Alter oder Geburtsdatum bekannt? Wenn nicht: explizit als deferred markieren.",
+                    "Aktuelles Körpergewicht direkt als bodyweight.logged oder bodyweight_kg in profile.updated speichern.",
+                    "Optional: Geschlecht/Körperzusammensetzung nur erfassen, wenn relevant oder gewünscht.",
+                ],
+            },
+            {
                 "area": "goals",
                 "description": "What the user wants to achieve — strength, hypertrophy, weight loss, health",
                 "approach": "narrative",
@@ -161,6 +176,7 @@ def get_interview_guide() -> dict[str, Any]:
 # Coverage area names — used for validation and coverage computation
 COVERAGE_AREAS = [
     "training_background",
+    "baseline_profile",
     "goals",
     "exercise_vocabulary",
     "unit_preferences",

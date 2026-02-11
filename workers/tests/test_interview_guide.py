@@ -112,6 +112,12 @@ class TestEventConventions:
         prof = conventions["profile.updated"]
         assert "experience_level" in prof["fields"]
         assert "training_modality" in prof["fields"]
+        assert "age" in prof["fields"]
+        assert "date_of_birth" in prof["fields"]
+        assert "age_deferred" in prof["fields"]
+        assert "bodyweight_kg" in prof["fields"]
+        assert "bodyweight_deferred" in prof["fields"]
+        assert "tri_state_semantics" in prof
 
     def test_injury_reported_convention(self):
         conventions = get_event_conventions()

@@ -77,6 +77,7 @@ Each area has an `approach` that guides the agent's questioning style:
 | Area | Approach | Produces |
 |------|----------|----------|
 | Training background | categorical | `profile.updated` |
+| Baseline profile completeness | categorical → narrative | `profile.updated`, `bodyweight.logged` |
 | Goals | narrative | `goal.set` |
 | Exercise vocabulary | conversational | `exercise.alias_created` |
 | Unit preferences | categorical | `preference.set` |
@@ -147,6 +148,14 @@ chronologically (last event per field wins).
 | `primary_location` | string | `"commercial_gym"`, `"home_gym"`, `"outdoor"` |
 | `current_program` | string | `"5/3/1"`, `"PPL"`, `"custom"` |
 | `nutrition_tracking` | string | `"active"`, `"not_interested"`, `"later"` |
+| `age` | number | `34` |
+| `date_of_birth` | string (ISO date) | `"1992-04-17"` |
+| `age_deferred` / `date_of_birth_deferred` | boolean | `true` |
+| `bodyweight_kg` | number | `82.4` |
+| `bodyweight_deferred` | boolean | `true` |
+| `sex` / `sex_deferred` | string / boolean | `"female"` / `true` |
+| `body_fat_pct` / `body_fat_pct_deferred` | number / boolean | `18.5` / `true` |
+| `body_composition_deferred` | boolean | `true` |
 
 ## Decision 8.4: Interview Coverage Computation
 
@@ -155,6 +164,7 @@ Pure-function logic determines which coverage areas are filled:
 | Area | Covered when |
 |------|-------------|
 | Training background | `profile.updated` with `training_modality` or `experience_level` |
+| Baseline profile completeness | Required slots (`age` or `date_of_birth`, plus bodyweight via `profile.updated.bodyweight_kg` or `bodyweight.logged`) are known or explicitly deferred |
 | Goals | Any `goal.set` event |
 | Exercise vocabulary | 3+ `exercise.alias_created` events |
 | Unit preferences | `preference.set` with key `unit_system` |

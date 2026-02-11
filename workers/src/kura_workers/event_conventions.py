@@ -20,7 +20,11 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
     return {
         # --- Identity & preferences ---
         "profile.updated": {
-            "description": "User attributes (delta merge, latest per field wins)",
+            "description": (
+                "User attributes (delta merge, latest per field wins). Includes "
+                "baseline-profile tri-state markers for known/unknown/deferred "
+                "(Decision 13 INV-006)."
+            ),
             "fields": {
                 "experience_level": "string (optional: beginner, intermediate, advanced)",
                 "training_modality": "string (optional: strength, endurance, hybrid, crossfit)",
@@ -29,12 +33,30 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "primary_location": "string (optional: commercial_gym, home_gym, outdoor)",
                 "current_program": "string (optional)",
                 "communication_style": "string (optional, free text — how the user wants to be addressed)",
+                "age": "number (optional, baseline in years)",
+                "date_of_birth": "string (optional, ISO date; alternative to age baseline)",
+                "age_deferred": "boolean (optional, explicit deferred marker when age/date_of_birth is postponed)",
+                "date_of_birth_deferred": "boolean (optional, explicit deferred marker when DOB is postponed)",
+                "bodyweight_kg": "number (optional, baseline bodyweight snapshot)",
+                "bodyweight_deferred": "boolean (optional, explicit deferred marker when bodyweight is postponed)",
+                "sex": "string (optional, free text or categorical e.g. female/male/intersex/non_binary)",
+                "sex_deferred": "boolean (optional, explicit deferred marker for sex)",
+                "body_fat_pct": "number (optional, body composition context)",
+                "body_fat_pct_deferred": "boolean (optional, explicit deferred marker for body fat context)",
+                "body_composition_deferred": "boolean (optional, explicit deferred marker for optional body composition context)",
             },
             "example": {
                 "experience_level": "intermediate",
                 "training_modality": "strength",
                 "training_frequency_per_week": 4,
+                "age_deferred": True,
+                "bodyweight_deferred": True,
             },
+            "tri_state_semantics": (
+                "For baseline fields, use one of: known value, explicit deferred marker, "
+                "or leave unknown. Required baseline slots (age/date_of_birth and bodyweight) "
+                "should not stay silently unknown once mentioned in onboarding."
+            ),
             "null_semantics": (
                 "Set any field to null to clear it. The field remains in the "
                 "profile with null value, indicating 'no longer set'. "

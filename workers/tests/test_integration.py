@@ -1168,6 +1168,81 @@ class TestUserProfileIntegration:
         # Exercises should be tracked
         assert "bench_press" in data["user"]["exercises_logged"]
 
+    async def test_baseline_profile_mention_captured_is_known(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "profile.updated", {
+            "age": 34,
+            "bodyweight_kg": 82.4,
+        }, "TIMESTAMP '2026-02-01 09:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_user_profile(db, {
+            "user_id": test_user_id, "event_type": "profile.updated",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "user_profile", "me")
+        assert proj is not None
+        baseline = proj["data"]["user"]["baseline_profile"]
+        assert baseline["status"] == "complete"
+        assert "age_or_date_of_birth" in baseline["known_fields"]
+        assert "bodyweight_kg" in baseline["known_fields"]
+        coverage = proj["data"]["user"]["interview_coverage"]
+        baseline_cov = next(c for c in coverage if c["area"] == "baseline_profile")
+        assert baseline_cov["status"] == "covered"
+
+    async def test_baseline_profile_mention_deferred_is_preserved(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "profile.updated", {
+            "age_deferred": True,
+            "bodyweight_deferred": True,
+            "sex_deferred": True,
+        }, "TIMESTAMP '2026-02-01 09:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_user_profile(db, {
+            "user_id": test_user_id, "event_type": "profile.updated",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "user_profile", "me")
+        assert proj is not None
+        baseline = proj["data"]["user"]["baseline_profile"]
+        assert baseline["status"] == "deferred"
+        assert set(baseline["required_deferred"]) == {
+            "age_or_date_of_birth",
+            "bodyweight_kg",
+        }
+        coverage = proj["data"]["user"]["interview_coverage"]
+        baseline_cov = next(c for c in coverage if c["area"] == "baseline_profile")
+        assert baseline_cov["status"] == "deferred"
+
+    async def test_baseline_profile_omitted_is_flagged(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "profile.updated", {
+            "training_modality": "strength",
+        }, "TIMESTAMP '2026-02-01 09:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_user_profile(db, {
+            "user_id": test_user_id, "event_type": "profile.updated",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "user_profile", "me")
+        assert proj is not None
+        baseline = proj["data"]["user"]["baseline_profile"]
+        assert baseline["status"] == "needs_input"
+        assert set(baseline["required_missing"]) == {
+            "age_or_date_of_birth",
+            "bodyweight_kg",
+        }
+        coverage = proj["data"]["user"]["interview_coverage"]
+        baseline_cov = next(c for c in coverage if c["area"] == "baseline_profile")
+        assert baseline_cov["status"] == "uncovered"
+        agenda_types = [item["type"] for item in proj["data"]["agenda"]]
+        assert "baseline_profile_missing" in agenda_types
+
     async def test_orphaned_event_types_detected(self, db, test_user_id):
         """Unknown event types should appear in data_quality.
 
