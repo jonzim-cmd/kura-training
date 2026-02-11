@@ -24,6 +24,7 @@ mod state;
     ),
     paths(
         routes::health::health_check,
+        routes::agent::get_agent_context,
         routes::events::create_event,
         routes::events::create_events_batch,
         routes::events::list_events,
@@ -42,6 +43,8 @@ mod state;
     components(schemas(
         HealthResponse,
         routes::account::AccountDeletedResponse,
+        routes::agent::AgentContextMeta,
+        routes::agent::AgentContextResponse,
         kura_core::error::ApiError,
         kura_core::events::Event,
         kura_core::events::EventMetadata,
@@ -133,6 +136,7 @@ async fn main() {
     let app = Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-doc/openapi.json", ApiDoc::openapi()))
         .merge(routes::health::router())
+        .merge(routes::agent::router().layer(middleware::rate_limit::projections_layer()))
         .merge(routes::events::write_router().layer(middleware::rate_limit::events_write_layer()))
         .merge(routes::events::read_router().layer(middleware::rate_limit::events_read_layer()))
         .merge(routes::projections::router().layer(middleware::rate_limit::projections_layer()))

@@ -42,6 +42,16 @@ enum Commands {
     /// Get system configuration (dimensions, conventions, event types)
     Config,
 
+    /// Get agent context bundle (system + user profile + key dimensions)
+    Context {
+        /// Max exercise_progression projections to include (default: 5)
+        #[arg(long)]
+        exercise_limit: Option<u32>,
+        /// Max custom projections to include (default: 10)
+        #[arg(long)]
+        custom_limit: Option<u32>,
+    },
+
     /// Diagnose setup: API, auth, worker, system config
     Doctor,
 
@@ -99,6 +109,14 @@ async fn main() {
         Commands::Config => {
             let token = resolve_or_exit(&cli.api_url).await;
             commands::system::config(&cli.api_url, &token).await
+        }
+
+        Commands::Context {
+            exercise_limit,
+            custom_limit,
+        } => {
+            let token = resolve_or_exit(&cli.api_url).await;
+            commands::system::context(&cli.api_url, &token, exercise_limit, custom_limit).await
         }
 
         Commands::Doctor => commands::system::doctor(&cli.api_url).await,

@@ -42,7 +42,7 @@ after context loss.
 
 ## Workstream E: Fluid-System Evolution (next iterations)
 
-- [ ] E1. Agent context bundle endpoint
+- [x] E1. Agent context bundle endpoint
   - Single fetch for `system_config + user_profile + key dimensions`.
 - [ ] E2. Rule lifecycle API extension
   - Validate/preview/apply/archive ergonomics for projection rules.
