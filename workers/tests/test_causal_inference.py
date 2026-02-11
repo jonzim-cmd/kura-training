@@ -4,6 +4,7 @@ from kura_workers.causal_inference import estimate_intervention_effect
 from kura_workers.handlers.causal_inference import (
     OUTCOME_STRENGTH_PER_EXERCISE,
     _append_result_caveats,
+    _blend_population_prior_into_effect,
     _estimate_segment_slices,
     _manifest_contribution,
 )
@@ -183,3 +184,62 @@ def test_manifest_contribution_prefers_strongest_strength_exercise_signal():
     assert strongest["outcome"] == OUTCOME_STRENGTH_PER_EXERCISE
     assert strongest["exercise_id"] == "bench_press"
     assert strongest["mean_ate"] == 0.12
+
+
+def test_blend_population_prior_into_effect_applies():
+    result = {
+        "status": "ok",
+        "effect": {
+            "mean_ate": 0.12,
+            "ci95": [0.02, 0.22],
+            "direction": "positive",
+            "probability_positive": 0.93,
+        },
+        "diagnostics": {"effect_sd": 0.05},
+    }
+    prior = {
+        "target_key": "estimand|program_change|readiness_score_t_plus_1",
+        "cohort_key": "tm:strength|el:intermediate",
+        "mean": 0.03,
+        "var": 0.01,
+        "blend_weight": 0.5,
+        "participants_count": 40,
+        "sample_size": 52,
+        "computed_at": "2026-02-11T00:00:00+00:00",
+    }
+
+    blended, meta = _blend_population_prior_into_effect(
+        result,
+        target_key="estimand|program_change|readiness_score_t_plus_1",
+        population_prior=prior,
+    )
+
+    assert meta["applied"] is True
+    assert blended["effect"]["mean_ate"] == 0.075
+    assert blended["population_prior"]["applied"] is True
+    assert blended["diagnostics"]["population_prior"]["target_key"] == prior["target_key"]
+
+
+def test_blend_population_prior_into_effect_fallback_when_prior_missing():
+    result = {
+        "status": "ok",
+        "effect": {
+            "mean_ate": 0.07,
+            "ci95": [0.01, 0.13],
+            "direction": "positive",
+            "probability_positive": 0.88,
+        },
+        "diagnostics": {"effect_sd": 0.03},
+    }
+
+    blended, meta = _blend_population_prior_into_effect(
+        result,
+        target_key="estimand|nutrition_shift|readiness_score_t_plus_1",
+        population_prior=None,
+    )
+
+    assert meta["attempted"] is True
+    assert meta["applied"] is False
+    assert meta["reason"] == "prior_unavailable_or_invalid"
+    assert blended["effect"]["mean_ate"] == 0.07
+    assert blended["diagnostics"]["population_prior"]["reason"] == "prior_unavailable_or_invalid"

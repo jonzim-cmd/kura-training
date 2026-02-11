@@ -1,12 +1,16 @@
 """Unit tests for population prior aggregation logic."""
 
 from kura_workers.population_priors import (
+    CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE,
     STRENGTH_FALLBACK_TARGET_KEY,
     _bool_from_any,
+    _build_causal_lookup_targets,
+    _build_causal_prior_rows,
     _build_readiness_prior_rows,
     _build_strength_prior_rows,
     _cohort_key_from_user_profile,
     _weighted_stats,
+    build_causal_estimand_target_key,
     population_prior_blend_weight,
 )
 
@@ -114,6 +118,96 @@ def test_build_readiness_prior_rows():
     assert len(priors) == 1
     assert priors[0]["projection_type"] == "readiness_inference"
     assert priors[0]["prior_payload"]["privacy_gate_passed"] is True
+
+
+def test_build_causal_estimand_target_key_normalizes_components():
+    assert build_causal_estimand_target_key(
+        intervention=" Nutrition_Shift ",
+        outcome="Readiness_Score_T_Plus_1",
+    ) == "estimand|nutrition_shift|readiness_score_t_plus_1"
+    assert build_causal_estimand_target_key(
+        intervention="program_change",
+        outcome=CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE,
+        exercise_id=" Bench_Press ",
+    ) == "estimand|program_change|strength_delta_by_exercise_t_plus_1|bench_press"
+
+
+def test_build_causal_lookup_targets_uses_strength_aggregate_fallback():
+    target = build_causal_estimand_target_key(
+        intervention="sleep_intervention",
+        outcome=CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE,
+        exercise_id="deadlift",
+    )
+    lookup_targets = _build_causal_lookup_targets(target)
+    assert lookup_targets[0] == target
+    assert (
+        "estimand|sleep_intervention|strength_aggregate_delta_t_plus_1"
+        in lookup_targets
+    )
+
+
+def test_build_causal_prior_rows():
+    rows = [
+        {
+            "user_id": "u1",
+            "key": "overview",
+            "data": {
+                "status": "ok",
+                "interventions": {
+                    "program_change": {
+                        "status": "ok",
+                        "outcomes": {
+                            "readiness_score_t_plus_1": {
+                                "status": "ok",
+                                "effect": {"mean_ate": 0.042, "ci95": [0.01, 0.08]},
+                                "diagnostics": {"effect_sd": 0.02},
+                            }
+                        },
+                    }
+                },
+            },
+        },
+        {
+            "user_id": "u2",
+            "key": "overview",
+            "data": {
+                "status": "ok",
+                "interventions": {
+                    "program_change": {
+                        "status": "ok",
+                        "outcomes": {
+                            "readiness_score_t_plus_1": {
+                                "status": "ok",
+                                "effect": {"mean_ate": 0.058, "ci95": [0.02, 0.1]},
+                                "diagnostics": {"effect_sd": 0.03},
+                            }
+                        },
+                    }
+                },
+            },
+        },
+    ]
+    cohort_by_user = {
+        "u1": "tm:strength|el:intermediate",
+        "u2": "tm:strength|el:intermediate",
+    }
+
+    priors = _build_causal_prior_rows(
+        rows,
+        cohort_by_user,
+        min_cohort_size=2,
+        window_days=180,
+    )
+
+    assert len(priors) == 1
+    prior = priors[0]
+    assert prior["projection_type"] == "causal_inference"
+    assert prior["target_key"] == "estimand|program_change|readiness_score_t_plus_1"
+    assert prior["prior_payload"]["privacy_gate_passed"] is True
+    assert prior["prior_payload"]["mean"] > 0.0
+    assert prior["prior_payload"]["var"] > 0.0
+    assert prior["prior_payload"]["estimand"]["intervention"] == "program_change"
+    assert prior["prior_payload"]["estimand"]["outcome"] == "readiness_score_t_plus_1"
 
 
 def test_population_prior_blend_weight_clamped(monkeypatch):

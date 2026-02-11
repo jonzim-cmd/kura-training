@@ -26,6 +26,36 @@ logger = logging.getLogger(__name__)
 POPULATION_OPT_IN_KEY = "population_priors_opt_in"
 STRENGTH_FALLBACK_TARGET_KEY = "__all__"
 READINESS_TARGET_KEY = "overview"
+CAUSAL_ESTIMAND_TARGET_PREFIX = "estimand"
+CAUSAL_OUTCOME_READINESS = "readiness_score_t_plus_1"
+CAUSAL_OUTCOME_STRENGTH_AGGREGATE = "strength_aggregate_delta_t_plus_1"
+CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE = "strength_delta_by_exercise_t_plus_1"
+CAUSAL_ALLOWED_OUTCOMES = {
+    CAUSAL_OUTCOME_READINESS,
+    CAUSAL_OUTCOME_STRENGTH_AGGREGATE,
+    CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE,
+}
+POPULATION_PRIOR_ALLOWED_PROJECTION_TYPES = {
+    "strength_inference",
+    "readiness_inference",
+    "causal_inference",
+}
+
+
+def build_causal_estimand_target_key(
+    *,
+    intervention: str,
+    outcome: str,
+    exercise_id: str | None = None,
+) -> str:
+    parts = [
+        CAUSAL_ESTIMAND_TARGET_PREFIX,
+        _normalize(intervention),
+        _normalize(outcome),
+    ]
+    if exercise_id is not None:
+        parts.append(_normalize(exercise_id))
+    return "|".join(parts)
 
 
 def population_priors_enabled() -> bool:
@@ -302,6 +332,29 @@ async def _load_readiness_projection_rows(
         return await cur.fetchall()
 
 
+async def _load_causal_projection_rows(
+    conn: psycopg.AsyncConnection[Any],
+    *,
+    user_ids: list[str],
+    window_days: int,
+) -> list[dict[str, Any]]:
+    if not user_ids:
+        return []
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT user_id::text AS user_id, key, data
+            FROM projections
+            WHERE projection_type = 'causal_inference'
+              AND key = 'overview'
+              AND user_id::text = ANY(%s)
+              AND updated_at >= NOW() - make_interval(days => %s)
+            """,
+            (user_ids, window_days),
+        )
+        return await cur.fetchall()
+
+
 def _build_strength_prior_rows(
     rows: list[dict[str, Any]],
     cohort_by_user: dict[str, str],
@@ -451,6 +504,212 @@ def _build_readiness_prior_rows(
     return out
 
 
+def _causal_effect_variance(payload: dict[str, Any]) -> float | None:
+    diagnostics = payload.get("diagnostics")
+    if isinstance(diagnostics, dict):
+        effect_sd = _as_float(diagnostics.get("effect_sd"))
+        if effect_sd is not None and effect_sd > 0.0:
+            return max(1e-6, effect_sd * effect_sd)
+
+    effect = payload.get("effect")
+    if not isinstance(effect, dict):
+        return None
+
+    ci95 = effect.get("ci95")
+    if not isinstance(ci95, (list, tuple)) or len(ci95) != 2:
+        return None
+
+    lower = _as_float(ci95[0])
+    upper = _as_float(ci95[1])
+    if lower is None or upper is None or upper <= lower:
+        return None
+    sd = (upper - lower) / 3.92  # 95% interval width ~= 3.92 * sd
+    return max(1e-6, sd * sd)
+
+
+def _add_causal_sample(
+    bucket_by_group: dict[tuple[str, str], dict[str, Any]],
+    *,
+    cohort_key: str,
+    target_key: str,
+    user_id: str,
+    mean_ate: float,
+    var_ate: float,
+    intervention: str,
+    outcome: str,
+    exercise_id: str | None = None,
+) -> None:
+    bucket = bucket_by_group.setdefault(
+        (cohort_key, target_key),
+        {
+            "users": set(),
+            "values": [],
+            "weights": [],
+            "within_vars": [],
+            "estimand": {
+                "type": "average_treatment_effect",
+                "intervention": _normalize(intervention),
+                "outcome": _normalize(outcome),
+            },
+        },
+    )
+    if exercise_id is not None:
+        bucket["estimand"]["exercise_id"] = _normalize(exercise_id)
+
+    bucket["users"].add(user_id)
+    bucket["values"].append(mean_ate)
+    bucket["within_vars"].append(max(1e-6, var_ate))
+    bucket["weights"].append(1.0 / max(1e-6, var_ate))
+
+
+def _extract_causal_effect_sample(payload: Any) -> tuple[float, float] | None:
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("status") != "ok":
+        return None
+    effect = payload.get("effect")
+    if not isinstance(effect, dict):
+        return None
+    mean_ate = _as_float(effect.get("mean_ate"))
+    if mean_ate is None:
+        return None
+    variance = _causal_effect_variance(payload)
+    if variance is None or variance <= 0.0:
+        return None
+    return mean_ate, variance
+
+
+def _build_causal_prior_rows(
+    rows: list[dict[str, Any]],
+    cohort_by_user: dict[str, str],
+    *,
+    min_cohort_size: int,
+    window_days: int,
+) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for row in rows:
+        user_id = str(row.get("user_id") or "")
+        data = row.get("data")
+        if not isinstance(data, dict):
+            continue
+
+        interventions = data.get("interventions")
+        if not isinstance(interventions, dict):
+            continue
+
+        cohort_key = cohort_by_user.get(user_id, "tm:unknown|el:unknown")
+        for intervention_name, intervention_payload in interventions.items():
+            if not isinstance(intervention_payload, dict):
+                continue
+
+            outcomes = intervention_payload.get("outcomes")
+            if not isinstance(outcomes, dict):
+                continue
+
+            for outcome_name in (
+                CAUSAL_OUTCOME_READINESS,
+                CAUSAL_OUTCOME_STRENGTH_AGGREGATE,
+            ):
+                sample = _extract_causal_effect_sample(outcomes.get(outcome_name))
+                if sample is None:
+                    continue
+                target_key = build_causal_estimand_target_key(
+                    intervention=intervention_name,
+                    outcome=outcome_name,
+                )
+                _add_causal_sample(
+                    groups,
+                    cohort_key=cohort_key,
+                    target_key=target_key,
+                    user_id=user_id,
+                    mean_ate=sample[0],
+                    var_ate=sample[1],
+                    intervention=intervention_name,
+                    outcome=outcome_name,
+                )
+
+            per_exercise = outcomes.get(CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE)
+            if not isinstance(per_exercise, dict):
+                continue
+
+            for exercise_id, exercise_payload in per_exercise.items():
+                sample = _extract_causal_effect_sample(exercise_payload)
+                if sample is None:
+                    continue
+                target_key = build_causal_estimand_target_key(
+                    intervention=intervention_name,
+                    outcome=CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE,
+                    exercise_id=str(exercise_id),
+                )
+                _add_causal_sample(
+                    groups,
+                    cohort_key=cohort_key,
+                    target_key=target_key,
+                    user_id=user_id,
+                    mean_ate=sample[0],
+                    var_ate=sample[1],
+                    intervention=intervention_name,
+                    outcome=CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE,
+                    exercise_id=str(exercise_id),
+                )
+
+    out: list[dict[str, Any]] = []
+    for (cohort_key, target_key), bucket in groups.items():
+        participants_count = len(bucket["users"])
+        sample_size = len(bucket["values"])
+        if participants_count < min_cohort_size or sample_size < min_cohort_size:
+            continue
+
+        mean, between_user_var = _weighted_stats(bucket["values"], bucket["weights"])
+        safe_weights = [max(0.0, weight) for weight in bucket["weights"]]
+        total_weight = sum(safe_weights)
+        if total_weight <= 0.0:
+            safe_weights = [1.0] * len(bucket["within_vars"])
+            total_weight = float(len(safe_weights))
+        within_effect_var = sum(
+            weight * max(1e-6, variance)
+            for weight, variance in zip(safe_weights, bucket["within_vars"])
+        ) / total_weight
+        total_var = max(1e-6, between_user_var + within_effect_var)
+
+        prior_payload: dict[str, Any] = {
+            "schema_version": 1,
+            "parameter": "mean_ate",
+            "distribution": "normal",
+            "mean": round(mean, 8),
+            "var": round(total_var, 8),
+            "std": round(math.sqrt(total_var), 8),
+            "between_user_var": round(between_user_var, 8),
+            "within_effect_var": round(within_effect_var, 8),
+            "min": round(min(bucket["values"]), 8),
+            "max": round(max(bucket["values"]), 8),
+            "privacy_gate_passed": True,
+            "estimand": dict(bucket["estimand"]),
+            "evidence": {
+                "participants_count": participants_count,
+                "sample_size": sample_size,
+                "source_window_days": window_days,
+                "weighting": "inverse_effect_variance",
+            },
+        }
+
+        out.append(
+            {
+                "projection_type": "causal_inference",
+                "target_key": target_key,
+                "cohort_key": cohort_key,
+                "prior_payload": prior_payload,
+                "participants_count": participants_count,
+                "sample_size": sample_size,
+                "min_cohort_size": min_cohort_size,
+                "source_window_days": window_days,
+            }
+        )
+
+    return out
+
+
 async def refresh_population_prior_profiles(
     conn: psycopg.AsyncConnection[Any],
 ) -> dict[str, Any]:
@@ -509,6 +768,11 @@ async def refresh_population_prior_profiles(
             user_ids=user_ids,
             window_days=window_days,
         )
+        causal_rows = await _load_causal_projection_rows(
+            conn,
+            user_ids=user_ids,
+            window_days=window_days,
+        )
 
         prior_rows: list[dict[str, Any]] = []
         prior_rows.extend(
@@ -522,6 +786,14 @@ async def refresh_population_prior_profiles(
         prior_rows.extend(
             _build_readiness_prior_rows(
                 readiness_rows,
+                cohort_by_user,
+                min_cohort_size=min_cohort_size,
+                window_days=window_days,
+            )
+        )
+        prior_rows.extend(
+            _build_causal_prior_rows(
+                causal_rows,
                 cohort_by_user,
                 min_cohort_size=min_cohort_size,
                 window_days=window_days,
@@ -562,6 +834,7 @@ async def refresh_population_prior_profiles(
             details={
                 "strength_candidates": len(strength_rows),
                 "readiness_candidates": len(readiness_rows),
+                "causal_candidates": len(causal_rows),
                 "min_cohort_size": min_cohort_size,
                 "window_days": window_days,
             },
@@ -651,6 +924,72 @@ async def _user_cohort_key(conn: psycopg.AsyncConnection[Any], user_id: str) -> 
     return _cohort_key_from_user_profile(row["data"])
 
 
+def _build_causal_lookup_targets(target_key: str) -> list[str]:
+    normalized_target = _normalize(target_key)
+    expected_prefix = f"{CAUSAL_ESTIMAND_TARGET_PREFIX}|"
+    if not normalized_target.startswith(expected_prefix):
+        return []
+
+    lookup_targets = [normalized_target]
+    parts = normalized_target.split("|")
+    if (
+        len(parts) == 4
+        and parts[2] == CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE
+    ):
+        aggregate_target = build_causal_estimand_target_key(
+            intervention=parts[1],
+            outcome=CAUSAL_OUTCOME_STRENGTH_AGGREGATE,
+        )
+        if aggregate_target not in lookup_targets:
+            lookup_targets.append(aggregate_target)
+    return lookup_targets
+
+
+def _lookup_targets_for_projection(
+    projection_type: str,
+    target_key: str,
+) -> list[str]:
+    if projection_type == "strength_inference":
+        targets = [_normalize(target_key)]
+        if STRENGTH_FALLBACK_TARGET_KEY not in targets:
+            targets.append(STRENGTH_FALLBACK_TARGET_KEY)
+        return targets
+    if projection_type == "readiness_inference":
+        return [READINESS_TARGET_KEY]
+    if projection_type == "causal_inference":
+        return _build_causal_lookup_targets(target_key)
+    return []
+
+
+def _validated_payload_stats(
+    projection_type: str,
+    prior_payload: dict[str, Any],
+) -> tuple[float, float] | None:
+    if not bool(prior_payload.get("privacy_gate_passed", True)):
+        return None
+
+    mean = _as_float(prior_payload.get("mean"))
+    var = _as_float(prior_payload.get("var"))
+    if mean is None or var is None or var <= 0.0:
+        return None
+
+    if projection_type == "causal_inference":
+        estimand = prior_payload.get("estimand")
+        if not isinstance(estimand, dict):
+            return None
+        intervention = _normalize(estimand.get("intervention"))
+        outcome = _normalize(estimand.get("outcome"))
+        if intervention == "unknown" or outcome not in CAUSAL_ALLOWED_OUTCOMES:
+            return None
+        if (
+            outcome == CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE
+            and _normalize(estimand.get("exercise_id")) == "unknown"
+        ):
+            return None
+
+    return mean, var
+
+
 async def resolve_population_prior(
     conn: psycopg.AsyncConnection[Any],
     *,
@@ -660,7 +999,7 @@ async def resolve_population_prior(
     retracted_ids: set[str] | None = None,
 ) -> dict[str, Any] | None:
     """Resolve a cohort prior for the current user and projection target."""
-    if projection_type not in {"strength_inference", "readiness_inference"}:
+    if projection_type not in POPULATION_PRIOR_ALLOWED_PROJECTION_TYPES:
         return None
     if not population_priors_enabled():
         return None
@@ -672,12 +1011,9 @@ async def resolve_population_prior(
     cohort_key = await _user_cohort_key(conn, user_id)
     min_cohort_size = population_prior_min_cohort_size()
 
-    lookup_targets = [_normalize(target_key)]
-    if projection_type == "strength_inference":
-        if STRENGTH_FALLBACK_TARGET_KEY not in lookup_targets:
-            lookup_targets.append(STRENGTH_FALLBACK_TARGET_KEY)
-    else:
-        lookup_targets = [READINESS_TARGET_KEY]
+    lookup_targets = _lookup_targets_for_projection(projection_type, target_key)
+    if not lookup_targets:
+        return None
 
     try:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -715,14 +1051,12 @@ async def resolve_population_prior(
     if not isinstance(prior_payload, dict):
         return None
 
-    mean = _as_float(prior_payload.get("mean"))
-    var = _as_float(prior_payload.get("var"))
-    if mean is None or var is None:
+    stats = _validated_payload_stats(projection_type, prior_payload)
+    if stats is None:
         return None
-    if var <= 0.0:
-        return None
+    mean, var = stats
 
-    return {
+    resolved: dict[str, Any] = {
         "projection_type": projection_type,
         "target_key": row["target_key"],
         "cohort_key": row["cohort_key"],
@@ -737,3 +1071,11 @@ async def resolve_population_prior(
             else str(row["computed_at"])
         ),
     }
+    if isinstance(prior_payload.get("parameter"), str):
+        resolved["parameter"] = prior_payload["parameter"]
+    if isinstance(prior_payload.get("estimand"), dict):
+        resolved["estimand"] = prior_payload["estimand"]
+    schema_version = prior_payload.get("schema_version")
+    if schema_version is not None:
+        resolved["schema_version"] = schema_version
+    return resolved

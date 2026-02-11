@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from collections import defaultdict
 from datetime import date, datetime, timezone
@@ -28,6 +29,7 @@ from ..inference_telemetry import (
     classify_inference_error,
     safe_record_inference_run,
 )
+from ..population_priors import build_causal_estimand_target_key, resolve_population_prior
 from ..registry import projection_handler
 from ..utils import epley_1rm, get_retracted_event_ids, resolve_exercise_key
 
@@ -72,6 +74,148 @@ def _map_effect_strength(effect_payload: Any) -> float:
     if not isinstance(effect_payload, dict):
         return 0.0
     return _safe_float(effect_payload.get("mean_ate"), default=0.0)
+
+
+def _normal_cdf(value: float, *, mu: float = 0.0, sigma: float = 1.0) -> float:
+    sigma = max(1e-9, sigma)
+    z = (value - mu) / (sigma * math.sqrt(2.0))
+    return 0.5 * (1.0 + math.erf(z))
+
+
+def _effect_variance(result: dict[str, Any]) -> float | None:
+    diagnostics = result.get("diagnostics")
+    if isinstance(diagnostics, dict):
+        effect_sd = _safe_float(diagnostics.get("effect_sd"), default=-1.0)
+        if effect_sd > 0.0:
+            return max(1e-6, effect_sd * effect_sd)
+
+    effect = result.get("effect")
+    if not isinstance(effect, dict):
+        return None
+    ci95 = effect.get("ci95")
+    if not isinstance(ci95, (list, tuple)) or len(ci95) != 2:
+        return None
+    lower = _safe_float(ci95[0], default=float("nan"))
+    upper = _safe_float(ci95[1], default=float("nan"))
+    if not math.isfinite(lower) or not math.isfinite(upper) or upper <= lower:
+        return None
+    sd = (upper - lower) / 3.92
+    return max(1e-6, sd * sd)
+
+
+def _attach_population_prior_diagnostics(
+    result: dict[str, Any],
+    prior_meta: dict[str, Any],
+) -> dict[str, Any]:
+    updated = dict(result)
+    diagnostics = dict(updated.get("diagnostics") or {})
+    diagnostics["population_prior"] = prior_meta
+    updated["diagnostics"] = diagnostics
+    updated["population_prior"] = prior_meta
+    return updated
+
+
+def _blend_population_prior_into_effect(
+    result: dict[str, Any],
+    *,
+    target_key: str,
+    population_prior: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if result.get("status") != "ok":
+        meta = {
+            "attempted": False,
+            "applied": False,
+            "target_key": target_key,
+            "reason": "outcome_not_ok",
+        }
+        return _attach_population_prior_diagnostics(result, meta), meta
+
+    effect = result.get("effect")
+    if not isinstance(effect, dict):
+        meta = {
+            "attempted": False,
+            "applied": False,
+            "target_key": target_key,
+            "reason": "missing_effect",
+        }
+        return _attach_population_prior_diagnostics(result, meta), meta
+
+    local_mean = _safe_float(effect.get("mean_ate"), default=float("nan"))
+    local_var = _effect_variance(result)
+    if not math.isfinite(local_mean) or local_var is None or local_var <= 0.0:
+        meta = {
+            "attempted": False,
+            "applied": False,
+            "target_key": target_key,
+            "reason": "invalid_local_estimate",
+        }
+        return _attach_population_prior_diagnostics(result, meta), meta
+
+    if not isinstance(population_prior, dict):
+        meta = {
+            "attempted": True,
+            "applied": False,
+            "target_key": target_key,
+            "reason": "prior_unavailable_or_invalid",
+        }
+        return _attach_population_prior_diagnostics(result, meta), meta
+
+    prior_mean = _safe_float(population_prior.get("mean"), default=float("nan"))
+    prior_var = _safe_float(population_prior.get("var"), default=float("nan"))
+    blend_weight = _safe_float(population_prior.get("blend_weight"), default=0.35)
+    blend_weight = _clamp(blend_weight, 0.0, 0.95)
+    if (
+        not math.isfinite(prior_mean)
+        or not math.isfinite(prior_var)
+        or prior_var <= 0.0
+    ):
+        meta = {
+            "attempted": True,
+            "applied": False,
+            "target_key": target_key,
+            "reason": "invalid_prior_stats",
+        }
+        return _attach_population_prior_diagnostics(result, meta), meta
+
+    blended_mean = ((1.0 - blend_weight) * local_mean) + (blend_weight * prior_mean)
+    blended_var = ((1.0 - blend_weight) * local_var) + (blend_weight * prior_var)
+    blended_var = max(1e-6, blended_var)
+    blended_sd = math.sqrt(blended_var)
+    delta = 1.96 * blended_sd
+    ci95 = [blended_mean - delta, blended_mean + delta]
+    probability_positive = _normal_cdf(blended_mean, sigma=blended_sd)
+    direction = "uncertain"
+    if ci95[0] > 0.0:
+        direction = "positive"
+    elif ci95[1] < 0.0:
+        direction = "negative"
+
+    updated_effect = dict(effect)
+    updated_effect["mean_ate"] = round(blended_mean, 4)
+    updated_effect["ci95"] = [round(ci95[0], 4), round(ci95[1], 4)]
+    updated_effect["direction"] = direction
+    updated_effect["probability_positive"] = round(probability_positive, 4)
+
+    meta = {
+        "attempted": True,
+        "applied": True,
+        "target_key": str(population_prior.get("target_key") or target_key),
+        "cohort_key": population_prior.get("cohort_key"),
+        "blend_weight": round(blend_weight, 4),
+        "participants_count": population_prior.get("participants_count"),
+        "sample_size": population_prior.get("sample_size"),
+        "computed_at": population_prior.get("computed_at"),
+        "local_mean_ate": round(local_mean, 4),
+        "local_var": round(local_var, 6),
+        "prior_mean": round(prior_mean, 4),
+        "prior_var": round(prior_var, 6),
+        "blended_mean_ate": round(blended_mean, 4),
+        "blended_var": round(blended_var, 6),
+    }
+
+    updated = dict(result)
+    updated["effect"] = updated_effect
+    return _attach_population_prior_diagnostics(updated, meta), meta
 
 
 def _estimate_effect(
@@ -339,6 +483,20 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                         },
                     },
                 },
+            },
+            "population_prior": {
+                "applied": "boolean",
+                "attempted_estimands": "integer",
+                "applied_estimands": "integer",
+                "details": [{
+                    "intervention": "string",
+                    "outcome": "string",
+                    "exercise_id": "string (optional)",
+                    "attempted": "boolean",
+                    "applied": "boolean",
+                    "reason": "string (optional)",
+                    "target_key": "string",
+                }],
             },
             "machine_caveats": [{
                 "intervention": "string",
@@ -799,6 +957,21 @@ async def update_causal_inference(
         machine_caveats: list[dict[str, Any]] = []
         has_ok = False
         insightful_outcomes = 0
+        prior_cache: dict[str, dict[str, Any] | None] = {}
+        population_prior_usage: list[dict[str, Any]] = []
+
+        async def _cached_population_prior(target_key: str) -> dict[str, Any] | None:
+            if target_key in prior_cache:
+                return prior_cache[target_key]
+            prior = await resolve_population_prior(
+                conn,
+                user_id=user_id,
+                projection_type="causal_inference",
+                target_key=target_key,
+                retracted_ids=retracted_ids,
+            )
+            prior_cache[target_key] = prior
+            return prior
 
         for name, sample_payload in samples_by_intervention.items():
             outcome_samples = sample_payload["outcomes"]
@@ -834,6 +1007,64 @@ async def update_causal_inference(
                     exercise_samples,
                     min_samples=strength_min_samples,
                     bootstrap_samples=bootstrap_samples,
+                )
+
+            readiness_target_key = build_causal_estimand_target_key(
+                intervention=name,
+                outcome=OUTCOME_READINESS,
+            )
+            readiness_prior = await _cached_population_prior(readiness_target_key)
+            readiness_result, readiness_prior_meta = _blend_population_prior_into_effect(
+                readiness_result,
+                target_key=readiness_target_key,
+                population_prior=readiness_prior,
+            )
+            population_prior_usage.append(
+                {
+                    "intervention": name,
+                    "outcome": OUTCOME_READINESS,
+                    **readiness_prior_meta,
+                }
+            )
+
+            strength_aggregate_target_key = build_causal_estimand_target_key(
+                intervention=name,
+                outcome=OUTCOME_STRENGTH_AGGREGATE,
+            )
+            strength_aggregate_prior = await _cached_population_prior(strength_aggregate_target_key)
+            strength_aggregate_result, strength_aggregate_prior_meta = _blend_population_prior_into_effect(
+                strength_aggregate_result,
+                target_key=strength_aggregate_target_key,
+                population_prior=strength_aggregate_prior,
+            )
+            population_prior_usage.append(
+                {
+                    "intervention": name,
+                    "outcome": OUTCOME_STRENGTH_AGGREGATE,
+                    **strength_aggregate_prior_meta,
+                }
+            )
+
+            for exercise_id, exercise_result in list(strength_per_exercise_results.items()):
+                exercise_target_key = build_causal_estimand_target_key(
+                    intervention=name,
+                    outcome=OUTCOME_STRENGTH_PER_EXERCISE,
+                    exercise_id=str(exercise_id),
+                )
+                exercise_prior = await _cached_population_prior(exercise_target_key)
+                blended_exercise_result, exercise_prior_meta = _blend_population_prior_into_effect(
+                    exercise_result,
+                    target_key=exercise_target_key,
+                    population_prior=exercise_prior,
+                )
+                strength_per_exercise_results[exercise_id] = blended_exercise_result
+                population_prior_usage.append(
+                    {
+                        "intervention": name,
+                        "outcome": OUTCOME_STRENGTH_PER_EXERCISE,
+                        "exercise_id": str(exercise_id),
+                        **exercise_prior_meta,
+                    }
                 )
 
             heterogeneous_effects = {
@@ -933,6 +1164,19 @@ async def update_causal_inference(
                 OUTCOME_STRENGTH_PER_EXERCISE: strength_per_exercise_windows,
             }
 
+        population_prior_attempted = sum(
+            1 for usage in population_prior_usage if bool(usage.get("attempted"))
+        )
+        population_prior_applied = sum(
+            1 for usage in population_prior_usage if bool(usage.get("applied"))
+        )
+        population_prior_summary = {
+            "attempted_estimands": population_prior_attempted,
+            "applied_estimands": population_prior_applied,
+            "applied": population_prior_applied > 0,
+            "details": population_prior_usage,
+        }
+
         projection_data = {
             "status": "ok" if has_ok else "insufficient_data",
             "engine": telemetry_engine,
@@ -961,6 +1205,7 @@ async def update_causal_inference(
             },
             "assumptions": ASSUMPTIONS,
             "interventions": intervention_results,
+            "population_prior": population_prior_summary,
             "machine_caveats": machine_caveats,
             "evidence_window": {
                 "days_considered": len(daily_context),
@@ -1008,6 +1253,21 @@ async def update_causal_inference(
                 1 for payload in intervention_results.values() if payload.get("status") == "ok"
             ),
             "insightful_outcomes": insightful_outcomes,
+            "population_prior": {
+                "attempted_estimands": population_prior_attempted,
+                "applied_estimands": population_prior_applied,
+                "applied": population_prior_applied > 0,
+                "fallback_reasons": {
+                    reason: sum(1 for usage in population_prior_usage if usage.get("reason") == reason)
+                    for reason in sorted(
+                        {
+                            str(usage.get("reason"))
+                            for usage in population_prior_usage
+                            if usage.get("reason")
+                        }
+                    )
+                },
+            },
         }
         if not has_ok:
             telemetry_error_taxonomy = INFERENCE_ERROR_INSUFFICIENT_DATA
