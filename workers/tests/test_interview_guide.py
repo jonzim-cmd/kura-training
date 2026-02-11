@@ -106,12 +106,19 @@ class TestEventConventions:
         assert "key" in pref["example"]
         assert "value" in pref["example"]
         assert "common_keys" in pref
+        assert "timezone" in pref["common_keys"]
 
     def test_profile_updated_convention(self):
         conventions = get_event_conventions()
         prof = conventions["profile.updated"]
         assert "experience_level" in prof["fields"]
         assert "training_modality" in prof["fields"]
+        assert "age" in prof["fields"]
+        assert "date_of_birth" in prof["fields"]
+        assert "age_deferred" in prof["fields"]
+        assert "bodyweight_kg" in prof["fields"]
+        assert "bodyweight_deferred" in prof["fields"]
+        assert "tri_state_semantics" in prof
 
     def test_injury_reported_convention(self):
         conventions = get_event_conventions()
@@ -144,6 +151,7 @@ class TestEventConventions:
             "profile.updated", "preference.set", "goal.set", "injury.reported",
             "session.completed", "learning.signal.logged",
             "event.retracted",
+            "workflow.onboarding.closed", "workflow.onboarding.override_granted",
             "projection_rule.created", "projection_rule.archived",
         }
         assert set(conventions.keys()) == expected

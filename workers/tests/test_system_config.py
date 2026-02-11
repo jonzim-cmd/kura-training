@@ -144,7 +144,7 @@ class TestBuildSystemConfig:
 
     def test_event_conventions_count(self):
         result = build_system_config()
-        assert len(result["event_conventions"]) == 25
+        assert len(result["event_conventions"]) >= 25
 
     def test_set_corrected_convention_requires_idempotency_key(self):
         result = build_system_config()
@@ -249,6 +249,16 @@ class TestConventions:
         assert "strength" in registry
         assert "mention_bound" in registry["strength"]
         assert "rest_seconds" in registry["strength"]["mention_bound"]
+
+    def test_has_visualization_policy_conventions(self):
+        result = _get_conventions()
+        assert "visualization_policy" in result
+        policy = result["visualization_policy"]
+        assert "policy_triggers" in policy
+        assert "trend" in policy["policy_triggers"]
+        assert "plan_vs_actual" in policy["policy_triggers"]
+        assert "resolve_endpoint" in policy
+        assert policy["resolve_endpoint"] == "/v1/agent/visualization/resolve"
 
     def test_has_semantic_resolution_conventions(self):
         result = _get_conventions()

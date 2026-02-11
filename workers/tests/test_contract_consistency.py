@@ -59,6 +59,15 @@ def test_every_coverage_area_can_be_marked_covered():
             goals,
             {**profile_data, "training_modality": "strength"},
             injuries,
+            0,
+        ),
+        "baseline_profile": (
+            aliases,
+            preferences,
+            goals,
+            {**profile_data, "age": 33},
+            injuries,
+            1,
         ),
         "goals": (
             aliases,
@@ -66,6 +75,7 @@ def test_every_coverage_area_can_be_marked_covered():
             [{"goal_type": "strength"}],
             profile_data,
             injuries,
+            0,
         ),
         "exercise_vocabulary": (
             {
@@ -77,6 +87,7 @@ def test_every_coverage_area_can_be_marked_covered():
             goals,
             profile_data,
             injuries,
+            0,
         ),
         "unit_preferences": (
             aliases,
@@ -84,6 +95,7 @@ def test_every_coverage_area_can_be_marked_covered():
             goals,
             profile_data,
             injuries,
+            0,
         ),
         "injuries": (
             aliases,
@@ -91,6 +103,7 @@ def test_every_coverage_area_can_be_marked_covered():
             goals,
             profile_data,
             [{"description": "knee pain"}],
+            0,
         ),
         "equipment": (
             aliases,
@@ -98,6 +111,7 @@ def test_every_coverage_area_can_be_marked_covered():
             goals,
             {**profile_data, "available_equipment": ["barbell", "rack"]},
             injuries,
+            0,
         ),
         "schedule": (
             aliases,
@@ -105,6 +119,7 @@ def test_every_coverage_area_can_be_marked_covered():
             goals,
             {**profile_data, "training_frequency_per_week": 4},
             injuries,
+            0,
         ),
         "nutrition_interest": (
             aliases,
@@ -112,6 +127,7 @@ def test_every_coverage_area_can_be_marked_covered():
             goals,
             profile_data,
             injuries,
+            0,
         ),
         "current_program": (
             aliases,
@@ -119,6 +135,7 @@ def test_every_coverage_area_can_be_marked_covered():
             goals,
             {**profile_data, "current_program": "5/3/1"},
             injuries,
+            0,
         ),
         "communication_preferences": (
             aliases,
@@ -126,6 +143,7 @@ def test_every_coverage_area_can_be_marked_covered():
             goals,
             {**profile_data, "communication_style": "short and direct"},
             injuries,
+            0,
         ),
     }
 

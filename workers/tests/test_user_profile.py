@@ -11,6 +11,7 @@ from kura_workers.handlers.user_profile import (
     _build_data_quality,
     _build_observed_patterns,
     _build_user_dimensions,
+    _compute_baseline_profile_summary,
     _compute_interview_coverage,
     _escalate_priority,
     _find_orphaned_event_types,
@@ -347,7 +348,7 @@ class TestInterviewCoverage:
         result = _compute_interview_coverage(
             aliases={}, preferences={}, goals=[], profile_data={}, injuries=[],
         )
-        assert len(result) == 10  # All coverage areas
+        assert len(result) == 11  # All coverage areas
         for item in result:
             assert item["status"] == "uncovered"
 
@@ -456,6 +457,46 @@ class TestInterviewCoverage:
         prog = next(c for c in result if c["area"] == "current_program")
         assert prog["status"] == "covered"
 
+    def test_baseline_profile_covered_with_known_values(self):
+        result = _compute_interview_coverage(
+            aliases={},
+            preferences={},
+            goals=[],
+            profile_data={"age": 34},
+            injuries=[],
+            bodyweight_event_count=1,
+        )
+        baseline = next(c for c in result if c["area"] == "baseline_profile")
+        assert baseline["status"] == "covered"
+
+    def test_baseline_profile_deferred_when_marked_deferred(self):
+        result = _compute_interview_coverage(
+            aliases={},
+            preferences={},
+            goals=[],
+            profile_data={"age_deferred": True, "bodyweight_deferred": True},
+            injuries=[],
+            bodyweight_event_count=0,
+        )
+        baseline = next(c for c in result if c["area"] == "baseline_profile")
+        assert baseline["status"] == "deferred"
+        assert "age_or_date_of_birth" in baseline["note"]
+        assert "bodyweight_kg" in baseline["note"]
+
+    def test_baseline_profile_uncovered_when_required_fields_missing(self):
+        result = _compute_interview_coverage(
+            aliases={},
+            preferences={},
+            goals=[],
+            profile_data={},
+            injuries=[],
+            bodyweight_event_count=0,
+        )
+        baseline = next(c for c in result if c["area"] == "baseline_profile")
+        assert baseline["status"] == "uncovered"
+        assert "age_or_date_of_birth" in baseline["note"]
+        assert "bodyweight_kg" in baseline["note"]
+
     def test_mixed_coverage(self):
         result = _compute_interview_coverage(
             aliases={"SQ": {"target": "squat", "confidence": "confirmed"}},
@@ -473,12 +514,68 @@ class TestInterviewCoverage:
         assert statuses["equipment"] == "uncovered"
 
 
+# --- TestBaselineProfileSummary (Decision 13 INV-006 / PDC.1) ---
+
+
+class TestBaselineProfileSummary:
+    def test_mention_captured_baseline_fields_are_known(self):
+        summary = _compute_baseline_profile_summary(
+            {"age": 33, "bodyweight_kg": 81.5},
+            bodyweight_event_count=0,
+            latest_bodyweight_kg=None,
+        )
+        assert summary["status"] == "complete"
+        assert summary["slots"]["age_or_date_of_birth"]["status"] == "known"
+        assert summary["slots"]["bodyweight_kg"]["status"] == "known"
+        assert "age_or_date_of_birth" in summary["known_fields"]
+        assert "bodyweight_kg" in summary["known_fields"]
+        assert summary["required_missing"] == []
+
+    def test_mention_deferred_baseline_fields_are_deferred(self):
+        summary = _compute_baseline_profile_summary(
+            {"age_deferred": True, "bodyweight_deferred": True},
+            bodyweight_event_count=0,
+            latest_bodyweight_kg=None,
+        )
+        assert summary["status"] == "deferred"
+        assert summary["slots"]["age_or_date_of_birth"]["status"] == "deferred"
+        assert summary["slots"]["bodyweight_kg"]["status"] == "deferred"
+        assert set(summary["required_deferred"]) == {
+            "age_or_date_of_birth",
+            "bodyweight_kg",
+        }
+
+    def test_omitted_baseline_fields_are_flagged_as_missing(self):
+        summary = _compute_baseline_profile_summary(
+            {},
+            bodyweight_event_count=0,
+            latest_bodyweight_kg=None,
+        )
+        assert summary["status"] == "needs_input"
+        assert set(summary["required_missing"]) == {
+            "age_or_date_of_birth",
+            "bodyweight_kg",
+        }
+
+    def test_bodyweight_events_count_as_known_baseline(self):
+        summary = _compute_baseline_profile_summary(
+            {"age": 32},
+            bodyweight_event_count=3,
+            latest_bodyweight_kg=79.8,
+        )
+        bodyweight = summary["slots"]["bodyweight_kg"]
+        assert bodyweight["status"] == "known"
+        assert bodyweight["source"] == "bodyweight.logged.weight_kg"
+        assert bodyweight["value"] == 79.8
+        assert summary["status"] == "complete"
+
+
 # --- TestOnboardingTrigger ---
 
 
 class TestOnboardingTrigger:
     def _all_uncovered(self):
-        return [{"area": f"area_{i}", "status": "uncovered"} for i in range(9)]
+        return [{"area": f"area_{i}", "status": "uncovered"} for i in range(11)]
 
     def _mostly_covered(self):
         return [
@@ -523,7 +620,7 @@ class TestOnboardingTrigger:
 
 class TestBuildAgendaWithInterview:
     def test_onboarding_in_agenda(self):
-        coverage = [{"area": f"a{i}", "status": "uncovered"} for i in range(9)]
+        coverage = [{"area": f"a{i}", "status": "uncovered"} for i in range(11)]
         result = _build_agenda(
             [], [], interview_coverage=coverage, total_events=0,
             has_goals=False, has_preferences=False,
@@ -553,7 +650,7 @@ class TestBuildAgendaWithInterview:
         assert "profile_refresh_suggested" not in types
 
     def test_interview_items_come_before_data_quality(self):
-        coverage = [{"area": f"a{i}", "status": "uncovered"} for i in range(9)]
+        coverage = [{"area": f"a{i}", "status": "uncovered"} for i in range(11)]
         result = _build_agenda(
             [{"exercise": "x", "occurrences": 1}],
             [],
@@ -573,6 +670,20 @@ class TestBuildAgendaWithInterview:
         )
         assert len(result) == 1
         assert result[0]["type"] == "resolve_exercises"
+
+    def test_baseline_profile_missing_is_flagged_in_agenda(self):
+        result = _build_agenda(
+            [],
+            [],
+            total_events=1,
+            baseline_summary={
+                "required_missing": ["age_or_date_of_birth", "bodyweight_kg"],
+            },
+        )
+        item = next(a for a in result if a["type"] == "baseline_profile_missing")
+        assert item["priority"] == "high"
+        assert "age_or_date_of_birth" in item["detail"]
+        assert "bodyweight_kg" in item["detail"]
 
 
 # --- TestOrphanedEventTypes (Decision 9) ---
@@ -914,7 +1025,7 @@ class TestAgendaWithObservedPatterns:
         assert priorities == ["medium", "low", "info"]
 
     def test_info_items_after_interview_items(self):
-        coverage = [{"area": f"a{i}", "status": "uncovered"} for i in range(9)]
+        coverage = [{"area": f"a{i}", "status": "uncovered"} for i in range(11)]
         patterns = {
             "observed_fields": {
                 "set.logged": {

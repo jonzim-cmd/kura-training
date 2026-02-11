@@ -27,6 +27,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/agent/capabilities", get(get_agent_capabilities))
         .route("/v1/agent/context", get(get_agent_context))
+        .route(
+            "/v1/agent/visualization/resolve",
+            post(resolve_visualization),
+        )
         .route("/v1/agent/write-with-proof", post(write_with_proof))
 }
 
@@ -173,6 +177,126 @@ pub struct AgentWriteWithProofRequest {
     pub include_repair_technical_details: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct AgentVisualizationDataSource {
+    pub projection_type: String,
+    pub key: String,
+    /// Dot-path inside projection.data (e.g. weekly_summary.0.total_volume_kg)
+    #[serde(default)]
+    pub json_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct AgentVisualizationSpec {
+    /// chart | table | timeline | ascii | mermaid
+    pub format: String,
+    /// Human-purpose of the visualization (e.g. "4-week volume trend")
+    pub purpose: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Optional explicit IANA timezone for date/week semantics
+    #[serde(default)]
+    pub timezone: Option<String>,
+    pub data_sources: Vec<AgentVisualizationDataSource>,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct AgentResolveVisualizationRequest {
+    pub task_intent: String,
+    /// auto | always | never
+    #[serde(default)]
+    pub user_preference_override: Option<String>,
+    /// low | medium | high
+    #[serde(default)]
+    pub complexity_hint: Option<String>,
+    /// If false, rich formats are converted to ASCII fallback.
+    #[serde(default = "default_true")]
+    pub allow_rich_rendering: bool,
+    /// Required only when policy decides visualization is useful.
+    #[serde(default)]
+    pub visualization_spec: Option<AgentVisualizationSpec>,
+    /// Optional session identifier used for telemetry metadata.
+    #[serde(default)]
+    pub telemetry_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentVisualizationPolicyDecision {
+    /// visualize | skipped | fallback
+    pub status: String,
+    /// trend | compare | plan_vs_actual | multi_week_scheduling | user_preference_always | user_preference_never | none
+    pub trigger: String,
+    /// auto | always | never
+    pub preference_mode: String,
+    /// low | medium | high
+    pub complexity: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentVisualizationResolvedSource {
+    pub projection_type: String,
+    pub key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub json_path: Option<String>,
+    pub projection_version: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projection_last_event_id: Option<Uuid>,
+    pub value: Value,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentVisualizationTimezoneContext {
+    pub timezone: String,
+    pub assumed: bool,
+    /// spec | user_profile.preference | fallback_utc
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentVisualizationOutput {
+    /// chart | table | timeline | ascii | mermaid | text
+    pub format: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentResolveVisualizationResponse {
+    pub policy: AgentVisualizationPolicyDecision,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visualization_spec: Option<AgentVisualizationSpec>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub resolved_sources: Vec<AgentVisualizationResolvedSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone_context: Option<AgentVisualizationTimezoneContext>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uncertainty_label: Option<String>,
+    pub output: AgentVisualizationOutput,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_output: Option<AgentVisualizationOutput>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub telemetry_signal_types: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentWorkflowGate {
+    /// onboarding | planning
+    pub phase: String,
+    /// allowed | blocked
+    pub status: String,
+    /// none | onboarding_closed | override
+    pub transition: String,
+    pub onboarding_closed: bool,
+    pub override_used: bool,
+    pub message: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub missing_requirements: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub planning_event_types: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AgentWriteReceipt {
     pub event_id: Uuid,
@@ -290,6 +414,7 @@ pub struct AgentWriteWithProofResponse {
     pub warnings: Vec<BatchEventWarning>,
     pub verification: AgentWriteVerificationSummary,
     pub claim_guard: AgentWriteClaimGuard,
+    pub workflow_gate: AgentWorkflowGate,
     pub session_audit: AgentSessionAuditSummary,
     pub repair_feedback: AgentRepairFeedback,
 }
@@ -345,6 +470,17 @@ struct ExistingWriteReceiptRow {
     metadata: Value,
 }
 
+#[derive(sqlx::FromRow)]
+struct WorkflowMarkerEventRow {
+    id: Uuid,
+    event_type: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct RetractedMarkerRow {
+    retracted_event_id: Option<String>,
+}
+
 #[derive(Debug)]
 struct SessionAuditArtifacts {
     summary: AgentSessionAuditSummary,
@@ -357,6 +493,14 @@ struct SessionAuditUnresolved {
     exercise_label: String,
     field: String,
     candidates: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AgentWorkflowState {
+    onboarding_closed: bool,
+    override_active: bool,
+    missing_close_requirements: Vec<String>,
+    legacy_planning_history: bool,
 }
 
 fn recover_receipts_for_idempotent_retry(
@@ -1103,6 +1247,162 @@ async fn fetch_quality_health_projection(
     Ok(projection)
 }
 
+async fn fetch_user_profile_projection(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<Option<ProjectionResponse>, AppError> {
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let projection = fetch_projection(&mut tx, user_id, "user_profile", "me").await?;
+    tx.commit().await?;
+    Ok(projection)
+}
+
+async fn resolve_visualization_sources(
+    state: &AppState,
+    user_id: Uuid,
+    spec: &AgentVisualizationSpec,
+) -> Result<Vec<AgentVisualizationResolvedSource>, AppError> {
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+    let mut resolved_sources = Vec::with_capacity(spec.data_sources.len());
+    let mut unresolved_references: Vec<String> = Vec::new();
+
+    for source in &spec.data_sources {
+        let projection =
+            fetch_projection(&mut tx, user_id, &source.projection_type, &source.key).await?;
+        let Some(projection) = projection else {
+            unresolved_references.push(format!("{}:{}", source.projection_type, source.key));
+            continue;
+        };
+        match bind_visualization_source(source, &projection) {
+            Ok(bound) => resolved_sources.push(bound),
+            Err(detail) => unresolved_references.push(detail),
+        }
+    }
+
+    tx.commit().await?;
+
+    if unresolved_references.is_empty() {
+        return Ok(resolved_sources);
+    }
+
+    Err(AppError::Validation {
+        message: "visualization_spec contains unresolved projection references".to_string(),
+        field: Some("visualization_spec.data_sources".to_string()),
+        received: Some(serde_json::json!({ "unresolved": unresolved_references })),
+        docs_hint: Some(
+            "Ensure each projection_type/key exists and json_path points to an existing data field."
+                .to_string(),
+        ),
+    })
+}
+
+async fn fetch_workflow_state(
+    state: &AppState,
+    user_id: Uuid,
+    user_profile: Option<&ProjectionResponse>,
+) -> Result<AgentWorkflowState, AppError> {
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+    let marker_rows = sqlx::query_as::<_, WorkflowMarkerEventRow>(
+        r#"
+        SELECT id, event_type
+        FROM events
+        WHERE user_id = $1
+          AND event_type IN ($2, $3)
+        ORDER BY timestamp ASC, id ASC
+        "#,
+    )
+    .bind(user_id)
+    .bind(WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE)
+    .bind(WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let planning_event_types: Vec<&str> = PLANNING_OR_COACHING_EVENT_TYPES.to_vec();
+    let legacy_planning_history = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM events e
+            WHERE e.user_id = $1
+              AND e.event_type = ANY($2)
+              AND NOT EXISTS (
+                SELECT 1
+                FROM events retracted
+                WHERE retracted.user_id = $1
+                  AND retracted.event_type = 'event.retracted'
+                  AND retracted.data->>'retracted_event_id' = e.id::text
+              )
+        )
+        "#,
+    )
+    .bind(user_id)
+    .bind(&planning_event_types)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let marker_ids: Vec<String> = marker_rows.iter().map(|row| row.id.to_string()).collect();
+    let retracted_ids: HashSet<String> = if marker_ids.is_empty() {
+        HashSet::new()
+    } else {
+        sqlx::query_as::<_, RetractedMarkerRow>(
+            r#"
+            SELECT data->>'retracted_event_id' AS retracted_event_id
+            FROM events
+            WHERE user_id = $1
+              AND event_type = 'event.retracted'
+              AND data->>'retracted_event_id' = ANY($2)
+            "#,
+        )
+        .bind(user_id)
+        .bind(&marker_ids)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .filter_map(|row| row.retracted_event_id)
+        .collect()
+    };
+
+    tx.commit().await?;
+
+    let active_markers: Vec<&WorkflowMarkerEventRow> = marker_rows
+        .iter()
+        .filter(|row| !retracted_ids.contains(&row.id.to_string()))
+        .collect();
+    let onboarding_closed = active_markers.iter().any(|row| {
+        row.event_type
+            .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE)
+    });
+    let override_active = active_markers.iter().any(|row| {
+        row.event_type
+            .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE)
+    });
+
+    Ok(AgentWorkflowState {
+        onboarding_closed,
+        override_active,
+        legacy_planning_history,
+        missing_close_requirements: if onboarding_closed {
+            Vec::new()
+        } else {
+            missing_onboarding_close_requirements(user_profile)
+        },
+    })
+}
+
 async fn fetch_projection_list(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
@@ -1148,6 +1448,740 @@ fn normalize_read_after_write_targets(
         }
     }
     normalized
+}
+
+const WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE: &str = "workflow.onboarding.closed";
+const WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE: &str = "workflow.onboarding.override_granted";
+const WORKFLOW_INVARIANT_ID: &str = "INV-004";
+const ONBOARDING_REQUIRED_AREAS: [&str; 3] = [
+    "training_background",
+    "baseline_profile",
+    "unit_preferences",
+];
+const PLANNING_OR_COACHING_EVENT_TYPES: [&str; 8] = [
+    "training_plan.created",
+    "training_plan.updated",
+    "training_plan.archived",
+    "projection_rule.created",
+    "projection_rule.archived",
+    "weight_target.set",
+    "sleep_target.set",
+    "nutrition_target.set",
+];
+const VISUALIZATION_RENDER_FORMATS: [&str; 5] = ["chart", "table", "timeline", "ascii", "mermaid"];
+const VISUALIZATION_INVARIANT_ID: &str = "INV-009";
+const VISUALIZATION_TREND_KEYWORDS: [&str; 8] = [
+    "trend",
+    "progress",
+    "verlauf",
+    "entwicklung",
+    "plateau",
+    "stagnation",
+    "improve",
+    "improving",
+];
+const VISUALIZATION_COMPARE_KEYWORDS: [&str; 7] = [
+    "compare",
+    "vergleich",
+    "versus",
+    " vs ",
+    "difference",
+    "delta",
+    "gegenueber",
+];
+const VISUALIZATION_PLAN_VS_ACTUAL_KEYWORDS: [&str; 8] = [
+    "plan vs actual",
+    "planned vs actual",
+    "soll ist",
+    "adherence",
+    "compliance",
+    "abweichung",
+    "planabweichung",
+    "target vs actual",
+];
+const VISUALIZATION_MULTI_WEEK_KEYWORDS: [&str; 8] = [
+    "multi-week",
+    "multi week",
+    "mehrwoechig",
+    "mehrwöchig",
+    "weekly schedule",
+    "wochenplan",
+    "several weeks",
+    "weeks ahead",
+];
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_planning_or_coaching_event_type(event_type: &str) -> bool {
+    let normalized = event_type.trim().to_lowercase();
+    PLANNING_OR_COACHING_EVENT_TYPES.contains(&normalized.as_str())
+}
+
+fn timezone_from_user_profile(data: &Value) -> Option<String> {
+    let user = data.get("user").and_then(Value::as_object)?;
+    let preferences = user.get("preferences").and_then(Value::as_object)?;
+    for key in ["timezone", "time_zone"] {
+        let configured = preferences
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if !configured.is_empty() {
+            return Some(configured.to_string());
+        }
+    }
+    None
+}
+
+fn has_timezone_preference_in_user_profile(data: &Value) -> bool {
+    timezone_from_user_profile(data).is_some()
+}
+
+fn normalize_visualization_format(format: &str) -> Option<String> {
+    let normalized = format.trim().to_lowercase();
+    if VISUALIZATION_RENDER_FORMATS.contains(&normalized.as_str()) {
+        Some(normalized)
+    } else {
+        None
+    }
+}
+
+fn normalize_visualization_preference(preference: Option<&str>) -> String {
+    match preference.unwrap_or("auto").trim().to_lowercase().as_str() {
+        "always" => "always".to_string(),
+        "never" => "never".to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
+fn contains_any_keyword(haystack: &str, keywords: &[&str]) -> bool {
+    keywords.iter().any(|keyword| haystack.contains(keyword))
+}
+
+fn detect_visualization_trigger(task_intent: &str) -> String {
+    let normalized = format!(" {} ", task_intent.trim().to_lowercase());
+    if contains_any_keyword(&normalized, &VISUALIZATION_PLAN_VS_ACTUAL_KEYWORDS) {
+        return "plan_vs_actual".to_string();
+    }
+    if contains_any_keyword(&normalized, &VISUALIZATION_MULTI_WEEK_KEYWORDS) {
+        return "multi_week_scheduling".to_string();
+    }
+    if contains_any_keyword(&normalized, &VISUALIZATION_COMPARE_KEYWORDS) {
+        return "compare".to_string();
+    }
+    if contains_any_keyword(&normalized, &VISUALIZATION_TREND_KEYWORDS) {
+        return "trend".to_string();
+    }
+    "none".to_string()
+}
+
+fn normalize_visualization_complexity(
+    complexity_hint: Option<&str>,
+    source_count: usize,
+    trigger: &str,
+) -> String {
+    let normalized_hint = complexity_hint.unwrap_or("").trim().to_lowercase();
+    if matches!(normalized_hint.as_str(), "low" | "medium" | "high") {
+        return normalized_hint;
+    }
+    if source_count >= 3 || trigger == "plan_vs_actual" || trigger == "multi_week_scheduling" {
+        return "high".to_string();
+    }
+    if source_count >= 2 || trigger == "trend" || trigger == "compare" {
+        return "medium".to_string();
+    }
+    "low".to_string()
+}
+
+fn visualization_policy_decision(
+    task_intent: &str,
+    user_preference_override: Option<&str>,
+    complexity_hint: Option<&str>,
+    source_count: usize,
+) -> AgentVisualizationPolicyDecision {
+    let preference_mode = normalize_visualization_preference(user_preference_override);
+    let trigger = detect_visualization_trigger(task_intent);
+    let complexity = normalize_visualization_complexity(complexity_hint, source_count, &trigger);
+
+    if preference_mode == "never" {
+        return AgentVisualizationPolicyDecision {
+            status: "skipped".to_string(),
+            trigger: "user_preference_never".to_string(),
+            preference_mode,
+            complexity,
+            reason: "Visualization skipped due to explicit user preference override.".to_string(),
+        };
+    }
+
+    if preference_mode == "always" {
+        return AgentVisualizationPolicyDecision {
+            status: "visualize".to_string(),
+            trigger: "user_preference_always".to_string(),
+            preference_mode,
+            complexity,
+            reason: "Visualization enabled due to explicit user preference override.".to_string(),
+        };
+    }
+
+    if trigger == "none" {
+        return AgentVisualizationPolicyDecision {
+            status: "skipped".to_string(),
+            trigger,
+            preference_mode,
+            complexity,
+            reason:
+                "No visualization trigger detected (trend/compare/plan-vs-actual/multi-week scheduling)."
+                    .to_string(),
+        };
+    }
+
+    AgentVisualizationPolicyDecision {
+        status: "visualize".to_string(),
+        trigger,
+        preference_mode,
+        complexity,
+        reason: "Visualization trigger detected and policy allows structured rendering."
+            .to_string(),
+    }
+}
+
+fn normalize_visualization_spec(
+    spec: AgentVisualizationSpec,
+) -> Result<AgentVisualizationSpec, AppError> {
+    let format =
+        normalize_visualization_format(&spec.format).ok_or_else(|| AppError::Validation {
+            message: "visualization_spec.format is not supported".to_string(),
+            field: Some("visualization_spec.format".to_string()),
+            received: Some(serde_json::json!(spec.format)),
+            docs_hint: Some(
+                "Supported formats: chart, table, timeline, ascii, mermaid.".to_string(),
+            ),
+        })?;
+    let purpose = spec.purpose.trim();
+    if purpose.is_empty() {
+        return Err(AppError::Validation {
+            message: "visualization_spec.purpose must not be empty".to_string(),
+            field: Some("visualization_spec.purpose".to_string()),
+            received: None,
+            docs_hint: Some(
+                "Provide a concrete purpose such as '4-week volume trend' or 'plan-vs-actual adherence'."
+                    .to_string(),
+            ),
+        });
+    }
+    if spec.data_sources.is_empty() {
+        return Err(AppError::Validation {
+            message: "visualization_spec.data_sources must not be empty".to_string(),
+            field: Some("visualization_spec.data_sources".to_string()),
+            received: None,
+            docs_hint: Some(
+                "Declare at least one projection source with projection_type/key before rendering."
+                    .to_string(),
+            ),
+        });
+    }
+
+    let normalized_sources: Vec<AgentVisualizationDataSource> = spec
+        .data_sources
+        .iter()
+        .enumerate()
+        .map(|(index, source)| {
+            let projection_type = source.projection_type.trim().to_lowercase();
+            let key = source.key.trim().to_lowercase();
+            if projection_type.is_empty() || key.is_empty() {
+                return Err(AppError::Validation {
+                    message: "Each visualization data source requires projection_type and key"
+                        .to_string(),
+                    field: Some(format!("visualization_spec.data_sources[{index}]")),
+                    received: Some(serde_json::json!({
+                        "projection_type": source.projection_type,
+                        "key": source.key,
+                    })),
+                    docs_hint: Some(
+                        "Use a concrete source reference, e.g. projection_type='training_timeline', key='overview'."
+                            .to_string(),
+                    ),
+                });
+            }
+            let json_path = source
+                .json_path
+                .as_ref()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            Ok(AgentVisualizationDataSource {
+                projection_type,
+                key,
+                json_path,
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+
+    Ok(AgentVisualizationSpec {
+        format,
+        purpose: purpose.to_string(),
+        title: spec
+            .title
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        timezone: spec
+            .timezone
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        data_sources: normalized_sources,
+    })
+}
+
+fn extract_json_path_value(data: &Value, json_path: Option<&str>) -> Option<Value> {
+    let path = json_path.map(str::trim).unwrap_or_default();
+    if path.is_empty() {
+        return Some(data.clone());
+    }
+
+    let mut current = data;
+    for segment in path.split('.') {
+        let token = segment.trim();
+        if token.is_empty() {
+            return None;
+        }
+        if let Ok(index) = token.parse::<usize>() {
+            current = current.as_array()?.get(index)?;
+        } else {
+            current = current.get(token)?;
+        }
+    }
+    Some(current.clone())
+}
+
+fn bind_visualization_source(
+    source: &AgentVisualizationDataSource,
+    projection: &ProjectionResponse,
+) -> Result<AgentVisualizationResolvedSource, String> {
+    let value = extract_json_path_value(&projection.projection.data, source.json_path.as_deref())
+        .ok_or_else(|| {
+        format!(
+            "{}:{} path '{}' was not resolvable",
+            source.projection_type,
+            source.key,
+            source.json_path.as_deref().unwrap_or_default()
+        )
+    })?;
+
+    Ok(AgentVisualizationResolvedSource {
+        projection_type: source.projection_type.clone(),
+        key: source.key.clone(),
+        json_path: source.json_path.clone(),
+        projection_version: projection.projection.version,
+        projection_last_event_id: projection.projection.last_event_id,
+        value,
+    })
+}
+
+fn resolve_visualization_timezone_context(
+    spec: &AgentVisualizationSpec,
+    user_profile: Option<&ProjectionResponse>,
+) -> AgentVisualizationTimezoneContext {
+    if let Some(explicit) = spec
+        .timezone
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return AgentVisualizationTimezoneContext {
+            timezone: explicit,
+            assumed: false,
+            source: "spec".to_string(),
+        };
+    }
+
+    if let Some(profile) = user_profile {
+        if let Some(profile_timezone) = timezone_from_user_profile(&profile.projection.data) {
+            return AgentVisualizationTimezoneContext {
+                timezone: profile_timezone,
+                assumed: false,
+                source: "user_profile.preference".to_string(),
+            };
+        }
+    }
+
+    AgentVisualizationTimezoneContext {
+        timezone: "UTC".to_string(),
+        assumed: true,
+        source: "fallback_utc".to_string(),
+    }
+}
+
+fn visualization_uncertainty_label(quality_health: Option<&ProjectionResponse>) -> Option<String> {
+    let status = quality_health?
+        .projection
+        .data
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_lowercase();
+
+    match status.as_str() {
+        "degraded" => Some(
+            "Data quality is currently degraded; treat this visualization as directional, not definitive."
+                .to_string(),
+        ),
+        "monitor" => Some(
+            "Data quality is in monitor mode; verify key conclusions before acting on the chart."
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
+fn truncate_visualization_value(value: &Value) -> String {
+    let serialized = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+    if serialized.len() <= 180 {
+        serialized
+    } else {
+        format!("{}...", &serialized[..177])
+    }
+}
+
+fn build_visualization_equivalent_summary(
+    spec: &AgentVisualizationSpec,
+    resolved_sources: &[AgentVisualizationResolvedSource],
+    timezone_context: &AgentVisualizationTimezoneContext,
+    uncertainty_label: Option<&str>,
+) -> String {
+    let mut lines = vec![
+        format!("Purpose: {}", spec.purpose),
+        format!(
+            "Timezone: {}{}",
+            timezone_context.timezone,
+            if timezone_context.assumed {
+                " (assumed)"
+            } else {
+                ""
+            }
+        ),
+    ];
+
+    for source in resolved_sources {
+        let path_suffix = source
+            .json_path
+            .as_ref()
+            .map(|path| format!(".{path}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "Source {}:{}{} => {}",
+            source.projection_type,
+            source.key,
+            path_suffix,
+            truncate_visualization_value(&source.value)
+        ));
+    }
+
+    if let Some(label) = uncertainty_label {
+        lines.push(format!("Uncertainty: {label}"));
+    }
+
+    lines.join("\n")
+}
+
+fn build_mermaid_preview(
+    resolved_sources: &[AgentVisualizationResolvedSource],
+    summary: &str,
+) -> String {
+    let mut mermaid_lines = vec!["flowchart TD".to_string()];
+    for (index, source) in resolved_sources.iter().enumerate() {
+        mermaid_lines.push(format!(
+            "  S{index}[\"{}:{}\"]",
+            source.projection_type, source.key
+        ));
+        if index > 0 {
+            mermaid_lines.push(format!("  S{} --> S{index}", index - 1));
+        }
+    }
+    format!("{}\n\n{}", mermaid_lines.join("\n"), summary)
+}
+
+fn build_visualization_outputs(
+    spec: &AgentVisualizationSpec,
+    resolved_sources: &[AgentVisualizationResolvedSource],
+    timezone_context: &AgentVisualizationTimezoneContext,
+    allow_rich_rendering: bool,
+    uncertainty_label: Option<&str>,
+) -> (
+    String,
+    AgentVisualizationOutput,
+    Option<AgentVisualizationOutput>,
+    Vec<String>,
+) {
+    let summary = build_visualization_equivalent_summary(
+        spec,
+        resolved_sources,
+        timezone_context,
+        uncertainty_label,
+    );
+    let mut warnings = Vec::new();
+    if timezone_context.assumed {
+        warnings.push(
+            "Timezone was not explicitly configured; UTC fallback was used for visualization semantics."
+                .to_string(),
+        );
+    }
+    if let Some(label) = uncertainty_label {
+        warnings.push(label.to_string());
+    }
+
+    if !allow_rich_rendering && spec.format != "ascii" {
+        return (
+            "fallback".to_string(),
+            AgentVisualizationOutput {
+                format: "ascii".to_string(),
+                content: summary,
+            },
+            None,
+            warnings,
+        );
+    }
+
+    if spec.format == "ascii" {
+        return (
+            "visualize".to_string(),
+            AgentVisualizationOutput {
+                format: "ascii".to_string(),
+                content: summary,
+            },
+            None,
+            warnings,
+        );
+    }
+
+    let rich_content = match spec.format.as_str() {
+        "mermaid" => build_mermaid_preview(resolved_sources, &summary),
+        "timeline" => format!("Timeline Preview\n\n{summary}"),
+        "chart" => format!("Chart Preview\n\n{summary}"),
+        "table" => format!("Table Preview\n\n{summary}"),
+        _ => summary.clone(),
+    };
+
+    (
+        "visualize".to_string(),
+        AgentVisualizationOutput {
+            format: spec.format.clone(),
+            content: rich_content,
+        },
+        Some(AgentVisualizationOutput {
+            format: "ascii".to_string(),
+            content: summary,
+        }),
+        warnings,
+    )
+}
+
+fn coverage_status_from_user_profile(data: &Value, area: &str) -> Option<String> {
+    let coverage = data
+        .get("user")
+        .and_then(|u| u.get("interview_coverage"))
+        .and_then(Value::as_array)?;
+    coverage.iter().find_map(|entry| {
+        let candidate_area = entry.get("area").and_then(Value::as_str)?.trim();
+        if candidate_area != area {
+            return None;
+        }
+        entry
+            .get("status")
+            .and_then(Value::as_str)
+            .map(|status| status.trim().to_lowercase())
+    })
+}
+
+fn missing_onboarding_close_requirements(user_profile: Option<&ProjectionResponse>) -> Vec<String> {
+    let mut missing = Vec::new();
+    let Some(profile) = user_profile else {
+        missing.push("user_profile_missing".to_string());
+        missing.push("user_profile_bootstrap_pending".to_string());
+        return missing;
+    };
+    let data = &profile.projection.data;
+    if data.get("user").map(Value::is_null).unwrap_or(true) {
+        missing.push("user_profile_bootstrap_pending".to_string());
+        return missing;
+    }
+
+    for area in ONBOARDING_REQUIRED_AREAS {
+        let Some(status) = coverage_status_from_user_profile(data, area) else {
+            missing.push(format!("coverage.{area}.missing"));
+            continue;
+        };
+        let satisfied = if area == "baseline_profile" {
+            matches!(status.as_str(), "covered" | "deferred")
+        } else {
+            status == "covered"
+        };
+        if !satisfied {
+            missing.push(format!("coverage.{area}.{status}"));
+        }
+    }
+
+    if !has_timezone_preference_in_user_profile(data) {
+        missing.push("preference.timezone.missing".to_string());
+    }
+
+    missing
+}
+
+fn workflow_gate_from_request(
+    events: &[CreateEventRequest],
+    state: &AgentWorkflowState,
+) -> AgentWorkflowGate {
+    let planning_event_types: Vec<String> = events
+        .iter()
+        .filter_map(|event| {
+            let event_type = event.event_type.trim().to_lowercase();
+            if is_planning_or_coaching_event_type(&event_type) {
+                Some(event_type)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let contains_planning_action = !planning_event_types.is_empty();
+    let requested_close = events.iter().any(|event| {
+        event
+            .event_type
+            .trim()
+            .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE)
+    });
+    let requested_override = events.iter().any(|event| {
+        event
+            .event_type
+            .trim()
+            .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE)
+    });
+
+    if !contains_planning_action {
+        return AgentWorkflowGate {
+            phase: if state.onboarding_closed {
+                "planning".to_string()
+            } else {
+                "onboarding".to_string()
+            },
+            status: "allowed".to_string(),
+            transition: "none".to_string(),
+            onboarding_closed: state.onboarding_closed,
+            override_used: false,
+            message: if state.onboarding_closed {
+                "Onboarding is closed; planning/coaching actions are available.".to_string()
+            } else {
+                "Onboarding remains active; no planning/coaching payload detected.".to_string()
+            },
+            missing_requirements: state.missing_close_requirements.clone(),
+            planning_event_types,
+        };
+    }
+
+    if state.onboarding_closed {
+        return AgentWorkflowGate {
+            phase: "planning".to_string(),
+            status: "allowed".to_string(),
+            transition: "none".to_string(),
+            onboarding_closed: true,
+            override_used: false,
+            message: "Planning/coaching payload allowed because onboarding is already closed."
+                .to_string(),
+            missing_requirements: Vec::new(),
+            planning_event_types,
+        };
+    }
+
+    if requested_close && state.missing_close_requirements.is_empty() {
+        return AgentWorkflowGate {
+            phase: "planning".to_string(),
+            status: "allowed".to_string(),
+            transition: "onboarding_closed".to_string(),
+            onboarding_closed: true,
+            override_used: false,
+            message:
+                "Onboarding close transition accepted. Planning/coaching payload is now allowed."
+                    .to_string(),
+            missing_requirements: Vec::new(),
+            planning_event_types,
+        };
+    }
+
+    if requested_override || state.override_active {
+        return AgentWorkflowGate {
+            phase: "onboarding".to_string(),
+            status: "allowed".to_string(),
+            transition: "override".to_string(),
+            onboarding_closed: false,
+            override_used: true,
+            message: "Planning/coaching payload allowed via explicit onboarding override."
+                .to_string(),
+            missing_requirements: state.missing_close_requirements.clone(),
+            planning_event_types,
+        };
+    }
+
+    if state.legacy_planning_history && state.missing_close_requirements.is_empty() {
+        return AgentWorkflowGate {
+            phase: "planning".to_string(),
+            status: "allowed".to_string(),
+            transition: "onboarding_closed".to_string(),
+            onboarding_closed: true,
+            override_used: false,
+            message: "Planning/coaching payload allowed for legacy compatibility; onboarding close marker will be auto-recorded."
+                .to_string(),
+            missing_requirements: Vec::new(),
+            planning_event_types,
+        };
+    }
+
+    AgentWorkflowGate {
+        phase: "onboarding".to_string(),
+        status: "blocked".to_string(),
+        transition: "none".to_string(),
+        onboarding_closed: false,
+        override_used: false,
+        message: "Planning/coaching payload blocked: onboarding phase is not closed.".to_string(),
+        missing_requirements: state.missing_close_requirements.clone(),
+        planning_event_types,
+    }
+}
+
+fn build_auto_onboarding_close_event(events: &[CreateEventRequest]) -> CreateEventRequest {
+    let mut idempotency_keys: Vec<String> = events
+        .iter()
+        .map(|event| event.metadata.idempotency_key.trim().to_lowercase())
+        .filter(|key| !key.is_empty())
+        .collect();
+    idempotency_keys.sort();
+    idempotency_keys.dedup();
+    let seed = format!("workflow_auto_close|{}", idempotency_keys.join("|"));
+    let idempotency_key = format!("workflow-auto-close-{}", stable_hash_suffix(&seed, 20));
+    let session_id = events
+        .iter()
+        .find_map(|event| event.metadata.session_id.clone())
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| Some("workflow:onboarding-auto-close".to_string()));
+
+    CreateEventRequest {
+        timestamp: Utc::now(),
+        event_type: WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE.to_string(),
+        data: serde_json::json!({
+            "reason": "Auto-close emitted for legacy compatibility before planning/coaching write.",
+            "closed_by": "system_auto",
+            "compatibility_mode": "legacy_planning_history",
+        }),
+        metadata: EventMetadata {
+            source: Some("agent_write_with_proof".to_string()),
+            agent: Some("api".to_string()),
+            device: None,
+            session_id,
+            idempotency_key,
+        },
+    }
 }
 
 const SESSION_AUDIT_MENTION_BOUND_FIELDS: [&str; 4] = ["rest_seconds", "tempo", "rir", "set_type"];
@@ -1668,6 +2702,14 @@ fn learning_signal_category(signal_type: &str) -> &'static str {
     match signal_type {
         "save_handshake_verified" => "outcome_signal",
         "save_handshake_pending" | "save_claim_mismatch_attempt" => "friction_signal",
+        "workflow_violation" => "friction_signal",
+        "workflow_override_used" => "correction_signal",
+        "workflow_phase_transition_closed" => "outcome_signal",
+        "viz_shown" => "outcome_signal",
+        "viz_skipped" => "outcome_signal",
+        "viz_source_bound" => "quality_signal",
+        "viz_fallback_used" => "friction_signal",
+        "viz_confusion_signal" => "friction_signal",
         "mismatch_detected" => "quality_signal",
         "mismatch_repaired" => "correction_signal",
         "mismatch_unresolved" => "friction_signal",
@@ -1796,6 +2838,212 @@ fn build_save_handshake_learning_signal_events(
             receipts.len(),
         ),
     ]
+}
+
+fn workflow_gate_signal_type(gate: &AgentWorkflowGate) -> Option<&'static str> {
+    if gate.status == "blocked" {
+        return Some("workflow_violation");
+    }
+    match gate.transition.as_str() {
+        "onboarding_closed" => Some("workflow_phase_transition_closed"),
+        "override" => Some("workflow_override_used"),
+        _ => None,
+    }
+}
+
+fn workflow_gate_confidence_band(gate: &AgentWorkflowGate) -> &'static str {
+    if gate.status == "blocked" {
+        "high"
+    } else if gate.transition == "override" {
+        "medium"
+    } else {
+        "high"
+    }
+}
+
+fn build_workflow_gate_learning_signal_event(
+    user_id: Uuid,
+    gate: &AgentWorkflowGate,
+) -> Option<CreateEventRequest> {
+    let signal_type = workflow_gate_signal_type(gate)?;
+    let captured_at = Utc::now();
+    let confidence_band = workflow_gate_confidence_band(gate);
+    let agent_version =
+        std::env::var("KURA_AGENT_VERSION").unwrap_or_else(|_| "api_agent_v1".to_string());
+    let signature_seed = format!(
+        "{}|{}|{}|{}|{}|{}|{}",
+        signal_type,
+        "onboarding_phase_gate",
+        WORKFLOW_INVARIANT_ID,
+        agent_version,
+        "onboarding_state_gate",
+        "chat",
+        confidence_band
+    );
+    let cluster_signature = format!("ls_{}", stable_hash_suffix(&signature_seed, 20));
+    let event_data = serde_json::json!({
+        "schema_version": LEARNING_TELEMETRY_SCHEMA_VERSION,
+        "signal_type": signal_type,
+        "category": learning_signal_category(signal_type),
+        "captured_at": captured_at,
+        "user_ref": {
+            "pseudonymized_user_id": pseudonymize_user_id_for_learning_signal(user_id),
+        },
+        "signature": {
+            "issue_type": "onboarding_phase_gate",
+            "invariant_id": WORKFLOW_INVARIANT_ID,
+            "agent_version": agent_version,
+            "workflow_phase": "onboarding_state_gate",
+            "modality": "chat",
+            "confidence_band": confidence_band,
+        },
+        "cluster_signature": cluster_signature,
+        "attributes": {
+            "phase": gate.phase,
+            "gate_status": gate.status,
+            "transition": gate.transition,
+            "onboarding_closed": gate.onboarding_closed,
+            "override_used": gate.override_used,
+            "missing_requirements": gate.missing_requirements,
+            "planning_event_types": gate.planning_event_types,
+        },
+    });
+
+    Some(CreateEventRequest {
+        timestamp: captured_at,
+        event_type: "learning.signal.logged".to_string(),
+        data: event_data,
+        metadata: EventMetadata {
+            source: Some("agent_write_with_proof".to_string()),
+            agent: Some("api".to_string()),
+            device: None,
+            session_id: Some("learning:onboarding-state-gate".to_string()),
+            idempotency_key: format!("learning-signal-{}", Uuid::now_v7()),
+        },
+    })
+}
+
+fn build_visualization_learning_signal_event(
+    user_id: Uuid,
+    signal_type: &'static str,
+    policy: &AgentVisualizationPolicyDecision,
+    spec: Option<&AgentVisualizationSpec>,
+    resolved_sources: &[AgentVisualizationResolvedSource],
+    timezone_context: Option<&AgentVisualizationTimezoneContext>,
+    uncertainty_label: Option<&str>,
+    telemetry_session_id: Option<&str>,
+) -> CreateEventRequest {
+    let captured_at = Utc::now();
+    let confidence_band = match signal_type {
+        "viz_confusion_signal" => "medium",
+        "viz_fallback_used" => "medium",
+        _ => "high",
+    };
+    let agent_version =
+        std::env::var("KURA_AGENT_VERSION").unwrap_or_else(|_| "api_agent_v1".to_string());
+    let signature_seed = format!(
+        "{}|{}|{}|{}|{}|{}|{}",
+        signal_type,
+        "visualization_policy",
+        VISUALIZATION_INVARIANT_ID,
+        agent_version,
+        "visualization_resolve",
+        "chat",
+        confidence_band
+    );
+    let cluster_signature = format!("ls_{}", stable_hash_suffix(&signature_seed, 20));
+
+    let event_data = serde_json::json!({
+        "schema_version": LEARNING_TELEMETRY_SCHEMA_VERSION,
+        "signal_type": signal_type,
+        "category": learning_signal_category(signal_type),
+        "captured_at": captured_at,
+        "user_ref": {
+            "pseudonymized_user_id": pseudonymize_user_id_for_learning_signal(user_id),
+        },
+        "signature": {
+            "issue_type": "visualization_policy",
+            "invariant_id": VISUALIZATION_INVARIANT_ID,
+            "agent_version": agent_version,
+            "workflow_phase": "visualization_resolve",
+            "modality": "chat",
+            "confidence_band": confidence_band,
+        },
+        "cluster_signature": cluster_signature,
+        "attributes": {
+            "policy_status": policy.status,
+            "policy_trigger": policy.trigger,
+            "policy_preference_mode": policy.preference_mode,
+            "policy_complexity": policy.complexity,
+            "visualization_format": spec.map(|s| s.format.clone()),
+            "data_source_count": resolved_sources.len(),
+            "data_sources": resolved_sources
+                .iter()
+                .map(|source| format!("{}:{}", source.projection_type, source.key))
+                .collect::<Vec<_>>(),
+            "timezone": timezone_context.map(|tz| tz.timezone.clone()),
+            "timezone_assumed": timezone_context.map(|tz| tz.assumed),
+            "uncertainty_label": uncertainty_label,
+        },
+    });
+
+    CreateEventRequest {
+        timestamp: captured_at,
+        event_type: "learning.signal.logged".to_string(),
+        data: event_data,
+        metadata: EventMetadata {
+            source: Some("agent_visualization_resolve".to_string()),
+            agent: Some("api".to_string()),
+            device: None,
+            session_id: telemetry_session_id
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .or_else(|| Some("learning:visualization-policy".to_string())),
+            idempotency_key: format!("learning-signal-{}", Uuid::now_v7()),
+        },
+    }
+}
+
+fn build_visualization_learning_signal_events(
+    user_id: Uuid,
+    policy: &AgentVisualizationPolicyDecision,
+    spec: Option<&AgentVisualizationSpec>,
+    resolved_sources: &[AgentVisualizationResolvedSource],
+    timezone_context: Option<&AgentVisualizationTimezoneContext>,
+    uncertainty_label: Option<&str>,
+    telemetry_session_id: Option<&str>,
+) -> Vec<CreateEventRequest> {
+    let mut signal_types: Vec<&'static str> = Vec::new();
+    if policy.status == "skipped" {
+        signal_types.push("viz_skipped");
+    } else {
+        signal_types.push("viz_source_bound");
+        if policy.status == "fallback" {
+            signal_types.push("viz_fallback_used");
+        } else {
+            signal_types.push("viz_shown");
+        }
+    }
+    if uncertainty_label.is_some() {
+        signal_types.push("viz_confusion_signal");
+    }
+
+    signal_types
+        .into_iter()
+        .map(|signal_type| {
+            build_visualization_learning_signal_event(
+                user_id,
+                signal_type,
+                policy,
+                spec,
+                resolved_sources,
+                timezone_context,
+                uncertainty_label,
+                telemetry_session_id,
+            )
+        })
+        .collect()
 }
 
 fn session_audit_auto_repair_allowed(policy: &AgentAutonomyPolicy) -> bool {
@@ -2291,6 +3539,163 @@ async fn verify_read_after_write_until_timeout(
     Ok((checks, waited_ms))
 }
 
+/// Resolve whether a visualization should be shown and validate data-bound specs.
+///
+/// Decision 13 + pdc.6 semantics:
+/// - policy-driven visualization gating based on intent, complexity, and user override
+/// - structured visualization_spec required before rendering when policy says "visualize"
+/// - strict source binding to resolvable projection references
+/// - deterministic ASCII fallback when rich rendering is unavailable
+#[utoipa::path(
+    post,
+    path = "/v1/agent/visualization/resolve",
+    request_body = AgentResolveVisualizationRequest,
+    responses(
+        (status = 200, description = "Visualization policy decision + resolved output", body = AgentResolveVisualizationResponse),
+        (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "system"
+)]
+pub async fn resolve_visualization(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Json(req): Json<AgentResolveVisualizationRequest>,
+) -> Result<Json<AgentResolveVisualizationResponse>, AppError> {
+    let user_id = auth.user_id;
+    let task_intent = req.task_intent.trim();
+    if task_intent.is_empty() {
+        return Err(AppError::Validation {
+            message: "task_intent must not be empty".to_string(),
+            field: Some("task_intent".to_string()),
+            received: None,
+            docs_hint: Some(
+                "Provide a concrete intent, e.g. 'compare last 4 weeks volume vs plan'."
+                    .to_string(),
+            ),
+        });
+    }
+
+    let source_count_hint = req
+        .visualization_spec
+        .as_ref()
+        .map(|spec| spec.data_sources.len())
+        .unwrap_or(0);
+    let mut policy = visualization_policy_decision(
+        task_intent,
+        req.user_preference_override.as_deref(),
+        req.complexity_hint.as_deref(),
+        source_count_hint,
+    );
+    let user_profile = fetch_user_profile_projection(&state, user_id).await?;
+    let quality_health = fetch_quality_health_projection(&state, user_id).await?;
+    let skip_uncertainty = visualization_uncertainty_label(quality_health.as_ref());
+
+    if policy.status == "skipped" {
+        let telemetry_events = build_visualization_learning_signal_events(
+            user_id,
+            &policy,
+            None,
+            &[],
+            None,
+            skip_uncertainty.as_deref(),
+            req.telemetry_session_id.as_deref(),
+        );
+        let telemetry_signal_types: Vec<String> = telemetry_events
+            .iter()
+            .filter_map(|event| {
+                event
+                    .data
+                    .get("signal_type")
+                    .and_then(Value::as_str)
+                    .map(|value| value.to_string())
+            })
+            .collect();
+        let _ = create_events_batch_internal(&state, user_id, &telemetry_events).await;
+
+        return Ok(Json(AgentResolveVisualizationResponse {
+            policy,
+            visualization_spec: None,
+            resolved_sources: Vec::new(),
+            timezone_context: None,
+            uncertainty_label: skip_uncertainty,
+            output: AgentVisualizationOutput {
+                format: "text".to_string(),
+                content:
+                    "Visualization skipped by policy. Provide explicit compare/trend/plan-vs-actual/multi-week intent or user override if a visual is needed."
+                        .to_string(),
+            },
+            fallback_output: None,
+            warnings: Vec::new(),
+            telemetry_signal_types,
+        }));
+    }
+
+    let normalized_spec =
+        normalize_visualization_spec(req.visualization_spec.ok_or_else(|| {
+            AppError::Validation {
+            message: "visualization_spec is required when policy decides visualization".to_string(),
+            field: Some("visualization_spec".to_string()),
+            received: None,
+            docs_hint: Some(
+                "Send visualization_spec with format, purpose, and data_sources before rendering."
+                    .to_string(),
+            ),
+        }
+        })?)?;
+    let resolved_sources = resolve_visualization_sources(&state, user_id, &normalized_spec).await?;
+    let timezone_context =
+        resolve_visualization_timezone_context(&normalized_spec, user_profile.as_ref());
+    let uncertainty_label = visualization_uncertainty_label(quality_health.as_ref());
+
+    let (resolved_status, output, fallback_output, warnings) = build_visualization_outputs(
+        &normalized_spec,
+        &resolved_sources,
+        &timezone_context,
+        req.allow_rich_rendering,
+        uncertainty_label.as_deref(),
+    );
+    policy.status = resolved_status;
+    if policy.status == "fallback" {
+        policy.reason =
+            "Rich rendering unavailable; deterministic ASCII fallback returned.".to_string();
+    }
+
+    let telemetry_events = build_visualization_learning_signal_events(
+        user_id,
+        &policy,
+        Some(&normalized_spec),
+        &resolved_sources,
+        Some(&timezone_context),
+        uncertainty_label.as_deref(),
+        req.telemetry_session_id.as_deref(),
+    );
+    let telemetry_signal_types: Vec<String> = telemetry_events
+        .iter()
+        .filter_map(|event| {
+            event
+                .data
+                .get("signal_type")
+                .and_then(Value::as_str)
+                .map(|value| value.to_string())
+        })
+        .collect();
+    let _ = create_events_batch_internal(&state, user_id, &telemetry_events).await;
+
+    Ok(Json(AgentResolveVisualizationResponse {
+        policy,
+        visualization_spec: Some(normalized_spec),
+        resolved_sources,
+        timezone_context: Some(timezone_context),
+        uncertainty_label,
+        output,
+        fallback_output,
+        warnings,
+        telemetry_signal_types,
+    }))
+}
+
 /// Write events with durable receipts and read-after-write verification.
 ///
 /// This endpoint enforces Decision 13.5 protocol semantics:
@@ -2332,9 +3737,80 @@ pub async fn write_with_proof(
         });
     }
 
+    let user_profile = fetch_user_profile_projection(&state, user_id).await?;
+    let workflow_state = fetch_workflow_state(&state, user_id, user_profile.as_ref()).await?;
+    let workflow_gate = workflow_gate_from_request(&req.events, &workflow_state);
+    let requested_close = req.events.iter().any(|event| {
+        event
+            .event_type
+            .trim()
+            .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE)
+    });
+    if workflow_gate.status == "blocked" {
+        if let Some(signal) = build_workflow_gate_learning_signal_event(user_id, &workflow_gate) {
+            let _ = create_events_batch_internal(&state, user_id, &[signal]).await;
+        }
+        let docs_hint = format!(
+            "Planning/coaching events require onboarding close ({WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE}) or explicit override ({WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE}). Missing requirements: {}",
+            workflow_gate.missing_requirements.join(", ")
+        );
+        return Err(AppError::Validation {
+            message: workflow_gate.message.clone(),
+            field: Some("events".to_string()),
+            received: Some(serde_json::json!({
+                "planning_event_types": workflow_gate.planning_event_types,
+                "missing_requirements": workflow_gate.missing_requirements,
+                "phase": workflow_gate.phase,
+            })),
+            docs_hint: Some(docs_hint),
+        });
+    }
+
+    let mut auto_close_applied = false;
+    if workflow_gate.transition == "onboarding_closed"
+        && !requested_close
+        && !workflow_state.onboarding_closed
+    {
+        let auto_close_event = build_auto_onboarding_close_event(&req.events);
+        let (_auto_close_receipts, _auto_close_warnings, _auto_close_write_path) =
+            write_events_with_receipts(
+                &state,
+                user_id,
+                &[auto_close_event],
+                "workflow_auto_close.idempotency_key",
+            )
+            .await?;
+        auto_close_applied = true;
+    }
+
+    let mut workflow_warnings: Vec<BatchEventWarning> = Vec::new();
+    if workflow_gate.transition == "onboarding_closed" {
+        workflow_warnings.push(BatchEventWarning {
+            event_index: 0,
+            field: "workflow.phase".to_string(),
+            message: if auto_close_applied {
+                "Legacy compatibility: onboarding close marker auto-recorded; planning/coaching phase is active."
+                    .to_string()
+            } else {
+                "Onboarding close transition accepted. Planning/coaching phase is active."
+                    .to_string()
+            },
+            severity: "info".to_string(),
+        });
+    } else if workflow_gate.transition == "override" {
+        workflow_warnings.push(BatchEventWarning {
+            event_index: 0,
+            field: "workflow.phase".to_string(),
+            message: "Planning/coaching phase allowed via explicit onboarding override."
+                .to_string(),
+            severity: "warning".to_string(),
+        });
+    }
+
     let (receipts, mut warnings, write_path) =
         write_events_with_receipts(&state, user_id, &req.events, "metadata.idempotency_key")
             .await?;
+    warnings.extend(workflow_warnings);
     let quality_health = fetch_quality_health_projection(&state, user_id).await?;
     let autonomy_policy = autonomy_policy_from_quality_health(quality_health.as_ref());
     let SessionAuditArtifacts {
@@ -2419,6 +3895,11 @@ pub async fn write_with_proof(
         &verification,
         &claim_guard,
     ));
+    if let Some(workflow_signal) =
+        build_workflow_gate_learning_signal_event(user_id, &workflow_gate)
+    {
+        quality_events.push(workflow_signal);
+    }
     quality_events.extend(telemetry_events);
     let _ = create_events_batch_internal(&state, user_id, &quality_events).await;
     let repair_feedback = build_repair_feedback(
@@ -2438,6 +3919,7 @@ pub async fn write_with_proof(
             warnings,
             verification,
             claim_guard,
+            workflow_gate,
             session_audit: session_audit_summary,
             repair_feedback,
         }),
@@ -2596,14 +4078,20 @@ pub async fn get_agent_context(
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentReadAfterWriteCheck, AgentReadAfterWriteTarget, AgentWriteReceipt, IntentClass,
-        ProjectionResponse, RankingContext, bootstrap_user_profile, build_agent_capabilities,
-        build_claim_guard, build_repair_feedback, build_save_handshake_learning_signal_events,
-        build_session_audit_artifacts, clamp_limit, clamp_verify_timeout_ms,
-        default_autonomy_policy, extract_set_context_mentions_from_text,
-        normalize_read_after_write_targets, normalize_set_type, parse_rest_seconds_from_text,
+        AgentReadAfterWriteCheck, AgentReadAfterWriteTarget, AgentVisualizationDataSource,
+        AgentVisualizationResolvedSource, AgentVisualizationSpec,
+        AgentVisualizationTimezoneContext, AgentWorkflowState, AgentWriteReceipt, IntentClass,
+        ProjectionResponse, RankingContext, WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE,
+        WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE, bind_visualization_source, bootstrap_user_profile,
+        build_agent_capabilities, build_auto_onboarding_close_event, build_claim_guard,
+        build_repair_feedback, build_save_handshake_learning_signal_events,
+        build_session_audit_artifacts, build_visualization_outputs, clamp_limit,
+        clamp_verify_timeout_ms, default_autonomy_policy, extract_set_context_mentions_from_text,
+        missing_onboarding_close_requirements, normalize_read_after_write_targets,
+        normalize_set_type, normalize_visualization_spec, parse_rest_seconds_from_text,
         parse_rir_from_text, parse_tempo_from_text, rank_projection_list, ranking_candidate_limit,
-        recover_receipts_for_idempotent_retry,
+        recover_receipts_for_idempotent_retry, visualization_policy_decision,
+        workflow_gate_from_request,
     };
     use chrono::{Duration, Utc};
     use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
@@ -2651,6 +4139,25 @@ mod tests {
                 agent: Some("test".to_string()),
                 device: None,
                 session_id: session_id.map(|value| value.to_string()),
+                idempotency_key: idempotency_key.to_string(),
+            },
+        }
+    }
+
+    fn make_event(
+        event_type: &str,
+        data: serde_json::Value,
+        idempotency_key: &str,
+    ) -> CreateEventRequest {
+        CreateEventRequest {
+            timestamp: Utc::now(),
+            event_type: event_type.to_string(),
+            data,
+            metadata: EventMetadata {
+                source: Some("api".to_string()),
+                agent: Some("test".to_string()),
+                device: None,
+                session_id: Some("session-1".to_string()),
                 idempotency_key: idempotency_key.to_string(),
             },
         }
@@ -2894,6 +4401,262 @@ mod tests {
         let recovered =
             recover_receipts_for_idempotent_retry(&requested, &std::collections::HashMap::new());
         assert!(recovered.is_empty());
+    }
+
+    #[test]
+    fn onboarding_close_requirements_accept_deferred_baseline_with_timezone() {
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "unit_system": "metric",
+                        "timezone": "Europe/Berlin"
+                    },
+                    "interview_coverage": [
+                        {"area": "training_background", "status": "covered"},
+                        {"area": "baseline_profile", "status": "deferred"},
+                        {"area": "unit_preferences", "status": "covered"}
+                    ]
+                }
+            }),
+        );
+        let missing = missing_onboarding_close_requirements(Some(&profile));
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn onboarding_close_requirements_flag_timezone_when_missing() {
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "unit_system": "metric"
+                    },
+                    "interview_coverage": [
+                        {"area": "training_background", "status": "covered"},
+                        {"area": "baseline_profile", "status": "covered"},
+                        {"area": "unit_preferences", "status": "covered"}
+                    ]
+                }
+            }),
+        );
+        let missing = missing_onboarding_close_requirements(Some(&profile));
+        assert!(
+            missing
+                .iter()
+                .any(|item| item == "preference.timezone.missing")
+        );
+    }
+
+    #[test]
+    fn workflow_gate_blocks_planning_drift_before_phase_close() {
+        let state = AgentWorkflowState {
+            onboarding_closed: false,
+            override_active: false,
+            missing_close_requirements: vec!["coverage.baseline_profile.uncovered".to_string()],
+            legacy_planning_history: false,
+        };
+        let events = vec![make_event(
+            "training_plan.created",
+            json!({"name": "Starter Plan"}),
+            "plan-k-1",
+        )];
+        let gate = workflow_gate_from_request(&events, &state);
+        assert_eq!(gate.status, "blocked");
+        assert_eq!(gate.phase, "onboarding");
+        assert_eq!(gate.transition, "none");
+        assert!(
+            gate.planning_event_types
+                .iter()
+                .any(|event_type| event_type == "training_plan.created")
+        );
+    }
+
+    #[test]
+    fn workflow_gate_allows_valid_onboarding_close_transition() {
+        let state = AgentWorkflowState {
+            onboarding_closed: false,
+            override_active: false,
+            missing_close_requirements: Vec::new(),
+            legacy_planning_history: false,
+        };
+        let events = vec![
+            make_event(
+                WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE,
+                json!({"reason": "onboarding complete"}),
+                "wf-close-k-1",
+            ),
+            make_event(
+                "training_plan.created",
+                json!({"name": "Starter Plan"}),
+                "plan-k-2",
+            ),
+        ];
+        let gate = workflow_gate_from_request(&events, &state);
+        assert_eq!(gate.status, "allowed");
+        assert_eq!(gate.transition, "onboarding_closed");
+        assert_eq!(gate.phase, "planning");
+        assert!(gate.onboarding_closed);
+    }
+
+    #[test]
+    fn workflow_gate_allows_explicit_override_path() {
+        let state = AgentWorkflowState {
+            onboarding_closed: false,
+            override_active: false,
+            missing_close_requirements: vec!["coverage.unit_preferences.uncovered".to_string()],
+            legacy_planning_history: false,
+        };
+        let events = vec![
+            make_event(
+                WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE,
+                json!({"reason": "user asked for plan now"}),
+                "wf-override-k-1",
+            ),
+            make_event(
+                "training_plan.updated",
+                json!({"name": "Adjusted Plan"}),
+                "plan-k-3",
+            ),
+        ];
+        let gate = workflow_gate_from_request(&events, &state);
+        assert_eq!(gate.status, "allowed");
+        assert_eq!(gate.transition, "override");
+        assert!(gate.override_used);
+        assert_eq!(gate.phase, "onboarding");
+    }
+
+    #[test]
+    fn workflow_gate_allows_legacy_compatibility_transition_when_requirements_met() {
+        let state = AgentWorkflowState {
+            onboarding_closed: false,
+            override_active: false,
+            missing_close_requirements: Vec::new(),
+            legacy_planning_history: true,
+        };
+        let events = vec![make_event(
+            "training_plan.created",
+            json!({"name": "Starter Plan"}),
+            "plan-k-legacy-1",
+        )];
+        let gate = workflow_gate_from_request(&events, &state);
+        assert_eq!(gate.status, "allowed");
+        assert_eq!(gate.transition, "onboarding_closed");
+        assert_eq!(gate.phase, "planning");
+        assert!(gate.onboarding_closed);
+        assert!(
+            gate.message
+                .contains("legacy compatibility; onboarding close marker will be auto-recorded")
+        );
+    }
+
+    #[test]
+    fn auto_onboarding_close_event_uses_deterministic_idempotency_seed() {
+        let events = vec![
+            make_event("training_plan.created", json!({"name": "A"}), "plan-k-1"),
+            make_event("training_plan.updated", json!({"name": "B"}), "plan-k-2"),
+        ];
+        let first = build_auto_onboarding_close_event(&events);
+        let second = build_auto_onboarding_close_event(&events);
+
+        assert_eq!(first.event_type, WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE);
+        assert_eq!(
+            first.metadata.idempotency_key,
+            second.metadata.idempotency_key
+        );
+        assert_eq!(
+            first.data.get("closed_by").and_then(Value::as_str),
+            Some("system_auto")
+        );
+    }
+
+    #[test]
+    fn visualization_policy_triggers_for_plan_vs_actual_intent() {
+        let decision = visualization_policy_decision(
+            "show plan vs actual adherence for the next 4 weeks",
+            None,
+            None,
+            2,
+        );
+        assert_eq!(decision.status, "visualize");
+        assert_eq!(decision.trigger, "plan_vs_actual");
+    }
+
+    #[test]
+    fn visualization_policy_skips_when_no_trigger_is_present() {
+        let decision =
+            visualization_policy_decision("what is my latest bodyweight entry", None, None, 1);
+        assert_eq!(decision.status, "skipped");
+        assert_eq!(decision.trigger, "none");
+    }
+
+    #[test]
+    fn visualization_source_binding_rejects_unresolvable_json_path() {
+        let source = AgentVisualizationDataSource {
+            projection_type: "training_timeline".to_string(),
+            key: "overview".to_string(),
+            json_path: Some("weekly_summary.0.missing_field".to_string()),
+        };
+        let projection = make_projection_response(
+            "training_timeline",
+            "overview",
+            Utc::now(),
+            json!({
+                "weekly_summary": [
+                    {"week": "2026-W06", "total_volume_kg": 1234.0}
+                ]
+            }),
+        );
+
+        let error = bind_visualization_source(&source, &projection)
+            .expect_err("missing json_path field must fail source binding");
+        assert!(error.contains("was not resolvable"));
+    }
+
+    #[test]
+    fn visualization_fallback_returns_ascii_when_rich_rendering_is_disabled() {
+        let spec = normalize_visualization_spec(AgentVisualizationSpec {
+            format: "mermaid".to_string(),
+            purpose: "Compare weekly training load".to_string(),
+            title: None,
+            timezone: None,
+            data_sources: vec![AgentVisualizationDataSource {
+                projection_type: "training_timeline".to_string(),
+                key: "overview".to_string(),
+                json_path: Some("weekly_summary".to_string()),
+            }],
+        })
+        .expect("spec normalization should succeed");
+        let resolved = vec![AgentVisualizationResolvedSource {
+            projection_type: "training_timeline".to_string(),
+            key: "overview".to_string(),
+            json_path: Some("weekly_summary".to_string()),
+            projection_version: 3,
+            projection_last_event_id: None,
+            value: json!([{"week": "2026-W06", "total_volume_kg": 1234.0}]),
+        }];
+        let timezone = AgentVisualizationTimezoneContext {
+            timezone: "UTC".to_string(),
+            assumed: true,
+            source: "fallback_utc".to_string(),
+        };
+
+        let (status, output, fallback_output, warnings) =
+            build_visualization_outputs(&spec, &resolved, &timezone, false, None);
+        assert_eq!(status, "fallback");
+        assert_eq!(output.format, "ascii");
+        assert!(fallback_output.is_none());
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("UTC fallback"))
+        );
     }
 
     #[test]

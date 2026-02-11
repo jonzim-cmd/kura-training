@@ -64,6 +64,53 @@ class TestEvaluateReadOnlyInvariants:
         issue_types = {issue["type"] for issue in issues}
         assert "timezone_missing" in issue_types
 
+    def test_detects_onboarding_phase_violation_without_close_or_override(self):
+        rows = [
+            _row("training_plan.created", {"name": "Starter plan"}),
+            _row("preference.set", {"key": "timezone", "value": "Europe/Berlin"}),
+            _row("profile.updated", {"age_deferred": True, "bodyweight_deferred": True}),
+        ]
+        issues, metrics = _evaluate_read_only_invariants(rows, alias_map={})
+
+        issue = next((item for item in issues if item["invariant_id"] == "INV-004"), None)
+        assert issue is not None
+        assert issue["type"] == "onboarding_phase_violation"
+        assert issue["metrics"]["planning_event_count"] == 1
+        assert issue["metrics"]["onboarding_closed"] is False
+        assert issue["metrics"]["override_present"] is False
+        assert metrics["planning_event_total"] == 1
+        assert metrics["onboarding_closed"] is False
+        assert metrics["onboarding_override_present"] is False
+
+    def test_onboarding_phase_violation_clears_when_onboarding_closed(self):
+        rows = [
+            _row("workflow.onboarding.closed", {"reason": "summary confirmed"}),
+            _row("training_plan.created", {"name": "Starter plan"}),
+            _row("preference.set", {"key": "timezone", "value": "Europe/Berlin"}),
+            _row("profile.updated", {"age_deferred": True, "bodyweight_deferred": True}),
+        ]
+        issues, metrics = _evaluate_read_only_invariants(rows, alias_map={})
+
+        assert all(item["invariant_id"] != "INV-004" for item in issues)
+        assert metrics["planning_event_total"] == 1
+        assert metrics["onboarding_closed"] is True
+
+    def test_onboarding_phase_violation_clears_when_override_present(self):
+        rows = [
+            _row(
+                "workflow.onboarding.override_granted",
+                {"reason": "user explicitly wants plan now"},
+            ),
+            _row("training_plan.updated", {"name": "Adjusted plan"}),
+            _row("preference.set", {"key": "timezone", "value": "Europe/Berlin"}),
+            _row("profile.updated", {"age_deferred": True, "bodyweight_deferred": True}),
+        ]
+        issues, metrics = _evaluate_read_only_invariants(rows, alias_map={})
+
+        assert all(item["invariant_id"] != "INV-004" for item in issues)
+        assert metrics["planning_event_total"] == 1
+        assert metrics["onboarding_override_present"] is True
+
     def test_goal_trackability_issue_for_jump_goal_without_path(self):
         rows = [
             _row("goal.set", {"description": "Ich will dunken koennen"}),

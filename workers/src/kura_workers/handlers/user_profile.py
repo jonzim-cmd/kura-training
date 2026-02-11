@@ -28,8 +28,218 @@ _INTERNAL_NON_ORPHAN_EVENT_TYPES = {
     "learning.signal.logged",
 }
 
+_BASELINE_REQUIRED_SLOTS = (
+    "age_or_date_of_birth",
+    "bodyweight_kg",
+)
+_BASELINE_OPTIONAL_SLOTS = (
+    "sex",
+    "body_composition_context",
+)
+_BODY_COMPOSITION_PROFILE_KEYS = (
+    "body_fat_pct",
+    "body_fat_percentage",
+    "body_composition_note",
+    "body_composition_notes",
+)
+
 
 # --- Pure functions (testable without DB) ---
+
+
+def _has_meaningful_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, dict, tuple, set)):
+        return len(value) > 0
+    return True
+
+
+def _slot_summary(
+    *,
+    status: str,
+    value: Any = None,
+    source: str | None = None,
+    optional: bool = False,
+    deferred_markers: list[str] | None = None,
+) -> dict[str, Any]:
+    slot: dict[str, Any] = {"status": status}
+    if optional:
+        slot["optional"] = True
+    if status == "known" and value is not None:
+        slot["value"] = value
+    if source:
+        slot["source"] = source
+    if deferred_markers:
+        slot["deferred_markers"] = deferred_markers
+    return slot
+
+
+def _compute_baseline_profile_summary(
+    profile_data: dict[str, Any],
+    bodyweight_event_count: int = 0,
+    latest_bodyweight_kg: Any = None,
+) -> dict[str, Any]:
+    """Compute baseline profile slots with known/unknown/deferred semantics."""
+
+    age_deferred_markers = [
+        marker
+        for marker in ["age_deferred", "date_of_birth_deferred"]
+        if bool(profile_data.get(marker))
+    ]
+    age_value = profile_data.get("age")
+    dob_value = profile_data.get("date_of_birth")
+    if _has_meaningful_value(age_value):
+        age_slot = _slot_summary(
+            status="known", value=age_value, source="profile.updated.age"
+        )
+    elif _has_meaningful_value(dob_value):
+        age_slot = _slot_summary(
+            status="known",
+            value=dob_value,
+            source="profile.updated.date_of_birth",
+        )
+    elif age_deferred_markers:
+        age_slot = _slot_summary(
+            status="deferred",
+            source="profile.updated",
+            deferred_markers=age_deferred_markers,
+        )
+    else:
+        age_slot = _slot_summary(status="unknown")
+
+    bodyweight_deferred_markers = [
+        marker
+        for marker in ["bodyweight_deferred", "body_composition_deferred"]
+        if bool(profile_data.get(marker))
+    ]
+    profile_bodyweight = profile_data.get("bodyweight_kg")
+    if _has_meaningful_value(profile_bodyweight):
+        bodyweight_slot = _slot_summary(
+            status="known",
+            value=profile_bodyweight,
+            source="profile.updated.bodyweight_kg",
+        )
+    elif _has_meaningful_value(latest_bodyweight_kg):
+        bodyweight_slot = _slot_summary(
+            status="known",
+            value=latest_bodyweight_kg,
+            source="bodyweight.logged.weight_kg",
+        )
+    elif bodyweight_event_count > 0:
+        bodyweight_slot = _slot_summary(
+            status="known",
+            source="bodyweight.logged",
+        )
+    elif bodyweight_deferred_markers:
+        bodyweight_slot = _slot_summary(
+            status="deferred",
+            source="profile.updated",
+            deferred_markers=bodyweight_deferred_markers,
+        )
+    else:
+        bodyweight_slot = _slot_summary(status="unknown")
+
+    sex_deferred_markers = []
+    if bool(profile_data.get("sex_deferred")):
+        sex_deferred_markers.append("sex_deferred")
+    sex_value = profile_data.get("sex")
+    if _has_meaningful_value(sex_value):
+        sex_slot = _slot_summary(
+            status="known",
+            value=sex_value,
+            source="profile.updated.sex",
+            optional=True,
+        )
+    elif sex_deferred_markers:
+        sex_slot = _slot_summary(
+            status="deferred",
+            source="profile.updated",
+            optional=True,
+            deferred_markers=sex_deferred_markers,
+        )
+    else:
+        sex_slot = _slot_summary(status="unknown", optional=True)
+
+    body_comp_deferred_markers = []
+    if bool(profile_data.get("body_composition_deferred")):
+        body_comp_deferred_markers.append("body_composition_deferred")
+    if bool(profile_data.get("body_fat_pct_deferred")):
+        body_comp_deferred_markers.append("body_fat_pct_deferred")
+    body_comp_values = {
+        key: profile_data.get(key)
+        for key in _BODY_COMPOSITION_PROFILE_KEYS
+        if _has_meaningful_value(profile_data.get(key))
+    }
+    if body_comp_values:
+        body_comp_slot = _slot_summary(
+            status="known",
+            value=body_comp_values,
+            source="profile.updated",
+            optional=True,
+        )
+    elif body_comp_deferred_markers:
+        body_comp_slot = _slot_summary(
+            status="deferred",
+            source="profile.updated",
+            optional=True,
+            deferred_markers=body_comp_deferred_markers,
+        )
+    else:
+        body_comp_slot = _slot_summary(status="unknown", optional=True)
+
+    slots = {
+        "age_or_date_of_birth": age_slot,
+        "bodyweight_kg": bodyweight_slot,
+        "sex": sex_slot,
+        "body_composition_context": body_comp_slot,
+    }
+
+    counts = {"known": 0, "deferred": 0, "unknown": 0}
+    known_fields: list[str] = []
+    deferred_fields: list[str] = []
+    for slot_name, slot_data in slots.items():
+        slot_status = slot_data["status"]
+        if slot_status in counts:
+            counts[slot_status] += 1
+        if slot_status == "known":
+            known_fields.append(slot_name)
+        if slot_status == "deferred":
+            deferred_fields.append(slot_name)
+
+    required_missing = [
+        slot_name
+        for slot_name in _BASELINE_REQUIRED_SLOTS
+        if slots[slot_name]["status"] == "unknown"
+    ]
+    required_deferred = [
+        slot_name
+        for slot_name in _BASELINE_REQUIRED_SLOTS
+        if slots[slot_name]["status"] == "deferred"
+    ]
+
+    if required_missing:
+        status = "needs_input"
+    elif required_deferred:
+        status = "deferred"
+    else:
+        status = "complete"
+
+    return {
+        "schema_version": "baseline_profile.v1",
+        "status": status,
+        "slots": slots,
+        "required_slots": list(_BASELINE_REQUIRED_SLOTS),
+        "optional_slots": list(_BASELINE_OPTIONAL_SLOTS),
+        "required_missing": required_missing,
+        "required_deferred": required_deferred,
+        "known_fields": known_fields,
+        "deferred_fields": deferred_fields,
+        "counts": counts,
+        "bodyweight_event_count": bodyweight_event_count,
+    }
 
 
 def _resolve_exercises(
@@ -263,6 +473,7 @@ def _compute_interview_coverage(
     goals: list[dict[str, Any]],
     profile_data: dict[str, Any],
     injuries: list[dict[str, Any]],
+    bodyweight_event_count: int = 0,
 ) -> list[dict[str, Any]]:
     """Compute interview coverage status per area (Decision 8).
 
@@ -281,6 +492,34 @@ def _compute_interview_coverage(
                 coverage.append({"area": area, "status": "covered"})
             else:
                 coverage.append({"area": area, "status": "uncovered"})
+
+        elif area == "baseline_profile":
+            baseline_summary = _compute_baseline_profile_summary(
+                profile_data,
+                bodyweight_event_count=bodyweight_event_count,
+            )
+            required_missing = baseline_summary["required_missing"]
+            required_deferred = baseline_summary["required_deferred"]
+            if baseline_summary["status"] == "complete":
+                coverage.append({"area": area, "status": "covered"})
+            elif baseline_summary["status"] == "deferred":
+                coverage.append({
+                    "area": area,
+                    "status": "deferred",
+                    "note": (
+                        "Deferred baseline fields: "
+                        + ", ".join(sorted(required_deferred))
+                    ),
+                })
+            else:
+                coverage.append({
+                    "area": area,
+                    "status": "uncovered",
+                    "note": (
+                        "Missing baseline fields: "
+                        + ", ".join(sorted(required_missing))
+                    ),
+                })
 
         elif area == "goals":
             if goals:
@@ -389,6 +628,7 @@ def _build_agenda(
     has_goals: bool = False,
     has_preferences: bool = False,
     observed_patterns: dict[str, Any] | None = None,
+    baseline_summary: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Build proactive agenda items for the agent.
 
@@ -412,6 +652,22 @@ def _build_agenda(
                 "priority": "medium",
                 "type": "profile_refresh_suggested",
                 "detail": f"Missing context in {len(uncovered)} areas: {', '.join(uncovered[:3])}. Brief interview would improve analysis.",
+                "dimensions": ["user_profile"],
+            })
+
+    if baseline_summary:
+        required_missing = baseline_summary.get("required_missing", [])
+        if required_missing:
+            missing_fields = ", ".join(required_missing)
+            priority = "high" if total_events < 5 else "medium"
+            agenda.append({
+                "priority": priority,
+                "type": "baseline_profile_missing",
+                "detail": (
+                    "Baseline profile incomplete ("
+                    + missing_fields
+                    + "). Capture values or mark them explicitly deferred."
+                ),
                 "dimensions": ["user_profile"],
             })
 
@@ -512,6 +768,8 @@ def _build_agenda(
     "sleep_target.set",
     "weight_target.set",
     "session.completed",
+    "workflow.onboarding.closed",
+    "workflow.onboarding.override_granted",
 )
 async def update_user_profile(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
@@ -529,7 +787,9 @@ async def update_user_profile(
             WHERE user_id = %s
               AND event_type IN (
                   'set.logged', 'set.corrected', 'exercise.alias_created', 'preference.set',
-                  'goal.set', 'profile.updated', 'program.started', 'injury.reported', 'session.completed'
+                  'goal.set', 'profile.updated', 'program.started', 'injury.reported',
+                  'bodyweight.logged', 'session.completed',
+                  'workflow.onboarding.closed', 'workflow.onboarding.override_granted'
               )
             ORDER BY timestamp ASC
             """,
@@ -563,6 +823,11 @@ async def update_user_profile(
     exercise_occurrences: dict[str, int] = defaultdict(int)
     first_set_logged_date: str | None = None
     last_set_logged_date: str | None = None
+    bodyweight_event_count = 0
+    latest_bodyweight_kg: Any = None
+    workflow_onboarding_closed = False
+    workflow_override_count = 0
+    workflow_last_transition_at: str | None = None
 
     first_event = rows[0]["timestamp"]
     last_event = rows[-1]["timestamp"]
@@ -626,8 +891,34 @@ async def update_user_profile(
         elif event_type == "injury.reported":
             injuries.append(data)
 
+        elif event_type == "bodyweight.logged":
+            bodyweight = data.get("weight_kg")
+            if bodyweight is not None:
+                bodyweight_event_count += 1
+                latest_bodyweight_kg = bodyweight
+
+        elif event_type == "workflow.onboarding.closed":
+            workflow_onboarding_closed = True
+            workflow_last_transition_at = row["timestamp"].isoformat()
+
+        elif event_type == "workflow.onboarding.override_granted":
+            workflow_override_count += 1
+            workflow_last_transition_at = row["timestamp"].isoformat()
+
     # Resolve exercises through alias map
     resolved_exercises = _resolve_exercises(exercises_logged, aliases)
+    baseline_profile = _compute_baseline_profile_summary(
+        profile_data,
+        bodyweight_event_count=bodyweight_event_count,
+        latest_bodyweight_kg=latest_bodyweight_kg,
+    )
+    workflow_state = {
+        "phase": "planning" if workflow_onboarding_closed else "onboarding",
+        "onboarding_closed": workflow_onboarding_closed,
+        "override_active": (not workflow_onboarding_closed) and workflow_override_count > 0,
+        "override_count": workflow_override_count,
+        "last_transition_at": workflow_last_transition_at,
+    }
 
     # Compute data quality
     alias_lookup = {a.strip().lower(): info["target"] for a, info in aliases.items()}
@@ -667,7 +958,12 @@ async def update_user_profile(
 
     # Compute interview coverage (Decision 8)
     interview_coverage = _compute_interview_coverage(
-        aliases, preferences, goals, profile_data, injuries,
+        aliases,
+        preferences,
+        goals,
+        profile_data,
+        injuries,
+        bodyweight_event_count=bodyweight_event_count,
     )
 
     # --- Build user + agenda layers ---
@@ -771,6 +1067,7 @@ async def update_user_profile(
         has_goals=bool(goals),
         has_preferences=bool(preferences),
         observed_patterns=observed_patterns,
+        baseline_summary=baseline_profile,
     )
 
     projection_data = {
@@ -780,6 +1077,8 @@ async def update_user_profile(
             "goals": goals,
             "profile": profile_data if profile_data else None,
             "injuries": injuries if injuries else None,
+            "baseline_profile": baseline_profile,
+            "workflow_state": workflow_state,
             "exercises_logged": sorted(resolved_exercises),
             "total_events": total_events,
             "first_event": first_event.isoformat(),

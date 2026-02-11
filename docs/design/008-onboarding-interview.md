@@ -77,9 +77,10 @@ Each area has an `approach` that guides the agent's questioning style:
 | Area | Approach | Produces |
 |------|----------|----------|
 | Training background | categorical | `profile.updated` |
+| Baseline profile completeness | categorical → narrative | `profile.updated`, `bodyweight.logged` |
 | Goals | narrative | `goal.set` |
 | Exercise vocabulary | conversational | `exercise.alias_created` |
-| Unit preferences | categorical | `preference.set` |
+| Unit + timezone preferences | categorical | `preference.set` |
 | Injuries/limitations | categorical → narrative | `injury.reported` |
 | Equipment | categorical | `profile.updated` |
 | Schedule/frequency | categorical | `profile.updated` |
@@ -147,6 +148,15 @@ chronologically (last event per field wins).
 | `primary_location` | string | `"commercial_gym"`, `"home_gym"`, `"outdoor"` |
 | `current_program` | string | `"5/3/1"`, `"PPL"`, `"custom"` |
 | `nutrition_tracking` | string | `"active"`, `"not_interested"`, `"later"` |
+| `timezone` (via `preference.set`) | string (IANA) | `"Europe/Berlin"` |
+| `age` | number | `34` |
+| `date_of_birth` | string (ISO date) | `"1992-04-17"` |
+| `age_deferred` / `date_of_birth_deferred` | boolean | `true` |
+| `bodyweight_kg` | number | `82.4` |
+| `bodyweight_deferred` | boolean | `true` |
+| `sex` / `sex_deferred` | string / boolean | `"female"` / `true` |
+| `body_fat_pct` / `body_fat_pct_deferred` | number / boolean | `18.5` / `true` |
+| `body_composition_deferred` | boolean | `true` |
 
 ## Decision 8.4: Interview Coverage Computation
 
@@ -155,9 +165,10 @@ Pure-function logic determines which coverage areas are filled:
 | Area | Covered when |
 |------|-------------|
 | Training background | `profile.updated` with `training_modality` or `experience_level` |
+| Baseline profile completeness | Required slots (`age` or `date_of_birth`, plus bodyweight via `profile.updated.bodyweight_kg` or `bodyweight.logged`) are known or explicitly deferred |
 | Goals | Any `goal.set` event |
 | Exercise vocabulary | 3+ `exercise.alias_created` events |
-| Unit preferences | `preference.set` with key `unit_system` |
+| Unit preferences | `preference.set` with key `unit_system`, and timezone should be captured via `timezone`/`time_zone` before schedule/date claims |
 | Injuries | Any `injury.reported` event, or `profile.updated` with `injuries_none: true` |
 | Equipment | `profile.updated` with `available_equipment` |
 | Schedule | `profile.updated` with `training_frequency_per_week` |
@@ -260,6 +271,25 @@ builds the full three-layer response, and subsequent reads return the complete
 4. GET /v1/projections/user_profile/me → full three-layer with interview_guide
 5. Agent continues interview using the guide
 ```
+
+## Decision 8.7: Onboarding -> Planning Workflow Gate (INV-004)
+
+To prevent coaching drift, `POST /v1/agent/write-with-proof` enforces a phase gate
+before planning/coaching payloads are accepted:
+
+- Planning/coaching events are blocked while onboarding is open.
+- Allowed transition paths are:
+  - `workflow.onboarding.closed`
+  - `workflow.onboarding.override_granted`
+- Onboarding close requires a complete minimum profile snapshot:
+  - coverage: `training_background`, `baseline_profile`, `unit_preferences`
+  - explicit timezone preference (`timezone`/`time_zone`)
+
+For backward compatibility, existing users with legacy planning history and no
+stored close marker are not hard-broken. On their next planning write (when
+close requirements are already satisfied), the API records
+`workflow.onboarding.closed` automatically with `closed_by: "system_auto"` and
+returns a compatibility warning.
 
 ## Accepted Trade-offs
 

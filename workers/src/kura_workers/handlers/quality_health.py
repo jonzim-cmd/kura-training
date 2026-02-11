@@ -40,6 +40,14 @@ _INVARIANT_SOURCE_EVENT_TYPES = (
     "bodyweight.logged",
     "projection_rule.created",
     "projection_rule.archived",
+    "training_plan.created",
+    "training_plan.updated",
+    "training_plan.archived",
+    "weight_target.set",
+    "sleep_target.set",
+    "nutrition_target.set",
+    "workflow.onboarding.closed",
+    "workflow.onboarding.override_granted",
 )
 
 _QUALITY_SIGNAL_EVENT_TYPES = (
@@ -1530,6 +1538,45 @@ def _evaluate_read_only_invariants(
             )
         )
 
+    planning_event_types = {
+        "training_plan.created",
+        "training_plan.updated",
+        "training_plan.archived",
+        "projection_rule.created",
+        "projection_rule.archived",
+        "weight_target.set",
+        "sleep_target.set",
+        "nutrition_target.set",
+    }
+    planning_rows = [
+        row for row in event_rows if row.get("event_type") in planning_event_types
+    ]
+    onboarding_closed = any(
+        row.get("event_type") == "workflow.onboarding.closed" for row in event_rows
+    )
+    onboarding_override = any(
+        row.get("event_type") == "workflow.onboarding.override_granted"
+        for row in event_rows
+    )
+    if planning_rows and not onboarding_closed and not onboarding_override:
+        sample_types = sorted(
+            {str(row.get("event_type") or "") for row in planning_rows if row.get("event_type")}
+        )
+        issues.append(
+            _issue(
+                "INV-004",
+                "onboarding_phase_violation",
+                "medium",
+                "Planning/coaching events were recorded before onboarding close without explicit override.",
+                metrics={
+                    "planning_event_count": len(planning_rows),
+                    "sample_planning_event_types": sample_types,
+                    "onboarding_closed": onboarding_closed,
+                    "override_present": onboarding_override,
+                },
+            )
+        )
+
     has_age = profile.get("age") is not None or bool(profile.get("date_of_birth"))
     age_deferred = bool(profile.get("age_deferred")) or bool(
         profile.get("date_of_birth_deferred")
@@ -1623,6 +1670,9 @@ def _evaluate_read_only_invariants(
         "goal_total": len(goal_rows),
         "active_custom_rule_count": len(active_custom_rules),
         "timezone_configured": bool(timezone_pref),
+        "onboarding_closed": onboarding_closed,
+        "onboarding_override_present": onboarding_override,
+        "planning_event_total": len(planning_rows),
         "mention_field_missing_total": len(mention_missing_rows),
     }
     return issues, metrics
@@ -1763,7 +1813,9 @@ def _build_quality_projection_data(
             "decision_phase": decision_phase,
         },
         "invariant_mode": (
-            "policy_gated_auto_apply" if repair_apply_enabled else "read_only"
+            "policy_gated_auto_apply"
+            if decision_phase.startswith("phase_2")
+            else "read_only"
         ),
         "invariants_evaluated": [
             "INV-001",
@@ -2003,14 +2055,16 @@ async def update_quality_health(
         user_id,
         detection_telemetry_events,
     )
+    # Tier A repairs are deterministic and safe by definition — always allow them.
+    # SLO degradation gates agent behavior (coaching, planning), not the system's
+    # own repair machinery. Blocking Tier A when degraded creates a bootstrap
+    # deadlock where the system can never heal itself.
     apply_cycle = await _auto_apply_tier_a_repairs(
         conn,
         user_id,
         simulated_proposals,
         now_iso,
-        allow_tier_a_auto_apply=bool(
-            initial_autonomy_policy.get("repair_auto_apply_enabled", True)
-        ),
+        allow_tier_a_auto_apply=True,
     )
     apply_results = apply_cycle["results"]
 

@@ -20,7 +20,11 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
     return {
         # --- Identity & preferences ---
         "profile.updated": {
-            "description": "User attributes (delta merge, latest per field wins)",
+            "description": (
+                "User attributes (delta merge, latest per field wins). Includes "
+                "baseline-profile tri-state markers for known/unknown/deferred "
+                "(Decision 13 INV-006)."
+            ),
             "fields": {
                 "experience_level": "string (optional: beginner, intermediate, advanced)",
                 "training_modality": "string (optional: strength, endurance, hybrid, crossfit)",
@@ -29,12 +33,30 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "primary_location": "string (optional: commercial_gym, home_gym, outdoor)",
                 "current_program": "string (optional)",
                 "communication_style": "string (optional, free text — how the user wants to be addressed)",
+                "age": "number (optional, baseline in years)",
+                "date_of_birth": "string (optional, ISO date; alternative to age baseline)",
+                "age_deferred": "boolean (optional, explicit deferred marker when age/date_of_birth is postponed)",
+                "date_of_birth_deferred": "boolean (optional, explicit deferred marker when DOB is postponed)",
+                "bodyweight_kg": "number (optional, baseline bodyweight snapshot)",
+                "bodyweight_deferred": "boolean (optional, explicit deferred marker when bodyweight is postponed)",
+                "sex": "string (optional, free text or categorical e.g. female/male/intersex/non_binary)",
+                "sex_deferred": "boolean (optional, explicit deferred marker for sex)",
+                "body_fat_pct": "number (optional, body composition context)",
+                "body_fat_pct_deferred": "boolean (optional, explicit deferred marker for body fat context)",
+                "body_composition_deferred": "boolean (optional, explicit deferred marker for optional body composition context)",
             },
             "example": {
                 "experience_level": "intermediate",
                 "training_modality": "strength",
                 "training_frequency_per_week": 4,
+                "age_deferred": True,
+                "bodyweight_deferred": True,
             },
+            "tri_state_semantics": (
+                "For baseline fields, use one of: known value, explicit deferred marker, "
+                "or leave unknown. Required baseline slots (age/date_of_birth and bodyweight) "
+                "should not stay silently unknown once mentioned in onboarding."
+            ),
             "null_semantics": (
                 "Set any field to null to clear it. The field remains in the "
                 "profile with null value, indicating 'no longer set'. "
@@ -58,6 +80,8 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             "common_keys": [
                 "unit_system",
                 "language",
+                "timezone",
+                "time_zone",
                 "nutrition_tracking",
                 "population_priors_opt_in",
             ],
@@ -394,6 +418,38 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
             "example": {"name": "hrv_tracking"},
         },
+        "workflow.onboarding.closed": {
+            "description": (
+                "Explicit transition marker: onboarding phase is closed and planning/coaching "
+                "actions are now allowed by workflow gate."
+            ),
+            "fields": {
+                "reason": "string (optional)",
+                "closed_by": "string (optional: user_confirmed|agent_confirmed|system_auto)",
+                "missing_requirements_at_close": "list[string] (optional, usually empty)",
+            },
+            "example": {
+                "reason": "User confirmed onboarding summary.",
+                "closed_by": "user_confirmed",
+                "missing_requirements_at_close": [],
+            },
+        },
+        "workflow.onboarding.override_granted": {
+            "description": (
+                "Explicit user override marker that temporarily allows planning/coaching "
+                "before onboarding closure."
+            ),
+            "fields": {
+                "reason": "string (required, explicit user intent)",
+                "confirmed_by": "string (optional: user)",
+                "scope": "string (optional: current_topic|current_session|manual)",
+            },
+            "example": {
+                "reason": "User asked to create a plan now despite open onboarding.",
+                "confirmed_by": "user",
+                "scope": "current_session",
+            },
+        },
         # --- Data corrections ---
         "learning.signal.logged": {
             "description": (
@@ -408,7 +464,10 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                     "repair_auto_applied, repair_auto_rejected, repair_verified_closed, "
                     "save_handshake_verified, save_handshake_pending, "
                     "save_claim_mismatch_attempt, correction_applied, correction_undone, "
-                    "clarification_requested"
+                    "clarification_requested, workflow_violation, "
+                    "workflow_phase_transition_closed, workflow_override_used, "
+                    "viz_shown, viz_skipped, viz_source_bound, viz_fallback_used, "
+                    "viz_confusion_signal"
                 ),
                 "category": "string (required: quality_signal|friction_signal|outcome_signal|correction_signal)",
                 "captured_at": "string (required, ISO datetime)",
