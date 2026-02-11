@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -123,7 +124,7 @@ pub struct AgentWriteReceipt {
     pub event_timestamp: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AgentReadAfterWriteCheck {
     pub projection_type: String,
     pub key: String,
@@ -795,13 +796,14 @@ fn default_autonomy_policy() -> AgentAutonomyPolicy {
         require_confirmation_for_plan_updates: false,
         require_confirmation_for_repairs: false,
         repair_auto_apply_enabled: true,
-        reason: "No quality_health autonomy policy available; using healthy defaults."
-            .to_string(),
+        reason: "No quality_health autonomy policy available; using healthy defaults.".to_string(),
         confirmation_templates: templates,
     }
 }
 
-fn parse_confirmation_templates(policy: &serde_json::Map<String, Value>) -> HashMap<String, String> {
+fn parse_confirmation_templates(
+    policy: &serde_json::Map<String, Value>,
+) -> HashMap<String, String> {
     let mut templates = default_autonomy_policy().confirmation_templates;
     if let Some(custom) = policy
         .get("confirmation_templates")
@@ -923,7 +925,9 @@ fn build_claim_guard(
     };
 
     let allow_saved_claim = receipts_complete && read_after_write_ok;
-    let (claim_status, recommended_user_phrase) = if allow_saved_claim && autonomy_policy.throttle_active {
+    let (claim_status, recommended_user_phrase) = if allow_saved_claim
+        && autonomy_policy.throttle_active
+    {
         (
             "verified".to_string(),
             autonomy_policy
@@ -999,6 +1003,154 @@ fn build_save_claim_checked_event(
             idempotency_key: format!("quality-save-claim-checked-{}", Uuid::now_v7()),
         },
     }
+}
+
+const LEARNING_TELEMETRY_SCHEMA_VERSION: i64 = 1;
+const SAVE_HANDSHAKE_INVARIANT_ID: &str = "INV-002";
+
+fn stable_hash_suffix(seed: &str, chars: usize) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(seed.as_bytes());
+    let digest = hex::encode(hasher.finalize());
+    let end = chars.min(digest.len());
+    digest[..end].to_string()
+}
+
+fn pseudonymize_user_id_for_learning_signal(user_id: Uuid) -> String {
+    let salt = std::env::var("KURA_TELEMETRY_SALT")
+        .unwrap_or_else(|_| "kura-learning-telemetry-v1".to_string());
+    let seed = format!("{salt}:{user_id}");
+    format!("u_{}", stable_hash_suffix(&seed, 24))
+}
+
+fn learning_signal_category(signal_type: &str) -> &'static str {
+    match signal_type {
+        "save_handshake_verified" => "outcome_signal",
+        "save_handshake_pending" | "save_claim_mismatch_attempt" => "friction_signal",
+        _ => "quality_signal",
+    }
+}
+
+fn save_claim_confidence_band(claim_guard: &AgentWriteClaimGuard) -> &'static str {
+    if claim_guard.allow_saved_claim {
+        "high"
+    } else if claim_guard
+        .uncertainty_markers
+        .iter()
+        .any(|marker| marker == "read_after_write_unverified")
+    {
+        "medium"
+    } else {
+        "low"
+    }
+}
+
+fn build_learning_signal_event(
+    user_id: Uuid,
+    signal_type: &str,
+    issue_type: &str,
+    claim_guard: &AgentWriteClaimGuard,
+    verification: &AgentWriteVerificationSummary,
+    requested_event_count: usize,
+    receipt_count: usize,
+) -> CreateEventRequest {
+    let captured_at = Utc::now();
+    let confidence_band = save_claim_confidence_band(claim_guard);
+    let agent_version =
+        std::env::var("KURA_AGENT_VERSION").unwrap_or_else(|_| "api_agent_v1".to_string());
+    let signature_seed = format!(
+        "{}|{}|{}|{}|{}|{}|{}",
+        signal_type,
+        issue_type,
+        SAVE_HANDSHAKE_INVARIANT_ID,
+        agent_version,
+        "agent_write_with_proof",
+        "chat",
+        confidence_band
+    );
+    let cluster_signature = format!("ls_{}", stable_hash_suffix(&signature_seed, 20));
+    let event_data = serde_json::json!({
+        "schema_version": LEARNING_TELEMETRY_SCHEMA_VERSION,
+        "signal_type": signal_type,
+        "category": learning_signal_category(signal_type),
+        "captured_at": captured_at,
+        "user_ref": {
+            "pseudonymized_user_id": pseudonymize_user_id_for_learning_signal(user_id),
+        },
+        "signature": {
+            "issue_type": issue_type,
+            "invariant_id": SAVE_HANDSHAKE_INVARIANT_ID,
+            "agent_version": agent_version,
+            "workflow_phase": "agent_write_with_proof",
+            "modality": "chat",
+            "confidence_band": confidence_band,
+        },
+        "cluster_signature": cluster_signature,
+        "attributes": {
+            "requested_event_count": requested_event_count,
+            "receipt_count": receipt_count,
+            "allow_saved_claim": claim_guard.allow_saved_claim,
+            "claim_status": claim_guard.claim_status,
+            "verification_status": verification.status,
+            "required_checks": verification.required_checks,
+            "verified_checks": verification.verified_checks,
+            "mismatch_detected": !claim_guard.allow_saved_claim,
+        },
+    });
+
+    CreateEventRequest {
+        timestamp: captured_at,
+        event_type: "learning.signal.logged".to_string(),
+        data: event_data,
+        metadata: EventMetadata {
+            source: Some("agent_write_with_proof".to_string()),
+            agent: Some("api".to_string()),
+            device: None,
+            session_id: Some("learning:save-handshake".to_string()),
+            idempotency_key: format!("learning-signal-{}", Uuid::now_v7()),
+        },
+    }
+}
+
+fn build_save_handshake_learning_signal_events(
+    user_id: Uuid,
+    requested_event_count: usize,
+    receipts: &[AgentWriteReceipt],
+    verification: &AgentWriteVerificationSummary,
+    claim_guard: &AgentWriteClaimGuard,
+) -> Vec<CreateEventRequest> {
+    if claim_guard.allow_saved_claim {
+        return vec![build_learning_signal_event(
+            user_id,
+            "save_handshake_verified",
+            "save_handshake_verified",
+            claim_guard,
+            verification,
+            requested_event_count,
+            receipts.len(),
+        )];
+    }
+
+    vec![
+        build_learning_signal_event(
+            user_id,
+            "save_handshake_pending",
+            "save_handshake_pending",
+            claim_guard,
+            verification,
+            requested_event_count,
+            receipts.len(),
+        ),
+        build_learning_signal_event(
+            user_id,
+            "save_claim_mismatch_attempt",
+            "save_claim_mismatch_attempt",
+            claim_guard,
+            verification,
+            requested_event_count,
+            receipts.len(),
+        ),
+    ]
 }
 
 async fn evaluate_read_after_write_checks(
@@ -1179,7 +1331,15 @@ pub async fn write_with_proof(
         &verification,
         &claim_guard,
     );
-    let _ = create_events_batch_internal(&state, user_id, &[quality_signal]).await;
+    let mut quality_events = vec![quality_signal];
+    quality_events.extend(build_save_handshake_learning_signal_events(
+        user_id,
+        requested_event_count,
+        &receipts,
+        &verification,
+        &claim_guard,
+    ));
+    let _ = create_events_batch_internal(&state, user_id, &quality_events).await;
 
     Ok((
         StatusCode::CREATED,
@@ -1259,8 +1419,7 @@ pub async fn get_agent_context(
         fetch_projection(&mut tx, user_id, "readiness_inference", "overview").await?;
     let causal_inference =
         fetch_projection(&mut tx, user_id, "causal_inference", "overview").await?;
-    let quality_health =
-        fetch_projection(&mut tx, user_id, "quality_health", "overview").await?;
+    let quality_health = fetch_projection(&mut tx, user_id, "quality_health", "overview").await?;
 
     let ranking_context =
         RankingContext::from_task_intent(task_intent.clone(), semantic_memory.as_ref());
@@ -1326,9 +1485,10 @@ pub async fn get_agent_context(
 mod tests {
     use super::{
         AgentReadAfterWriteCheck, AgentReadAfterWriteTarget, AgentWriteReceipt, IntentClass,
-        ProjectionResponse, RankingContext, bootstrap_user_profile, build_claim_guard, clamp_limit,
-        clamp_verify_timeout_ms, default_autonomy_policy, normalize_read_after_write_targets,
-        rank_projection_list, ranking_candidate_limit,
+        ProjectionResponse, RankingContext, bootstrap_user_profile, build_claim_guard,
+        build_save_handshake_learning_signal_events, clamp_limit, clamp_verify_timeout_ms,
+        default_autonomy_policy, normalize_read_after_write_targets, rank_projection_list,
+        ranking_candidate_limit,
     };
     use chrono::{Duration, Utc};
     use kura_core::events::BatchEventWarning;
@@ -1555,13 +1715,7 @@ mod tests {
             severity: "warning".to_string(),
         }];
 
-        let guard = build_claim_guard(
-            &receipts,
-            1,
-            &checks,
-            &warnings,
-            default_autonomy_policy(),
-        );
+        let guard = build_claim_guard(&receipts, 1, &checks, &warnings, default_autonomy_policy());
         assert!(!guard.allow_saved_claim);
         assert_eq!(guard.claim_status, "deferred");
         assert!(
@@ -1624,6 +1778,106 @@ mod tests {
                 .uncertainty_markers
                 .iter()
                 .any(|marker| marker == "autonomy_throttled_by_integrity_slo")
+        );
+    }
+
+    #[test]
+    fn save_handshake_learning_signal_verified_uses_pseudonymous_user_ref() {
+        let user_id = Uuid::now_v7();
+        let event_id = Uuid::now_v7();
+        let receipts = vec![AgentWriteReceipt {
+            event_id,
+            event_type: "set.logged".to_string(),
+            idempotency_key: "abc-123".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "user_profile".to_string(),
+            key: "me".to_string(),
+            status: "verified".to_string(),
+            observed_projection_version: Some(5),
+            observed_last_event_id: Some(event_id),
+            detail: "ok".to_string(),
+        }];
+        let verification = super::AgentWriteVerificationSummary {
+            status: "verified".to_string(),
+            checked_at: Utc::now(),
+            waited_ms: 10,
+            required_checks: 1,
+            verified_checks: 1,
+            checks: checks.clone(),
+        };
+        let guard = build_claim_guard(&receipts, 1, &checks, &[], default_autonomy_policy());
+
+        let events = build_save_handshake_learning_signal_events(
+            user_id,
+            1,
+            &receipts,
+            &verification,
+            &guard,
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "learning.signal.logged");
+        assert_eq!(events[0].data["signal_type"], "save_handshake_verified");
+        let pseudo = events[0].data["user_ref"]["pseudonymized_user_id"]
+            .as_str()
+            .unwrap_or("");
+        assert!(pseudo.starts_with("u_"));
+        assert!(!pseudo.contains(&user_id.to_string()));
+    }
+
+    #[test]
+    fn save_handshake_learning_signal_pending_emits_pending_and_mismatch() {
+        let user_id = Uuid::now_v7();
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.logged".to_string(),
+            idempotency_key: "abc-123".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "user_profile".to_string(),
+            key: "me".to_string(),
+            status: "pending".to_string(),
+            observed_projection_version: None,
+            observed_last_event_id: None,
+            detail: "pending".to_string(),
+        }];
+        let verification = super::AgentWriteVerificationSummary {
+            status: "pending".to_string(),
+            checked_at: Utc::now(),
+            waited_ms: 40,
+            required_checks: 1,
+            verified_checks: 0,
+            checks: checks.clone(),
+        };
+        let guard = build_claim_guard(&receipts, 1, &checks, &[], default_autonomy_policy());
+
+        let events = build_save_handshake_learning_signal_events(
+            user_id,
+            1,
+            &receipts,
+            &verification,
+            &guard,
+        );
+
+        assert_eq!(events.len(), 2);
+        let signal_types: Vec<String> = events
+            .iter()
+            .filter_map(|event| {
+                event
+                    .data
+                    .get("signal_type")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string())
+            })
+            .collect();
+        assert!(signal_types.iter().any(|v| v == "save_handshake_pending"));
+        assert!(
+            signal_types
+                .iter()
+                .any(|v| v == "save_claim_mismatch_attempt")
         );
     }
 }

@@ -144,7 +144,7 @@ class TestBuildSystemConfig:
 
     def test_event_conventions_count(self):
         result = build_system_config()
-        assert len(result["event_conventions"]) == 22
+        assert len(result["event_conventions"]) == 23
 
     def test_interview_guide_structure(self):
         result = build_system_config()

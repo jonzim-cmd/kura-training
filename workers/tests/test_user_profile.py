@@ -602,6 +602,15 @@ class TestOrphanedEventTypes:
         result = _find_orphaned_event_types(all_event_types)
         assert result == []
 
+    def test_internal_learning_telemetry_is_not_marked_orphaned(self):
+        all_event_types = {
+            "learning.signal.logged": 99,
+            "set.logged": 3,
+        }
+        result = _find_orphaned_event_types(all_event_types)
+        orphaned_types = {item["event_type"] for item in result}
+        assert "learning.signal.logged" not in orphaned_types
+
     def test_empty_event_types(self):
         result = _find_orphaned_event_types({})
         assert result == []

@@ -24,6 +24,10 @@ from ..utils import get_retracted_event_ids
 
 logger = logging.getLogger(__name__)
 
+_INTERNAL_NON_ORPHAN_EVENT_TYPES = {
+    "learning.signal.logged",
+}
+
 
 # --- Pure functions (testable without DB) ---
 
@@ -97,6 +101,8 @@ def _find_orphaned_event_types(
     handled = set(registered_event_types())
     orphaned = []
     for event_type, count in sorted(all_event_types.items()):
+        if event_type in _INTERNAL_NON_ORPHAN_EVENT_TYPES:
+            continue
         if event_type not in handled:
             orphaned.append({"event_type": event_type, "count": count})
     return orphaned

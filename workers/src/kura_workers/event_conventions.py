@@ -328,6 +328,59 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             "example": {"name": "hrv_tracking"},
         },
         # --- Data corrections ---
+        "learning.signal.logged": {
+            "description": (
+                "Canonical implicit-learning telemetry signal for cross-session "
+                "quality/friction/outcome/correction analysis."
+            ),
+            "fields": {
+                "schema_version": "number (required, telemetry schema version)",
+                "signal_type": (
+                    "string (required) — one of: quality_issue_detected, "
+                    "repair_proposed, repair_simulated_safe, repair_simulated_risky, "
+                    "repair_auto_applied, repair_auto_rejected, repair_verified_closed, "
+                    "save_handshake_verified, save_handshake_pending, "
+                    "save_claim_mismatch_attempt, correction_applied, correction_undone, "
+                    "clarification_requested"
+                ),
+                "category": "string (required: quality_signal|friction_signal|outcome_signal|correction_signal)",
+                "captured_at": "string (required, ISO datetime)",
+                "user_ref": {
+                    "pseudonymized_user_id": "string (required, salted deterministic pseudonym)"
+                },
+                "signature": {
+                    "issue_type": "string (required, 'none' if not applicable)",
+                    "invariant_id": "string (required, 'none' if not applicable)",
+                    "agent_version": "string (required)",
+                    "workflow_phase": "string (required)",
+                    "modality": "string (required)",
+                    "confidence_band": "string (required: low|medium|high)",
+                },
+                "cluster_signature": "string (required, stable hash for clustering)",
+                "attributes": "object (optional, signal-specific details)",
+            },
+            "example": {
+                "schema_version": 1,
+                "signal_type": "save_claim_mismatch_attempt",
+                "category": "friction_signal",
+                "captured_at": "2026-02-11T12:12:00Z",
+                "user_ref": {"pseudonymized_user_id": "u_7ac3f5be2ab8d93e55f1f8c3"},
+                "signature": {
+                    "issue_type": "save_claim_mismatch_attempt",
+                    "invariant_id": "INV-002",
+                    "agent_version": "api_agent_v1",
+                    "workflow_phase": "agent_write_with_proof",
+                    "modality": "chat",
+                    "confidence_band": "medium",
+                },
+                "cluster_signature": "ls_40a2cb4d2f5e6f2443e0",
+                "attributes": {
+                    "requested_event_count": 2,
+                    "receipt_count": 2,
+                    "verification_status": "pending",
+                },
+            },
+        },
         "event.retracted": {
             "description": (
                 "Retracts a previously logged event. The retracted event "

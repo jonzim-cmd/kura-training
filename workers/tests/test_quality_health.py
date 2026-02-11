@@ -5,6 +5,7 @@ from datetime import datetime
 from kura_workers.handlers.quality_health import (
     _autonomy_policy_from_slos,
     _auto_apply_decision,
+    _build_detection_learning_signal_events,
     _build_quality_projection_data,
     _build_simulated_repair_proposals,
     _compute_integrity_slos,
@@ -198,6 +199,51 @@ class TestRepairProposals:
         assert proposal["state"] == "simulated_risky"
         assert proposal["safe_for_apply"] is False
         assert any("UTC assumption" in note for note in proposal["simulate"]["notes"])
+
+    def test_detection_telemetry_events_cover_issue_and_simulation_states(self):
+        issues = [
+            {
+                "issue_id": "INV-001:unresolved_exercise_identity",
+                "invariant_id": "INV-001",
+                "type": "unresolved_exercise_identity",
+                "severity": "high",
+                "detail": "identity gap",
+                "metrics": {
+                    "top_unresolved_terms_with_counts": [
+                        {"term": "bench press", "count": 3},
+                    ],
+                },
+            },
+            {
+                "issue_id": "INV-003:timezone_missing",
+                "invariant_id": "INV-003",
+                "type": "timezone_missing",
+                "severity": "high",
+                "detail": "timezone missing",
+                "metrics": {},
+            },
+        ]
+        proposals = _build_simulated_repair_proposals(
+            issues,
+            evaluated_at="2026-02-11T10:00:00+00:00",
+        )
+        events = _build_detection_learning_signal_events(
+            user_id="user-1",
+            issues=issues,
+            proposals=proposals,
+            evaluated_at="2026-02-11T10:00:00+00:00",
+            source_anchor="anchor-1",
+        )
+
+        signal_types = {
+            event["data"]["signal_type"]
+            for event in events
+            if event["event_type"] == "learning.signal.logged"
+        }
+        assert "quality_issue_detected" in signal_types
+        assert "repair_proposed" in signal_types
+        assert "repair_simulated_safe" in signal_types
+        assert "repair_simulated_risky" in signal_types
 
 
 class TestAutoApplyPolicy:

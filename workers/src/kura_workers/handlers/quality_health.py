@@ -20,6 +20,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from ..learning_telemetry import build_learning_signal_event
 from ..registry import projection_handler
 from ..semantic_catalog import EXERCISE_CATALOG
 from ..utils import get_alias_map, get_retracted_event_ids
@@ -706,6 +707,108 @@ def _build_quality_issue_closed_event(
     }
 
 
+def _build_detection_learning_signal_events(
+    user_id: str,
+    issues: list[dict[str, Any]],
+    proposals: list[dict[str, Any]],
+    evaluated_at: str,
+    source_anchor: str,
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for issue in issues:
+        issue_id = str(issue["issue_id"])
+        invariant_id = str(issue.get("invariant_id") or "none")
+        issue_type = str(issue.get("type") or "none")
+        events.append(
+            build_learning_signal_event(
+                user_id=str(user_id),
+                signal_type="quality_issue_detected",
+                workflow_phase="quality_health_evaluation",
+                source="quality_health",
+                agent="repair_planner",
+                modality="chat",
+                confidence="high" if issue.get("severity") == "high" else "medium",
+                issue_type=issue_type,
+                invariant_id=invariant_id,
+                attributes={
+                    "issue_id": issue_id,
+                    "severity": issue.get("severity"),
+                },
+                session_id=f"quality:{issue_id}",
+                timestamp=evaluated_at,
+                idempotency_seed=f"{source_anchor}:{issue_id}:quality_issue_detected",
+                agent_version="worker_quality_health_v1",
+            )
+        )
+
+    for proposal in proposals:
+        proposal_id = str(proposal.get("proposal_id", ""))
+        issue_id = str(proposal.get("issue_id", ""))
+        invariant_id = str(proposal.get("invariant_id") or "none")
+        issue_type = str(proposal.get("issue_type") or "none")
+        tier = str(proposal.get("tier") or "unknown")
+        state = str(proposal.get("state") or _REPAIR_STATE_PROPOSED)
+        confidence = "high" if tier == "A" else "medium"
+
+        events.append(
+            build_learning_signal_event(
+                user_id=str(user_id),
+                signal_type="repair_proposed",
+                workflow_phase="quality_health_repair_planning",
+                source="quality_health",
+                agent="repair_planner",
+                modality="chat",
+                confidence=confidence,
+                issue_type=issue_type,
+                invariant_id=invariant_id,
+                attributes={
+                    "proposal_id": proposal_id,
+                    "issue_id": issue_id,
+                    "tier": tier,
+                    "state": state,
+                    "safe_for_apply": bool(proposal.get("safe_for_apply")),
+                },
+                session_id=f"quality:{issue_id or proposal_id}",
+                timestamp=evaluated_at,
+                idempotency_seed=f"{source_anchor}:{proposal_id}:repair_proposed",
+                agent_version="worker_quality_health_v1",
+            )
+        )
+
+        state_signal = {
+            _REPAIR_STATE_SIMULATED_SAFE: "repair_simulated_safe",
+            _REPAIR_STATE_SIMULATED_RISKY: "repair_simulated_risky",
+        }.get(state)
+        if not state_signal:
+            continue
+        events.append(
+            build_learning_signal_event(
+                user_id=str(user_id),
+                signal_type=state_signal,
+                workflow_phase="quality_health_simulation",
+                source="quality_health",
+                agent="repair_planner",
+                modality="chat",
+                confidence=confidence,
+                issue_type=issue_type,
+                invariant_id=invariant_id,
+                attributes={
+                    "proposal_id": proposal_id,
+                    "issue_id": issue_id,
+                    "tier": tier,
+                    "state": state,
+                    "safe_for_apply": bool(proposal.get("safe_for_apply")),
+                },
+                session_id=f"quality:{issue_id or proposal_id}",
+                timestamp=evaluated_at,
+                idempotency_seed=f"{source_anchor}:{proposal_id}:{state_signal}",
+                agent_version="worker_quality_health_v1",
+            )
+        )
+
+    return events
+
+
 async def _insert_events_with_idempotency_guard(
     conn: psycopg.AsyncConnection[Any],
     user_id: str,
@@ -827,7 +930,31 @@ async def _auto_apply_tier_a_repairs(
                 evaluated_at,
                 reason_code,
             )
+            learning_signal = build_learning_signal_event(
+                user_id=str(user_id),
+                signal_type="repair_auto_rejected",
+                workflow_phase="quality_health_auto_apply",
+                source="quality_health",
+                agent="repair_autopilot",
+                modality="chat",
+                confidence="medium",
+                issue_type=str(proposal.get("issue_type") or "none"),
+                invariant_id=str(proposal.get("invariant_id") or "none"),
+                attributes={
+                    "proposal_id": proposal["proposal_id"],
+                    "issue_id": proposal["issue_id"],
+                    "reason_code": reason_code,
+                    "proposal_state_before": state_before,
+                },
+                session_id=f"quality:{proposal['issue_id']}",
+                timestamp=evaluated_at,
+                idempotency_seed=(
+                    f"{proposal['proposal_id']}:{reason_code}:repair_auto_rejected"
+                ),
+                agent_version="worker_quality_health_v1",
+            )
             events_to_write.append(rejected_event)
+            events_to_write.append(learning_signal)
             results.append(
                 {
                     "proposal_id": proposal["proposal_id"],
@@ -848,8 +975,31 @@ async def _auto_apply_tier_a_repairs(
         proposal["state_history"].append({"state": _REPAIR_STATE_APPLIED, "at": evaluated_at})
         repair_events = proposal.get("proposed_event_batch", {}).get("events") or []
         applied_event = _build_quality_fix_applied_event(proposal, evaluated_at)
+        learning_signal = build_learning_signal_event(
+            user_id=str(user_id),
+            signal_type="repair_auto_applied",
+            workflow_phase="quality_health_auto_apply",
+            source="quality_health",
+            agent="repair_autopilot",
+            modality="chat",
+            confidence="high",
+            issue_type=str(proposal.get("issue_type") or "none"),
+            invariant_id=str(proposal.get("invariant_id") or "none"),
+            attributes={
+                "proposal_id": proposal["proposal_id"],
+                "issue_id": proposal["issue_id"],
+                "reason_code": reason_code,
+                "proposal_state_before": state_before,
+                "repair_event_count": len(repair_events),
+            },
+            session_id=f"quality:{proposal['issue_id']}",
+            timestamp=evaluated_at,
+            idempotency_seed=f"{proposal['proposal_id']}:repair_auto_applied",
+            agent_version="worker_quality_health_v1",
+        )
         events_to_write.extend(repair_events)
         events_to_write.append(applied_event)
+        events_to_write.append(learning_signal)
         results.append(
             {
                 "proposal_id": proposal["proposal_id"],
@@ -894,6 +1044,7 @@ async def _verify_applied_repairs(
     verified_at: str,
 ) -> dict[str, Any]:
     close_events: list[dict[str, Any]] = []
+    learning_signal_events: list[dict[str, Any]] = []
     for result in apply_results:
         if result.get("decision") != "applied":
             continue
@@ -905,11 +1056,36 @@ async def _verify_applied_repairs(
             close_event = _build_quality_issue_closed_event(result, verified_at)
             result["close_event_key"] = _event_idempotency_key(close_event)
             close_events.append(close_event)
+            learning_signal_events.append(
+                build_learning_signal_event(
+                    user_id=str(user_id),
+                    signal_type="repair_verified_closed",
+                    workflow_phase="quality_health_verify",
+                    source="quality_health",
+                    agent="repair_autopilot",
+                    modality="chat",
+                    confidence="high",
+                    issue_type=str(result.get("issue_type") or "none"),
+                    invariant_id=str(result.get("invariant_id") or "none"),
+                    attributes={
+                        "proposal_id": result["proposal_id"],
+                        "issue_id": result["issue_id"],
+                    },
+                    session_id=f"quality:{result['issue_id']}",
+                    timestamp=verified_at,
+                    idempotency_seed=(
+                        f"{result['proposal_id']}:repair_verified_closed"
+                    ),
+                    agent_version="worker_quality_health_v1",
+                )
+            )
         else:
             result["proposal_state_after_verify"] = _REPAIR_STATE_APPLIED
             result["close_event_key"] = None
 
-    close_summary = await _insert_events_with_idempotency_guard(conn, user_id, close_events)
+    close_summary = await _insert_events_with_idempotency_guard(
+        conn, user_id, close_events + learning_signal_events
+    )
     inserted_keys = close_summary["inserted_keys"]
     preexisting_keys = close_summary["preexisting_keys"]
     for result in apply_results:
@@ -1654,6 +1830,18 @@ async def update_quality_health(
     initial_integrity_slos = _compute_integrity_slos(rows, metrics, now_iso)
     initial_autonomy_policy = _autonomy_policy_from_slos(initial_integrity_slos)
     simulated_proposals = _build_simulated_repair_proposals(issues, now_iso)
+    detection_telemetry_events = _build_detection_learning_signal_events(
+        str(user_id),
+        issues,
+        simulated_proposals,
+        now_iso,
+        source_anchor=str(rows[-1]["id"]),
+    )
+    await _insert_events_with_idempotency_guard(
+        conn,
+        user_id,
+        detection_telemetry_events,
+    )
     apply_cycle = await _auto_apply_tier_a_repairs(
         conn,
         user_id,
