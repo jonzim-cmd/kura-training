@@ -37,7 +37,7 @@ fi
 
 # Check that password is not the default
 if grep -q "CHANGE_ME" "$ENV_FILE"; then
-    error "KURA_DB_PASSWORD is still set to CHANGE_ME. Generate a real password: openssl rand -base64 32"
+    error "KURA_DB_PASSWORD is still set to CHANGE_ME. Generate a real password: openssl rand -hex 24"
 fi
 
 # Check moltbot-internal network exists

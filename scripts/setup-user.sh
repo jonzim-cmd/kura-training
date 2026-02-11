@@ -53,23 +53,34 @@ fi
 
 # shellcheck disable=SC1090
 source "$ENV_FILE"
-DB_URL="postgresql://kura:${KURA_DB_PASSWORD}@kura-postgres:5432/kura"
+# Resolve postgres container name (compose prefixes with project name)
+PG_CONTAINER=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+    ps --format '{{.Name}}' kura-postgres 2>/dev/null | head -1)
+PG_HOST="${PG_CONTAINER:-docker-kura-postgres-1}"
+DB_URL="postgresql://kura:${KURA_DB_PASSWORD}@${PG_HOST}:5432/kura"
 
-# CLI image name (built by deploy.sh)
-CLI_IMAGE="kura-training-kura-cli"
-# Fallback: try the compose-generated name
+# Resolve Docker network name
+NETWORK=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+    config --format json 2>/dev/null | python3 -c "
+import sys,json
+cfg=json.load(sys.stdin)
+nets=cfg.get('networks',{})
+for v in nets.values():
+    if v.get('external'):
+        print(v.get('name','')); break
+" 2>/dev/null)
+NETWORK="${NETWORK:-moltbot_moltbot-internal}"
+
+# CLI image (built by deploy.sh --extract)
+CLI_IMAGE="kura-cli:latest"
 if ! docker image inspect "$CLI_IMAGE" >/dev/null 2>&1; then
-    CLI_IMAGE="docker-kura-cli"
-    if ! docker image inspect "$CLI_IMAGE" >/dev/null 2>&1; then
-        info "Building CLI image..."
-        docker build --target cli -t kura-cli:latest -f "${ROOT_DIR}/Dockerfile" "$ROOT_DIR"
-        CLI_IMAGE="kura-cli:latest"
-    fi
+    info "Building CLI image..."
+    docker build --target cli -t kura-cli:latest -f "${ROOT_DIR}/Dockerfile" "$ROOT_DIR"
 fi
 
-# Helper: run kura CLI in a temporary container on moltbot-internal network
+# Helper: run kura CLI in a temporary container on the shared network
 kura_cli() {
-    docker run --rm --network moltbot-internal \
+    docker run --rm --network "$NETWORK" \
         -e DATABASE_URL="$DB_URL" \
         "$CLI_IMAGE" "$@"
 }
