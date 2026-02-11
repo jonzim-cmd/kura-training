@@ -42,6 +42,9 @@ enum Commands {
     /// Get system configuration (dimensions, conventions, event types)
     Config,
 
+    /// Diagnose setup: API, auth, worker, system config
+    Doctor,
+
     /// Discover API endpoints (returns OpenAPI spec)
     Discover {
         /// Show compact endpoint list only (method, path, summary)
@@ -97,6 +100,8 @@ async fn main() {
             let token = resolve_or_exit(&cli.api_url).await;
             commands::system::config(&cli.api_url, &token).await
         }
+
+        Commands::Doctor => commands::system::doctor(&cli.api_url).await,
 
         Commands::Discover { endpoints } => {
             commands::system::discover(&cli.api_url, endpoints).await

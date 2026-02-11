@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use crate::util::{api_request, client, exit_error};
+use crate::util::{api_request, check_auth_configured, client, exit_error, raw_api_request, resolve_token};
 
 pub async fn config(api_url: &str, token: &str) -> i32 {
     api_request(
@@ -121,4 +121,269 @@ pub async fn discover(api_url: &str, endpoints_only: bool) -> i32 {
 
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     0
+}
+
+pub async fn doctor(api_url: &str) -> i32 {
+    let mut checks: Vec<serde_json::Value> = Vec::new();
+    let mut overall = "ok";
+
+    // 1. API reachable
+    match raw_api_request(api_url, reqwest::Method::GET, "/health", None).await {
+        Ok((status, body)) if status == 200 => {
+            let version = body
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            checks.push(json!({
+                "name": "api_reachable",
+                "status": "ok",
+                "detail": format!("{api_url} (v{version})")
+            }));
+        }
+        Ok((status, _)) => {
+            overall = "error";
+            checks.push(json!({
+                "name": "api_reachable",
+                "status": "error",
+                "detail": format!("{api_url} returned HTTP {status}")
+            }));
+        }
+        Err(e) => {
+            overall = "error";
+            checks.push(json!({
+                "name": "api_reachable",
+                "status": "error",
+                "detail": format!("{api_url}: {e}")
+            }));
+            // No point continuing if API is unreachable
+            let output = json!({ "checks": checks, "overall": overall });
+            eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+            return 1;
+        }
+    }
+
+    // 2. Auth configured
+    match check_auth_configured() {
+        Some((method, detail)) => {
+            checks.push(json!({
+                "name": "auth_configured",
+                "status": "ok",
+                "detail": format!("{method}: {detail}")
+            }));
+        }
+        None => {
+            if overall == "ok" {
+                overall = "warn";
+            }
+            checks.push(json!({
+                "name": "auth_configured",
+                "status": "warn",
+                "detail": "No credentials found. Run `kura login` or set KURA_API_KEY."
+            }));
+        }
+    }
+
+    // 3. Auth valid (only if configured)
+    let token = match resolve_token(api_url).await {
+        Ok(t) => {
+            // Try an authenticated request
+            match raw_api_request(api_url, reqwest::Method::GET, "/v1/projections/user_profile/me", Some(&t)).await {
+                Ok((status, body)) if (200..=404).contains(&status) => {
+                    // 200 = has profile, 404 = new user (both mean auth works)
+                    let user_hint = if status == 200 {
+                        body.get("user_id")
+                            .and_then(|u| u.as_str())
+                            .map(|u| format!("user_id: {u}"))
+                            .unwrap_or_else(|| "authenticated".to_string())
+                    } else {
+                        "authenticated (new user, no profile yet)".to_string()
+                    };
+                    checks.push(json!({
+                        "name": "auth_valid",
+                        "status": "ok",
+                        "detail": user_hint
+                    }));
+                }
+                Ok((401, _)) => {
+                    if overall == "ok" {
+                        overall = "warn";
+                    }
+                    checks.push(json!({
+                        "name": "auth_valid",
+                        "status": "error",
+                        "detail": "Token rejected (HTTP 401). Run `kura login` again."
+                    }));
+                }
+                Ok((status, _)) => {
+                    if overall == "ok" {
+                        overall = "warn";
+                    }
+                    checks.push(json!({
+                        "name": "auth_valid",
+                        "status": "warn",
+                        "detail": format!("Unexpected HTTP {status} on auth check")
+                    }));
+                }
+                Err(e) => {
+                    if overall == "ok" {
+                        overall = "warn";
+                    }
+                    checks.push(json!({
+                        "name": "auth_valid",
+                        "status": "error",
+                        "detail": format!("Auth check request failed: {e}")
+                    }));
+                }
+            }
+            Some(t)
+        }
+        Err(e) => {
+            if overall == "ok" {
+                overall = "warn";
+            }
+            checks.push(json!({
+                "name": "auth_valid",
+                "status": "warn",
+                "detail": format!("{e}")
+            }));
+            None
+        }
+    };
+
+    // 4. System config (workers write this at startup — empty = worker never ran)
+    if let Some(ref t) = token {
+        match raw_api_request(api_url, reqwest::Method::GET, "/v1/system/config", Some(t)).await {
+            Ok((200, body)) => {
+                let data = body.get("data").unwrap_or(&body);
+                let dimensions = data
+                    .get("dimensions")
+                    .and_then(|d| d.as_object())
+                    .map(|d| d.len())
+                    .unwrap_or(0);
+                let conventions = data
+                    .get("event_conventions")
+                    .and_then(|c| c.as_object())
+                    .map(|c| c.len())
+                    .unwrap_or(0);
+
+                if dimensions > 0 {
+                    checks.push(json!({
+                        "name": "system_config",
+                        "status": "ok",
+                        "detail": format!("{dimensions} dimensions, {conventions} event conventions")
+                    }));
+                } else {
+                    if overall == "ok" {
+                        overall = "warn";
+                    }
+                    checks.push(json!({
+                        "name": "system_config",
+                        "status": "warn",
+                        "detail": "Config exists but has no dimensions. Worker may not have started."
+                    }));
+                }
+            }
+            Ok((404, _)) => {
+                if overall == "ok" {
+                    overall = "warn";
+                }
+                checks.push(json!({
+                    "name": "system_config",
+                    "status": "warn",
+                    "detail": "Not found. Worker has not started yet (worker writes system_config at startup)."
+                }));
+            }
+            Ok((status, _)) => {
+                if overall == "ok" {
+                    overall = "warn";
+                }
+                checks.push(json!({
+                    "name": "system_config",
+                    "status": "warn",
+                    "detail": format!("HTTP {status}")
+                }));
+            }
+            Err(e) => {
+                if overall == "ok" {
+                    overall = "warn";
+                }
+                checks.push(json!({
+                    "name": "system_config",
+                    "status": "error",
+                    "detail": format!("{e}")
+                }));
+            }
+        }
+    }
+
+    // 5. Worker active — check if projections exist (workers create them)
+    if let Some(ref t) = token {
+        match raw_api_request(api_url, reqwest::Method::GET, "/v1/projections", Some(t)).await {
+            Ok((200, body)) => {
+                let count = body.as_array().map(|a| a.len()).unwrap_or(0);
+                if count > 0 {
+                    // Check freshness: find most recent updated_at
+                    let newest = body
+                        .as_array()
+                        .and_then(|arr| {
+                            arr.iter()
+                                .filter_map(|p| p.get("updated_at").and_then(|u| u.as_str()))
+                                .max()
+                        })
+                        .unwrap_or("unknown");
+
+                    checks.push(json!({
+                        "name": "worker_active",
+                        "status": "ok",
+                        "detail": format!("{count} projections, newest: {newest}")
+                    }));
+                } else {
+                    if overall == "ok" {
+                        overall = "warn";
+                    }
+                    checks.push(json!({
+                        "name": "worker_active",
+                        "status": "warn",
+                        "detail": "No projections found. Worker may not be running or no events logged yet."
+                    }));
+                }
+            }
+            Ok((status, _)) => {
+                if overall == "ok" {
+                    overall = "warn";
+                }
+                checks.push(json!({
+                    "name": "worker_active",
+                    "status": "warn",
+                    "detail": format!("HTTP {status} on snapshot check")
+                }));
+            }
+            Err(e) => {
+                if overall == "ok" {
+                    overall = "warn";
+                }
+                checks.push(json!({
+                    "name": "worker_active",
+                    "status": "error",
+                    "detail": format!("{e}")
+                }));
+            }
+        }
+    }
+
+    let output = json!({
+        "checks": checks,
+        "overall": overall
+    });
+
+    if overall == "ok" {
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        0
+    } else if overall == "warn" {
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        0
+    } else {
+        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+        1
+    }
 }

@@ -245,6 +245,57 @@ pub async fn api_request(
     exit_code
 }
 
+/// Execute a raw API request and return the response (no printing).
+/// Used by doctor and other commands that need to inspect the response.
+pub async fn raw_api_request(
+    api_url: &str,
+    method: reqwest::Method,
+    path: &str,
+    token: Option<&str>,
+) -> Result<(u16, serde_json::Value), String> {
+    let url = reqwest::Url::parse(&format!("{api_url}{path}"))
+        .map_err(|e| format!("Invalid URL: {e}"))?;
+
+    let mut req = client().request(method, url);
+    if let Some(t) = token {
+        req = req.header("Authorization", format!("Bearer {t}"));
+    }
+
+    let resp = req.send().await.map_err(|e| format!("{e}"))?;
+    let status = resp.status().as_u16();
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .unwrap_or(json!({"error": "non-json response"}));
+
+    Ok((status, body))
+}
+
+/// Check if auth is configured (without making a request).
+/// Returns (method_name, detail) or None.
+pub fn check_auth_configured() -> Option<(&'static str, String)> {
+    if let Ok(key) = std::env::var("KURA_API_KEY") {
+        let prefix = if key.len() > 12 {
+            &key[..12]
+        } else {
+            &key
+        };
+        return Some(("api_key (env)", format!("{prefix}...")));
+    }
+
+    if let Some(creds) = load_credentials() {
+        let expired = chrono::Utc::now() >= creds.expires_at;
+        let detail = if expired {
+            format!("expired at {}", creds.expires_at)
+        } else {
+            format!("valid until {}", creds.expires_at)
+        };
+        return Some(("oauth_token (stored)", detail));
+    }
+
+    None
+}
+
 /// Read JSON from a file path or stdin (when path is "-").
 pub fn read_json_from_file(path: &str) -> Result<serde_json::Value, String> {
     let raw = if path == "-" {
