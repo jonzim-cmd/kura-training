@@ -6,6 +6,7 @@ This project uses **bd** (beads) for issue tracking.
 
 Run `bd prime` for workflow context, or install hooks (`bd hooks install`) for auto-injection.
 For full workflow details: `bd prime`.
+When working in a git worktree, use `scripts/bd-safe.sh` (auto-sets `BEADS_NO_DAEMON=1`).
 
 ## Collaboration Principle
 
@@ -17,11 +18,11 @@ clear reasoning, honest uncertainty, and shared ownership of quality.
 ## Quick Reference
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --status in_progress  # Claim work
-bd close <id>         # Complete work
-bd sync               # Sync with git
+scripts/bd-safe.sh ready              # Find available work
+scripts/bd-safe.sh show <id>          # View issue details
+scripts/bd-safe.sh update <id> --status in_progress  # Claim work
+scripts/bd-safe.sh close <id>         # Complete work
+scripts/bd-safe.sh sync               # Sync with git
 ```
 
 ## Landing the Plane (Session Completion)
@@ -36,7 +37,7 @@ bd sync               # Sync with git
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd sync
+   scripts/bd-safe.sh sync
    git push
    git status  # MUST show "up to date with origin"
    ```
