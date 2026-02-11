@@ -1,5 +1,6 @@
 pub mod account;
 pub mod admin;
+pub mod agent;
 pub mod api;
 pub mod auth;
 pub mod event;

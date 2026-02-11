@@ -24,6 +24,7 @@ mod state;
     ),
     paths(
         routes::health::health_check,
+        routes::agent::get_agent_capabilities,
         routes::agent::get_agent_context,
         routes::agent::write_with_proof,
         routes::semantic::resolve_semantic_terms,
@@ -50,6 +51,11 @@ mod state;
     components(schemas(
         HealthResponse,
         routes::account::AccountDeletedResponse,
+        routes::agent::AgentCapabilitiesResponse,
+        routes::agent::AgentFallbackContract,
+        routes::agent::AgentUpgradePhase,
+        routes::agent::AgentUpgradePolicy,
+        routes::agent::AgentVerificationContract,
         routes::agent::AgentContextMeta,
         routes::agent::AgentContextResponse,
         routes::agent::AgentReadAfterWriteTarget,
@@ -176,9 +182,21 @@ async fn main() {
         .merge(routes::health::router())
         .merge(routes::agent::router().layer(middleware::rate_limit::projections_layer()))
         .merge(routes::semantic::router().layer(middleware::rate_limit::projections_layer()))
-        .merge(routes::events::write_router().layer(middleware::rate_limit::events_write_layer()))
-        .merge(routes::events::read_router().layer(middleware::rate_limit::events_read_layer()))
-        .merge(routes::projections::router().layer(middleware::rate_limit::projections_layer()))
+        .merge(
+            routes::events::write_router()
+                .layer(middleware::rate_limit::events_write_layer())
+                .layer(middleware::upgrade_signal::legacy_contract_layer()),
+        )
+        .merge(
+            routes::events::read_router()
+                .layer(middleware::rate_limit::events_read_layer())
+                .layer(middleware::upgrade_signal::legacy_contract_layer()),
+        )
+        .merge(
+            routes::projections::router()
+                .layer(middleware::rate_limit::projections_layer())
+                .layer(middleware::upgrade_signal::legacy_contract_layer()),
+        )
         .merge(
             routes::projection_rules::router().layer(middleware::rate_limit::projections_layer()),
         )
