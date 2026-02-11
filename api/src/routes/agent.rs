@@ -4,11 +4,13 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -163,6 +165,17 @@ pub struct AgentWriteClaimGuard {
     pub autonomy_policy: AgentAutonomyPolicy,
 }
 
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentSessionAuditSummary {
+    /// clean | repaired | needs_clarification
+    pub status: String,
+    pub mismatch_detected: usize,
+    pub mismatch_repaired: usize,
+    pub mismatch_unresolved: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clarification_question: Option<String>,
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AgentWriteWithProofResponse {
     pub receipts: Vec<AgentWriteReceipt>,
@@ -170,6 +183,7 @@ pub struct AgentWriteWithProofResponse {
     pub warnings: Vec<BatchEventWarning>,
     pub verification: AgentWriteVerificationSummary,
     pub claim_guard: AgentWriteClaimGuard,
+    pub session_audit: AgentSessionAuditSummary,
 }
 
 #[derive(sqlx::FromRow)]
@@ -221,6 +235,20 @@ struct ExistingWriteReceiptRow {
     event_type: String,
     timestamp: DateTime<Utc>,
     metadata: Value,
+}
+
+#[derive(Debug)]
+struct SessionAuditArtifacts {
+    summary: AgentSessionAuditSummary,
+    repair_events: Vec<CreateEventRequest>,
+    telemetry_events: Vec<CreateEventRequest>,
+}
+
+#[derive(Debug)]
+struct SessionAuditUnresolved {
+    exercise_label: String,
+    field: String,
+    candidates: Vec<String>,
 }
 
 fn recover_receipts_for_idempotent_retry(
@@ -295,6 +323,72 @@ async fn fetch_existing_receipts_by_idempotency_keys(
     }
 
     Ok(recovered)
+}
+
+fn to_write_receipts(events: &[kura_core::events::Event]) -> Vec<AgentWriteReceipt> {
+    events
+        .iter()
+        .map(|event| AgentWriteReceipt {
+            event_id: event.id,
+            event_type: event.event_type.clone(),
+            idempotency_key: event.metadata.idempotency_key.clone(),
+            event_timestamp: event.timestamp,
+        })
+        .collect()
+}
+
+async fn write_events_with_receipts(
+    state: &AppState,
+    user_id: Uuid,
+    events: &[CreateEventRequest],
+    warning_field: &str,
+) -> Result<(Vec<AgentWriteReceipt>, Vec<BatchEventWarning>, String), AppError> {
+    if events.is_empty() {
+        return Ok((Vec::new(), Vec::new(), "fresh_write".to_string()));
+    }
+
+    let mut warnings: Vec<BatchEventWarning> = Vec::new();
+    let mut write_path = "fresh_write".to_string();
+    let receipts: Vec<AgentWriteReceipt> = match create_events_batch_internal(
+        state, user_id, events,
+    )
+    .await
+    {
+        Ok(batch_result) => {
+            warnings = batch_result.warnings;
+            to_write_receipts(&batch_result.events)
+        }
+        Err(AppError::IdempotencyConflict { .. }) => {
+            write_path = "idempotent_retry".to_string();
+            let requested_keys: Vec<String> = events
+                .iter()
+                .map(|event| event.metadata.idempotency_key.clone())
+                .collect();
+            let recovered_by_key =
+                fetch_existing_receipts_by_idempotency_keys(state, user_id, &requested_keys)
+                    .await?;
+            let recovered = recover_receipts_for_idempotent_retry(events, &recovered_by_key);
+            let recovered_count = recovered.len();
+            let requested_count = events.len();
+            let recovery_message = if recovered_count == requested_count {
+                "Idempotent retry detected; reused existing write receipts.".to_string()
+            } else {
+                format!(
+                    "Idempotent retry detected but recovery is incomplete ({recovered_count}/{requested_count} receipts)."
+                )
+            };
+            warnings.push(BatchEventWarning {
+                event_index: 0,
+                field: warning_field.to_string(),
+                message: recovery_message,
+                severity: "warning".to_string(),
+            });
+            recovered
+        }
+        Err(err) => return Err(err),
+    };
+
+    Ok((receipts, warnings, write_path))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -848,6 +942,247 @@ fn normalize_read_after_write_targets(
     normalized
 }
 
+const SESSION_AUDIT_MENTION_BOUND_FIELDS: [&str; 4] = ["rest_seconds", "tempo", "rir", "set_type"];
+const SESSION_AUDIT_INVARIANT_ID: &str = "INV-008";
+
+static TEMPO_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\btempo\s*[:=]?\s*(\d-[\dx]-[\dx]-[\dx])\b").expect("valid tempo regex")
+});
+static TEMPO_BARE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b(\d-[\dx]-[\dx]-[\dx])\b").expect("valid tempo bare"));
+static RIR_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(?:rir\s*[:=]?\s*(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*rir|(\d+)\s*reps?\s+in\s+reserve)\b",
+    )
+    .expect("valid rir regex")
+});
+static REST_MMSS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:rest|pause|break|satzpause)\s*[:=]?\s*(\d{1,2}):(\d{2})\b")
+        .expect("valid rest mmss regex")
+});
+static REST_SECONDS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(?:(?:rest|pause|break|satzpause)\s*[:=]?\s*(\d{1,3})\s*(?:s|sec|secs|second|seconds)|(\d{1,3})\s*(?:s|sec|secs|second|seconds)\s*(?:rest|pause|break|satzpause))\b",
+    )
+    .expect("valid rest seconds regex")
+});
+static REST_MINUTES_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(?:(?:rest|pause|break|satzpause)\s*[:=]?\s*(\d{1,2})\s*(?:m|min|mins|minute|minutes)|(\d{1,2})\s*(?:m|min|mins|minute|minutes)\s*(?:rest|pause|break|satzpause))\b",
+    )
+    .expect("valid rest minutes regex")
+});
+static REST_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:rest|pause|break|satzpause)\s*[:=]?\s*(\d{1,3})\b")
+        .expect("valid rest number regex")
+});
+
+fn round_to_two(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+fn normalize_rest_seconds(value: f64) -> Option<f64> {
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    Some(round_to_two(value))
+}
+
+fn normalize_rir(value: f64) -> Option<f64> {
+    if !value.is_finite() {
+        return None;
+    }
+    Some(round_to_two(value.clamp(0.0, 10.0)))
+}
+
+fn parse_rest_seconds_from_text(text: &str) -> Option<f64> {
+    if let Some(caps) = REST_MMSS_RE.captures(text) {
+        let minutes = caps.get(1)?.as_str().parse::<f64>().ok()?;
+        let seconds = caps.get(2)?.as_str().parse::<f64>().ok()?;
+        return normalize_rest_seconds((minutes * 60.0) + seconds);
+    }
+    if let Some(caps) = REST_SECONDS_RE.captures(text) {
+        let raw = caps
+            .get(1)
+            .or_else(|| caps.get(2))
+            .map(|m| m.as_str())
+            .and_then(|raw| raw.parse::<f64>().ok())?;
+        return normalize_rest_seconds(raw);
+    }
+    if let Some(caps) = REST_MINUTES_RE.captures(text) {
+        let raw = caps
+            .get(1)
+            .or_else(|| caps.get(2))
+            .map(|m| m.as_str())
+            .and_then(|raw| raw.parse::<f64>().ok())?;
+        return normalize_rest_seconds(raw * 60.0);
+    }
+    if let Some(caps) = REST_NUMBER_RE.captures(text) {
+        let raw = caps.get(1)?.as_str().parse::<f64>().ok()?;
+        return normalize_rest_seconds(raw);
+    }
+    None
+}
+
+fn parse_rir_from_text(text: &str) -> Option<f64> {
+    let caps = RIR_RE.captures(text)?;
+    let raw = caps
+        .get(1)
+        .or_else(|| caps.get(2))
+        .or_else(|| caps.get(3))
+        .map(|m| m.as_str())?;
+    normalize_rir(raw.parse::<f64>().ok()?)
+}
+
+fn parse_tempo_from_text(text: &str) -> Option<String> {
+    let caps = TEMPO_RE
+        .captures(text)
+        .or_else(|| TEMPO_BARE_RE.captures(text))?;
+    let raw = caps.get(1)?.as_str().trim().to_lowercase();
+    if raw.is_empty() { None } else { Some(raw) }
+}
+
+fn normalize_set_type(value: &str) -> Option<String> {
+    let text = value.trim().to_lowercase();
+    if text.is_empty() {
+        return None;
+    }
+    for (needle, canonical) in [
+        ("warmup", "warmup"),
+        ("warm-up", "warmup"),
+        ("backoff", "backoff"),
+        ("back-off", "backoff"),
+        ("amrap", "amrap"),
+        ("working", "working"),
+    ] {
+        if text.contains(needle) {
+            return Some(canonical.to_string());
+        }
+    }
+    None
+}
+
+fn mention_value_from_number(value: f64) -> Option<Value> {
+    serde_json::Number::from_f64(value).map(Value::Number)
+}
+
+fn extract_set_context_mentions_from_text(text: &str) -> HashMap<&'static str, Value> {
+    let mut mentions = HashMap::new();
+    let normalized = text.trim().to_lowercase();
+    if normalized.is_empty() {
+        return mentions;
+    }
+
+    if let Some(value) =
+        parse_rest_seconds_from_text(&normalized).and_then(mention_value_from_number)
+    {
+        mentions.insert("rest_seconds", value);
+    }
+    if let Some(value) = parse_rir_from_text(&normalized).and_then(mention_value_from_number) {
+        mentions.insert("rir", value);
+    }
+    if let Some(value) = parse_tempo_from_text(&normalized) {
+        mentions.insert("tempo", Value::String(value));
+    }
+    if let Some(value) = normalize_set_type(&normalized) {
+        mentions.insert("set_type", Value::String(value));
+    }
+
+    mentions
+}
+
+fn event_text_candidates(event: &CreateEventRequest) -> Vec<&str> {
+    let mut out = Vec::new();
+    for key in ["notes", "context_text", "utterance"] {
+        if let Some(text) = event.data.get(key).and_then(Value::as_str) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                out.push(trimmed);
+            }
+        }
+    }
+    out
+}
+
+fn event_structured_field_present(event: &CreateEventRequest, field: &str) -> bool {
+    event
+        .data
+        .get(field)
+        .map(|value| !value.is_null())
+        .unwrap_or(false)
+}
+
+fn canonical_mention_value(value: &Value) -> String {
+    if let Some(number) = value.as_f64() {
+        return format!("{:.2}", number);
+    }
+    value
+        .as_str()
+        .map(|s| s.trim().to_lowercase())
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn audit_field_label(field: &str) -> &'static str {
+    match field {
+        "rest_seconds" => "Satzpause",
+        "tempo" => "Tempo",
+        "rir" => "RIR",
+        "set_type" => "Satztyp",
+        _ => "Feld",
+    }
+}
+
+fn format_value_for_question(value: &str) -> String {
+    if let Ok(parsed) = value.parse::<f64>() {
+        if (parsed.fract()).abs() < f64::EPSILON {
+            return format!("{}", parsed as i64);
+        }
+        return format!("{parsed:.2}");
+    }
+    value.to_string()
+}
+
+fn exercise_label_for_event(event: &CreateEventRequest) -> String {
+    for key in ["exercise_id", "exercise"] {
+        if let Some(label) = event.data.get(key).and_then(Value::as_str) {
+            let trimmed = label.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    "diesem Satz".to_string()
+}
+
+fn build_clarification_question(unresolved: &[SessionAuditUnresolved]) -> Option<String> {
+    let first = unresolved.first()?;
+    if first.candidates.len() > 1 {
+        let values = first
+            .candidates
+            .iter()
+            .map(|v| format_value_for_question(v))
+            .collect::<Vec<_>>()
+            .join(" oder ");
+        return Some(format!(
+            "Ich habe bei {} widersprüchliche Angaben für {} erkannt ({}). Welchen Wert soll ich speichern?",
+            first.exercise_label,
+            audit_field_label(&first.field),
+            values
+        ));
+    }
+    let value = first
+        .candidates
+        .first()
+        .map(|v| format_value_for_question(v))
+        .unwrap_or_else(|| "einen Wert".to_string());
+    Some(format!(
+        "Ich habe bei {} {} als {} erkannt. Soll ich das speichern?",
+        first.exercise_label,
+        audit_field_label(&first.field),
+        value
+    ))
+}
+
 fn all_read_after_write_verified(checks: &[AgentReadAfterWriteCheck]) -> bool {
     checks.iter().all(|check| check.status == "verified")
 }
@@ -1059,6 +1394,7 @@ fn build_save_claim_checked_event(
     receipts: &[AgentWriteReceipt],
     verification: &AgentWriteVerificationSummary,
     claim_guard: &AgentWriteClaimGuard,
+    session_audit: &AgentSessionAuditSummary,
 ) -> CreateEventRequest {
     let mismatch_detected = !claim_guard.allow_saved_claim;
     let event_data = serde_json::json!({
@@ -1078,6 +1414,13 @@ fn build_save_claim_checked_event(
             "slo_status": claim_guard.autonomy_policy.slo_status,
             "throttle_active": claim_guard.autonomy_policy.throttle_active,
             "max_scope_level": claim_guard.autonomy_policy.max_scope_level,
+        },
+        "session_audit": {
+            "status": session_audit.status,
+            "mismatch_detected": session_audit.mismatch_detected,
+            "mismatch_repaired": session_audit.mismatch_repaired,
+            "mismatch_unresolved": session_audit.mismatch_unresolved,
+            "clarification_question": session_audit.clarification_question,
         },
     });
 
@@ -1117,6 +1460,9 @@ fn learning_signal_category(signal_type: &str) -> &'static str {
     match signal_type {
         "save_handshake_verified" => "outcome_signal",
         "save_handshake_pending" | "save_claim_mismatch_attempt" => "friction_signal",
+        "mismatch_detected" => "quality_signal",
+        "mismatch_repaired" => "correction_signal",
+        "mismatch_unresolved" => "friction_signal",
         _ => "quality_signal",
     }
 }
@@ -1244,6 +1590,256 @@ fn build_save_handshake_learning_signal_events(
     ]
 }
 
+fn session_audit_auto_repair_allowed(policy: &AgentAutonomyPolicy) -> bool {
+    policy.repair_auto_apply_enabled && !policy.require_confirmation_for_repairs
+}
+
+fn session_audit_signal_confidence_band(
+    signal_type: &str,
+    summary: &AgentSessionAuditSummary,
+) -> &'static str {
+    match signal_type {
+        "mismatch_repaired" => "high",
+        "mismatch_unresolved" => "low",
+        "mismatch_detected" if summary.mismatch_unresolved > 0 => "medium",
+        _ => "high",
+    }
+}
+
+fn build_session_audit_learning_signal_event(
+    user_id: Uuid,
+    signal_type: &str,
+    summary: &AgentSessionAuditSummary,
+) -> CreateEventRequest {
+    let captured_at = Utc::now();
+    let confidence_band = session_audit_signal_confidence_band(signal_type, summary);
+    let agent_version =
+        std::env::var("KURA_AGENT_VERSION").unwrap_or_else(|_| "api_agent_v1".to_string());
+    let signature_seed = format!(
+        "{}|{}|{}|{}|{}|{}|{}",
+        signal_type,
+        signal_type,
+        SESSION_AUDIT_INVARIANT_ID,
+        agent_version,
+        "session_audit_gate",
+        "chat",
+        confidence_band
+    );
+    let cluster_signature = format!("ls_{}", stable_hash_suffix(&signature_seed, 20));
+
+    let event_data = serde_json::json!({
+        "schema_version": LEARNING_TELEMETRY_SCHEMA_VERSION,
+        "signal_type": signal_type,
+        "category": learning_signal_category(signal_type),
+        "captured_at": captured_at,
+        "user_ref": {
+            "pseudonymized_user_id": pseudonymize_user_id_for_learning_signal(user_id),
+        },
+        "signature": {
+            "issue_type": signal_type,
+            "invariant_id": SESSION_AUDIT_INVARIANT_ID,
+            "agent_version": agent_version,
+            "workflow_phase": "session_audit_gate",
+            "modality": "chat",
+            "confidence_band": confidence_band,
+        },
+        "cluster_signature": cluster_signature,
+        "attributes": {
+            "audit_status": summary.status,
+            "mismatch_detected": summary.mismatch_detected,
+            "mismatch_repaired": summary.mismatch_repaired,
+            "mismatch_unresolved": summary.mismatch_unresolved,
+            "clarification_needed": summary.clarification_question.is_some(),
+        },
+    });
+
+    CreateEventRequest {
+        timestamp: captured_at,
+        event_type: "learning.signal.logged".to_string(),
+        data: event_data,
+        metadata: EventMetadata {
+            source: Some("agent_write_with_proof".to_string()),
+            agent: Some("api".to_string()),
+            device: None,
+            session_id: Some("learning:session-audit".to_string()),
+            idempotency_key: format!("learning-signal-{}", Uuid::now_v7()),
+        },
+    }
+}
+
+fn build_session_audit_artifacts(
+    user_id: Uuid,
+    requested_events: &[CreateEventRequest],
+    requested_receipts: &[AgentWriteReceipt],
+    autonomy_policy: &AgentAutonomyPolicy,
+) -> SessionAuditArtifacts {
+    let auto_repair_allowed = session_audit_auto_repair_allowed(autonomy_policy);
+    let mut mismatch_detected = 0usize;
+    let mut mismatch_repaired = 0usize;
+    let mut mismatch_unresolved = 0usize;
+    let mut unresolved: Vec<SessionAuditUnresolved> = Vec::new();
+    let mut repair_fields_by_target: BTreeMap<Uuid, BTreeMap<String, Value>> = BTreeMap::new();
+    let mut session_id_by_target: HashMap<Uuid, Option<String>> = HashMap::new();
+
+    for (index, event) in requested_events.iter().enumerate() {
+        if event.event_type.trim().to_lowercase() != "set.logged" {
+            continue;
+        }
+        let Some(receipt) = requested_receipts.get(index) else {
+            continue;
+        };
+
+        let mut mentions_by_field: HashMap<String, BTreeMap<String, Value>> = HashMap::new();
+        for text in event_text_candidates(event) {
+            for (field, value) in extract_set_context_mentions_from_text(text) {
+                let canonical = canonical_mention_value(&value);
+                mentions_by_field
+                    .entry(field.to_string())
+                    .or_default()
+                    .entry(canonical)
+                    .or_insert(value);
+            }
+        }
+
+        for field in SESSION_AUDIT_MENTION_BOUND_FIELDS {
+            let Some(candidates) = mentions_by_field.get(field) else {
+                continue;
+            };
+            if event_structured_field_present(event, field) {
+                continue;
+            }
+
+            mismatch_detected += 1;
+            if candidates.len() == 1 && auto_repair_allowed {
+                let value = candidates.values().next().cloned().unwrap_or(Value::Null);
+                repair_fields_by_target
+                    .entry(receipt.event_id)
+                    .or_default()
+                    .insert(field.to_string(), value);
+                session_id_by_target
+                    .entry(receipt.event_id)
+                    .or_insert_with(|| event.metadata.session_id.clone());
+                mismatch_repaired += 1;
+                continue;
+            }
+
+            mismatch_unresolved += 1;
+            unresolved.push(SessionAuditUnresolved {
+                exercise_label: exercise_label_for_event(event),
+                field: field.to_string(),
+                candidates: candidates.keys().cloned().collect(),
+            });
+        }
+    }
+
+    let mut repair_events = Vec::new();
+    for (target_event_id, changed_fields) in repair_fields_by_target {
+        if changed_fields.is_empty() {
+            continue;
+        }
+
+        let mut changed_fields_payload = serde_json::Map::new();
+        let mut seed_parts = Vec::new();
+        for (field, value) in changed_fields {
+            seed_parts.push(format!("{field}:{}", canonical_mention_value(&value)));
+            changed_fields_payload.insert(
+                field.clone(),
+                serde_json::json!({
+                    "value": value,
+                    "repair_provenance": {
+                        "source_type": "inferred",
+                        "confidence": 0.95,
+                        "confidence_band": "high",
+                        "applies_scope": "single_set",
+                        "reason": "Deterministic mention-field session audit."
+                    }
+                }),
+            );
+        }
+        seed_parts.sort();
+        let seed = format!("session_audit|{}|{}", target_event_id, seed_parts.join("|"));
+        let idempotency_key = format!("session-audit-correction-{}", stable_hash_suffix(&seed, 20));
+        let session_id = session_id_by_target
+            .get(&target_event_id)
+            .cloned()
+            .flatten()
+            .or_else(|| Some("session_audit".to_string()));
+
+        repair_events.push(CreateEventRequest {
+            timestamp: Utc::now(),
+            event_type: "set.corrected".to_string(),
+            data: serde_json::json!({
+                "target_event_id": target_event_id,
+                "changed_fields": changed_fields_payload,
+                "reason": "Session audit auto-repair persisted mention-bound fields.",
+                "repair_provenance": {
+                    "source_type": "inferred",
+                    "confidence": 0.95,
+                    "confidence_band": "high",
+                    "applies_scope": "single_set",
+                    "reason": "Deterministic mention-field session audit."
+                },
+            }),
+            metadata: EventMetadata {
+                source: Some("agent_write_with_proof".to_string()),
+                agent: Some("api".to_string()),
+                device: None,
+                session_id,
+                idempotency_key,
+            },
+        });
+    }
+
+    let status = if mismatch_detected == 0 {
+        "clean".to_string()
+    } else if mismatch_unresolved == 0 && mismatch_repaired > 0 {
+        "repaired".to_string()
+    } else {
+        "needs_clarification".to_string()
+    };
+    let clarification_question = if status == "needs_clarification" {
+        build_clarification_question(&unresolved)
+    } else {
+        None
+    };
+    let summary = AgentSessionAuditSummary {
+        status,
+        mismatch_detected,
+        mismatch_repaired,
+        mismatch_unresolved,
+        clarification_question,
+    };
+
+    let mut telemetry_events = Vec::new();
+    if summary.mismatch_detected > 0 {
+        telemetry_events.push(build_session_audit_learning_signal_event(
+            user_id,
+            "mismatch_detected",
+            &summary,
+        ));
+    }
+    if summary.mismatch_repaired > 0 {
+        telemetry_events.push(build_session_audit_learning_signal_event(
+            user_id,
+            "mismatch_repaired",
+            &summary,
+        ));
+    }
+    if summary.mismatch_unresolved > 0 {
+        telemetry_events.push(build_session_audit_learning_signal_event(
+            user_id,
+            "mismatch_unresolved",
+            &summary,
+        ));
+    }
+
+    SessionAuditArtifacts {
+        summary,
+        repair_events,
+        telemetry_events,
+    }
+}
+
 async fn evaluate_read_after_write_checks(
     state: &AppState,
     user_id: Uuid,
@@ -1367,58 +1963,29 @@ pub async fn write_with_proof(
         });
     }
 
-    let mut warnings: Vec<BatchEventWarning> = Vec::new();
-    let mut write_path = "fresh_write".to_string();
-    let receipts: Vec<AgentWriteReceipt> = match create_events_batch_internal(
-        &state,
-        user_id,
-        &req.events,
-    )
-    .await
-    {
-        Ok(batch_result) => {
-            warnings = batch_result.warnings;
-            batch_result
-                .events
-                .iter()
-                .map(|event| AgentWriteReceipt {
-                    event_id: event.id,
-                    event_type: event.event_type.clone(),
-                    idempotency_key: event.metadata.idempotency_key.clone(),
-                    event_timestamp: event.timestamp,
-                })
-                .collect()
-        }
-        Err(AppError::IdempotencyConflict { .. }) => {
-            write_path = "idempotent_retry".to_string();
-            let requested_keys: Vec<String> = req
-                .events
-                .iter()
-                .map(|event| event.metadata.idempotency_key.clone())
-                .collect();
-            let recovered_by_key =
-                fetch_existing_receipts_by_idempotency_keys(&state, user_id, &requested_keys)
-                    .await?;
-            let recovered = recover_receipts_for_idempotent_retry(&req.events, &recovered_by_key);
-            let recovered_count = recovered.len();
-            let recovery_message = if recovered_count == requested_event_count {
-                "Idempotent retry detected; reused existing write receipts.".to_string()
-            } else {
-                format!(
-                    "Idempotent retry detected but recovery is incomplete ({recovered_count}/{requested_event_count} receipts)."
-                )
-            };
-            warnings.push(BatchEventWarning {
-                event_index: 0,
-                field: "metadata.idempotency_key".to_string(),
-                message: recovery_message,
-                severity: "warning".to_string(),
-            });
-            recovered
-        }
-        Err(err) => return Err(err),
-    };
-    let event_ids: HashSet<Uuid> = receipts.iter().map(|receipt| receipt.event_id).collect();
+    let (receipts, mut warnings, write_path) =
+        write_events_with_receipts(&state, user_id, &req.events, "metadata.idempotency_key")
+            .await?;
+    let quality_health = fetch_quality_health_projection(&state, user_id).await?;
+    let autonomy_policy = autonomy_policy_from_quality_health(quality_health.as_ref());
+    let SessionAuditArtifacts {
+        summary: session_audit_summary,
+        repair_events,
+        telemetry_events,
+    } = build_session_audit_artifacts(user_id, &req.events, &receipts, &autonomy_policy);
+
+    let mut event_ids: HashSet<Uuid> = receipts.iter().map(|receipt| receipt.event_id).collect();
+    if !repair_events.is_empty() {
+        let (repair_receipts, repair_warnings, _repair_write_path) = write_events_with_receipts(
+            &state,
+            user_id,
+            &repair_events,
+            "session_audit.idempotency_key",
+        )
+        .await?;
+        warnings.extend(repair_warnings);
+        event_ids.extend(repair_receipts.iter().map(|receipt| receipt.event_id));
+    }
 
     let (checks, waited_ms) = verify_read_after_write_until_timeout(
         &state,
@@ -1445,8 +2012,6 @@ pub async fn write_with_proof(
         "pending".to_string()
     };
 
-    let quality_health = fetch_quality_health_projection(&state, user_id).await?;
-    let autonomy_policy = autonomy_policy_from_quality_health(quality_health.as_ref());
     let verification = AgentWriteVerificationSummary {
         status: verification_status,
         checked_at: Utc::now(),
@@ -1468,6 +2033,7 @@ pub async fn write_with_proof(
         &receipts,
         &verification,
         &claim_guard,
+        &session_audit_summary,
     );
     let mut quality_events = vec![quality_signal];
     quality_events.extend(build_save_handshake_learning_signal_events(
@@ -1477,6 +2043,7 @@ pub async fn write_with_proof(
         &verification,
         &claim_guard,
     ));
+    quality_events.extend(telemetry_events);
     let _ = create_events_batch_internal(&state, user_id, &quality_events).await;
 
     Ok((
@@ -1486,6 +2053,7 @@ pub async fn write_with_proof(
             warnings,
             verification,
             claim_guard,
+            session_audit: session_audit_summary,
         }),
     ))
 }
@@ -1622,11 +2190,11 @@ pub async fn get_agent_context(
 #[cfg(test)]
 mod tests {
     use super::{
-        bootstrap_user_profile, build_claim_guard, build_save_handshake_learning_signal_events,
-        clamp_limit, clamp_verify_timeout_ms, default_autonomy_policy,
-        normalize_read_after_write_targets, rank_projection_list, ranking_candidate_limit,
-        recover_receipts_for_idempotent_retry, AgentReadAfterWriteCheck, AgentReadAfterWriteTarget,
-        AgentWriteReceipt, IntentClass, ProjectionResponse, RankingContext,
+        AgentReadAfterWriteCheck, AgentReadAfterWriteTarget, AgentWriteReceipt, IntentClass,
+        ProjectionResponse, RankingContext, bootstrap_user_profile, build_claim_guard,
+        build_save_handshake_learning_signal_events, build_session_audit_artifacts, clamp_limit,
+        clamp_verify_timeout_ms, default_autonomy_policy, normalize_read_after_write_targets,
+        rank_projection_list, ranking_candidate_limit, recover_receipts_for_idempotent_retry,
     };
     use chrono::{Duration, Utc};
     use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
@@ -1656,6 +2224,25 @@ mod tests {
                 projection_version: 1,
                 computed_at: updated_at,
                 freshness: ProjectionFreshness::from_computed_at(updated_at, now),
+            },
+        }
+    }
+
+    fn make_set_event(
+        data: serde_json::Value,
+        session_id: Option<&str>,
+        idempotency_key: &str,
+    ) -> CreateEventRequest {
+        CreateEventRequest {
+            timestamp: Utc::now(),
+            event_type: "set.logged".to_string(),
+            data,
+            metadata: EventMetadata {
+                source: Some("api".to_string()),
+                agent: Some("test".to_string()),
+                device: None,
+                session_id: session_id.map(|value| value.to_string()),
+                idempotency_key: idempotency_key.to_string(),
             },
         }
     }
@@ -1882,6 +2469,168 @@ mod tests {
     }
 
     #[test]
+    fn session_audit_is_clean_when_no_missing_mention_bound_fields() {
+        let user_id = Uuid::now_v7();
+        let requested = vec![make_set_event(
+            json!({
+                "exercise_id": "barbell_back_squat",
+                "reps": 5,
+                "rest_seconds": 90,
+                "notes": "rest 90 sec"
+            }),
+            Some("session-1"),
+            "k-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.logged".to_string(),
+            idempotency_key: "k-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let policy = default_autonomy_policy();
+
+        let artifacts = build_session_audit_artifacts(user_id, &requested, &receipts, &policy);
+        assert_eq!(artifacts.summary.status, "clean");
+        assert_eq!(artifacts.summary.mismatch_detected, 0);
+        assert_eq!(artifacts.summary.mismatch_repaired, 0);
+        assert_eq!(artifacts.summary.mismatch_unresolved, 0);
+        assert!(artifacts.summary.clarification_question.is_none());
+        assert!(artifacts.repair_events.is_empty());
+        assert!(artifacts.telemetry_events.is_empty());
+    }
+
+    #[test]
+    fn session_audit_auto_repairs_high_confidence_mismatch() {
+        let user_id = Uuid::now_v7();
+        let requested = vec![make_set_event(
+            json!({
+                "exercise_id": "barbell_back_squat",
+                "reps": 5,
+                "notes": "rest 90 sec"
+            }),
+            Some("session-1"),
+            "k-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.logged".to_string(),
+            idempotency_key: "k-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let policy = default_autonomy_policy();
+
+        let artifacts = build_session_audit_artifacts(user_id, &requested, &receipts, &policy);
+        assert_eq!(artifacts.summary.status, "repaired");
+        assert_eq!(artifacts.summary.mismatch_detected, 1);
+        assert_eq!(artifacts.summary.mismatch_repaired, 1);
+        assert_eq!(artifacts.summary.mismatch_unresolved, 0);
+        assert!(artifacts.summary.clarification_question.is_none());
+        assert_eq!(artifacts.repair_events.len(), 1);
+        assert_eq!(artifacts.repair_events[0].event_type, "set.corrected");
+        assert_eq!(
+            artifacts.repair_events[0].data["target_event_id"],
+            json!(receipts[0].event_id)
+        );
+        assert_eq!(
+            artifacts.repair_events[0].data["changed_fields"]["rest_seconds"]["value"]
+                .as_f64()
+                .unwrap_or_default(),
+            90.0
+        );
+
+        let signal_types: Vec<String> = artifacts
+            .telemetry_events
+            .iter()
+            .filter_map(|event| {
+                event
+                    .data
+                    .get("signal_type")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string())
+            })
+            .collect();
+        assert!(signal_types.iter().any(|s| s == "mismatch_detected"));
+        assert!(signal_types.iter().any(|s| s == "mismatch_repaired"));
+        assert!(!signal_types.iter().any(|s| s == "mismatch_unresolved"));
+    }
+
+    #[test]
+    fn session_audit_requires_clarification_for_conflicting_mentions() {
+        let user_id = Uuid::now_v7();
+        let requested = vec![make_set_event(
+            json!({
+                "exercise_id": "barbell_back_squat",
+                "reps": 5,
+                "notes": "rest 60 sec",
+                "context_text": "rest 90 sec"
+            }),
+            Some("session-1"),
+            "k-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.logged".to_string(),
+            idempotency_key: "k-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let policy = default_autonomy_policy();
+
+        let artifacts = build_session_audit_artifacts(user_id, &requested, &receipts, &policy);
+        assert_eq!(artifacts.summary.status, "needs_clarification");
+        assert_eq!(artifacts.summary.mismatch_detected, 1);
+        assert_eq!(artifacts.summary.mismatch_repaired, 0);
+        assert_eq!(artifacts.summary.mismatch_unresolved, 1);
+        assert!(artifacts.summary.clarification_question.is_some());
+        assert!(artifacts.repair_events.is_empty());
+
+        let signal_types: Vec<String> = artifacts
+            .telemetry_events
+            .iter()
+            .filter_map(|event| {
+                event
+                    .data
+                    .get("signal_type")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string())
+            })
+            .collect();
+        assert!(signal_types.iter().any(|s| s == "mismatch_detected"));
+        assert!(signal_types.iter().any(|s| s == "mismatch_unresolved"));
+        assert!(!signal_types.iter().any(|s| s == "mismatch_repaired"));
+    }
+
+    #[test]
+    fn session_audit_respects_policy_when_auto_repair_is_disabled() {
+        let user_id = Uuid::now_v7();
+        let requested = vec![make_set_event(
+            json!({
+                "exercise_id": "barbell_back_squat",
+                "reps": 5,
+                "notes": "rest 90 sec"
+            }),
+            Some("session-1"),
+            "k-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.logged".to_string(),
+            idempotency_key: "k-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let mut policy = default_autonomy_policy();
+        policy.repair_auto_apply_enabled = false;
+        policy.require_confirmation_for_repairs = true;
+
+        let artifacts = build_session_audit_artifacts(user_id, &requested, &receipts, &policy);
+        assert_eq!(artifacts.summary.status, "needs_clarification");
+        assert_eq!(artifacts.summary.mismatch_detected, 1);
+        assert_eq!(artifacts.summary.mismatch_repaired, 0);
+        assert_eq!(artifacts.summary.mismatch_unresolved, 1);
+        assert!(artifacts.summary.clarification_question.is_some());
+        assert!(artifacts.repair_events.is_empty());
+    }
+
+    #[test]
     fn claim_guard_is_verified_only_when_receipts_and_readback_complete() {
         let event_id = Uuid::now_v7();
         let receipts = vec![AgentWriteReceipt {
@@ -1932,18 +2681,24 @@ mod tests {
         let guard = build_claim_guard(&receipts, 1, &checks, &warnings, default_autonomy_policy());
         assert!(!guard.allow_saved_claim);
         assert_eq!(guard.claim_status, "pending");
-        assert!(guard
-            .uncertainty_markers
-            .iter()
-            .any(|marker| marker == "read_after_write_unverified"));
-        assert!(guard
-            .deferred_markers
-            .iter()
-            .any(|marker| marker == "defer_saved_claim_until_projection_readback"));
-        assert!(guard
-            .uncertainty_markers
-            .iter()
-            .any(|marker| marker == "plausibility_warnings_present"));
+        assert!(
+            guard
+                .uncertainty_markers
+                .iter()
+                .any(|marker| marker == "read_after_write_unverified")
+        );
+        assert!(
+            guard
+                .deferred_markers
+                .iter()
+                .any(|marker| marker == "defer_saved_claim_until_projection_readback")
+        );
+        assert!(
+            guard
+                .uncertainty_markers
+                .iter()
+                .any(|marker| marker == "plausibility_warnings_present")
+        );
     }
 
     #[test]
@@ -1981,10 +2736,12 @@ mod tests {
                 .len()
                 > 10
         );
-        assert!(guard
-            .uncertainty_markers
-            .iter()
-            .any(|marker| marker == "autonomy_throttled_by_integrity_slo"));
+        assert!(
+            guard
+                .uncertainty_markers
+                .iter()
+                .any(|marker| marker == "autonomy_throttled_by_integrity_slo")
+        );
     }
 
     #[test]
@@ -2001,10 +2758,12 @@ mod tests {
         let guard = build_claim_guard(&[], 1, &checks, &[], default_autonomy_policy());
         assert!(!guard.allow_saved_claim);
         assert_eq!(guard.claim_status, "failed");
-        assert!(guard
-            .deferred_markers
-            .iter()
-            .any(|marker| marker == "defer_saved_claim_until_receipt_complete"));
+        assert!(
+            guard
+                .deferred_markers
+                .iter()
+                .any(|marker| marker == "defer_saved_claim_until_receipt_complete")
+        );
     }
 
     #[test]
@@ -2102,8 +2861,10 @@ mod tests {
             })
             .collect();
         assert!(signal_types.iter().any(|v| v == "save_handshake_pending"));
-        assert!(signal_types
-            .iter()
-            .any(|v| v == "save_claim_mismatch_attempt"));
+        assert!(
+            signal_types
+                .iter()
+                .any(|v| v == "save_claim_mismatch_attempt")
+        );
     }
 }

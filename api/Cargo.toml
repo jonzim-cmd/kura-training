@@ -30,3 +30,4 @@ url = { workspace = true }
 tower_governor = { workspace = true }
 governor = { workspace = true }
 strsim = { workspace = true }
+regex = { workspace = true }
