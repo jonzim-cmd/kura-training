@@ -151,6 +151,7 @@ class TestEventConventions:
             "profile.updated", "preference.set", "goal.set", "injury.reported",
             "session.completed", "learning.signal.logged",
             "event.retracted",
+            "workflow.onboarding.closed", "workflow.onboarding.override_granted",
             "projection_rule.created", "projection_rule.archived",
         }
         assert set(conventions.keys()) == expected

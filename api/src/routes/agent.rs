@@ -174,6 +174,23 @@ pub struct AgentWriteWithProofRequest {
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentWorkflowGate {
+    /// onboarding | planning
+    pub phase: String,
+    /// allowed | blocked
+    pub status: String,
+    /// none | onboarding_closed | override
+    pub transition: String,
+    pub onboarding_closed: bool,
+    pub override_used: bool,
+    pub message: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub missing_requirements: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub planning_event_types: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AgentWriteReceipt {
     pub event_id: Uuid,
     pub event_type: String,
@@ -290,6 +307,7 @@ pub struct AgentWriteWithProofResponse {
     pub warnings: Vec<BatchEventWarning>,
     pub verification: AgentWriteVerificationSummary,
     pub claim_guard: AgentWriteClaimGuard,
+    pub workflow_gate: AgentWorkflowGate,
     pub session_audit: AgentSessionAuditSummary,
     pub repair_feedback: AgentRepairFeedback,
 }
@@ -345,6 +363,17 @@ struct ExistingWriteReceiptRow {
     metadata: Value,
 }
 
+#[derive(sqlx::FromRow)]
+struct WorkflowMarkerEventRow {
+    id: Uuid,
+    event_type: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct RetractedMarkerRow {
+    retracted_event_id: Option<String>,
+}
+
 #[derive(Debug)]
 struct SessionAuditArtifacts {
     summary: AgentSessionAuditSummary,
@@ -357,6 +386,14 @@ struct SessionAuditUnresolved {
     exercise_label: String,
     field: String,
     candidates: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AgentWorkflowState {
+    onboarding_closed: bool,
+    override_active: bool,
+    missing_close_requirements: Vec<String>,
+    legacy_planning_history: bool,
 }
 
 fn recover_receipts_for_idempotent_retry(
@@ -1103,6 +1140,118 @@ async fn fetch_quality_health_projection(
     Ok(projection)
 }
 
+async fn fetch_user_profile_projection(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<Option<ProjectionResponse>, AppError> {
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let projection = fetch_projection(&mut tx, user_id, "user_profile", "me").await?;
+    tx.commit().await?;
+    Ok(projection)
+}
+
+async fn fetch_workflow_state(
+    state: &AppState,
+    user_id: Uuid,
+    user_profile: Option<&ProjectionResponse>,
+) -> Result<AgentWorkflowState, AppError> {
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+    let marker_rows = sqlx::query_as::<_, WorkflowMarkerEventRow>(
+        r#"
+        SELECT id, event_type
+        FROM events
+        WHERE user_id = $1
+          AND event_type IN ($2, $3)
+        ORDER BY timestamp ASC, id ASC
+        "#,
+    )
+    .bind(user_id)
+    .bind(WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE)
+    .bind(WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let planning_event_types: Vec<&str> = PLANNING_OR_COACHING_EVENT_TYPES.to_vec();
+    let legacy_planning_history = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM events e
+            WHERE e.user_id = $1
+              AND e.event_type = ANY($2)
+              AND NOT EXISTS (
+                SELECT 1
+                FROM events retracted
+                WHERE retracted.user_id = $1
+                  AND retracted.event_type = 'event.retracted'
+                  AND retracted.data->>'retracted_event_id' = e.id::text
+              )
+        )
+        "#,
+    )
+    .bind(user_id)
+    .bind(&planning_event_types)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let marker_ids: Vec<String> = marker_rows.iter().map(|row| row.id.to_string()).collect();
+    let retracted_ids: HashSet<String> = if marker_ids.is_empty() {
+        HashSet::new()
+    } else {
+        sqlx::query_as::<_, RetractedMarkerRow>(
+            r#"
+            SELECT data->>'retracted_event_id' AS retracted_event_id
+            FROM events
+            WHERE user_id = $1
+              AND event_type = 'event.retracted'
+              AND data->>'retracted_event_id' = ANY($2)
+            "#,
+        )
+        .bind(user_id)
+        .bind(&marker_ids)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .filter_map(|row| row.retracted_event_id)
+        .collect()
+    };
+
+    tx.commit().await?;
+
+    let active_markers: Vec<&WorkflowMarkerEventRow> = marker_rows
+        .iter()
+        .filter(|row| !retracted_ids.contains(&row.id.to_string()))
+        .collect();
+    let onboarding_closed = active_markers.iter().any(|row| {
+        row.event_type
+            .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE)
+    });
+    let override_active = active_markers.iter().any(|row| {
+        row.event_type
+            .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE)
+    });
+
+    Ok(AgentWorkflowState {
+        onboarding_closed,
+        override_active,
+        legacy_planning_history,
+        missing_close_requirements: if onboarding_closed {
+            Vec::new()
+        } else {
+            missing_onboarding_close_requirements(user_profile)
+        },
+    })
+}
+
 async fn fetch_projection_list(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
@@ -1148,6 +1297,253 @@ fn normalize_read_after_write_targets(
         }
     }
     normalized
+}
+
+const WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE: &str = "workflow.onboarding.closed";
+const WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE: &str = "workflow.onboarding.override_granted";
+const WORKFLOW_INVARIANT_ID: &str = "INV-004";
+const ONBOARDING_REQUIRED_AREAS: [&str; 3] = [
+    "training_background",
+    "baseline_profile",
+    "unit_preferences",
+];
+const PLANNING_OR_COACHING_EVENT_TYPES: [&str; 8] = [
+    "training_plan.created",
+    "training_plan.updated",
+    "training_plan.archived",
+    "projection_rule.created",
+    "projection_rule.archived",
+    "weight_target.set",
+    "sleep_target.set",
+    "nutrition_target.set",
+];
+
+fn is_planning_or_coaching_event_type(event_type: &str) -> bool {
+    let normalized = event_type.trim().to_lowercase();
+    PLANNING_OR_COACHING_EVENT_TYPES.contains(&normalized.as_str())
+}
+
+fn has_timezone_preference_in_user_profile(data: &Value) -> bool {
+    let user = data.get("user").and_then(Value::as_object);
+    let preferences = user
+        .and_then(|u| u.get("preferences"))
+        .and_then(Value::as_object);
+    for key in ["timezone", "time_zone"] {
+        let configured = preferences
+            .and_then(|prefs| prefs.get(key))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if !configured.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+fn coverage_status_from_user_profile(data: &Value, area: &str) -> Option<String> {
+    let coverage = data
+        .get("user")
+        .and_then(|u| u.get("interview_coverage"))
+        .and_then(Value::as_array)?;
+    coverage.iter().find_map(|entry| {
+        let candidate_area = entry.get("area").and_then(Value::as_str)?.trim();
+        if candidate_area != area {
+            return None;
+        }
+        entry
+            .get("status")
+            .and_then(Value::as_str)
+            .map(|status| status.trim().to_lowercase())
+    })
+}
+
+fn missing_onboarding_close_requirements(user_profile: Option<&ProjectionResponse>) -> Vec<String> {
+    let mut missing = Vec::new();
+    let Some(profile) = user_profile else {
+        missing.push("user_profile_missing".to_string());
+        missing.push("user_profile_bootstrap_pending".to_string());
+        return missing;
+    };
+    let data = &profile.projection.data;
+    if data.get("user").map(Value::is_null).unwrap_or(true) {
+        missing.push("user_profile_bootstrap_pending".to_string());
+        return missing;
+    }
+
+    for area in ONBOARDING_REQUIRED_AREAS {
+        let Some(status) = coverage_status_from_user_profile(data, area) else {
+            missing.push(format!("coverage.{area}.missing"));
+            continue;
+        };
+        let satisfied = if area == "baseline_profile" {
+            matches!(status.as_str(), "covered" | "deferred")
+        } else {
+            status == "covered"
+        };
+        if !satisfied {
+            missing.push(format!("coverage.{area}.{status}"));
+        }
+    }
+
+    if !has_timezone_preference_in_user_profile(data) {
+        missing.push("preference.timezone.missing".to_string());
+    }
+
+    missing
+}
+
+fn workflow_gate_from_request(
+    events: &[CreateEventRequest],
+    state: &AgentWorkflowState,
+) -> AgentWorkflowGate {
+    let planning_event_types: Vec<String> = events
+        .iter()
+        .filter_map(|event| {
+            let event_type = event.event_type.trim().to_lowercase();
+            if is_planning_or_coaching_event_type(&event_type) {
+                Some(event_type)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let contains_planning_action = !planning_event_types.is_empty();
+    let requested_close = events.iter().any(|event| {
+        event
+            .event_type
+            .trim()
+            .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE)
+    });
+    let requested_override = events.iter().any(|event| {
+        event
+            .event_type
+            .trim()
+            .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE)
+    });
+
+    if !contains_planning_action {
+        return AgentWorkflowGate {
+            phase: if state.onboarding_closed {
+                "planning".to_string()
+            } else {
+                "onboarding".to_string()
+            },
+            status: "allowed".to_string(),
+            transition: "none".to_string(),
+            onboarding_closed: state.onboarding_closed,
+            override_used: false,
+            message: if state.onboarding_closed {
+                "Onboarding is closed; planning/coaching actions are available.".to_string()
+            } else {
+                "Onboarding remains active; no planning/coaching payload detected.".to_string()
+            },
+            missing_requirements: state.missing_close_requirements.clone(),
+            planning_event_types,
+        };
+    }
+
+    if state.onboarding_closed {
+        return AgentWorkflowGate {
+            phase: "planning".to_string(),
+            status: "allowed".to_string(),
+            transition: "none".to_string(),
+            onboarding_closed: true,
+            override_used: false,
+            message: "Planning/coaching payload allowed because onboarding is already closed."
+                .to_string(),
+            missing_requirements: Vec::new(),
+            planning_event_types,
+        };
+    }
+
+    if requested_close && state.missing_close_requirements.is_empty() {
+        return AgentWorkflowGate {
+            phase: "planning".to_string(),
+            status: "allowed".to_string(),
+            transition: "onboarding_closed".to_string(),
+            onboarding_closed: true,
+            override_used: false,
+            message:
+                "Onboarding close transition accepted. Planning/coaching payload is now allowed."
+                    .to_string(),
+            missing_requirements: Vec::new(),
+            planning_event_types,
+        };
+    }
+
+    if requested_override || state.override_active {
+        return AgentWorkflowGate {
+            phase: "onboarding".to_string(),
+            status: "allowed".to_string(),
+            transition: "override".to_string(),
+            onboarding_closed: false,
+            override_used: true,
+            message: "Planning/coaching payload allowed via explicit onboarding override."
+                .to_string(),
+            missing_requirements: state.missing_close_requirements.clone(),
+            planning_event_types,
+        };
+    }
+
+    if state.legacy_planning_history && state.missing_close_requirements.is_empty() {
+        return AgentWorkflowGate {
+            phase: "planning".to_string(),
+            status: "allowed".to_string(),
+            transition: "onboarding_closed".to_string(),
+            onboarding_closed: true,
+            override_used: false,
+            message: "Planning/coaching payload allowed for legacy compatibility; onboarding close marker will be auto-recorded."
+                .to_string(),
+            missing_requirements: Vec::new(),
+            planning_event_types,
+        };
+    }
+
+    AgentWorkflowGate {
+        phase: "onboarding".to_string(),
+        status: "blocked".to_string(),
+        transition: "none".to_string(),
+        onboarding_closed: false,
+        override_used: false,
+        message: "Planning/coaching payload blocked: onboarding phase is not closed.".to_string(),
+        missing_requirements: state.missing_close_requirements.clone(),
+        planning_event_types,
+    }
+}
+
+fn build_auto_onboarding_close_event(events: &[CreateEventRequest]) -> CreateEventRequest {
+    let mut idempotency_keys: Vec<String> = events
+        .iter()
+        .map(|event| event.metadata.idempotency_key.trim().to_lowercase())
+        .filter(|key| !key.is_empty())
+        .collect();
+    idempotency_keys.sort();
+    idempotency_keys.dedup();
+    let seed = format!("workflow_auto_close|{}", idempotency_keys.join("|"));
+    let idempotency_key = format!("workflow-auto-close-{}", stable_hash_suffix(&seed, 20));
+    let session_id = events
+        .iter()
+        .find_map(|event| event.metadata.session_id.clone())
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| Some("workflow:onboarding-auto-close".to_string()));
+
+    CreateEventRequest {
+        timestamp: Utc::now(),
+        event_type: WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE.to_string(),
+        data: serde_json::json!({
+            "reason": "Auto-close emitted for legacy compatibility before planning/coaching write.",
+            "closed_by": "system_auto",
+            "compatibility_mode": "legacy_planning_history",
+        }),
+        metadata: EventMetadata {
+            source: Some("agent_write_with_proof".to_string()),
+            agent: Some("api".to_string()),
+            device: None,
+            session_id,
+            idempotency_key,
+        },
+    }
 }
 
 const SESSION_AUDIT_MENTION_BOUND_FIELDS: [&str; 4] = ["rest_seconds", "tempo", "rir", "set_type"];
@@ -1668,6 +2064,9 @@ fn learning_signal_category(signal_type: &str) -> &'static str {
     match signal_type {
         "save_handshake_verified" => "outcome_signal",
         "save_handshake_pending" | "save_claim_mismatch_attempt" => "friction_signal",
+        "workflow_violation" => "friction_signal",
+        "workflow_override_used" => "correction_signal",
+        "workflow_phase_transition_closed" => "outcome_signal",
         "mismatch_detected" => "quality_signal",
         "mismatch_repaired" => "correction_signal",
         "mismatch_unresolved" => "friction_signal",
@@ -1796,6 +2195,89 @@ fn build_save_handshake_learning_signal_events(
             receipts.len(),
         ),
     ]
+}
+
+fn workflow_gate_signal_type(gate: &AgentWorkflowGate) -> Option<&'static str> {
+    if gate.status == "blocked" {
+        return Some("workflow_violation");
+    }
+    match gate.transition.as_str() {
+        "onboarding_closed" => Some("workflow_phase_transition_closed"),
+        "override" => Some("workflow_override_used"),
+        _ => None,
+    }
+}
+
+fn workflow_gate_confidence_band(gate: &AgentWorkflowGate) -> &'static str {
+    if gate.status == "blocked" {
+        "high"
+    } else if gate.transition == "override" {
+        "medium"
+    } else {
+        "high"
+    }
+}
+
+fn build_workflow_gate_learning_signal_event(
+    user_id: Uuid,
+    gate: &AgentWorkflowGate,
+) -> Option<CreateEventRequest> {
+    let signal_type = workflow_gate_signal_type(gate)?;
+    let captured_at = Utc::now();
+    let confidence_band = workflow_gate_confidence_band(gate);
+    let agent_version =
+        std::env::var("KURA_AGENT_VERSION").unwrap_or_else(|_| "api_agent_v1".to_string());
+    let signature_seed = format!(
+        "{}|{}|{}|{}|{}|{}|{}",
+        signal_type,
+        "onboarding_phase_gate",
+        WORKFLOW_INVARIANT_ID,
+        agent_version,
+        "onboarding_state_gate",
+        "chat",
+        confidence_band
+    );
+    let cluster_signature = format!("ls_{}", stable_hash_suffix(&signature_seed, 20));
+    let event_data = serde_json::json!({
+        "schema_version": LEARNING_TELEMETRY_SCHEMA_VERSION,
+        "signal_type": signal_type,
+        "category": learning_signal_category(signal_type),
+        "captured_at": captured_at,
+        "user_ref": {
+            "pseudonymized_user_id": pseudonymize_user_id_for_learning_signal(user_id),
+        },
+        "signature": {
+            "issue_type": "onboarding_phase_gate",
+            "invariant_id": WORKFLOW_INVARIANT_ID,
+            "agent_version": agent_version,
+            "workflow_phase": "onboarding_state_gate",
+            "modality": "chat",
+            "confidence_band": confidence_band,
+        },
+        "cluster_signature": cluster_signature,
+        "attributes": {
+            "phase": gate.phase,
+            "gate_status": gate.status,
+            "transition": gate.transition,
+            "onboarding_closed": gate.onboarding_closed,
+            "override_used": gate.override_used,
+            "missing_requirements": gate.missing_requirements,
+            "planning_event_types": gate.planning_event_types,
+        },
+    });
+
+    Some(CreateEventRequest {
+        timestamp: captured_at,
+        event_type: "learning.signal.logged".to_string(),
+        data: event_data,
+        metadata: EventMetadata {
+            source: Some("agent_write_with_proof".to_string()),
+            agent: Some("api".to_string()),
+            device: None,
+            session_id: Some("learning:onboarding-state-gate".to_string()),
+            idempotency_key: format!("learning-signal-{}", Uuid::now_v7()),
+        },
+    })
 }
 
 fn session_audit_auto_repair_allowed(policy: &AgentAutonomyPolicy) -> bool {
@@ -2332,9 +2814,80 @@ pub async fn write_with_proof(
         });
     }
 
+    let user_profile = fetch_user_profile_projection(&state, user_id).await?;
+    let workflow_state = fetch_workflow_state(&state, user_id, user_profile.as_ref()).await?;
+    let workflow_gate = workflow_gate_from_request(&req.events, &workflow_state);
+    let requested_close = req.events.iter().any(|event| {
+        event
+            .event_type
+            .trim()
+            .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE)
+    });
+    if workflow_gate.status == "blocked" {
+        if let Some(signal) = build_workflow_gate_learning_signal_event(user_id, &workflow_gate) {
+            let _ = create_events_batch_internal(&state, user_id, &[signal]).await;
+        }
+        let docs_hint = format!(
+            "Planning/coaching events require onboarding close ({WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE}) or explicit override ({WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE}). Missing requirements: {}",
+            workflow_gate.missing_requirements.join(", ")
+        );
+        return Err(AppError::Validation {
+            message: workflow_gate.message.clone(),
+            field: Some("events".to_string()),
+            received: Some(serde_json::json!({
+                "planning_event_types": workflow_gate.planning_event_types,
+                "missing_requirements": workflow_gate.missing_requirements,
+                "phase": workflow_gate.phase,
+            })),
+            docs_hint: Some(docs_hint),
+        });
+    }
+
+    let mut auto_close_applied = false;
+    if workflow_gate.transition == "onboarding_closed"
+        && !requested_close
+        && !workflow_state.onboarding_closed
+    {
+        let auto_close_event = build_auto_onboarding_close_event(&req.events);
+        let (_auto_close_receipts, _auto_close_warnings, _auto_close_write_path) =
+            write_events_with_receipts(
+                &state,
+                user_id,
+                &[auto_close_event],
+                "workflow_auto_close.idempotency_key",
+            )
+            .await?;
+        auto_close_applied = true;
+    }
+
+    let mut workflow_warnings: Vec<BatchEventWarning> = Vec::new();
+    if workflow_gate.transition == "onboarding_closed" {
+        workflow_warnings.push(BatchEventWarning {
+            event_index: 0,
+            field: "workflow.phase".to_string(),
+            message: if auto_close_applied {
+                "Legacy compatibility: onboarding close marker auto-recorded; planning/coaching phase is active."
+                    .to_string()
+            } else {
+                "Onboarding close transition accepted. Planning/coaching phase is active."
+                    .to_string()
+            },
+            severity: "info".to_string(),
+        });
+    } else if workflow_gate.transition == "override" {
+        workflow_warnings.push(BatchEventWarning {
+            event_index: 0,
+            field: "workflow.phase".to_string(),
+            message: "Planning/coaching phase allowed via explicit onboarding override."
+                .to_string(),
+            severity: "warning".to_string(),
+        });
+    }
+
     let (receipts, mut warnings, write_path) =
         write_events_with_receipts(&state, user_id, &req.events, "metadata.idempotency_key")
             .await?;
+    warnings.extend(workflow_warnings);
     let quality_health = fetch_quality_health_projection(&state, user_id).await?;
     let autonomy_policy = autonomy_policy_from_quality_health(quality_health.as_ref());
     let SessionAuditArtifacts {
@@ -2419,6 +2972,11 @@ pub async fn write_with_proof(
         &verification,
         &claim_guard,
     ));
+    if let Some(workflow_signal) =
+        build_workflow_gate_learning_signal_event(user_id, &workflow_gate)
+    {
+        quality_events.push(workflow_signal);
+    }
     quality_events.extend(telemetry_events);
     let _ = create_events_batch_internal(&state, user_id, &quality_events).await;
     let repair_feedback = build_repair_feedback(
@@ -2438,6 +2996,7 @@ pub async fn write_with_proof(
             warnings,
             verification,
             claim_guard,
+            workflow_gate,
             session_audit: session_audit_summary,
             repair_feedback,
         }),
@@ -2596,14 +3155,16 @@ pub async fn get_agent_context(
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentReadAfterWriteCheck, AgentReadAfterWriteTarget, AgentWriteReceipt, IntentClass,
-        ProjectionResponse, RankingContext, bootstrap_user_profile, build_agent_capabilities,
-        build_claim_guard, build_repair_feedback, build_save_handshake_learning_signal_events,
-        build_session_audit_artifacts, clamp_limit, clamp_verify_timeout_ms,
-        default_autonomy_policy, extract_set_context_mentions_from_text,
-        normalize_read_after_write_targets, normalize_set_type, parse_rest_seconds_from_text,
-        parse_rir_from_text, parse_tempo_from_text, rank_projection_list, ranking_candidate_limit,
-        recover_receipts_for_idempotent_retry,
+        AgentReadAfterWriteCheck, AgentReadAfterWriteTarget, AgentWorkflowState, AgentWriteReceipt,
+        IntentClass, ProjectionResponse, RankingContext, WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE,
+        WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE, bootstrap_user_profile, build_agent_capabilities,
+        build_auto_onboarding_close_event, build_claim_guard, build_repair_feedback,
+        build_save_handshake_learning_signal_events, build_session_audit_artifacts, clamp_limit,
+        clamp_verify_timeout_ms, default_autonomy_policy, extract_set_context_mentions_from_text,
+        missing_onboarding_close_requirements, normalize_read_after_write_targets,
+        normalize_set_type, parse_rest_seconds_from_text, parse_rir_from_text,
+        parse_tempo_from_text, rank_projection_list, ranking_candidate_limit,
+        recover_receipts_for_idempotent_retry, workflow_gate_from_request,
     };
     use chrono::{Duration, Utc};
     use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
@@ -2651,6 +3212,25 @@ mod tests {
                 agent: Some("test".to_string()),
                 device: None,
                 session_id: session_id.map(|value| value.to_string()),
+                idempotency_key: idempotency_key.to_string(),
+            },
+        }
+    }
+
+    fn make_event(
+        event_type: &str,
+        data: serde_json::Value,
+        idempotency_key: &str,
+    ) -> CreateEventRequest {
+        CreateEventRequest {
+            timestamp: Utc::now(),
+            event_type: event_type.to_string(),
+            data,
+            metadata: EventMetadata {
+                source: Some("api".to_string()),
+                agent: Some("test".to_string()),
+                device: None,
+                session_id: Some("session-1".to_string()),
                 idempotency_key: idempotency_key.to_string(),
             },
         }
@@ -2894,6 +3474,179 @@ mod tests {
         let recovered =
             recover_receipts_for_idempotent_retry(&requested, &std::collections::HashMap::new());
         assert!(recovered.is_empty());
+    }
+
+    #[test]
+    fn onboarding_close_requirements_accept_deferred_baseline_with_timezone() {
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "unit_system": "metric",
+                        "timezone": "Europe/Berlin"
+                    },
+                    "interview_coverage": [
+                        {"area": "training_background", "status": "covered"},
+                        {"area": "baseline_profile", "status": "deferred"},
+                        {"area": "unit_preferences", "status": "covered"}
+                    ]
+                }
+            }),
+        );
+        let missing = missing_onboarding_close_requirements(Some(&profile));
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn onboarding_close_requirements_flag_timezone_when_missing() {
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "unit_system": "metric"
+                    },
+                    "interview_coverage": [
+                        {"area": "training_background", "status": "covered"},
+                        {"area": "baseline_profile", "status": "covered"},
+                        {"area": "unit_preferences", "status": "covered"}
+                    ]
+                }
+            }),
+        );
+        let missing = missing_onboarding_close_requirements(Some(&profile));
+        assert!(
+            missing
+                .iter()
+                .any(|item| item == "preference.timezone.missing")
+        );
+    }
+
+    #[test]
+    fn workflow_gate_blocks_planning_drift_before_phase_close() {
+        let state = AgentWorkflowState {
+            onboarding_closed: false,
+            override_active: false,
+            missing_close_requirements: vec!["coverage.baseline_profile.uncovered".to_string()],
+            legacy_planning_history: false,
+        };
+        let events = vec![make_event(
+            "training_plan.created",
+            json!({"name": "Starter Plan"}),
+            "plan-k-1",
+        )];
+        let gate = workflow_gate_from_request(&events, &state);
+        assert_eq!(gate.status, "blocked");
+        assert_eq!(gate.phase, "onboarding");
+        assert_eq!(gate.transition, "none");
+        assert!(
+            gate.planning_event_types
+                .iter()
+                .any(|event_type| event_type == "training_plan.created")
+        );
+    }
+
+    #[test]
+    fn workflow_gate_allows_valid_onboarding_close_transition() {
+        let state = AgentWorkflowState {
+            onboarding_closed: false,
+            override_active: false,
+            missing_close_requirements: Vec::new(),
+            legacy_planning_history: false,
+        };
+        let events = vec![
+            make_event(
+                WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE,
+                json!({"reason": "onboarding complete"}),
+                "wf-close-k-1",
+            ),
+            make_event(
+                "training_plan.created",
+                json!({"name": "Starter Plan"}),
+                "plan-k-2",
+            ),
+        ];
+        let gate = workflow_gate_from_request(&events, &state);
+        assert_eq!(gate.status, "allowed");
+        assert_eq!(gate.transition, "onboarding_closed");
+        assert_eq!(gate.phase, "planning");
+        assert!(gate.onboarding_closed);
+    }
+
+    #[test]
+    fn workflow_gate_allows_explicit_override_path() {
+        let state = AgentWorkflowState {
+            onboarding_closed: false,
+            override_active: false,
+            missing_close_requirements: vec!["coverage.unit_preferences.uncovered".to_string()],
+            legacy_planning_history: false,
+        };
+        let events = vec![
+            make_event(
+                WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE,
+                json!({"reason": "user asked for plan now"}),
+                "wf-override-k-1",
+            ),
+            make_event(
+                "training_plan.updated",
+                json!({"name": "Adjusted Plan"}),
+                "plan-k-3",
+            ),
+        ];
+        let gate = workflow_gate_from_request(&events, &state);
+        assert_eq!(gate.status, "allowed");
+        assert_eq!(gate.transition, "override");
+        assert!(gate.override_used);
+        assert_eq!(gate.phase, "onboarding");
+    }
+
+    #[test]
+    fn workflow_gate_allows_legacy_compatibility_transition_when_requirements_met() {
+        let state = AgentWorkflowState {
+            onboarding_closed: false,
+            override_active: false,
+            missing_close_requirements: Vec::new(),
+            legacy_planning_history: true,
+        };
+        let events = vec![make_event(
+            "training_plan.created",
+            json!({"name": "Starter Plan"}),
+            "plan-k-legacy-1",
+        )];
+        let gate = workflow_gate_from_request(&events, &state);
+        assert_eq!(gate.status, "allowed");
+        assert_eq!(gate.transition, "onboarding_closed");
+        assert_eq!(gate.phase, "planning");
+        assert!(gate.onboarding_closed);
+        assert!(
+            gate.message
+                .contains("legacy compatibility; onboarding close marker will be auto-recorded")
+        );
+    }
+
+    #[test]
+    fn auto_onboarding_close_event_uses_deterministic_idempotency_seed() {
+        let events = vec![
+            make_event("training_plan.created", json!({"name": "A"}), "plan-k-1"),
+            make_event("training_plan.updated", json!({"name": "B"}), "plan-k-2"),
+        ];
+        let first = build_auto_onboarding_close_event(&events);
+        let second = build_auto_onboarding_close_event(&events);
+
+        assert_eq!(first.event_type, WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE);
+        assert_eq!(
+            first.metadata.idempotency_key,
+            second.metadata.idempotency_key
+        );
+        assert_eq!(
+            first.data.get("closed_by").and_then(Value::as_str),
+            Some("system_auto")
+        );
     }
 
     #[test]

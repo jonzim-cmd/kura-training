@@ -768,6 +768,8 @@ def _build_agenda(
     "sleep_target.set",
     "weight_target.set",
     "session.completed",
+    "workflow.onboarding.closed",
+    "workflow.onboarding.override_granted",
 )
 async def update_user_profile(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
@@ -786,7 +788,8 @@ async def update_user_profile(
               AND event_type IN (
                   'set.logged', 'set.corrected', 'exercise.alias_created', 'preference.set',
                   'goal.set', 'profile.updated', 'program.started', 'injury.reported',
-                  'bodyweight.logged', 'session.completed'
+                  'bodyweight.logged', 'session.completed',
+                  'workflow.onboarding.closed', 'workflow.onboarding.override_granted'
               )
             ORDER BY timestamp ASC
             """,
@@ -822,6 +825,9 @@ async def update_user_profile(
     last_set_logged_date: str | None = None
     bodyweight_event_count = 0
     latest_bodyweight_kg: Any = None
+    workflow_onboarding_closed = False
+    workflow_override_count = 0
+    workflow_last_transition_at: str | None = None
 
     first_event = rows[0]["timestamp"]
     last_event = rows[-1]["timestamp"]
@@ -891,6 +897,14 @@ async def update_user_profile(
                 bodyweight_event_count += 1
                 latest_bodyweight_kg = bodyweight
 
+        elif event_type == "workflow.onboarding.closed":
+            workflow_onboarding_closed = True
+            workflow_last_transition_at = row["timestamp"].isoformat()
+
+        elif event_type == "workflow.onboarding.override_granted":
+            workflow_override_count += 1
+            workflow_last_transition_at = row["timestamp"].isoformat()
+
     # Resolve exercises through alias map
     resolved_exercises = _resolve_exercises(exercises_logged, aliases)
     baseline_profile = _compute_baseline_profile_summary(
@@ -898,6 +912,13 @@ async def update_user_profile(
         bodyweight_event_count=bodyweight_event_count,
         latest_bodyweight_kg=latest_bodyweight_kg,
     )
+    workflow_state = {
+        "phase": "planning" if workflow_onboarding_closed else "onboarding",
+        "onboarding_closed": workflow_onboarding_closed,
+        "override_active": (not workflow_onboarding_closed) and workflow_override_count > 0,
+        "override_count": workflow_override_count,
+        "last_transition_at": workflow_last_transition_at,
+    }
 
     # Compute data quality
     alias_lookup = {a.strip().lower(): info["target"] for a, info in aliases.items()}
@@ -1057,6 +1078,7 @@ async def update_user_profile(
             "profile": profile_data if profile_data else None,
             "injuries": injuries if injuries else None,
             "baseline_profile": baseline_profile,
+            "workflow_state": workflow_state,
             "exercises_logged": sorted(resolved_exercises),
             "total_events": total_events,
             "first_event": first_event.isoformat(),

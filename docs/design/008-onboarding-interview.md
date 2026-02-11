@@ -272,6 +272,25 @@ builds the full three-layer response, and subsequent reads return the complete
 5. Agent continues interview using the guide
 ```
 
+## Decision 8.7: Onboarding -> Planning Workflow Gate (INV-004)
+
+To prevent coaching drift, `POST /v1/agent/write-with-proof` enforces a phase gate
+before planning/coaching payloads are accepted:
+
+- Planning/coaching events are blocked while onboarding is open.
+- Allowed transition paths are:
+  - `workflow.onboarding.closed`
+  - `workflow.onboarding.override_granted`
+- Onboarding close requires a complete minimum profile snapshot:
+  - coverage: `training_background`, `baseline_profile`, `unit_preferences`
+  - explicit timezone preference (`timezone`/`time_zone`)
+
+For backward compatibility, existing users with legacy planning history and no
+stored close marker are not hard-broken. On their next planning write (when
+close requirements are already satisfied), the API records
+`workflow.onboarding.closed` automatically with `closed_by: "system_auto"` and
+returns a compatibility warning.
+
 ## Accepted Trade-offs
 
 ### Interview guide is static, not per-user customizable

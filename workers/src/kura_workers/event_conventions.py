@@ -418,6 +418,38 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
             "example": {"name": "hrv_tracking"},
         },
+        "workflow.onboarding.closed": {
+            "description": (
+                "Explicit transition marker: onboarding phase is closed and planning/coaching "
+                "actions are now allowed by workflow gate."
+            ),
+            "fields": {
+                "reason": "string (optional)",
+                "closed_by": "string (optional: user_confirmed|agent_confirmed|system_auto)",
+                "missing_requirements_at_close": "list[string] (optional, usually empty)",
+            },
+            "example": {
+                "reason": "User confirmed onboarding summary.",
+                "closed_by": "user_confirmed",
+                "missing_requirements_at_close": [],
+            },
+        },
+        "workflow.onboarding.override_granted": {
+            "description": (
+                "Explicit user override marker that temporarily allows planning/coaching "
+                "before onboarding closure."
+            ),
+            "fields": {
+                "reason": "string (required, explicit user intent)",
+                "confirmed_by": "string (optional: user)",
+                "scope": "string (optional: current_topic|current_session|manual)",
+            },
+            "example": {
+                "reason": "User asked to create a plan now despite open onboarding.",
+                "confirmed_by": "user",
+                "scope": "current_session",
+            },
+        },
         # --- Data corrections ---
         "learning.signal.logged": {
             "description": (
@@ -432,7 +464,8 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                     "repair_auto_applied, repair_auto_rejected, repair_verified_closed, "
                     "save_handshake_verified, save_handshake_pending, "
                     "save_claim_mismatch_attempt, correction_applied, correction_undone, "
-                    "clarification_requested"
+                    "clarification_requested, workflow_violation, "
+                    "workflow_phase_transition_closed, workflow_override_used"
                 ),
                 "category": "string (required: quality_signal|friction_signal|outcome_signal|correction_signal)",
                 "captured_at": "string (required, ISO datetime)",
