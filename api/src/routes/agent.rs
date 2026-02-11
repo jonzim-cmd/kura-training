@@ -25,6 +25,7 @@ use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/v1/agent/capabilities", get(get_agent_capabilities))
         .route("/v1/agent/context", get(get_agent_context))
         .route("/v1/agent/write-with-proof", post(write_with_proof))
 }
@@ -88,6 +89,54 @@ pub struct AgentContextResponse {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub custom: Vec<ProjectionResponse>,
     pub meta: AgentContextMeta,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentVerificationContract {
+    pub requires_receipts: bool,
+    pub requires_read_after_write: bool,
+    pub required_claim_guard_field: String,
+    pub saved_claim_condition: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentFallbackContract {
+    pub endpoint: String,
+    pub compatibility_status: String,
+    pub action_hint: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentUpgradePhase {
+    pub phase: String,
+    pub compatibility_status: String,
+    pub starts_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ends_at: Option<String>,
+    pub action_hint: String,
+    pub applies_to_endpoints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentUpgradePolicy {
+    pub current_phase: String,
+    pub phases: Vec<AgentUpgradePhase>,
+    pub upgrade_signal_header: String,
+    pub docs_hint: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentCapabilitiesResponse {
+    pub schema_version: String,
+    pub protocol_version: String,
+    pub preferred_read_endpoint: String,
+    pub preferred_write_endpoint: String,
+    pub required_verification_contract: AgentVerificationContract,
+    pub supported_fallbacks: Vec<AgentFallbackContract>,
+    pub min_cli_version: String,
+    pub min_mcp_version: String,
+    pub upgrade_policy: AgentUpgradePolicy,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -448,6 +497,99 @@ async fn write_events_with_receipts(
     };
 
     Ok((receipts, warnings, write_path))
+}
+
+fn build_agent_capabilities() -> AgentCapabilitiesResponse {
+    AgentCapabilitiesResponse {
+        schema_version: "agent_capabilities.v1".to_string(),
+        protocol_version: "2026-02-11.agent-contract.v1".to_string(),
+        preferred_read_endpoint: "/v1/agent/context".to_string(),
+        preferred_write_endpoint: "/v1/agent/write-with-proof".to_string(),
+        required_verification_contract: AgentVerificationContract {
+            requires_receipts: true,
+            requires_read_after_write: true,
+            required_claim_guard_field: "claim_guard.allow_saved_claim".to_string(),
+            saved_claim_condition: "allow_saved_claim=true".to_string(),
+        },
+        supported_fallbacks: vec![
+            AgentFallbackContract {
+                endpoint: "/v1/events".to_string(),
+                compatibility_status: "supported_with_upgrade_signal".to_string(),
+                action_hint: "Prefer /v1/agent/write-with-proof for agent writes.".to_string(),
+                reason: "Legacy event writes do not enforce read-after-write proof.".to_string(),
+            },
+            AgentFallbackContract {
+                endpoint: "/v1/events/batch".to_string(),
+                compatibility_status: "supported_with_upgrade_signal".to_string(),
+                action_hint: "Prefer /v1/agent/write-with-proof for agent writes.".to_string(),
+                reason: "Legacy batch writes do not return claim guard verification.".to_string(),
+            },
+            AgentFallbackContract {
+                endpoint: "/v1/projections".to_string(),
+                compatibility_status: "supported_with_upgrade_signal".to_string(),
+                action_hint: "Prefer /v1/agent/context for bundled agent reads.".to_string(),
+                reason: "Snapshot reads miss contract-level ranking and bundle guarantees."
+                    .to_string(),
+            },
+            AgentFallbackContract {
+                endpoint: "/v1/projections/{projection_type}/{key}".to_string(),
+                compatibility_status: "supported_with_upgrade_signal".to_string(),
+                action_hint: "Prefer /v1/agent/context for bundled agent reads.".to_string(),
+                reason: "Direct projection reads bypass context bundle semantics.".to_string(),
+            },
+        ],
+        min_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+        min_mcp_version: "not_implemented".to_string(),
+        upgrade_policy: AgentUpgradePolicy {
+            current_phase: "supported_with_upgrade_signals".to_string(),
+            phases: vec![
+                AgentUpgradePhase {
+                    phase: "supported".to_string(),
+                    compatibility_status: "supported".to_string(),
+                    starts_at: "2026-02-11".to_string(),
+                    ends_at: Some("2026-04-30".to_string()),
+                    action_hint: "Clients may keep legacy flows during migration.".to_string(),
+                    applies_to_endpoints: vec![
+                        "/v1/events".to_string(),
+                        "/v1/events/batch".to_string(),
+                        "/v1/projections".to_string(),
+                        "/v1/projections/{projection_type}/{key}".to_string(),
+                    ],
+                },
+                AgentUpgradePhase {
+                    phase: "deprecated".to_string(),
+                    compatibility_status: "deprecated".to_string(),
+                    starts_at: "2026-05-01".to_string(),
+                    ends_at: Some("2026-08-31".to_string()),
+                    action_hint: "Migrate to /v1/agent/context and /v1/agent/write-with-proof."
+                        .to_string(),
+                    applies_to_endpoints: vec![
+                        "/v1/events".to_string(),
+                        "/v1/events/batch".to_string(),
+                        "/v1/projections".to_string(),
+                        "/v1/projections/{projection_type}/{key}".to_string(),
+                    ],
+                },
+                AgentUpgradePhase {
+                    phase: "removed".to_string(),
+                    compatibility_status: "planned".to_string(),
+                    starts_at: "2026-09-01".to_string(),
+                    ends_at: None,
+                    action_hint:
+                        "Legacy agent flows must be routed through agent contract endpoints."
+                            .to_string(),
+                    applies_to_endpoints: vec![
+                        "/v1/events".to_string(),
+                        "/v1/events/batch".to_string(),
+                        "/v1/projections".to_string(),
+                        "/v1/projections/{projection_type}/{key}".to_string(),
+                    ],
+                },
+            ],
+            upgrade_signal_header: "x-kura-upgrade-signal".to_string(),
+            docs_hint: "Discover preferred contracts via /v1/agent/capabilities.".to_string(),
+        },
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2302,6 +2444,23 @@ pub async fn write_with_proof(
     ))
 }
 
+/// Get machine-readable capability manifest for agent contract negotiation.
+#[utoipa::path(
+    get,
+    path = "/v1/agent/capabilities",
+    responses(
+        (status = 200, description = "Agent capability manifest", body = AgentCapabilitiesResponse),
+        (status = 401, description = "Unauthorized", body = ApiError)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "system"
+)]
+pub async fn get_agent_capabilities(
+    _auth: AuthenticatedUser,
+) -> Result<Json<AgentCapabilitiesResponse>, AppError> {
+    Ok(Json(build_agent_capabilities()))
+}
+
 /// Get agent context bundle in a single read call.
 ///
 /// Returns the deployment-static system config, user profile, and key
@@ -2438,18 +2597,18 @@ pub async fn get_agent_context(
 mod tests {
     use super::{
         AgentReadAfterWriteCheck, AgentReadAfterWriteTarget, AgentWriteReceipt, IntentClass,
-        ProjectionResponse, RankingContext, bootstrap_user_profile, build_claim_guard,
-        build_repair_feedback, build_save_handshake_learning_signal_events,
+        ProjectionResponse, RankingContext, bootstrap_user_profile, build_agent_capabilities,
+        build_claim_guard, build_repair_feedback, build_save_handshake_learning_signal_events,
         build_session_audit_artifacts, clamp_limit, clamp_verify_timeout_ms,
         default_autonomy_policy, extract_set_context_mentions_from_text,
         normalize_read_after_write_targets, normalize_set_type, parse_rest_seconds_from_text,
-        parse_rir_from_text, parse_tempo_from_text, rank_projection_list,
-        ranking_candidate_limit, recover_receipts_for_idempotent_retry,
+        parse_rir_from_text, parse_tempo_from_text, rank_projection_list, ranking_candidate_limit,
+        recover_receipts_for_idempotent_retry,
     };
     use chrono::{Duration, Utc};
     use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
     use kura_core::projections::{Projection, ProjectionFreshness, ProjectionMeta};
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use uuid::Uuid;
 
     fn make_projection_response(
@@ -3419,7 +3578,10 @@ mod tests {
     fn extract_set_context_mentions_combined_text() {
         let mentions =
             extract_set_context_mentions_from_text("rest 90 sec, rir 2, tempo 3-1-x-0, warmup");
-        assert_eq!(mentions.get("rest_seconds").and_then(Value::as_f64), Some(90.0));
+        assert_eq!(
+            mentions.get("rest_seconds").and_then(Value::as_f64),
+            Some(90.0)
+        );
         assert_eq!(mentions.get("rir").and_then(Value::as_f64), Some(2.0));
         assert_eq!(
             mentions.get("tempo").and_then(Value::as_str),
@@ -3518,5 +3680,43 @@ mod tests {
         let policy = super::autonomy_policy_from_quality_health(Some(&projection));
         assert_eq!(policy.slo_status, "healthy");
         assert!(!policy.throttle_active);
+    }
+
+    #[test]
+    fn capabilities_manifest_exposes_agent_contract_preferences() {
+        let manifest = build_agent_capabilities();
+        assert_eq!(manifest.schema_version, "agent_capabilities.v1");
+        assert_eq!(manifest.preferred_read_endpoint, "/v1/agent/context");
+        assert_eq!(
+            manifest.preferred_write_endpoint,
+            "/v1/agent/write-with-proof"
+        );
+        assert!(manifest.required_verification_contract.requires_receipts);
+        assert!(
+            manifest
+                .required_verification_contract
+                .requires_read_after_write
+        );
+        assert!(!manifest.min_cli_version.trim().is_empty());
+    }
+
+    #[test]
+    fn capabilities_manifest_contains_fallbacks_and_upgrade_policy() {
+        let manifest = build_agent_capabilities();
+        assert!(manifest.supported_fallbacks.iter().any(|fallback| {
+            fallback.endpoint == "/v1/events"
+                && fallback.compatibility_status == "supported_with_upgrade_signal"
+        }));
+        assert!(
+            manifest
+                .upgrade_policy
+                .phases
+                .iter()
+                .any(|phase| phase.compatibility_status == "deprecated")
+        );
+        assert_eq!(
+            manifest.upgrade_policy.upgrade_signal_header,
+            "x-kura-upgrade-signal"
+        );
     }
 }

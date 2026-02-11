@@ -6,7 +6,11 @@ use clap::{Parser, Subcommand};
 use util::{exit_error, resolve_token};
 
 #[derive(Parser)]
-#[command(name = "kura", version, about = "Kura Training CLI — Agent interface for training, nutrition, and health data")]
+#[command(
+    name = "kura",
+    version,
+    about = "Kura Training CLI — Agent interface for training, nutrition, and health data"
+)]
 struct Cli {
     /// API base URL
     #[arg(long, env = "KURA_API_URL", default_value = "http://localhost:3000")]
@@ -55,6 +59,9 @@ enum Commands {
         #[arg(long)]
         custom_limit: Option<u32>,
     },
+
+    /// Write events with receipts + read-after-write verification
+    WriteWithProof(commands::agent::WriteWithProofArgs),
 
     /// Diagnose setup: API, auth, worker, system config
     Doctor,
@@ -125,7 +132,13 @@ async fn main() {
             custom_limit,
         } => {
             let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
-            commands::system::context(&cli.api_url, token.as_deref(), exercise_limit, custom_limit).await
+            commands::system::context(&cli.api_url, token.as_deref(), exercise_limit, custom_limit)
+                .await
+        }
+
+        Commands::WriteWithProof(args) => {
+            let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
+            commands::agent::write_with_proof(&cli.api_url, token.as_deref(), args).await
         }
 
         Commands::Doctor => commands::system::doctor(&cli.api_url).await,
@@ -165,9 +178,6 @@ async fn resolve_or_exit(api_url: &str, no_auth: bool) -> Option<String> {
     }
     match resolve_token(api_url).await {
         Ok(t) => Some(t),
-        Err(e) => exit_error(
-            &e.to_string(),
-            Some("Run `kura login` or set KURA_API_KEY"),
-        ),
+        Err(e) => exit_error(&e.to_string(), Some("Run `kura login` or set KURA_API_KEY")),
     }
 }

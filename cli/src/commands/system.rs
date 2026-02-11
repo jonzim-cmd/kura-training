@@ -1,6 +1,22 @@
 use serde_json::json;
 
-use crate::util::{api_request, check_auth_configured, client, exit_error, raw_api_request, resolve_token};
+use crate::util::{
+    api_request, check_auth_configured, client, exit_error, raw_api_request, resolve_token,
+};
+
+fn parse_version_triplet(raw: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = raw.trim().split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    Some((major, minor, patch))
+}
+
+fn is_cli_version_compatible(current: &str, minimum: &str) -> Option<bool> {
+    let current = parse_version_triplet(current)?;
+    let minimum = parse_version_triplet(minimum)?;
+    Some(current >= minimum)
+}
 
 pub async fn config(api_url: &str, token: Option<&str>) -> i32 {
     api_request(
@@ -215,7 +231,14 @@ pub async fn doctor(api_url: &str) -> i32 {
     let token = match resolve_token(api_url).await {
         Ok(t) => {
             // Try an authenticated request
-            match raw_api_request(api_url, reqwest::Method::GET, "/v1/projections/user_profile/me", Some(&t)).await {
+            match raw_api_request(
+                api_url,
+                reqwest::Method::GET,
+                "/v1/projections/user_profile/me",
+                Some(&t),
+            )
+            .await
+            {
                 Ok((status, body)) if (200..=404).contains(&status) => {
                     // 200 = has profile, 404 = new user (both mean auth works)
                     let user_hint = if status == 200 {
@@ -279,6 +302,89 @@ pub async fn doctor(api_url: &str) -> i32 {
     };
 
     // 4. System config (workers write this at startup — empty = worker never ran)
+    if let Some(ref t) = token {
+        match raw_api_request(
+            api_url,
+            reqwest::Method::GET,
+            "/v1/agent/capabilities",
+            Some(t),
+        )
+        .await
+        {
+            Ok((200, body)) => {
+                let preferred_read = body
+                    .get("preferred_read_endpoint")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let preferred_write = body
+                    .get("preferred_write_endpoint")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let protocol_version = body
+                    .get("protocol_version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let min_cli = body
+                    .get("min_cli_version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let current_cli = env!("CARGO_PKG_VERSION");
+
+                let compat_status = match is_cli_version_compatible(current_cli, min_cli) {
+                    Some(true) => "ok",
+                    Some(false) => {
+                        if overall == "ok" {
+                            overall = "warn";
+                        }
+                        "warn"
+                    }
+                    None => "ok",
+                };
+                let compat_hint = match is_cli_version_compatible(current_cli, min_cli) {
+                    Some(true) => "compatible".to_string(),
+                    Some(false) => format!("upgrade cli (current={current_cli}, min={min_cli})"),
+                    None => "version comparison unavailable".to_string(),
+                };
+                checks.push(json!({
+                    "name": "agent_capabilities",
+                    "status": compat_status,
+                    "detail": format!("protocol={protocol_version}, read={preferred_read}, write={preferred_write}, cli={compat_hint}")
+                }));
+            }
+            Ok((404, _)) => {
+                if overall == "ok" {
+                    overall = "warn";
+                }
+                checks.push(json!({
+                    "name": "agent_capabilities",
+                    "status": "warn",
+                    "detail": "Not found (HTTP 404). API is older than capability-manifest contract."
+                }));
+            }
+            Ok((status, _)) => {
+                if overall == "ok" {
+                    overall = "warn";
+                }
+                checks.push(json!({
+                    "name": "agent_capabilities",
+                    "status": "warn",
+                    "detail": format!("HTTP {status} while checking /v1/agent/capabilities")
+                }));
+            }
+            Err(e) => {
+                if overall == "ok" {
+                    overall = "warn";
+                }
+                checks.push(json!({
+                    "name": "agent_capabilities",
+                    "status": "error",
+                    "detail": format!("{e}")
+                }));
+            }
+        }
+    }
+
+    // 5. System config (workers write this at startup — empty = worker never ran)
     if let Some(ref t) = token {
         match raw_api_request(api_url, reqwest::Method::GET, "/v1/system/config", Some(t)).await {
             Ok((200, body)) => {
@@ -344,7 +450,7 @@ pub async fn doctor(api_url: &str) -> i32 {
         }
     }
 
-    // 5. Worker active — check if projections exist (workers create them)
+    // 6. Worker active — check if projections exist (workers create them)
     if let Some(ref t) = token {
         match raw_api_request(api_url, reqwest::Method::GET, "/v1/projections", Some(t)).await {
             Ok((200, body)) => {
@@ -413,5 +519,29 @@ pub async fn doctor(api_url: &str) -> i32 {
     } else {
         eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
         1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_cli_version_compatible, parse_version_triplet};
+
+    #[test]
+    fn parse_version_triplet_accepts_semver_triplets() {
+        assert_eq!(parse_version_triplet("0.1.0"), Some((0, 1, 0)));
+        assert_eq!(parse_version_triplet("12.34.56"), Some((12, 34, 56)));
+    }
+
+    #[test]
+    fn parse_version_triplet_rejects_invalid_values() {
+        assert_eq!(parse_version_triplet("0.1"), None);
+        assert_eq!(parse_version_triplet("x.y.z"), None);
+    }
+
+    #[test]
+    fn cli_version_compatibility_compares_triplets() {
+        assert_eq!(is_cli_version_compatible("0.2.0", "0.1.9"), Some(true));
+        assert_eq!(is_cli_version_compatible("0.1.0", "0.1.0"), Some(true));
+        assert_eq!(is_cli_version_compatible("0.1.0", "0.2.0"), Some(false));
     }
 }
