@@ -570,12 +570,20 @@ class TestInferenceIntegration:
         strength_data = strength["data"]
         assert strength_data["exercise_id"] == "bench_press"
         assert strength_data["data_quality"]["sessions_used"] >= 3
+        assert "dynamics" in strength_data
+        assert "estimated_1rm" in strength_data["dynamics"]
+        assert "phase" in strength_data
+        assert "weekly_cycle" in strength_data["phase"]
 
         readiness = await get_projection(db, test_user_id, "readiness_inference")
         assert readiness is not None
         readiness_data = readiness["data"]
         assert readiness_data["data_quality"]["days_with_observations"] >= 5
         assert "readiness_today" in readiness_data
+        assert "dynamics" in readiness_data
+        assert "readiness" in readiness_data["dynamics"]
+        assert "phase" in readiness_data
+        assert "weekly_cycle" in readiness_data["phase"]
 
         strength_run = await get_latest_inference_run(
             db, test_user_id, "strength_inference", "bench_press"

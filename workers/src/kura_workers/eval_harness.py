@@ -230,6 +230,8 @@ def evaluate_strength_history(
                 "rmse": None,
                 "mean_error": None,
                 "plateau_brier": None,
+                "velocity_mae": None,
+                "direction_accuracy": None,
             },
         }
 
@@ -241,10 +243,14 @@ def evaluate_strength_history(
     inside_ci = 0
     errors: list[float] = []
     plateau_brier_terms: list[float] = []
+    velocity_errors: list[float] = []
+    direction_hits = 0
+    direction_total = 0
     engines_used: dict[str, int] = {}
     horizons_seen: list[int] = []
 
     plateau_threshold = float(os.environ.get("KURA_BAYES_PLATEAU_SLOPE_PER_DAY", "0.02"))
+    derivative_direction_eps = float(os.environ.get("KURA_STRENGTH_DERIVATIVE_VELOCITY_EPS", "0.03"))
 
     with _temporary_env("KURA_BAYES_ENGINE", strength_engine):
         for i in range(2, len(model_points)):
@@ -290,12 +296,34 @@ def evaluate_strength_history(
                 plateau_label = 1.0 if realized_slope <= plateau_threshold else 0.0
                 plateau_brier_terms.append((plateau_probability - plateau_label) ** 2)
 
+            realized_slope = (actual_future - current_e1rm) / float(horizon_days)
+            dynamics = inference.get("dynamics") or {}
+            predicted_velocity = _as_float(
+                dynamics.get("model_velocity_per_day", dynamics.get("velocity_per_day"))
+            )
+            if predicted_velocity is not None:
+                velocity_errors.append(predicted_velocity - realized_slope)
+
+            predicted_direction = str(dynamics.get("direction") or "")
+            if predicted_direction in {"up", "flat", "down"}:
+                direction_total += 1
+                if realized_slope > derivative_direction_eps:
+                    realized_direction = "up"
+                elif realized_slope < -derivative_direction_eps:
+                    realized_direction = "down"
+                else:
+                    realized_direction = "flat"
+                if predicted_direction == realized_direction:
+                    direction_hits += 1
+
     metrics = {
         "coverage_ci95": _round_or_none(_safe_ratio(inside_ci, labeled_windows), 6),
         "mae": _round_or_none(_mae(errors), 6),
         "rmse": _round_or_none(_rmse(errors), 6),
         "mean_error": _round_or_none(_safe_mean(errors), 6),
         "plateau_brier": _round_or_none(_safe_mean(plateau_brier_terms), 6),
+        "velocity_mae": _round_or_none(_mae(velocity_errors), 6),
+        "direction_accuracy": _round_or_none(_safe_ratio(direction_hits, direction_total), 6),
     }
     status = "ok" if labeled_windows > 0 else "insufficient_labels"
     return {
@@ -334,6 +362,8 @@ def evaluate_readiness_daily_scores(key: str, daily_scores: Any) -> dict[str, An
                 "mae_nowcast": None,
                 "rmse_nowcast": None,
                 "state_accuracy": None,
+                "velocity_mae_nowcast": None,
+                "direction_accuracy_nowcast": None,
             },
         }
 
@@ -343,6 +373,10 @@ def evaluate_readiness_daily_scores(key: str, daily_scores: Any) -> dict[str, An
     inside_ci = 0
     errors: list[float] = []
     state_hits = 0
+    velocity_errors: list[float] = []
+    direction_hits = 0
+    direction_total = 0
+    derivative_direction_eps = float(os.environ.get("KURA_READINESS_DERIVATIVE_VELOCITY_EPS", "0.015"))
 
     for i in range(4, len(observations)):
         subset = observations[: i + 1]
@@ -368,11 +402,31 @@ def evaluate_readiness_daily_scores(key: str, daily_scores: Any) -> dict[str, An
         if pred_state in {"low", "moderate", "high"} and pred_state == _state_from_score(actual):
             state_hits += 1
 
+        dynamics = inference.get("dynamics") or {}
+        predicted_velocity = _as_float(dynamics.get("velocity_per_day"))
+        if predicted_velocity is not None and i > 0:
+            actual_velocity = observations[i] - observations[i - 1]
+            velocity_errors.append(predicted_velocity - actual_velocity)
+
+            predicted_direction = str(dynamics.get("direction") or "")
+            if predicted_direction in {"up", "flat", "down"}:
+                direction_total += 1
+                if actual_velocity > derivative_direction_eps:
+                    realized_direction = "up"
+                elif actual_velocity < -derivative_direction_eps:
+                    realized_direction = "down"
+                else:
+                    realized_direction = "flat"
+                if predicted_direction == realized_direction:
+                    direction_hits += 1
+
     metrics = {
         "coverage_ci95_nowcast": _round_or_none(_safe_ratio(inside_ci, labeled_windows), 6),
         "mae_nowcast": _round_or_none(_mae(errors), 6),
         "rmse_nowcast": _round_or_none(_rmse(errors), 6),
         "state_accuracy": _round_or_none(_safe_ratio(state_hits, labeled_windows), 6),
+        "velocity_mae_nowcast": _round_or_none(_mae(velocity_errors), 6),
+        "direction_accuracy_nowcast": _round_or_none(_safe_ratio(direction_hits, direction_total), 6),
     }
     status = "ok" if labeled_windows > 0 else "insufficient_labels"
     return {

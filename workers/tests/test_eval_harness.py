@@ -49,6 +49,8 @@ def test_evaluate_strength_history_with_labels(monkeypatch):
     assert result["metrics"]["mae"] is not None
     assert result["metrics"]["coverage_ci95"] is not None
     assert result["metrics"]["plateau_brier"] is not None
+    assert result["metrics"]["velocity_mae"] is not None
+    assert result["metrics"]["direction_accuracy"] is not None
     assert "closed_form" in result["engines_used"]
 
 
@@ -74,6 +76,8 @@ def test_evaluate_readiness_daily_scores_ok():
     assert result["metrics"]["mae_nowcast"] is not None
     assert result["metrics"]["coverage_ci95_nowcast"] is not None
     assert result["metrics"]["state_accuracy"] is not None
+    assert result["metrics"]["velocity_mae_nowcast"] is not None
+    assert result["metrics"]["direction_accuracy_nowcast"] is not None
 
 
 def test_evaluate_readiness_daily_scores_insufficient_data():

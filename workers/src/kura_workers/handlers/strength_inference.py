@@ -14,7 +14,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
-from ..inference_engine import run_strength_inference
+from ..inference_engine import run_strength_inference, weekly_phase_from_date
 from ..inference_telemetry import (
     INFERENCE_ERROR_INSUFFICIENT_DATA,
     classify_inference_error,
@@ -65,6 +65,32 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         },
         "estimated_1rm": {"mean": "number", "ci95": "[number, number]"},
         "predicted_1rm": {"horizon_days": "integer", "mean": "number", "ci95": "[number, number]"},
+        "dynamics": {
+            "estimated_1rm": {
+                "value": "number",
+                "velocity_per_day": "number|null",
+                "velocity_per_week": "number|null",
+                "acceleration_per_day2": "number|null",
+                "trajectory_code": "string",
+                "phase": "string",
+                "direction": "string",
+                "momentum": "string",
+                "confidence": "number [0,1]",
+                "samples": "integer",
+                "model_velocity_per_day": "number (optional)",
+                "model_velocity_ci95": "[number, number] (optional)",
+            },
+            "predicted_delta_kg": "number (optional)",
+        },
+        "phase": {
+            "projection_phase": "string",
+            "weekly_cycle": {
+                "day_of_week": "string|null",
+                "phase": "string",
+                "angle_deg": "number|null",
+                "bucket_index": "integer|null",
+            },
+        },
         "diagnostics": "object",
         "data_quality": {
             "sessions_used": "integer",
@@ -252,10 +278,18 @@ async def update_strength_inference(
             {"date": d, "estimated_1rm": round(v, 2)}
             for d, v in sorted(by_date_best.items())
         ][-120:]
+        dynamics_snapshot = dict(inference.get("dynamics", {}))
+        projection_phase = str(dynamics_snapshot.get("phase") or "unknown")
+        weekly_cycle = weekly_phase_from_date(history[-1]["date"] if history else None)
 
         projection_data: dict[str, Any] = {
             "exercise_id": canonical,
             "history": history,
+            "dynamics": {"estimated_1rm": dynamics_snapshot},
+            "phase": {
+                "projection_phase": projection_phase,
+                "weekly_cycle": weekly_cycle,
+            },
             "data_quality": {
                 "sessions_used": len(points),
                 "sets_used": len(rows),
@@ -285,6 +319,12 @@ async def update_strength_inference(
             projection_data["trend"] = inference["trend"]
             projection_data["estimated_1rm"] = inference["estimated_1rm"]
             projection_data["predicted_1rm"] = inference["predicted_1rm"]
+            predicted_mean = inference["predicted_1rm"].get("mean")
+            estimated_mean = inference["estimated_1rm"].get("mean")
+            if isinstance(predicted_mean, (int, float)) and isinstance(estimated_mean, (int, float)):
+                projection_data["dynamics"]["predicted_delta_kg"] = round(
+                    float(predicted_mean) - float(estimated_mean), 2
+                )
 
         last_event_id = str(rows[-1]["id"])
         async with conn.cursor() as cur:

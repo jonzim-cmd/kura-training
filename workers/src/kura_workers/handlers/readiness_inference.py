@@ -14,7 +14,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
-from ..inference_engine import run_readiness_inference
+from ..inference_engine import run_readiness_inference, weekly_phase_from_date
 from ..inference_telemetry import (
     INFERENCE_ERROR_INSUFFICIENT_DATA,
     classify_inference_error,
@@ -76,6 +76,30 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "posterior_mean": "number",
             "posterior_ci95": "[number, number]",
             "observations": "integer",
+        },
+        "dynamics": {
+            "readiness": {
+                "value": "number",
+                "velocity_per_day": "number|null",
+                "velocity_per_week": "number|null",
+                "acceleration_per_day2": "number|null",
+                "trajectory_code": "string",
+                "phase": "string",
+                "direction": "string",
+                "momentum": "string",
+                "confidence": "number [0,1]",
+                "samples": "integer",
+                "state": "string (optional)",
+            },
+        },
+        "phase": {
+            "projection_phase": "string",
+            "weekly_cycle": {
+                "day_of_week": "string|null",
+                "phase": "string",
+                "angle_deg": "number|null",
+                "bucket_index": "integer|null",
+            },
         },
         "daily_scores": [{
             "date": "ISO 8601 date",
@@ -250,9 +274,17 @@ async def update_readiness_inference(
 
         inference = run_readiness_inference(observations)
         telemetry_engine = str(inference.get("engine", "none") or "none")
+        dynamics_snapshot = dict(inference.get("dynamics", {}))
+        projection_phase = str(dynamics_snapshot.get("phase") or "unknown")
+        latest_day = daily_scores[-1]["date"] if daily_scores else None
 
         projection_data: dict[str, Any] = {
             "daily_scores": daily_scores[-60:],
+            "dynamics": {"readiness": dynamics_snapshot},
+            "phase": {
+                "projection_phase": projection_phase,
+                "weekly_cycle": weekly_phase_from_date(latest_day),
+            },
             "engine": inference.get("engine"),
             "diagnostics": inference.get("diagnostics", {}),
             "data_quality": {

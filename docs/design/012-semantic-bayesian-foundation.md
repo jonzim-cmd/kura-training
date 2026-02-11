@@ -88,10 +88,13 @@ New projection: `strength_inference/<exercise_id>`
 - Per-exercise probabilistic trend and near-term forecast
 - Plateau/improvement probabilities
 - Supports PyMC path with safe closed-form fallback
+- Derivative-enriched `dynamics` payload (`velocity`, `acceleration`, discrete `trajectory_code`)
+- Weekly cycle `phase` snapshot for low-resolution cyclic context
 
 New projection: `readiness_inference/overview`
 - Daily readiness posterior from sleep/energy/soreness/load signals
 - Confidence intervals and state classification
+- Derivative-enriched readiness dynamics and weekly cycle phase snapshot
 
 ### D12.5 Recompute Model
 

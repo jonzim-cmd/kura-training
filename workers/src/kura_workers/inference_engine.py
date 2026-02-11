@@ -5,9 +5,217 @@ from __future__ import annotations
 import logging
 import math
 import os
+from datetime import date, datetime
 from statistics import mean
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_WEEKLY_PHASE_BY_WEEKDAY = (
+    "week_start",
+    "load_build",
+    "load_build",
+    "peak_load",
+    "transition",
+    "recovery",
+    "recovery",
+)
+
+
+def _as_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str):
+        return None
+
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(raw).date()
+    except ValueError:
+        return None
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _round_or_none(value: float | None, digits: int) -> float | None:
+    if value is None:
+        return None
+    return round(value, digits)
+
+
+def _tail_weighted_average(values: list[float], window: int) -> float | None:
+    if not values:
+        return None
+    tail = values[-max(1, window):]
+    weights = [float(idx + 1) for idx in range(len(tail))]
+    weighted_sum = sum(v * w for v, w in zip(tail, weights))
+    weight_total = sum(weights)
+    if weight_total <= 0.0:
+        return None
+    return weighted_sum / weight_total
+
+
+def _derivative_samples(points: list[tuple[float, float]]) -> tuple[list[float], list[float]]:
+    slopes: list[float] = []
+    slope_midpoints: list[float] = []
+
+    for idx in range(1, len(points)):
+        x0, y0 = points[idx - 1]
+        x1, y1 = points[idx]
+        dx = x1 - x0
+        if dx <= 0:
+            continue
+        slopes.append((y1 - y0) / dx)
+        slope_midpoints.append((x0 + x1) / 2.0)
+
+    accelerations: list[float] = []
+    for idx in range(1, len(slopes)):
+        dx = slope_midpoints[idx] - slope_midpoints[idx - 1]
+        if dx <= 0:
+            continue
+        accelerations.append((slopes[idx] - slopes[idx - 1]) / dx)
+
+    return slopes, accelerations
+
+
+def _trajectory_code(
+    velocity: float | None,
+    acceleration: float | None,
+    *,
+    velocity_epsilon: float,
+    acceleration_epsilon: float,
+) -> tuple[str, str, str, str]:
+    if velocity is None:
+        return "unknown", "unknown", "unknown", "unknown"
+
+    direction = "flat"
+    if velocity > velocity_epsilon:
+        direction = "up"
+    elif velocity < -velocity_epsilon:
+        direction = "down"
+
+    momentum = "steady"
+    if acceleration is not None:
+        if direction == "up":
+            if acceleration > acceleration_epsilon:
+                momentum = "accelerating"
+            elif acceleration < -acceleration_epsilon:
+                momentum = "decelerating"
+        elif direction == "down":
+            if acceleration < -acceleration_epsilon:
+                momentum = "accelerating"
+            elif acceleration > acceleration_epsilon:
+                momentum = "decelerating"
+        else:
+            if acceleration > acceleration_epsilon:
+                momentum = "accelerating"
+            elif acceleration < -acceleration_epsilon:
+                momentum = "decelerating"
+
+    if direction == "up":
+        if momentum == "accelerating":
+            return "up_up", "build", direction, momentum
+        if momentum == "decelerating":
+            return "up_flat", "consolidate", direction, momentum
+        return "up", "progress", direction, momentum
+
+    if direction == "flat":
+        if momentum == "accelerating":
+            return "flat_up", "rebound_start", direction, momentum
+        if momentum == "decelerating":
+            return "flat_down", "plateau_risk", direction, momentum
+        return "flat", "plateau", direction, momentum
+
+    # direction == "down"
+    if momentum == "accelerating":
+        return "down_down", "regression", direction, momentum
+    if momentum == "decelerating":
+        return "down_flat", "recovery", direction, momentum
+    return "down", "dip", direction, momentum
+
+
+def summarize_signal_dynamics(
+    points: list[tuple[float, float]],
+    *,
+    velocity_epsilon: float,
+    acceleration_epsilon: float,
+) -> dict[str, Any]:
+    if not points:
+        return {
+            "value": None,
+            "velocity_per_day": None,
+            "velocity_per_week": None,
+            "acceleration_per_day2": None,
+            "trajectory_code": "unknown",
+            "phase": "unknown",
+            "direction": "unknown",
+            "momentum": "unknown",
+            "confidence": 0.0,
+            "samples": 0,
+        }
+
+    sorted_points = sorted(points, key=lambda item: item[0])
+    slopes, accelerations = _derivative_samples(sorted_points)
+    velocity = _tail_weighted_average(slopes, window=3)
+    acceleration = _tail_weighted_average(accelerations, window=2)
+    trajectory_code, phase, direction, momentum = _trajectory_code(
+        velocity,
+        acceleration,
+        velocity_epsilon=velocity_epsilon,
+        acceleration_epsilon=acceleration_epsilon,
+    )
+
+    slope_strength = min(1.0, len(slopes) / 3.0)
+    accel_strength = min(1.0, len(accelerations) / 2.0)
+    confidence = min(1.0, (0.7 * slope_strength) + (0.3 * accel_strength))
+
+    return {
+        "value": _round_or_none(sorted_points[-1][1], 3),
+        "velocity_per_day": _round_or_none(velocity, 6),
+        "velocity_per_week": _round_or_none((velocity * 7.0) if velocity is not None else None, 6),
+        "acceleration_per_day2": _round_or_none(acceleration, 6),
+        "trajectory_code": trajectory_code,
+        "phase": phase,
+        "direction": direction,
+        "momentum": momentum,
+        "confidence": round(confidence, 3),
+        "samples": len(sorted_points),
+    }
+
+
+def weekly_phase_from_date(value: Any) -> dict[str, Any]:
+    parsed = _as_date(value)
+    if parsed is None:
+        return {
+            "day_of_week": None,
+            "phase": "unknown",
+            "angle_deg": None,
+            "bucket_index": None,
+        }
+
+    weekday = parsed.weekday()
+    angle_deg = (weekday / 7.0) * 360.0
+    return {
+        "day_of_week": parsed.strftime("%A").lower(),
+        "phase": _WEEKLY_PHASE_BY_WEEKDAY[weekday],
+        "angle_deg": round(angle_deg, 2),
+        "bucket_index": weekday,
+    }
 
 
 def _inv2(m: list[list[float]]) -> list[list[float]]:
@@ -212,12 +420,21 @@ def _pymc_strength(
 
 def run_strength_inference(points: list[tuple[float, float]]) -> dict:
     """Run strength inference over (day_offset, estimated_1rm) points."""
+    dynamics = summarize_signal_dynamics(
+        points,
+        velocity_epsilon=float(os.environ.get("KURA_STRENGTH_DERIVATIVE_VELOCITY_EPS", "0.03")),
+        acceleration_epsilon=float(
+            os.environ.get("KURA_STRENGTH_DERIVATIVE_ACCELERATION_EPS", "0.01")
+        ),
+    )
+
     if len(points) < 3:
         return {
             "engine": "none",
             "status": "insufficient_data",
             "required_points": 3,
             "observed_points": len(points),
+            "dynamics": dynamics,
         }
 
     x = [p[0] for p in points]
@@ -226,22 +443,51 @@ def run_strength_inference(points: list[tuple[float, float]]) -> dict:
     slope_plateau_threshold = float(os.environ.get("KURA_BAYES_PLATEAU_SLOPE_PER_DAY", "0.02"))
     preferred_engine = os.environ.get("KURA_BAYES_ENGINE", "pymc").strip().lower()
 
+    result: dict[str, Any]
     if preferred_engine == "pymc":
         pymc_result = _pymc_strength(x, y, horizon_days, slope_plateau_threshold)
         if pymc_result is not None:
-            return pymc_result
+            result = pymc_result
+        else:
+            result = _closed_form_strength(x, y, horizon_days, slope_plateau_threshold)
+    else:
+        result = _closed_form_strength(x, y, horizon_days, slope_plateau_threshold)
 
-    return _closed_form_strength(x, y, horizon_days, slope_plateau_threshold)
+    trend = result.get("trend") or {}
+    slope_ci95 = trend.get("slope_ci95")
+    if isinstance(slope_ci95, list) and len(slope_ci95) == 2:
+        low = _as_float(slope_ci95[0])
+        high = _as_float(slope_ci95[1])
+        if low is not None and high is not None:
+            dynamics["model_velocity_ci95"] = [round(low, 6), round(high, 6)]
+
+    modeled_velocity = _as_float(trend.get("slope_kg_per_day"))
+    if modeled_velocity is not None:
+        dynamics["model_velocity_per_day"] = round(modeled_velocity, 6)
+        dynamics["model_velocity_per_week"] = round(modeled_velocity * 7.0, 6)
+
+    result["dynamics"] = dynamics
+    return result
 
 
 def run_readiness_inference(observations: list[float]) -> dict:
     """Normal-Normal Bayesian update for readiness score [0, 1]."""
+    points = [(float(idx), float(value)) for idx, value in enumerate(observations)]
+    dynamics = summarize_signal_dynamics(
+        points,
+        velocity_epsilon=float(os.environ.get("KURA_READINESS_DERIVATIVE_VELOCITY_EPS", "0.015")),
+        acceleration_epsilon=float(
+            os.environ.get("KURA_READINESS_DERIVATIVE_ACCELERATION_EPS", "0.008")
+        ),
+    )
+
     if len(observations) < 5:
         return {
             "engine": "none",
             "status": "insufficient_data",
             "required_points": 5,
             "observed_points": len(observations),
+            "dynamics": dynamics,
         }
 
     prior_mean = float(os.environ.get("KURA_READINESS_PRIOR_MEAN", "0.6"))
@@ -265,7 +511,7 @@ def run_readiness_inference(observations: list[float]) -> dict:
     elif short_term <= 0.45:
         state = "low"
 
-    return {
+    result = {
         "engine": "normal_normal",
         "status": "ok",
         "readiness_today": {
@@ -284,3 +530,14 @@ def run_readiness_inference(observations: list[float]) -> dict:
             "prior_var": prior_var,
         },
     }
+
+    readiness_today = result.get("readiness_today") or {}
+    today_mean = _as_float(readiness_today.get("mean"))
+    if today_mean is not None:
+        dynamics["value"] = round(today_mean, 3)
+    state = readiness_today.get("state")
+    if isinstance(state, str) and state:
+        dynamics["state"] = state
+
+    result["dynamics"] = dynamics
+    return result
