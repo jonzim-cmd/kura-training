@@ -99,7 +99,7 @@ if [[ "${1:-}" == "--extract" ]]; then
     chmod +x "$CLI_DEST/kura"
 
     info "CLI binary installed at ${CLI_DEST}/kura"
-    info "Test: ${CLI_DEST}/kura --api-url http://kura-api:3000 health"
+    info "Test: KURA_API_URL=http://kura-proxy:8320 ${CLI_DEST}/kura health"
 fi
 
 # ── Summary ───────────────────────────────────────────

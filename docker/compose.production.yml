@@ -48,6 +48,23 @@ services:
       retries: 3
     restart: unless-stopped
 
+  kura-proxy:
+    build:
+      context: ./kura-proxy
+    environment:
+      KURA_API_KEY: ${KURA_API_KEY}
+    depends_on:
+      kura-api:
+        condition: service_healthy
+    networks:
+      - moltbot-internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8320/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
   kura-worker:
     build:
       context: ../workers
