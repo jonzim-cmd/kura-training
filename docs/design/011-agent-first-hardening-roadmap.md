@@ -64,7 +64,7 @@ after context loss.
 - [x] F4. Agent protocol hardening
   - Enforce write receipts + read-after-write verification before "saved" claims.
   - Add explicit uncertainty/deferred markers for low-confidence facts.
-- [ ] F5. Autonomous low-risk repair tier
+- [x] F5. Autonomous low-risk repair tier
   - Auto-apply only deterministic Tier A repairs.
   - Keep higher-risk repairs confirmation-gated.
 - [ ] F6. Integrity SLOs + autonomy throttling

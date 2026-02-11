@@ -1,7 +1,9 @@
 """Tests for quality_health read-only invariant evaluation (Decision 13 Phase 0)."""
 
 from kura_workers.handlers.quality_health import (
+    _auto_apply_decision,
     _build_quality_projection_data,
+    _build_simulated_repair_proposals,
     _compute_quality_score,
     _evaluate_read_only_invariants,
     _generate_repair_proposals,
@@ -184,3 +186,73 @@ class TestRepairProposals:
         assert proposal["state"] == "simulated_risky"
         assert proposal["safe_for_apply"] is False
         assert any("UTC assumption" in note for note in proposal["simulate"]["notes"])
+
+
+class TestAutoApplyPolicy:
+    def test_tier_a_simulated_safe_is_auto_apply_eligible(self):
+        issues = [
+            {
+                "issue_id": "INV-001:unresolved_exercise_identity",
+                "invariant_id": "INV-001",
+                "type": "unresolved_exercise_identity",
+                "severity": "high",
+                "detail": "identity gap",
+                "metrics": {
+                    "top_unresolved_terms_with_counts": [
+                        {"term": "bench press", "count": 2},
+                    ],
+                },
+            }
+        ]
+        proposals = _build_simulated_repair_proposals(
+            issues,
+            evaluated_at="2026-02-11T10:00:00+00:00",
+        )
+        assert len(proposals) == 1
+        allowed, reason = _auto_apply_decision(proposals[0])
+        assert allowed is True
+        assert reason == "policy_pass"
+
+    def test_risky_proposal_is_rejected_for_auto_apply(self):
+        issues = [
+            {
+                "issue_id": "INV-003:timezone_missing",
+                "invariant_id": "INV-003",
+                "type": "timezone_missing",
+                "severity": "high",
+                "detail": "timezone missing",
+                "metrics": {},
+            }
+        ]
+        proposals = _build_simulated_repair_proposals(
+            issues,
+            evaluated_at="2026-02-11T10:00:00+00:00",
+        )
+        assert len(proposals) == 1
+        allowed, reason = _auto_apply_decision(proposals[0])
+        assert allowed is False
+        assert reason in {"tier_not_a", "state_not_simulated_safe"}
+
+    def test_non_deterministic_source_is_rejected(self):
+        proposal = {
+            "proposal_id": "repair:INV-001:unresolved_exercise_identity",
+            "issue_id": "INV-001:unresolved_exercise_identity",
+            "invariant_id": "INV-001",
+            "issue_type": "unresolved_exercise_identity",
+            "tier": "A",
+            "state": "simulated_safe",
+            "candidate_sources": ["slug_fallback"],
+            "simulate": {"warnings": [], "projection_impacts": []},
+            "proposed_event_batch": {
+                "events": [
+                    {
+                        "event_type": "exercise.alias_created",
+                        "data": {"alias": "x", "exercise_id": "x"},
+                        "metadata": {"idempotency_key": "k"},
+                    }
+                ]
+            },
+        }
+        allowed, reason = _auto_apply_decision(proposal)
+        assert allowed is False
+        assert reason == "non_deterministic_source"

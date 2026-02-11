@@ -1,19 +1,23 @@
-"""Quality Health projection handler (Decision 13, Phase 1).
+"""Quality Health projection handler (Decision 13, Phase 2).
 
-Evaluates invariants in read-only mode and generates inspectable repair proposals.
+Evaluates invariants, generates inspectable repair proposals, and auto-applies
+only deterministic low-risk (Tier A) proposals behind strict policy gates.
 Every proposal is passed through a simulate bridge (contract-compatible with
 `/v1/events/simulate`) before it can enter an apply-ready path.
 """
 
+import hashlib
 import json
 import logging
 import re
+import uuid
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Json
 
 from ..registry import projection_handler
 from ..semantic_catalog import EXERCISE_CATALOG
@@ -49,9 +53,23 @@ _REPAIR_STATE_PROPOSED = "proposed"
 _REPAIR_STATE_SIMULATED_SAFE = "simulated_safe"
 _REPAIR_STATE_SIMULATED_RISKY = "simulated_risky"
 _REPAIR_STATE_REJECTED = "rejected"
+_REPAIR_STATE_APPLIED = "applied"
+_REPAIR_STATE_AUTO_APPLY_REJECTED = "auto_apply_rejected"
+_REPAIR_STATE_VERIFIED_CLOSED = "verified_closed"
 
 _APPLY_ALLOWED_STATES = {_REPAIR_STATE_SIMULATED_SAFE}
 _SIMULATE_ENDPOINT = "/v1/events/simulate"
+_AUTO_APPLY_POLICY_GATE = (
+    "tier_a_only_and_state_simulated_safe_and_no_warnings_and_no_unknown_impacts_and_deterministic_source"
+)
+_AUTO_APPLY_POLICY_VERSION = "phase_2_tier_a_v1"
+_QUALITY_EVENT_FIX_APPLIED = "quality.fix.applied"
+_QUALITY_EVENT_FIX_REJECTED = "quality.fix.rejected"
+_QUALITY_EVENT_ISSUE_CLOSED = "quality.issue.closed"
+_DETERMINISTIC_PROPOSAL_SOURCES = {
+    "catalog_variant_exact",
+    "catalog_key_slug_match",
+}
 
 _OVERVIEW_KEY_BY_PROJECTION = {
     "body_composition",
@@ -503,6 +521,394 @@ def _simulate_repair_proposals(
     return result
 
 
+def _sort_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        issues,
+        key=lambda item: (
+            _SEVERITY_ORDER.get(item["severity"], 99),
+            item["invariant_id"],
+            item["type"],
+        ),
+    )
+
+
+def _build_simulated_repair_proposals(
+    issues: list[dict[str, Any]],
+    evaluated_at: str,
+) -> list[dict[str, Any]]:
+    sorted_issues = _sort_issues(issues)
+    return _simulate_repair_proposals(
+        _generate_repair_proposals(sorted_issues, evaluated_at),
+        evaluated_at=evaluated_at,
+    )
+
+
+def _has_unknown_projection_impacts(simulation: dict[str, Any]) -> bool:
+    impacts = simulation.get("projection_impacts") or []
+    return any(_normalize(impact.get("change")) == "unknown" for impact in impacts)
+
+
+def _proposal_has_deterministic_source(proposal: dict[str, Any]) -> bool:
+    if proposal.get("issue_type") != "unresolved_exercise_identity":
+        return False
+    sources = proposal.get("candidate_sources") or []
+    return bool(sources) and all(
+        source in _DETERMINISTIC_PROPOSAL_SOURCES for source in sources
+    )
+
+
+def _auto_apply_decision(proposal: dict[str, Any]) -> tuple[bool, str]:
+    if proposal.get("tier") != "A":
+        return False, "tier_not_a"
+    if proposal.get("state") != _REPAIR_STATE_SIMULATED_SAFE:
+        return False, "state_not_simulated_safe"
+    simulation = proposal.get("simulate") or {}
+    if simulation.get("warnings"):
+        return False, "warnings_present"
+    if _has_unknown_projection_impacts(simulation):
+        return False, "unknown_projection_impacts"
+    if not _proposal_has_deterministic_source(proposal):
+        return False, "non_deterministic_source"
+    events = proposal.get("proposed_event_batch", {}).get("events") or []
+    if not events:
+        return False, "empty_event_batch"
+    return True, "policy_pass"
+
+
+def _event_idempotency_key(event: dict[str, Any]) -> str:
+    metadata = event.get("metadata") or {}
+    return str(metadata.get("idempotency_key", "")).strip()
+
+
+def _stable_idempotency_suffix(seed: str) -> str:
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:20]
+
+
+def _build_quality_fix_applied_event(
+    proposal: dict[str, Any],
+    evaluated_at: str,
+) -> dict[str, Any]:
+    repair_events = proposal.get("proposed_event_batch", {}).get("events") or []
+    repair_idempotency_keys = [
+        key for event in repair_events if (key := _event_idempotency_key(event))
+    ]
+    idempotency_key = (
+        f"quality-fix-applied-{_stable_idempotency_suffix(str(proposal['proposal_id']))}"
+    )
+    return {
+        "timestamp": evaluated_at,
+        "event_type": _QUALITY_EVENT_FIX_APPLIED,
+        "data": {
+            "proposal_id": proposal["proposal_id"],
+            "issue_id": proposal["issue_id"],
+            "invariant_id": proposal["invariant_id"],
+            "issue_type": proposal["issue_type"],
+            "tier": proposal["tier"],
+            "policy_gate": _AUTO_APPLY_POLICY_GATE,
+            "policy_version": _AUTO_APPLY_POLICY_VERSION,
+            "repair_event_count": len(repair_idempotency_keys),
+            "repair_event_idempotency_keys": repair_idempotency_keys,
+        },
+        "metadata": {
+            "source": "quality_health",
+            "agent": "repair_autopilot",
+            "session_id": f"quality:{proposal['issue_id']}",
+            "idempotency_key": idempotency_key,
+        },
+    }
+
+
+def _build_quality_fix_rejected_event(
+    proposal: dict[str, Any],
+    evaluated_at: str,
+    reason_code: str,
+) -> dict[str, Any]:
+    simulation = proposal.get("simulate") or {}
+    idempotency_seed = f"{proposal['proposal_id']}:{reason_code}"
+    idempotency_key = (
+        f"quality-fix-rejected-{_stable_idempotency_suffix(idempotency_seed)}"
+    )
+    return {
+        "timestamp": evaluated_at,
+        "event_type": _QUALITY_EVENT_FIX_REJECTED,
+        "data": {
+            "proposal_id": proposal["proposal_id"],
+            "issue_id": proposal["issue_id"],
+            "invariant_id": proposal["invariant_id"],
+            "issue_type": proposal["issue_type"],
+            "tier": proposal["tier"],
+            "proposal_state": proposal.get("state"),
+            "reason_code": reason_code,
+            "warnings_count": len(simulation.get("warnings") or []),
+            "unknown_projection_impacts": _has_unknown_projection_impacts(simulation),
+            "policy_gate": _AUTO_APPLY_POLICY_GATE,
+            "policy_version": _AUTO_APPLY_POLICY_VERSION,
+        },
+        "metadata": {
+            "source": "quality_health",
+            "agent": "repair_autopilot",
+            "session_id": f"quality:{proposal['issue_id']}",
+            "idempotency_key": idempotency_key,
+        },
+    }
+
+
+def _build_quality_issue_closed_event(
+    result: dict[str, Any],
+    verified_at: str,
+) -> dict[str, Any]:
+    idempotency_key = (
+        f"quality-issue-closed-{_stable_idempotency_suffix(str(result['proposal_id']))}"
+    )
+    return {
+        "timestamp": verified_at,
+        "event_type": _QUALITY_EVENT_ISSUE_CLOSED,
+        "data": {
+            "proposal_id": result["proposal_id"],
+            "issue_id": result["issue_id"],
+            "invariant_id": result["invariant_id"],
+            "issue_type": result["issue_type"],
+            "closed_by": "auto_apply_verification",
+            "policy_version": _AUTO_APPLY_POLICY_VERSION,
+        },
+        "metadata": {
+            "source": "quality_health",
+            "agent": "repair_autopilot",
+            "session_id": f"quality:{result['issue_id']}",
+            "idempotency_key": idempotency_key,
+        },
+    }
+
+
+async def _insert_events_with_idempotency_guard(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not events:
+        return {
+            "inserted_event_ids": [],
+            "inserted_keys": set(),
+            "preexisting_keys": set(),
+        }
+
+    unique_events: list[dict[str, Any]] = []
+    event_keys: list[str] = []
+    seen_keys: set[str] = set()
+    for event in events:
+        key = _event_idempotency_key(event)
+        if not key:
+            raise ValueError(
+                f"quality repair event '{event.get('event_type', '')}' missing metadata.idempotency_key"
+            )
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        unique_events.append(event)
+        event_keys.append(key)
+
+    await conn.execute("SET LOCAL ROLE app_writer")
+    await conn.execute(
+        "SELECT set_config('kura.current_user_id', %s, true)",
+        (str(user_id),),
+    )
+
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT metadata->>'idempotency_key' AS idempotency_key
+            FROM events
+            WHERE user_id = %s
+              AND metadata->>'idempotency_key' = ANY(%s)
+            """,
+            (str(user_id), event_keys),
+        )
+        existing_rows = await cur.fetchall()
+
+    preexisting_keys = {
+        str(row["idempotency_key"])
+        for row in existing_rows
+        if row.get("idempotency_key")
+    }
+    inserted_keys: set[str] = set()
+    inserted_event_ids: list[str] = []
+
+    async with conn.cursor(row_factory=dict_row) as cur:
+        for event in unique_events:
+            key = _event_idempotency_key(event)
+            if key in preexisting_keys:
+                continue
+            event_type = str(event.get("event_type", "")).strip()
+            if not event_type:
+                raise ValueError("quality repair event is missing event_type")
+
+            await cur.execute(
+                """
+                INSERT INTO events (id, user_id, timestamp, event_type, data, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    str(uuid.uuid4()),
+                    str(user_id),
+                    event.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+                    event_type,
+                    Json(event.get("data") or {}),
+                    Json(event.get("metadata") or {}),
+                ),
+            )
+            row = await cur.fetchone()
+            inserted_event_ids.append(str(row["id"]))
+            inserted_keys.add(key)
+
+    await conn.execute("SET LOCAL ROLE app_worker")
+
+    return {
+        "inserted_event_ids": inserted_event_ids,
+        "inserted_keys": inserted_keys,
+        "preexisting_keys": preexisting_keys,
+    }
+
+
+async def _auto_apply_tier_a_repairs(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+    proposals: list[dict[str, Any]],
+    evaluated_at: str,
+) -> dict[str, Any]:
+    events_to_write: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
+
+    for proposal in proposals:
+        state_before = str(proposal.get("state", _REPAIR_STATE_PROPOSED))
+        allowed, reason_code = _auto_apply_decision(proposal)
+        if not allowed:
+            proposal["state"] = _REPAIR_STATE_AUTO_APPLY_REJECTED
+            proposal["state_history"].append(
+                {
+                    "state": _REPAIR_STATE_AUTO_APPLY_REJECTED,
+                    "at": evaluated_at,
+                    "reason_code": reason_code,
+                }
+            )
+            rejected_event = _build_quality_fix_rejected_event(
+                proposal,
+                evaluated_at,
+                reason_code,
+            )
+            events_to_write.append(rejected_event)
+            results.append(
+                {
+                    "proposal_id": proposal["proposal_id"],
+                    "issue_id": proposal["issue_id"],
+                    "invariant_id": proposal["invariant_id"],
+                    "issue_type": proposal["issue_type"],
+                    "decision": "rejected",
+                    "reason_code": reason_code,
+                    "proposal_state_before": state_before,
+                    "proposal_state_after": _REPAIR_STATE_AUTO_APPLY_REJECTED,
+                    "repair_event_keys": [],
+                    "audit_event_key": _event_idempotency_key(rejected_event),
+                }
+            )
+            continue
+
+        proposal["state"] = _REPAIR_STATE_APPLIED
+        proposal["state_history"].append({"state": _REPAIR_STATE_APPLIED, "at": evaluated_at})
+        repair_events = proposal.get("proposed_event_batch", {}).get("events") or []
+        applied_event = _build_quality_fix_applied_event(proposal, evaluated_at)
+        events_to_write.extend(repair_events)
+        events_to_write.append(applied_event)
+        results.append(
+            {
+                "proposal_id": proposal["proposal_id"],
+                "issue_id": proposal["issue_id"],
+                "invariant_id": proposal["invariant_id"],
+                "issue_type": proposal["issue_type"],
+                "decision": "applied",
+                "reason_code": reason_code,
+                "proposal_state_before": state_before,
+                "proposal_state_after": _REPAIR_STATE_APPLIED,
+                "repair_event_keys": [
+                    key for event in repair_events if (key := _event_idempotency_key(event))
+                ],
+                "audit_event_key": _event_idempotency_key(applied_event),
+            }
+        )
+
+    write_summary = await _insert_events_with_idempotency_guard(conn, user_id, events_to_write)
+    inserted_keys = write_summary["inserted_keys"]
+    preexisting_keys = write_summary["preexisting_keys"]
+
+    for result in results:
+        repair_keys = result.get("repair_event_keys") or []
+        result["repair_events_inserted"] = sum(
+            1 for key in repair_keys if key in inserted_keys
+        )
+        result["repair_events_preexisting"] = sum(
+            1 for key in repair_keys if key in preexisting_keys
+        )
+        audit_key = str(result.get("audit_event_key", ""))
+        result["audit_event_inserted"] = audit_key in inserted_keys
+        result["audit_event_preexisting"] = audit_key in preexisting_keys
+
+    return {"results": results, "write_summary": write_summary}
+
+
+async def _verify_applied_repairs(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+    apply_results: list[dict[str, Any]],
+    open_issue_ids: set[str],
+    verified_at: str,
+) -> dict[str, Any]:
+    close_events: list[dict[str, Any]] = []
+    for result in apply_results:
+        if result.get("decision") != "applied":
+            continue
+        issue_closed = str(result["issue_id"]) not in open_issue_ids
+        result["issue_closed_after_verify"] = issue_closed
+        result["verified_at"] = verified_at
+        if issue_closed:
+            result["proposal_state_after_verify"] = _REPAIR_STATE_VERIFIED_CLOSED
+            close_event = _build_quality_issue_closed_event(result, verified_at)
+            result["close_event_key"] = _event_idempotency_key(close_event)
+            close_events.append(close_event)
+        else:
+            result["proposal_state_after_verify"] = _REPAIR_STATE_APPLIED
+            result["close_event_key"] = None
+
+    close_summary = await _insert_events_with_idempotency_guard(conn, user_id, close_events)
+    inserted_keys = close_summary["inserted_keys"]
+    preexisting_keys = close_summary["preexisting_keys"]
+    for result in apply_results:
+        close_key = result.get("close_event_key")
+        if not close_key:
+            continue
+        result["close_event_inserted"] = close_key in inserted_keys
+        result["close_event_preexisting"] = close_key in preexisting_keys
+
+    return {"close_summary": close_summary}
+
+
+async def _load_quality_source_rows(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+) -> list[dict[str, Any]]:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT id, timestamp, event_type, data
+            FROM events
+            WHERE user_id = %s
+              AND event_type = ANY(%s)
+            ORDER BY timestamp ASC, id ASC
+            """,
+            (user_id, list(_EVENT_TYPES)),
+        )
+        return await cur.fetchall()
+
+
 def _evaluate_read_only_invariants(
     event_rows: list[dict[str, Any]],
     alias_map: dict[str, str],
@@ -659,6 +1065,13 @@ def _build_quality_projection_data(
     issues: list[dict[str, Any]],
     metrics: dict[str, Any],
     evaluated_at: str,
+    proposals: list[dict[str, Any]] | None = None,
+    *,
+    repair_apply_enabled: bool = False,
+    repair_apply_gate: str | None = None,
+    repair_apply_results: list[dict[str, Any]] | None = None,
+    decision_phase: str = "phase_1_assisted_repairs",
+    last_repair_at: str | None = None,
 ) -> dict[str, Any]:
     score = _compute_quality_score(issues)
     status = _status_from_score(score, issues)
@@ -670,14 +1083,7 @@ def _build_quality_projection_data(
         "info": sev_counts.get("info", 0),
     }
 
-    sorted_issues = sorted(
-        issues,
-        key=lambda item: (
-            _SEVERITY_ORDER.get(item["severity"], 99),
-            item["invariant_id"],
-            item["type"],
-        ),
-    )
+    sorted_issues = _sort_issues(issues)
 
     top_issues = [
         {
@@ -689,10 +1095,8 @@ def _build_quality_projection_data(
         for issue in sorted_issues[:5]
     ]
 
-    proposals = _simulate_repair_proposals(
-        _generate_repair_proposals(sorted_issues, evaluated_at),
-        evaluated_at=evaluated_at,
-    )
+    if proposals is None:
+        proposals = _build_simulated_repair_proposals(sorted_issues, evaluated_at)
     proposals_by_issue = {proposal["issue_id"]: proposal for proposal in proposals}
     proposals_by_state = Counter(
         proposal.get("state", _REPAIR_STATE_PROPOSED)
@@ -732,20 +1136,43 @@ def _build_quality_projection_data(
                 _REPAIR_STATE_SIMULATED_RISKY, 0
             ),
             _REPAIR_STATE_REJECTED: proposals_by_state.get(_REPAIR_STATE_REJECTED, 0),
+            _REPAIR_STATE_APPLIED: proposals_by_state.get(_REPAIR_STATE_APPLIED, 0),
+            _REPAIR_STATE_AUTO_APPLY_REJECTED: proposals_by_state.get(
+                _REPAIR_STATE_AUTO_APPLY_REJECTED, 0
+            ),
+            _REPAIR_STATE_VERIFIED_CLOSED: proposals_by_state.get(
+                _REPAIR_STATE_VERIFIED_CLOSED, 0
+            ),
         },
         "repair_apply_ready_ids": apply_ready,
-        "repair_apply_enabled": False,
-        "repair_apply_gate": (
-            "tier_a_only_and_state_simulated_safe; auto-apply disabled in phase_1"
-        ),
+        "repair_apply_enabled": repair_apply_enabled,
+        "repair_apply_gate": repair_apply_gate
+        or "tier_a_only_and_state_simulated_safe; auto-apply disabled in phase_1",
         "simulate_bridge": {
             "target_endpoint": _SIMULATE_ENDPOINT,
             "engine": "worker_simulate_bridge_v1",
-            "decision_phase": "phase_1_assisted_repairs",
+            "decision_phase": decision_phase,
         },
-        "invariant_mode": "read_only",
+        "invariant_mode": (
+            "policy_gated_auto_apply" if repair_apply_enabled else "read_only"
+        ),
         "invariants_evaluated": ["INV-001", "INV-003", "INV-005", "INV-006"],
         "metrics": metrics,
+        "last_repair_at": last_repair_at,
+        "repair_apply_results": repair_apply_results or [],
+        "repair_apply_results_total": len(repair_apply_results or []),
+        "repair_apply_results_by_decision": {
+            "applied": sum(
+                1
+                for result in (repair_apply_results or [])
+                if result.get("decision") == "applied"
+            ),
+            "rejected": sum(
+                1
+                for result in (repair_apply_results or [])
+                if result.get("decision") == "rejected"
+            ),
+        },
         "last_evaluated_at": evaluated_at,
         "decision_ref": "docs/design/013-self-healing-agentic-data-plane.md",
     }
@@ -760,6 +1187,10 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "quality_score": data.get("score"),
         "quality_open_issues": data.get("issues_open"),
         "quality_repair_apply_ready": len(data.get("repair_apply_ready_ids") or []),
+        "quality_repair_applied": data.get("repair_apply_results_by_decision", {}).get(
+            "applied"
+        ),
+        "quality_last_repair_at": data.get("last_repair_at"),
     }
 
 
@@ -768,8 +1199,8 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     dimension_meta={
         "name": "quality_health",
         "description": (
-            "Invariant health + assisted repair proposals for Decision 13. "
-            "Generates simulated repair plans without mutating canonical events."
+            "Invariant health + policy-gated repair proposals for Decision 13. "
+            "Tier A deterministic repairs may auto-apply and are always evented."
         ),
         "key_structure": "single overview per user",
         "projection_key": "overview",
@@ -811,7 +1242,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                 "issue_id": "string",
                 "tier": "string — A|B|C",
                 "state": (
-                    "string — proposed|simulated_safe|simulated_risky|rejected"
+                    "string — proposed|simulated_safe|simulated_risky|rejected|applied|auto_apply_rejected|verified_closed"
                 ),
                 "safe_for_apply": "boolean",
                 "auto_apply_eligible": "boolean",
@@ -831,18 +1262,34 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                 "simulated_safe": "integer",
                 "simulated_risky": "integer",
                 "rejected": "integer",
+                "applied": "integer",
+                "auto_apply_rejected": "integer",
+                "verified_closed": "integer",
             },
             "repair_apply_ready_ids": ["string"],
             "repair_apply_enabled": "boolean",
             "repair_apply_gate": "string",
+            "repair_apply_results": [{
+                "proposal_id": "string",
+                "issue_id": "string",
+                "decision": "string — applied|rejected",
+                "reason_code": "string",
+                "proposal_state_after_verify": "string | null",
+            }],
+            "repair_apply_results_total": "integer",
+            "repair_apply_results_by_decision": {
+                "applied": "integer",
+                "rejected": "integer",
+            },
             "simulate_bridge": {
                 "target_endpoint": "string",
                 "engine": "string",
                 "decision_phase": "string",
             },
-            "invariant_mode": "string — read_only",
+            "invariant_mode": "string — read_only|policy_gated_auto_apply",
             "invariants_evaluated": ["string"],
             "metrics": "object",
+            "last_repair_at": "ISO 8601 datetime | null",
             "last_evaluated_at": "ISO 8601 datetime",
             "decision_ref": "string",
         },
@@ -854,21 +1301,7 @@ async def update_quality_health(
 ) -> None:
     user_id = payload["user_id"]
     retracted_ids = await get_retracted_event_ids(conn, user_id)
-    alias_map = await get_alias_map(conn, user_id, retracted_ids=retracted_ids)
-
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            """
-            SELECT id, timestamp, event_type, data
-            FROM events
-            WHERE user_id = %s
-              AND event_type = ANY(%s)
-            ORDER BY timestamp ASC, id ASC
-            """,
-            (user_id, list(_EVENT_TYPES)),
-        )
-        rows = await cur.fetchall()
-
+    rows = await _load_quality_source_rows(conn, user_id)
     rows = [r for r in rows if str(r["id"]) not in retracted_ids]
 
     if not rows:
@@ -879,9 +1312,56 @@ async def update_quality_health(
             )
         return
 
+    alias_map = await get_alias_map(conn, user_id, retracted_ids=retracted_ids)
     issues, metrics = _evaluate_read_only_invariants(rows, alias_map)
     now_iso = datetime.now(timezone.utc).isoformat()
-    projection_data = _build_quality_projection_data(issues, metrics, now_iso)
+    simulated_proposals = _build_simulated_repair_proposals(issues, now_iso)
+    apply_cycle = await _auto_apply_tier_a_repairs(
+        conn,
+        user_id,
+        simulated_proposals,
+        now_iso,
+    )
+    apply_results = apply_cycle["results"]
+
+    has_applied = any(result.get("decision") == "applied" for result in apply_results)
+    last_repair_at: str | None = None
+    if has_applied:
+        retracted_ids = await get_retracted_event_ids(conn, user_id)
+        rows = await _load_quality_source_rows(conn, user_id)
+        rows = [r for r in rows if str(r["id"]) not in retracted_ids]
+        if not rows:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "DELETE FROM projections WHERE user_id = %s AND projection_type = 'quality_health' AND key = 'overview'",
+                    (user_id,),
+                )
+            return
+        alias_map = await get_alias_map(conn, user_id, retracted_ids=retracted_ids)
+        issues, metrics = _evaluate_read_only_invariants(rows, alias_map)
+        verified_at = datetime.now(timezone.utc).isoformat()
+        await _verify_applied_repairs(
+            conn,
+            user_id,
+            apply_results,
+            open_issue_ids={str(issue["issue_id"]) for issue in issues},
+            verified_at=verified_at,
+        )
+        last_repair_at = verified_at
+        now_iso = verified_at
+
+    final_proposals = _build_simulated_repair_proposals(issues, now_iso)
+    projection_data = _build_quality_projection_data(
+        issues,
+        metrics,
+        now_iso,
+        proposals=final_proposals,
+        repair_apply_enabled=True,
+        repair_apply_gate=_AUTO_APPLY_POLICY_GATE,
+        repair_apply_results=apply_results,
+        decision_phase="phase_2_autonomous_tier_a",
+        last_repair_at=last_repair_at,
+    )
     last_event_id = str(rows[-1]["id"])
 
     async with conn.cursor() as cur:
@@ -899,9 +1379,11 @@ async def update_quality_health(
         )
 
     logger.info(
-        "Updated quality_health for user=%s (status=%s score=%.3f issues=%d)",
+        "Updated quality_health for user=%s (status=%s score=%.3f issues=%d applied=%d rejected=%d)",
         user_id,
         projection_data["status"],
         projection_data["score"],
         projection_data["issues_open"],
+        projection_data["repair_apply_results_by_decision"]["applied"],
+        projection_data["repair_apply_results_by_decision"]["rejected"],
     )

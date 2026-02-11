@@ -107,6 +107,23 @@ async def get_projection(conn, user_id, projection_type, key="overview"):
         return await cur.fetchone()
 
 
+async def count_events(conn, user_id, event_type, data_key=None, data_value=None):
+    query = """
+        SELECT COUNT(*) AS count
+        FROM events
+        WHERE user_id = %s
+          AND event_type = %s
+    """
+    params = [user_id, event_type]
+    if data_key is not None:
+        query += " AND data->>%s = %s"
+        params.extend([data_key, data_value])
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(query, tuple(params))
+        row = await cur.fetchone()
+    return int(row["count"])
+
+
 async def get_latest_inference_run(conn, user_id, projection_type, key):
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -1188,7 +1205,7 @@ class TestUserProfileIntegration:
 
 
 class TestQualityHealthIntegration:
-    async def test_detects_read_only_invariant_issues(self, db, test_user_id):
+    async def test_detects_policy_gated_invariant_issues(self, db, test_user_id):
         await create_test_user(db, test_user_id)
         await insert_event(db, test_user_id, "set.logged", {
             "exercise": "Mystery Cable Move", "weight_kg": 25, "reps": 10,
@@ -1209,16 +1226,106 @@ class TestQualityHealthIntegration:
         proj = await get_projection(db, test_user_id, "quality_health")
         assert proj is not None
         data = proj["data"]
-        assert data["invariant_mode"] == "read_only"
+        assert data["invariant_mode"] == "policy_gated_auto_apply"
+        assert data["repair_apply_enabled"] is True
         assert data["issues_open"] >= 1
         assert data["score"] < 1.0
         issue_types = {issue["type"] for issue in data["issues"]}
-        assert "unresolved_exercise_identity" in issue_types
         assert "timezone_missing" in issue_types
-        assert data["repair_proposals_total"] >= 2
+        assert data["repair_proposals_total"] >= 1
         assert data["simulate_bridge"]["target_endpoint"] == "/v1/events/simulate"
+        assert data["simulate_bridge"]["decision_phase"] == "phase_2_autonomous_tier_a"
         proposal_states = {proposal["state"] for proposal in data["repair_proposals"]}
         assert "simulated_risky" in proposal_states
+
+    async def test_tier_a_auto_apply_closes_issue_and_emits_events(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise": "bench press", "weight_kg": 90, "reps": 6,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+        await insert_event(db, test_user_id, "preference.set", {
+            "key": "timezone", "value": "Europe/Berlin",
+        }, "TIMESTAMP '2026-02-01 11:00:00+01'")
+        await insert_event(db, test_user_id, "profile.updated", {
+            "age_deferred": True, "bodyweight_deferred": True,
+        }, "TIMESTAMP '2026-02-01 12:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_quality_health(db, {
+            "user_id": test_user_id, "event_type": "set.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "quality_health")
+        assert proj is not None
+        data = proj["data"]
+        assert data["issues_open"] == 0
+        assert data["repair_apply_results_by_decision"]["applied"] >= 1
+        assert data["last_repair_at"] is not None
+
+        alias_events = await count_events(
+            db,
+            test_user_id,
+            "exercise.alias_created",
+            data_key="alias",
+            data_value="bench press",
+        )
+        assert alias_events == 1
+        assert await count_events(db, test_user_id, "quality.fix.applied") >= 1
+        assert await count_events(db, test_user_id, "quality.issue.closed") >= 1
+
+    async def test_auto_apply_recurrence_guard_is_idempotent(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise": "bench press", "weight_kg": 85, "reps": 5,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+        await insert_event(db, test_user_id, "preference.set", {
+            "key": "timezone", "value": "Europe/Berlin",
+        }, "TIMESTAMP '2026-02-01 11:00:00+01'")
+        await insert_event(db, test_user_id, "profile.updated", {
+            "age_deferred": True, "bodyweight_deferred": True,
+        }, "TIMESTAMP '2026-02-01 12:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        payload = {"user_id": test_user_id, "event_type": "set.logged"}
+        await update_quality_health(db, payload)
+        await update_quality_health(db, payload)
+        await db.execute("RESET ROLE")
+
+        alias_events = await count_events(
+            db,
+            test_user_id,
+            "exercise.alias_created",
+            data_key="alias",
+            data_value="bench press",
+        )
+        assert alias_events == 1
+        assert await count_events(db, test_user_id, "quality.fix.applied") == 1
+        assert await count_events(db, test_user_id, "quality.issue.closed") == 1
+
+    async def test_risky_repairs_are_rejected_without_apply(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "barbell_back_squat", "weight_kg": 100, "reps": 5,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+        await insert_event(db, test_user_id, "profile.updated", {
+            "age_deferred": True, "bodyweight_deferred": True,
+        }, "TIMESTAMP '2026-02-01 11:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_quality_health(db, {
+            "user_id": test_user_id, "event_type": "set.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        assert await count_events(
+            db,
+            test_user_id,
+            "preference.set",
+            data_key="key",
+            data_value="timezone",
+        ) == 0
+        assert await count_events(db, test_user_id, "quality.fix.rejected") >= 1
 
 
 # ---------------------------------------------------------------------------
