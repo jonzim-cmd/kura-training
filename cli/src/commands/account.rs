@@ -12,13 +12,13 @@ pub enum AccountCommands {
     },
 }
 
-pub async fn run(api_url: &str, token: &str, command: AccountCommands) -> i32 {
+pub async fn run(api_url: &str, token: Option<&str>, command: AccountCommands) -> i32 {
     match command {
         AccountCommands::Delete { confirm } => delete(api_url, token, confirm).await,
     }
 }
 
-async fn delete(api_url: &str, token: &str, confirm: bool) -> i32 {
+async fn delete(api_url: &str, token: Option<&str>, confirm: bool) -> i32 {
     if !confirm {
         exit_error(
             "Account deletion is permanent and irreversible. All events, projections, and credentials will be destroyed.",
@@ -30,7 +30,7 @@ async fn delete(api_url: &str, token: &str, confirm: bool) -> i32 {
         api_url,
         reqwest::Method::DELETE,
         "/v1/account",
-        Some(token),
+        token,
         None,
         &[],
         &[],

@@ -55,7 +55,7 @@ pub enum EventCommands {
     },
 }
 
-pub async fn run(api_url: &str, token: &str, command: EventCommands) -> i32 {
+pub async fn run(api_url: &str, token: Option<&str>, command: EventCommands) -> i32 {
     match command {
         EventCommands::Create {
             event_type,
@@ -103,7 +103,7 @@ pub async fn run(api_url: &str, token: &str, command: EventCommands) -> i32 {
 
 async fn create(
     api_url: &str,
-    token: &str,
+    token: Option<&str>,
     event_type: &str,
     timestamp: Option<&str>,
     data: Option<&str>,
@@ -160,7 +160,7 @@ async fn create(
         api_url,
         reqwest::Method::POST,
         "/v1/events",
-        Some(token),
+        token,
         Some(body),
         &[],
         &[],
@@ -172,7 +172,7 @@ async fn create(
 
 async fn list(
     api_url: &str,
-    token: &str,
+    token: Option<&str>,
     event_type: Option<&str>,
     since: Option<&str>,
     until: Option<&str>,
@@ -200,7 +200,7 @@ async fn list(
         api_url,
         reqwest::Method::GET,
         "/v1/events",
-        Some(token),
+        token,
         None,
         &query,
         &[],
@@ -210,7 +210,7 @@ async fn list(
     .await
 }
 
-async fn batch(api_url: &str, token: &str, file: &str) -> i32 {
+async fn batch(api_url: &str, token: Option<&str>, file: &str) -> i32 {
     let body = match read_json_from_file(file) {
         Ok(v) => v,
         Err(e) => exit_error(&e, Some("Provide a JSON file with {\"events\": [...]}")),
@@ -220,7 +220,7 @@ async fn batch(api_url: &str, token: &str, file: &str) -> i32 {
         api_url,
         reqwest::Method::POST,
         "/v1/events/batch",
-        Some(token),
+        token,
         Some(body),
         &[],
         &[],

@@ -2,12 +2,12 @@ use serde_json::json;
 
 use crate::util::{api_request, check_auth_configured, client, exit_error, raw_api_request, resolve_token};
 
-pub async fn config(api_url: &str, token: &str) -> i32 {
+pub async fn config(api_url: &str, token: Option<&str>) -> i32 {
     api_request(
         api_url,
         reqwest::Method::GET,
         "/v1/system/config",
-        Some(token),
+        token,
         None,
         &[],
         &[],
@@ -19,7 +19,7 @@ pub async fn config(api_url: &str, token: &str) -> i32 {
 
 pub async fn context(
     api_url: &str,
-    token: &str,
+    token: Option<&str>,
     exercise_limit: Option<u32>,
     custom_limit: Option<u32>,
 ) -> i32 {
@@ -35,7 +35,7 @@ pub async fn context(
         api_url,
         reqwest::Method::GET,
         "/v1/agent/context",
-        Some(token),
+        token,
         None,
         &query,
         &[],
@@ -45,12 +45,12 @@ pub async fn context(
     .await
 }
 
-pub async fn snapshot(api_url: &str, token: &str) -> i32 {
+pub async fn snapshot(api_url: &str, token: Option<&str>) -> i32 {
     api_request(
         api_url,
         reqwest::Method::GET,
         "/v1/projections",
-        Some(token),
+        token,
         None,
         &[],
         &[],

@@ -21,7 +21,7 @@ pub enum ProjectionCommands {
     },
 }
 
-pub async fn run(api_url: &str, token: &str, command: ProjectionCommands) -> i32 {
+pub async fn run(api_url: &str, token: Option<&str>, command: ProjectionCommands) -> i32 {
     match command {
         ProjectionCommands::Get {
             projection_type,
@@ -33,12 +33,12 @@ pub async fn run(api_url: &str, token: &str, command: ProjectionCommands) -> i32
     }
 }
 
-async fn get(api_url: &str, token: &str, projection_type: &str, key: &str) -> i32 {
+async fn get(api_url: &str, token: Option<&str>, projection_type: &str, key: &str) -> i32 {
     api_request(
         api_url,
         reqwest::Method::GET,
         &format!("/v1/projections/{projection_type}/{key}"),
-        Some(token),
+        token,
         None,
         &[],
         &[],
@@ -48,12 +48,12 @@ async fn get(api_url: &str, token: &str, projection_type: &str, key: &str) -> i3
     .await
 }
 
-async fn list(api_url: &str, token: &str, projection_type: &str) -> i32 {
+async fn list(api_url: &str, token: Option<&str>, projection_type: &str) -> i32 {
     api_request(
         api_url,
         reqwest::Method::GET,
         &format!("/v1/projections/{projection_type}"),
-        Some(token),
+        token,
         None,
         &[],
         &[],

@@ -12,6 +12,10 @@ struct Cli {
     #[arg(long, env = "KURA_API_URL", default_value = "http://localhost:3000")]
     api_url: String,
 
+    /// Skip credential check (for use behind an auth-injecting proxy)
+    #[arg(long, env = "KURA_NO_AUTH")]
+    no_auth: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -89,34 +93,39 @@ async fn main() {
     let code = match cli.command {
         Commands::Health => commands::health::run(&cli.api_url).await,
 
-        Commands::Api(args) => commands::api::run(&cli.api_url, args).await,
+        Commands::Api(mut args) => {
+            if cli.no_auth {
+                args.no_auth = true;
+            }
+            commands::api::run(&cli.api_url, args).await
+        }
 
         Commands::Event { command } => {
-            let token = resolve_or_exit(&cli.api_url).await;
-            commands::event::run(&cli.api_url, &token, command).await
+            let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
+            commands::event::run(&cli.api_url, token.as_deref(), command).await
         }
 
         Commands::Projection { command } => {
-            let token = resolve_or_exit(&cli.api_url).await;
-            commands::projection::run(&cli.api_url, &token, command).await
+            let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
+            commands::projection::run(&cli.api_url, token.as_deref(), command).await
         }
 
         Commands::Snapshot => {
-            let token = resolve_or_exit(&cli.api_url).await;
-            commands::system::snapshot(&cli.api_url, &token).await
+            let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
+            commands::system::snapshot(&cli.api_url, token.as_deref()).await
         }
 
         Commands::Config => {
-            let token = resolve_or_exit(&cli.api_url).await;
-            commands::system::config(&cli.api_url, &token).await
+            let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
+            commands::system::config(&cli.api_url, token.as_deref()).await
         }
 
         Commands::Context {
             exercise_limit,
             custom_limit,
         } => {
-            let token = resolve_or_exit(&cli.api_url).await;
-            commands::system::context(&cli.api_url, &token, exercise_limit, custom_limit).await
+            let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
+            commands::system::context(&cli.api_url, token.as_deref(), exercise_limit, custom_limit).await
         }
 
         Commands::Doctor => commands::system::doctor(&cli.api_url).await,
@@ -126,8 +135,8 @@ async fn main() {
         }
 
         Commands::Account { command } => {
-            let token = resolve_or_exit(&cli.api_url).await;
-            commands::account::run(&cli.api_url, &token, command).await
+            let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
+            commands::account::run(&cli.api_url, token.as_deref(), command).await
         }
 
         Commands::Admin { command } => commands::admin::run(&cli.api_url, command).await,
@@ -150,9 +159,12 @@ async fn main() {
     std::process::exit(code);
 }
 
-async fn resolve_or_exit(api_url: &str) -> String {
+async fn resolve_or_exit(api_url: &str, no_auth: bool) -> Option<String> {
+    if no_auth {
+        return None;
+    }
     match resolve_token(api_url).await {
-        Ok(t) => t,
+        Ok(t) => Some(t),
         Err(e) => exit_error(
             &e.to_string(),
             Some("Run `kura login` or set KURA_API_KEY"),
