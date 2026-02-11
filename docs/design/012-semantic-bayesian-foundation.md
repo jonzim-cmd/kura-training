@@ -116,6 +116,21 @@ Catch-up behavior:
 - If worker downtime causes missed slots, scheduler computes due run count and
   records missed-run telemetry, while scheduling one catch-up execution cycle.
 
+### D12.8 Agent Context Ranking Layer
+
+`GET /v1/agent/context` applies a projection ranking layer for list-like
+context blocks (`exercise_progression`, `strength_inference`, `custom`).
+
+Ranking dimensions:
+- recency (projection update age)
+- confidence (projection-specific reliability heuristics)
+- semantic relevance (task intent token overlap + semantic memory candidate hints)
+- task intent alignment (projection-type affinity)
+
+This is retrieval orchestration only. It intentionally stays separate from
+the semantic resolve endpoint contract and does not change canonical
+resolution behavior.
+
 ## Design Principles
 
 1. **No black boxes**: projections include diagnostics + uncertainty metadata
