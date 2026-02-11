@@ -46,7 +46,7 @@ after context loss.
   - Single fetch for `system_config + user_profile + key dimensions`.
 - [ ] E2. Rule lifecycle API extension
   - Validate/preview/apply/archive ergonomics for projection rules.
-- [ ] E3. Projection freshness SLA metadata
+- [x] E3. Projection freshness SLA metadata
   - Expose lag and last processing state in projection responses.
 - [ ] E4. Optional dry-run simulation endpoint
   - Predict projection deltas before writing events.

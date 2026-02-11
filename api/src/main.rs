@@ -62,6 +62,8 @@ mod state;
         kura_core::projections::Projection,
         kura_core::projections::ProjectionResponse,
         kura_core::projections::ProjectionMeta,
+        kura_core::projections::ProjectionFreshness,
+        kura_core::projections::ProjectionFreshnessStatus,
         routes::projection_rules::ProjectionRuleItem,
         routes::projection_rules::ProjectionRulesResponse,
         routes::system::SystemConfigResponse,

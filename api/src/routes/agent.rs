@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use kura_core::error::ApiError;
-use kura_core::projections::{Projection, ProjectionMeta, ProjectionResponse};
+use kura_core::projections::{Projection, ProjectionFreshness, ProjectionMeta, ProjectionResponse};
 
 use crate::auth::AuthenticatedUser;
 use crate::error::AppError;
@@ -69,10 +69,12 @@ struct ProjectionRow {
 }
 
 impl ProjectionRow {
-    fn into_response(self) -> ProjectionResponse {
+    fn into_response(self, now: DateTime<Utc>) -> ProjectionResponse {
+        let computed_at = self.updated_at;
         let meta = ProjectionMeta {
             projection_version: self.version,
-            computed_at: self.updated_at,
+            computed_at,
+            freshness: ProjectionFreshness::from_computed_at(computed_at, now),
         };
         ProjectionResponse {
             projection: Projection {
@@ -83,7 +85,7 @@ impl ProjectionRow {
                 data: self.data,
                 version: self.version,
                 last_event_id: self.last_event_id,
-                updated_at: self.updated_at,
+                updated_at: computed_at,
             },
             meta,
         }
@@ -125,6 +127,7 @@ fn bootstrap_user_profile(user_id: Uuid) -> ProjectionResponse {
         meta: ProjectionMeta {
             projection_version: 0,
             computed_at: now,
+            freshness: ProjectionFreshness::from_computed_at(now, now),
         },
     }
 }
@@ -135,6 +138,7 @@ async fn fetch_projection(
     projection_type: &str,
     key: &str,
 ) -> Result<Option<ProjectionResponse>, AppError> {
+    let now = Utc::now();
     let row = sqlx::query_as::<_, ProjectionRow>(
         r#"
         SELECT id, user_id, projection_type, key, data, version, last_event_id, updated_at
@@ -148,7 +152,7 @@ async fn fetch_projection(
     .fetch_optional(&mut **tx)
     .await?;
 
-    Ok(row.map(|r| r.into_response()))
+    Ok(row.map(|r| r.into_response(now)))
 }
 
 async fn fetch_projection_list(
@@ -157,6 +161,7 @@ async fn fetch_projection_list(
     projection_type: &str,
     limit: i64,
 ) -> Result<Vec<ProjectionResponse>, AppError> {
+    let now = Utc::now();
     let rows = sqlx::query_as::<_, ProjectionRow>(
         r#"
         SELECT id, user_id, projection_type, key, data, version, last_event_id, updated_at
@@ -172,7 +177,7 @@ async fn fetch_projection_list(
     .fetch_all(&mut **tx)
     .await?;
 
-    Ok(rows.into_iter().map(|r| r.into_response()).collect())
+    Ok(rows.into_iter().map(|r| r.into_response(now)).collect())
 }
 
 /// Get agent context bundle in a single read call.

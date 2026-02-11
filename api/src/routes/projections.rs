@@ -1,10 +1,11 @@
 use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
+use chrono::Utc;
 use uuid::Uuid;
 
 use kura_core::error::ApiError;
-use kura_core::projections::{Projection, ProjectionMeta, ProjectionResponse};
+use kura_core::projections::{Projection, ProjectionFreshness, ProjectionMeta, ProjectionResponse};
 
 use crate::auth::AuthenticatedUser;
 use crate::error::AppError;
@@ -37,10 +38,12 @@ struct ProjectionRow {
 }
 
 impl ProjectionRow {
-    fn into_response(self) -> ProjectionResponse {
+    fn into_response(self, now: chrono::DateTime<chrono::Utc>) -> ProjectionResponse {
+        let computed_at = self.updated_at;
         let meta = ProjectionMeta {
             projection_version: self.version,
-            computed_at: self.updated_at,
+            computed_at,
+            freshness: ProjectionFreshness::from_computed_at(computed_at, now),
         };
         ProjectionResponse {
             projection: Projection {
@@ -51,7 +54,7 @@ impl ProjectionRow {
                 data: self.data,
                 version: self.version,
                 last_event_id: self.last_event_id,
-                updated_at: self.updated_at,
+                updated_at: computed_at,
             },
             meta,
         }
@@ -99,7 +102,8 @@ pub async fn snapshot(
 
     tx.commit().await?;
 
-    let responses: Vec<ProjectionResponse> = rows.into_iter().map(|r| r.into_response()).collect();
+    let now = Utc::now();
+    let responses: Vec<ProjectionResponse> = rows.into_iter().map(|r| r.into_response(now)).collect();
     Ok(Json(responses))
 }
 
@@ -152,13 +156,15 @@ pub async fn get_projection(
 
     tx.commit().await?;
 
+    let now = Utc::now();
     match row {
-        Some(r) => Ok(Json(r.into_response())),
+        Some(r) => Ok(Json(r.into_response(now))),
         // Bootstrap response for new users: return empty profile with
         // onboarding_needed agenda instead of 404 (Decision 8).
         // The full three-layer response becomes available after the first event
         // triggers the Python worker.
         None if projection_type == "user_profile" && key == "me" => {
+            let computed_at = now;
             Ok(Json(ProjectionResponse {
                 projection: Projection {
                     id: Uuid::nil(),
@@ -176,11 +182,12 @@ pub async fn get_projection(
                     }),
                     version: 0,
                     last_event_id: None,
-                    updated_at: chrono::Utc::now(),
+                    updated_at: computed_at,
                 },
                 meta: ProjectionMeta {
                     projection_version: 0,
-                    computed_at: chrono::Utc::now(),
+                    computed_at,
+                    freshness: ProjectionFreshness::from_computed_at(computed_at, now),
                 },
             }))
         }
@@ -237,6 +244,7 @@ pub async fn list_projections(
 
     tx.commit().await?;
 
-    let responses: Vec<ProjectionResponse> = rows.into_iter().map(|r| r.into_response()).collect();
+    let now = Utc::now();
+    let responses: Vec<ProjectionResponse> = rows.into_iter().map(|r| r.into_response(now)).collect();
     Ok(Json(responses))
 }
