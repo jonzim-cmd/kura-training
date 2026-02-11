@@ -312,3 +312,12 @@ class TestAgentBehavior:
         markers = uncertainty["required_markers"]
         assert "uncertain" in markers
         assert "deferred" in markers
+
+    def test_operational_has_autonomy_confirmation_templates(self):
+        result = _get_agent_behavior()
+        throttling = result["operational"]["autonomy_throttling"]
+        catalog = throttling["confirmation_template_catalog"]
+        assert "healthy" in catalog
+        assert "monitor" in catalog
+        assert "degraded" in catalog
+        assert "non_trivial_action" in catalog["degraded"]

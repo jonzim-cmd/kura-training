@@ -96,6 +96,7 @@ pub struct AgentAutonomyPolicy {
     pub require_confirmation_for_repairs: bool,
     pub repair_auto_apply_enabled: bool,
     pub reason: String,
+    pub confirmation_templates: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -154,6 +155,8 @@ pub struct AgentWriteClaimGuard {
     pub uncertainty_markers: Vec<String>,
     pub deferred_markers: Vec<String>,
     pub recommended_user_phrase: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_action_confirmation_prompt: Option<String>,
     pub autonomy_policy: AgentAutonomyPolicy,
 }
 
@@ -765,6 +768,24 @@ fn all_read_after_write_verified(checks: &[AgentReadAfterWriteCheck]) -> bool {
 }
 
 fn default_autonomy_policy() -> AgentAutonomyPolicy {
+    let mut templates = HashMap::new();
+    templates.insert(
+        "non_trivial_action".to_string(),
+        "Wenn du willst, kann ich als nächsten Schritt direkt fortfahren.".to_string(),
+    );
+    templates.insert(
+        "plan_update".to_string(),
+        "Wenn du willst, passe ich den Plan jetzt entsprechend an.".to_string(),
+    );
+    templates.insert(
+        "repair_action".to_string(),
+        "Eine risikoarme Reparatur ist möglich. Soll ich sie ausführen?".to_string(),
+    );
+    templates.insert(
+        "post_save_followup".to_string(),
+        "Speichern ist verifiziert.".to_string(),
+    );
+
     AgentAutonomyPolicy {
         policy_version: "phase_3_integrity_slo_v1".to_string(),
         slo_status: "healthy".to_string(),
@@ -776,7 +797,26 @@ fn default_autonomy_policy() -> AgentAutonomyPolicy {
         repair_auto_apply_enabled: true,
         reason: "No quality_health autonomy policy available; using healthy defaults."
             .to_string(),
+        confirmation_templates: templates,
     }
+}
+
+fn parse_confirmation_templates(policy: &serde_json::Map<String, Value>) -> HashMap<String, String> {
+    let mut templates = default_autonomy_policy().confirmation_templates;
+    if let Some(custom) = policy
+        .get("confirmation_templates")
+        .and_then(Value::as_object)
+    {
+        for (key, value) in custom {
+            if let Some(text) = value.as_str() {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    templates.insert(key.to_string(), trimmed.to_string());
+                }
+            }
+        }
+    }
+    templates
 }
 
 fn autonomy_policy_from_quality_health(
@@ -835,6 +875,7 @@ fn autonomy_policy_from_quality_health(
             .and_then(Value::as_str)
             .unwrap_or("Autonomy policy derived from quality_health.")
             .to_string(),
+        confirmation_templates: parse_confirmation_templates(policy),
     }
 }
 
@@ -872,14 +913,29 @@ fn build_claim_guard(
         deferred_markers.push("confirm_non_trivial_actions_due_to_slo_regression".to_string());
     }
 
+    let next_action_confirmation_prompt = if autonomy_policy.throttle_active {
+        autonomy_policy
+            .confirmation_templates
+            .get("non_trivial_action")
+            .cloned()
+    } else {
+        None
+    };
+
     let allow_saved_claim = receipts_complete && read_after_write_ok;
     let (claim_status, recommended_user_phrase) = if allow_saved_claim && autonomy_policy.throttle_active {
         (
             "verified".to_string(),
-            format!(
-                "Saved and verified in the read model. Integrity status '{}' requires explicit confirmation before non-trivial follow-up actions.",
-                autonomy_policy.slo_status
-            ),
+            autonomy_policy
+                .confirmation_templates
+                .get("post_save_followup")
+                .cloned()
+                .unwrap_or_else(|| {
+                    format!(
+                        "Saved and verified in the read model. Integrity status '{}' requires explicit confirmation before non-trivial follow-up actions.",
+                        autonomy_policy.slo_status
+                    )
+                }),
         )
     } else if allow_saved_claim {
         (
@@ -900,6 +956,7 @@ fn build_claim_guard(
         uncertainty_markers,
         deferred_markers,
         recommended_user_phrase,
+        next_action_confirmation_prompt,
         autonomy_policy,
     }
 }
@@ -920,6 +977,7 @@ fn build_save_claim_checked_event(
         "required_checks": verification.required_checks,
         "verified_checks": verification.verified_checks,
         "mismatch_detected": mismatch_detected,
+        "next_action_confirmation_prompt": claim_guard.next_action_confirmation_prompt,
         "uncertainty_markers": claim_guard.uncertainty_markers,
         "deferred_markers": claim_guard.deferred_markers,
         "autonomy_policy": {
@@ -1471,6 +1529,7 @@ mod tests {
         assert!(guard.allow_saved_claim);
         assert_eq!(guard.claim_status, "verified");
         assert!(guard.uncertainty_markers.is_empty());
+        assert!(guard.next_action_confirmation_prompt.is_none());
     }
 
     #[test]
@@ -1552,6 +1611,14 @@ mod tests {
         assert!(guard.allow_saved_claim);
         assert_eq!(guard.claim_status, "verified");
         assert_eq!(guard.autonomy_policy.slo_status, "degraded");
+        assert!(
+            guard
+                .next_action_confirmation_prompt
+                .as_deref()
+                .unwrap_or("")
+                .len()
+                > 10
+        );
         assert!(
             guard
                 .uncertainty_markers

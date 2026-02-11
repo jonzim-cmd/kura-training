@@ -1101,6 +1101,57 @@ def _compute_integrity_slos(
 
 
 def _autonomy_policy_from_slos(integrity_slos: dict[str, Any]) -> dict[str, Any]:
+    def confirmation_templates(status: str) -> dict[str, str]:
+        if status == "degraded":
+            return {
+                "non_trivial_action": (
+                    "Datenintegrität ist aktuell eingeschränkt. Soll ich fortfahren? "
+                    "Bitte antworte mit JA, um diese Aktion explizit zu bestätigen."
+                ),
+                "plan_update": (
+                    "Integritätsstatus ist degradiert. Planänderungen brauchen eine "
+                    "explizite Bestätigung. Soll ich den Plan jetzt ändern?"
+                ),
+                "repair_action": (
+                    "Automatische Reparaturen sind pausiert. Soll ich diese Reparatur "
+                    "manuell mit deiner Bestätigung anwenden?"
+                ),
+                "post_save_followup": (
+                    "Speichern ist verifiziert. Wegen degradiertem Integritätsstatus "
+                    "frage ich vor weiteren nicht-trivialen Schritten immer explizit nach."
+                ),
+            }
+        if status == "monitor":
+            return {
+                "non_trivial_action": (
+                    "Integritätsstatus ist im Monitor-Bereich. Soll ich mit diesem "
+                    "nächsten Schritt fortfahren?"
+                ),
+                "plan_update": (
+                    "Monitor-Status aktiv: Bitte kurz bestätigen, dass ich die "
+                    "Plananpassung durchführen soll."
+                ),
+                "repair_action": (
+                    "Diese Reparatur ist als risikoarm eingestuft. Soll ich sie anwenden?"
+                ),
+                "post_save_followup": (
+                    "Speichern ist verifiziert. Im Monitor-Status frage ich "
+                    "nicht-triviale Folgeaktionen kurz nach."
+                ),
+            }
+        return {
+            "non_trivial_action": (
+                "Wenn du willst, kann ich als nächsten Schritt direkt fortfahren."
+            ),
+            "plan_update": (
+                "Wenn du willst, passe ich den Plan jetzt entsprechend an."
+            ),
+            "repair_action": (
+                "Eine risikoarme Reparatur ist möglich. Soll ich sie ausführen?"
+            ),
+            "post_save_followup": "Speichern ist verifiziert.",
+        }
+
     slo_status = str(integrity_slos.get("status", "healthy"))
     if slo_status == "degraded":
         return {
@@ -1115,6 +1166,7 @@ def _autonomy_policy_from_slos(integrity_slos: dict[str, Any]) -> dict[str, Any]
             "reason": (
                 "Integrity SLOs degraded: disable autonomous repair apply and require explicit confirmations."
             ),
+            "confirmation_templates": confirmation_templates("degraded"),
         }
     if slo_status == "monitor":
         return {
@@ -1129,6 +1181,7 @@ def _autonomy_policy_from_slos(integrity_slos: dict[str, Any]) -> dict[str, Any]
             "reason": (
                 "Integrity SLOs in monitor range: reduce scope and require confirmation for non-trivial actions."
             ),
+            "confirmation_templates": confirmation_templates("monitor"),
         }
     return {
         "policy_version": _AUTONOMY_POLICY_VERSION,
@@ -1140,6 +1193,7 @@ def _autonomy_policy_from_slos(integrity_slos: dict[str, Any]) -> dict[str, Any]
         "require_confirmation_for_repairs": False,
         "repair_auto_apply_enabled": True,
         "reason": "Integrity SLOs healthy.",
+        "confirmation_templates": confirmation_templates("healthy"),
     }
 
 
@@ -1564,6 +1618,12 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                 "require_confirmation_for_repairs": "boolean",
                 "repair_auto_apply_enabled": "boolean",
                 "reason": "string",
+                "confirmation_templates": {
+                    "non_trivial_action": "string",
+                    "plan_update": "string",
+                    "repair_action": "string",
+                    "post_save_followup": "string",
+                },
             },
             "last_repair_at": "ISO 8601 datetime | null",
             "last_evaluated_at": "ISO 8601 datetime",

@@ -227,6 +227,32 @@ def _get_agent_behavior() -> dict[str, Any]:
                     "Treat monitor/degraded SLO status as a hard behavioral boundary, not a suggestion.",
                     "Never escalate autonomy above the policy-defined max_scope_level.",
                 ],
+                "confirmation_template_catalog": {
+                    "healthy": {
+                        "non_trivial_action": (
+                            "Wenn du willst, kann ich als nächsten Schritt direkt fortfahren."
+                        ),
+                        "plan_update": (
+                            "Wenn du willst, passe ich den Plan jetzt entsprechend an."
+                        ),
+                    },
+                    "monitor": {
+                        "non_trivial_action": (
+                            "Integritätsstatus ist im Monitor-Bereich. Soll ich mit diesem nächsten Schritt fortfahren?"
+                        ),
+                        "plan_update": (
+                            "Monitor-Status aktiv: Bitte kurz bestätigen, dass ich die Plananpassung durchführen soll."
+                        ),
+                    },
+                    "degraded": {
+                        "non_trivial_action": (
+                            "Datenintegrität ist aktuell eingeschränkt. Soll ich fortfahren? Bitte antworte mit JA."
+                        ),
+                        "plan_update": (
+                            "Integritätsstatus ist degradiert. Planänderungen brauchen eine explizite Bestätigung. Soll ich den Plan ändern?"
+                        ),
+                    },
+                },
             },
         },
     }

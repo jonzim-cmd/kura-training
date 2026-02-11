@@ -327,9 +327,12 @@ class TestIntegritySlos:
         assert policy["throttle_active"] is True
         assert policy["max_scope_level"] == "strict"
         assert policy["repair_auto_apply_enabled"] is False
+        assert "confirmation_templates" in policy
+        assert "non_trivial_action" in policy["confirmation_templates"]
 
     def test_autonomy_policy_is_relaxed_when_slos_healthy(self):
         policy = _autonomy_policy_from_slos({"status": "healthy"})
         assert policy["throttle_active"] is False
         assert policy["max_scope_level"] == "moderate"
         assert policy["repair_auto_apply_enabled"] is True
+        assert "post_save_followup" in policy["confirmation_templates"]
