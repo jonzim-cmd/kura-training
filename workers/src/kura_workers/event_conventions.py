@@ -91,6 +91,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "weight_kg": "number (required for weighted exercises)",
                 "reps": "number (required)",
                 "rpe": "number (optional, 1-10)",
+                "rir": "number (optional, 0-10 reps in reserve)",
                 "set_type": "string (optional: warmup, working, backoff, amrap)",
             },
             "example": {
@@ -99,6 +100,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "weight_kg": 100,
                 "reps": 5,
                 "rpe": 8,
+                "rir": 2,
             },
             "normalization": (
                 "ALWAYS set exercise_id when you recognize the exercise. "
@@ -133,7 +135,10 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             "fields": {
                 "name": "string (optional, plan name)",
                 "plan_id": "string (optional, defaults to 'default')",
-                "sessions": "list[{day, name, exercises}] (optional)",
+                "sessions": (
+                    "list[{day, name, exercises}] (optional). "
+                    "exercise entries may include target_rir (0..10) and/or target_rpe."
+                ),
                 "cycle_weeks": "number (optional)",
                 "notes": "string (optional)",
             },
@@ -153,7 +158,10 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             "fields": {
                 "plan_id": "string (optional, defaults to 'default')",
                 "name": "string (optional)",
-                "sessions": "list[{day, name, exercises}] (optional)",
+                "sessions": (
+                    "list[{day, name, exercises}] (optional). "
+                    "exercise entries may include target_rir (0..10) and/or target_rpe."
+                ),
                 "cycle_weeks": "number (optional)",
                 "notes": "string (optional)",
             },

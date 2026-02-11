@@ -25,6 +25,118 @@ from ..utils import get_retracted_event_ids
 logger = logging.getLogger(__name__)
 
 
+def _as_optional_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_target_rir(value: Any) -> float | None:
+    parsed = _as_optional_float(value)
+    if parsed is None:
+        return None
+    if parsed < 0:
+        return 0.0
+    if parsed > 10:
+        return 10.0
+    return round(parsed, 2)
+
+
+def _infer_target_rir_from_target_rpe(exercise: dict[str, Any]) -> float | None:
+    parsed_rpe = _as_optional_float(exercise.get("target_rpe"))
+    if parsed_rpe is None:
+        parsed_rpe = _as_optional_float(exercise.get("rpe"))
+    if parsed_rpe is None:
+        return None
+    return _normalize_target_rir(10.0 - parsed_rpe)
+
+
+def _normalize_plan_sessions_with_rir(sessions: Any) -> list[Any]:
+    if not isinstance(sessions, list):
+        return []
+
+    normalized_sessions: list[Any] = []
+    for session in sessions:
+        if not isinstance(session, dict):
+            normalized_sessions.append(session)
+            continue
+
+        normalized_session = dict(session)
+        exercises = session.get("exercises")
+        if not isinstance(exercises, list):
+            normalized_sessions.append(normalized_session)
+            continue
+
+        normalized_exercises: list[Any] = []
+        for exercise in exercises:
+            if not isinstance(exercise, dict):
+                normalized_exercises.append(exercise)
+                continue
+
+            normalized_exercise = dict(exercise)
+            explicit_rir = _normalize_target_rir(
+                exercise.get("target_rir", exercise.get("rir"))
+            )
+            if explicit_rir is not None:
+                normalized_exercise["target_rir"] = explicit_rir
+            else:
+                inferred_rir = _infer_target_rir_from_target_rpe(exercise)
+                if inferred_rir is not None:
+                    normalized_exercise["target_rir"] = inferred_rir
+                    normalized_exercise["target_rir_source"] = "inferred_from_target_rpe"
+
+            normalized_exercises.append(normalized_exercise)
+
+        normalized_session["exercises"] = normalized_exercises
+        normalized_sessions.append(normalized_session)
+
+    return normalized_sessions
+
+
+def _compute_rir_target_summary(sessions: Any) -> dict[str, Any]:
+    if not isinstance(sessions, list):
+        return {
+            "exercises_total": 0,
+            "exercises_with_target_rir": 0,
+            "inferred_target_rir": 0,
+        }
+
+    exercises_total = 0
+    exercises_with_target_rir = 0
+    inferred_target_rir = 0
+    total_target_rir = 0.0
+
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        exercises = session.get("exercises")
+        if not isinstance(exercises, list):
+            continue
+        for exercise in exercises:
+            if not isinstance(exercise, dict):
+                continue
+            exercises_total += 1
+            target_rir = _normalize_target_rir(exercise.get("target_rir"))
+            if target_rir is None:
+                continue
+            exercises_with_target_rir += 1
+            total_target_rir += target_rir
+            if exercise.get("target_rir_source") == "inferred_from_target_rpe":
+                inferred_target_rir += 1
+
+    result = {
+        "exercises_total": exercises_total,
+        "exercises_with_target_rir": exercises_with_target_rir,
+        "inferred_target_rir": inferred_target_rir,
+    }
+    if exercises_with_target_rir:
+        result["average_target_rir"] = round(
+            total_target_rir / exercises_with_target_rir, 2
+        )
+    return result
+
+
 def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Extract summary for user_profile manifest."""
     if not projection_rows:
@@ -69,9 +181,22 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                 "created_at": "ISO 8601 datetime",
                 "updated_at": "ISO 8601 datetime",
                 "status": "string — active|inactive",
-                "sessions": [{"name": "string", "exercises": ["object — plan-specific"]}],
+                "sessions": [{
+                    "name": "string",
+                    "exercises": [{
+                        "exercise_id": "string (optional)",
+                        "target_rir": "number (optional, 0..10)",
+                        "target_rir_source": "string (optional: inferred_from_target_rpe)",
+                    }],
+                }],
                 "cycle_weeks": "integer or null",
                 "notes": "string or null",
+                "rir_targets": {
+                    "exercises_total": "integer",
+                    "exercises_with_target_rir": "integer",
+                    "inferred_target_rir": "integer",
+                    "average_target_rir": "number (optional)",
+                },
             },
             "total_plans": "integer — active + archived",
             "plan_history": [{
@@ -136,15 +261,19 @@ async def update_training_plan(
         plan_id = data.get("plan_id", "default")
 
         if event_type == "training_plan.created":
+            normalized_sessions = _normalize_plan_sessions_with_rir(
+                data.get("sessions", [])
+            )
             plans[plan_id] = {
                 "plan_id": plan_id,
                 "name": data.get("name", "unnamed"),
                 "created_at": ts.isoformat(),
                 "updated_at": ts.isoformat(),
                 "status": "active",
-                "sessions": data.get("sessions", []),
+                "sessions": normalized_sessions,
                 "cycle_weeks": data.get("cycle_weeks"),
                 "notes": data.get("notes"),
+                "rir_targets": _compute_rir_target_summary(normalized_sessions),
             }
 
         elif event_type == "training_plan.updated":
@@ -155,7 +284,13 @@ async def update_training_plan(
                 if "name" in data:
                     plan["name"] = data["name"]
                 if "sessions" in data:
-                    plan["sessions"] = data["sessions"]
+                    normalized_sessions = _normalize_plan_sessions_with_rir(
+                        data["sessions"]
+                    )
+                    plan["sessions"] = normalized_sessions
+                    plan["rir_targets"] = _compute_rir_target_summary(
+                        normalized_sessions
+                    )
                 if "cycle_weeks" in data:
                     plan["cycle_weeks"] = data["cycle_weeks"]
                 if "notes" in data:

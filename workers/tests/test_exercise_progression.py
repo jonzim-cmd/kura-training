@@ -1,10 +1,11 @@
 """Tests for exercise_progression handler pure functions and data handling."""
 
-import pytest
-
 from kura_workers.handlers.exercise_progression import (
+    _infer_rir_from_rpe,
     _iso_week,
     _manifest_contribution,
+    _normalize_rir,
+    _resolve_set_rir,
 )
 from kura_workers.utils import (
     epley_1rm,
@@ -158,3 +159,24 @@ class TestFindAllKeysForCanonical:
         result = find_all_keys_for_canonical("barbell_back_squat", alias_map)
         assert "barbell_back_squat" in result
         assert "kniebeuge" in result
+
+
+class TestRirHelpers:
+    def test_normalize_rir_bounds_and_rounding(self):
+        assert _normalize_rir(-2) == 0.0
+        assert _normalize_rir(3.1415) == 3.14
+        assert _normalize_rir(12) == 10.0
+
+    def test_infer_rir_from_rpe(self):
+        assert _infer_rir_from_rpe(8.0) == 2.0
+        assert _infer_rir_from_rpe(None) is None
+
+    def test_resolve_set_rir_prefers_explicit(self):
+        rir, source = _resolve_set_rir({"rir": 1, "rpe": 8}, 8.0)
+        assert rir == 1.0
+        assert source == "explicit"
+
+    def test_resolve_set_rir_falls_back_to_rpe(self):
+        rir, source = _resolve_set_rir({"rpe": 8}, 8.0)
+        assert rir == 2.0
+        assert source == "inferred_from_rpe"

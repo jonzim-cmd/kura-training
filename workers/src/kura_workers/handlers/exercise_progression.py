@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # Everything else is passed through as observed_attributes (Decision 10).
 _KNOWN_FIELDS: set[str] = {
     "exercise", "exercise_id", "weight_kg", "weight", "reps",
-    "rpe", "set_type", "set_number",
+    "rpe", "rir", "set_type", "set_number",
 }
 
 # Fields we *expect* for typical strength sets. Missing = data_quality hint.
@@ -49,6 +49,42 @@ _EXPECTED_FIELDS: dict[str, str] = {
     "weight_kg": "No weight — bodyweight or assisted exercise?",
     "reps": "No reps — time-based or isometric exercise?",
 }
+
+
+def _as_optional_float(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed
+
+
+def _normalize_rir(value: Any) -> float | None:
+    parsed = _as_optional_float(value)
+    if parsed is None:
+        return None
+    if parsed < 0:
+        return 0.0
+    if parsed > 10:
+        return 10.0
+    return round(parsed, 2)
+
+
+def _infer_rir_from_rpe(rpe: float | None) -> float | None:
+    if rpe is None:
+        return None
+    inferred = 10.0 - rpe
+    return _normalize_rir(inferred)
+
+
+def _resolve_set_rir(data: dict[str, Any], parsed_rpe: float | None) -> tuple[float | None, str | None]:
+    explicit = _normalize_rir(data.get("rir"))
+    if explicit is not None:
+        return explicit, "explicit"
+    inferred = _infer_rir_from_rpe(parsed_rpe)
+    if inferred is not None:
+        return inferred, "inferred_from_rpe"
+    return None, None
 
 
 def _iso_week(d) -> str:
@@ -85,15 +121,17 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "total_sessions": "integer — distinct training sessions",
         "total_sets": "integer",
         "total_volume_kg": "number — sum(weight_kg * reps)",
-        "recent_sessions": [{
-            "timestamp": "ISO 8601 datetime",
-            "weight_kg": "number",
-            "reps": "integer",
-            "estimated_1rm": "number — Epley formula",
-            "rpe": "number (optional)",
-            "set_type": "string (optional)",
-            "session_id": "string (optional)",
-            "extra": "object — unknown fields passed through (optional)",
+            "recent_sessions": [{
+                "timestamp": "ISO 8601 datetime",
+                "weight_kg": "number",
+                "reps": "integer",
+                "estimated_1rm": "number — Epley formula",
+                "rpe": "number (optional)",
+                "rir": "number (optional)",
+                "rir_source": "string (optional: explicit|inferred_from_rpe)",
+                "set_type": "string (optional)",
+                "session_id": "string (optional)",
+                "extra": "object — unknown fields passed through (optional)",
         }],
         "weekly_history": [{
             "week": "ISO 8601 week (e.g. 2026-W06)",
@@ -286,11 +324,18 @@ async def update_exercise_progression(
             "_session_key": session_key,  # internal, stripped before output
         }
         # Include optional known fields if present
+        parsed_rpe: float | None = None
         if "rpe" in data:
             try:
-                set_entry["rpe"] = float(data["rpe"])
+                parsed_rpe = float(data["rpe"])
+                set_entry["rpe"] = parsed_rpe
             except (ValueError, TypeError):
                 pass
+        parsed_rir, rir_source = _resolve_set_rir(data, parsed_rpe)
+        if parsed_rir is not None:
+            set_entry["rir"] = parsed_rir
+            if rir_source and rir_source != "explicit":
+                set_entry["rir_source"] = rir_source
         if "set_type" in data:
             set_entry["set_type"] = data["set_type"]
         if session_id is not None:
