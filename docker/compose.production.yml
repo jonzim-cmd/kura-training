@@ -75,4 +75,7 @@ volumes:
 
 networks:
   moltbot-internal:
+    # Docker Compose prefixes network names with the project name.
+    # moltbot's compose creates "moltbot_moltbot-internal".
+    name: moltbot_moltbot-internal
     external: true
