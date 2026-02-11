@@ -53,12 +53,12 @@ after context loss.
 
 ## Workstream F: Self-Healing Data Plane (Decision 13)
 
-- [ ] F1. Invariant evaluator (read-only mode)
+- [x] F1. Invariant evaluator (read-only mode)
   - Implement typed invariant checks over events + projections.
   - Emit quality issues without automatic mutation.
-- [ ] F2. Quality health projection
+- [x] F2. Quality health projection
   - Add `quality_health/overview` projection with score, open issues, and severity breakdown.
-- [ ] F3. Repair proposal + simulation bridge
+- [x] F3. Repair proposal + simulation bridge
   - Generate proposed compensating event batches.
   - Run all proposals through `/v1/events/simulate` before apply.
 - [ ] F4. Agent protocol hardening

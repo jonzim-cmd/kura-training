@@ -1215,6 +1215,10 @@ class TestQualityHealthIntegration:
         issue_types = {issue["type"] for issue in data["issues"]}
         assert "unresolved_exercise_identity" in issue_types
         assert "timezone_missing" in issue_types
+        assert data["repair_proposals_total"] >= 2
+        assert data["simulate_bridge"]["target_endpoint"] == "/v1/events/simulate"
+        proposal_states = {proposal["state"] for proposal in data["repair_proposals"]}
+        assert "simulated_risky" in proposal_states
 
 
 # ---------------------------------------------------------------------------

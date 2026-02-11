@@ -4,6 +4,8 @@ from kura_workers.handlers.quality_health import (
     _build_quality_projection_data,
     _compute_quality_score,
     _evaluate_read_only_invariants,
+    _generate_repair_proposals,
+    _simulate_repair_proposals,
 )
 
 
@@ -104,3 +106,81 @@ class TestQualityProjectionData:
         assert data["top_issues"][0]["invariant_id"] == "INV-003"
         assert data["invariant_mode"] == "read_only"
 
+    def test_projection_includes_repair_proposals(self):
+        issues = [
+            {
+                "issue_id": "INV-001:unresolved_exercise_identity",
+                "invariant_id": "INV-001",
+                "type": "unresolved_exercise_identity",
+                "severity": "high",
+                "detail": "identity gap",
+                "metrics": {
+                    "top_unresolved_terms_with_counts": [
+                        {"term": "bench press", "count": 2},
+                    ],
+                },
+            }
+        ]
+        data = _build_quality_projection_data(
+            issues,
+            metrics={"set_logged_total": 2},
+            evaluated_at="2026-02-11T10:00:00+00:00",
+        )
+
+        assert data["repair_proposals_total"] == 1
+        proposal = data["repair_proposals"][0]
+        assert proposal["issue_id"] == "INV-001:unresolved_exercise_identity"
+        assert proposal["state"] == "simulated_safe"
+        assert proposal["safe_for_apply"] is True
+        assert data["repair_apply_ready_ids"] == [proposal["proposal_id"]]
+
+
+class TestRepairProposals:
+    def test_inv001_generates_alias_repair_events(self):
+        issues = [
+            {
+                "issue_id": "INV-001:unresolved_exercise_identity",
+                "invariant_id": "INV-001",
+                "type": "unresolved_exercise_identity",
+                "severity": "high",
+                "detail": "identity gap",
+                "metrics": {
+                    "top_unresolved_terms_with_counts": [
+                        {"term": "bench press", "count": 3},
+                    ],
+                },
+            }
+        ]
+        proposals = _generate_repair_proposals(
+            issues,
+            evaluated_at="2026-02-11T10:00:00+00:00",
+        )
+        assert len(proposals) == 1
+        events = proposals[0]["proposed_event_batch"]["events"]
+        assert len(events) == 1
+        assert events[0]["event_type"] == "exercise.alias_created"
+        assert events[0]["data"]["exercise_id"] == "barbell_bench_press"
+
+    def test_inv003_is_simulated_risky(self):
+        issues = [
+            {
+                "issue_id": "INV-003:timezone_missing",
+                "invariant_id": "INV-003",
+                "type": "timezone_missing",
+                "severity": "high",
+                "detail": "timezone missing",
+                "metrics": {},
+            }
+        ]
+        proposals = _simulate_repair_proposals(
+            _generate_repair_proposals(
+                issues,
+                evaluated_at="2026-02-11T10:00:00+00:00",
+            ),
+            evaluated_at="2026-02-11T10:00:00+00:00",
+        )
+        assert len(proposals) == 1
+        proposal = proposals[0]
+        assert proposal["state"] == "simulated_risky"
+        assert proposal["safe_for_apply"] is False
+        assert any("UTC assumption" in note for note in proposal["simulate"]["notes"])
