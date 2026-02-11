@@ -22,15 +22,20 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..causal_inference import ASSUMPTIONS, estimate_intervention_effect
+from ..inference_engine import weekly_phase_from_date
 from ..inference_telemetry import (
     INFERENCE_ERROR_INSUFFICIENT_DATA,
     classify_inference_error,
     safe_record_inference_run,
 )
 from ..registry import projection_handler
-from ..utils import get_retracted_event_ids
+from ..utils import epley_1rm, get_retracted_event_ids, resolve_exercise_key
 
 logger = logging.getLogger(__name__)
+
+OUTCOME_READINESS = "readiness_score_t_plus_1"
+OUTCOME_STRENGTH_AGGREGATE = "strength_aggregate_delta_t_plus_1"
+OUTCOME_STRENGTH_PER_EXERCISE = "strength_delta_by_exercise_t_plus_1"
 
 
 def _median(values: list[float]) -> float:
@@ -63,6 +68,141 @@ def _safe_float(value: Any, *, default: float = 0.0) -> float:
         return default
 
 
+def _map_effect_strength(effect_payload: Any) -> float:
+    if not isinstance(effect_payload, dict):
+        return 0.0
+    return _safe_float(effect_payload.get("mean_ate"), default=0.0)
+
+
+def _estimate_effect(
+    samples: list[dict[str, Any]],
+    *,
+    min_samples: int,
+    bootstrap_samples: int,
+) -> dict[str, Any]:
+    result = estimate_intervention_effect(
+        samples,
+        min_samples=min_samples,
+        bootstrap_samples=bootstrap_samples,
+    )
+    diagnostics = dict(result.get("diagnostics") or {})
+    diagnostics["observed_windows"] = len(samples)
+    result["diagnostics"] = diagnostics
+    return result
+
+
+def _ensure_segment_guardrail_caveat(
+    result: dict[str, Any],
+    *,
+    observed_samples: int,
+    min_samples: int,
+    segment_type: str,
+    segment_label: str,
+) -> None:
+    if observed_samples >= min_samples:
+        return
+    caveats = result.setdefault("caveats", [])
+    if any(c.get("code") == "segment_insufficient_samples" for c in caveats):
+        return
+    caveats.append(
+        {
+            "code": "segment_insufficient_samples",
+            "severity": "medium",
+            "details": {
+                "segment_type": segment_type,
+                "segment_label": segment_label,
+                "required_samples": min_samples,
+                "observed_samples": observed_samples,
+            },
+        }
+    )
+
+
+def _estimate_segment_slices(
+    samples: list[dict[str, Any]],
+    *,
+    segment_key: str,
+    min_samples: int,
+    bootstrap_samples: int,
+) -> dict[str, dict[str, Any]]:
+    buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for sample in samples:
+        segment_label = str(sample.get(segment_key) or "unknown")
+        buckets[segment_label].append(sample)
+
+    results: dict[str, dict[str, Any]] = {}
+    for segment_label, rows in sorted(buckets.items(), key=lambda item: item[0]):
+        base_rows = [
+            {
+                "treated": row.get("treated"),
+                "outcome": row.get("outcome"),
+                "confounders": row.get("confounders", {}),
+            }
+            for row in rows
+        ]
+        segment_result = _estimate_effect(
+            base_rows,
+            min_samples=min_samples,
+            bootstrap_samples=bootstrap_samples,
+        )
+        _ensure_segment_guardrail_caveat(
+            segment_result,
+            observed_samples=len(base_rows),
+            min_samples=min_samples,
+            segment_type=segment_key,
+            segment_label=segment_label,
+        )
+        diagnostics = dict(segment_result.get("diagnostics") or {})
+        diagnostics["segment_type"] = segment_key
+        diagnostics["segment_label"] = segment_label
+        diagnostics["segment_samples"] = len(base_rows)
+        segment_result["diagnostics"] = diagnostics
+        results[segment_label] = segment_result
+    return results
+
+
+def _append_result_caveats(
+    machine_caveats: list[dict[str, Any]],
+    *,
+    intervention: str,
+    outcome: str,
+    result: dict[str, Any],
+    exercise_id: str | None = None,
+    segment_type: str | None = None,
+    segment_label: str | None = None,
+) -> None:
+    for caveat in result.get("caveats", []):
+        payload: dict[str, Any] = {
+            "intervention": intervention,
+            "outcome": outcome,
+            "code": caveat.get("code"),
+            "severity": caveat.get("severity"),
+            "details": caveat.get("details", {}),
+        }
+        if exercise_id:
+            payload["exercise_id"] = exercise_id
+        if segment_type:
+            payload["segment_type"] = segment_type
+        if segment_label:
+            payload["segment_label"] = segment_label
+        machine_caveats.append(payload)
+
+
+def _phase_bucket(value: str | None) -> str:
+    phase = (value or "unknown").strip().lower()
+    if not phase:
+        return "unknown"
+    return phase
+
+
+def _subgroup_bucket(readiness_score: float) -> str:
+    return "low_readiness" if readiness_score < 0.55 else "high_readiness"
+
+
+def _round_strength_map(values: dict[str, float]) -> dict[str, float]:
+    return {key: round(float(val), 2) for key, val in sorted(values.items())}
+
+
 def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not projection_rows:
         return {}
@@ -76,17 +216,44 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
 
     strongest_name: str | None = None
     strongest_value = 0.0
+    strongest_outcome: str | None = None
+    strongest_exercise: str | None = None
     for name, payload in interventions.items():
         effect = payload.get("effect") or {}
-        mean_ate = _safe_float(effect.get("mean_ate"), default=0.0)
+        mean_ate = _map_effect_strength(effect)
         if abs(mean_ate) > abs(strongest_value):
             strongest_name = name
             strongest_value = mean_ate
+            strongest_outcome = OUTCOME_READINESS
+            strongest_exercise = None
+
+        outcomes = payload.get("outcomes") or {}
+        agg_payload = outcomes.get(OUTCOME_STRENGTH_AGGREGATE) or {}
+        agg_effect = _map_effect_strength((agg_payload or {}).get("effect"))
+        if abs(agg_effect) > abs(strongest_value):
+            strongest_name = name
+            strongest_value = agg_effect
+            strongest_outcome = OUTCOME_STRENGTH_AGGREGATE
+            strongest_exercise = None
+
+        per_exercise = outcomes.get(OUTCOME_STRENGTH_PER_EXERCISE) or {}
+        if isinstance(per_exercise, dict):
+            for exercise_id, exercise_payload in per_exercise.items():
+                exercise_effect = _map_effect_strength((exercise_payload or {}).get("effect"))
+                if abs(exercise_effect) > abs(strongest_value):
+                    strongest_name = name
+                    strongest_value = exercise_effect
+                    strongest_outcome = OUTCOME_STRENGTH_PER_EXERCISE
+                    strongest_exercise = str(exercise_id)
     if strongest_name is not None:
         result["strongest_signal"] = {
             "intervention": strongest_name,
             "mean_ate": round(strongest_value, 4),
         }
+        if strongest_outcome is not None:
+            result["strongest_signal"]["outcome"] = strongest_outcome
+        if strongest_exercise is not None:
+            result["strongest_signal"]["exercise_id"] = strongest_exercise
     return result
 
 
@@ -133,10 +300,16 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                 "horizon": "string",
                 "notes": "string",
             },
+            "outcome_definitions": {
+                "readiness_score_t_plus_1": "next-day readiness composite score",
+                "strength_aggregate_delta_t_plus_1": "next-day delta in aggregate daily best estimated 1RM",
+                "strength_delta_by_exercise_t_plus_1": "next-day delta in per-exercise daily best estimated 1RM",
+            },
             "assumptions": [{"code": "string", "description": "string"}],
             "interventions": {
                 "<intervention_name>": {
                     "status": "string",
+                    "primary_outcome": "string",
                     "estimand": "string",
                     "effect": {
                         "mean_ate": "number",
@@ -151,18 +324,37 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                     },
                     "diagnostics": "object",
                     "caveats": [{"code": "string", "severity": "string", "details": "object"}],
+                    "outcomes": {
+                        "readiness_score_t_plus_1": "effect object",
+                        "strength_aggregate_delta_t_plus_1": "effect object",
+                        "strength_delta_by_exercise_t_plus_1": {
+                            "<exercise_id>": "effect object",
+                        },
+                    },
+                    "heterogeneous_effects": {
+                        "minimum_segment_samples": "integer",
+                        "<outcome_name>": {
+                            "subgroups": {"<segment>": "effect object"},
+                            "phases": {"<phase>": "effect object"},
+                        },
+                    },
                 },
             },
             "machine_caveats": [{
                 "intervention": "string",
+                "outcome": "string",
                 "code": "string",
                 "severity": "string",
                 "details": "object",
+                "exercise_id": "string (optional)",
+                "segment_type": "string (optional)",
+                "segment_label": "string (optional)",
             }],
             "evidence_window": {
                 "days_considered": "integer",
                 "windows_evaluated": "integer",
                 "history_days_required": "integer",
+                "minimum_segment_samples": "integer",
             },
             "daily_context": [{
                 "date": "ISO 8601 date",
@@ -170,6 +362,8 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                 "sleep_hours": "number",
                 "protein_g": "number",
                 "load_volume": "number",
+                "strength_aggregate_e1rm": "number|null",
+                "strength_by_exercise": {"<exercise_id>": "number"},
                 "program_change_event": "boolean",
                 "sleep_target_event": "boolean",
                 "nutrition_target_event": "boolean",
@@ -181,6 +375,15 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                     "program_change": "integer",
                     "nutrition_shift": "integer",
                     "sleep_intervention": "integer",
+                },
+                "outcome_windows": {
+                    "<intervention_name>": {
+                        "readiness_score_t_plus_1": "integer",
+                        "strength_aggregate_delta_t_plus_1": "integer",
+                        "strength_delta_by_exercise_t_plus_1": {
+                            "<exercise_id>": "integer",
+                        },
+                    },
                 },
             },
         },
@@ -280,6 +483,7 @@ async def update_causal_inference(
                 "program_events": 0,
                 "sleep_target_events": 0,
                 "nutrition_target_events": 0,
+                "strength_by_exercise": {},
             }
         )
 
@@ -309,6 +513,17 @@ async def update_causal_inference(
                 reps = _safe_float(data.get("reps"), default=0.0)
                 if weight > 0.0 and reps > 0.0:
                     bucket["load_volume"] += weight * reps
+                    exercise_key = resolve_exercise_key(data)
+                    if exercise_key:
+                        e1rm = epley_1rm(weight, int(round(reps)))
+                        if e1rm > 0.0:
+                            strength_map = bucket["strength_by_exercise"]
+                            previous = _safe_float(
+                                strength_map.get(exercise_key),
+                                default=0.0,
+                            )
+                            if e1rm > previous:
+                                strength_map[exercise_key] = e1rm
             elif row_event_type == "meal.logged":
                 bucket["protein_g"] += max(0.0, _safe_float(data.get("protein_g"), default=0.0))
                 bucket["calories"] += max(0.0, _safe_float(data.get("calories"), default=0.0))
@@ -333,6 +548,7 @@ async def update_causal_inference(
         load_baseline = max(1.0, _median(load_values))
 
         daily_context: list[dict[str, Any]] = []
+        strength_state: dict[str, float] = {}
         for day in observed_days:
             bucket = per_day[day]
             sleep_hours = (
@@ -352,6 +568,15 @@ async def update_causal_inference(
             )
             load_volume = float(bucket["load_volume"])
             protein_g = float(bucket["protein_g"])
+
+            for exercise_id, value in (bucket["strength_by_exercise"] or {}).items():
+                strength_state[str(exercise_id)] = _safe_float(value, default=0.0)
+            strength_snapshot = dict(strength_state)
+            strength_aggregate = (
+                _mean(list(strength_snapshot.values()))
+                if strength_snapshot
+                else None
+            )
 
             sleep_score = _clamp(sleep_hours / 8.0, 0.0, 1.2)
             energy_score = _clamp(energy / 10.0, 0.0, 1.0)
@@ -378,6 +603,12 @@ async def update_causal_inference(
                     "load_volume": round(load_volume, 2),
                     "protein_g": round(protein_g, 2),
                     "calories": round(float(bucket["calories"]), 2),
+                    "strength_aggregate_e1rm": (
+                        round(float(strength_aggregate), 2)
+                        if strength_aggregate is not None
+                        else None
+                    ),
+                    "strength_by_exercise": _round_strength_map(strength_snapshot),
                     "program_change_event": bool(bucket["program_events"]),
                     "sleep_target_event": bool(bucket["sleep_target_events"]),
                     "nutrition_target_event": bool(bucket["nutrition_target_events"]),
@@ -386,10 +617,28 @@ async def update_causal_inference(
 
         history_days_required = 7
         windows_evaluated = 0
-        samples_by_intervention: dict[str, list[dict[str, Any]]] = {
-            "program_change": [],
-            "nutrition_shift": [],
-            "sleep_intervention": [],
+        samples_by_intervention: dict[str, dict[str, Any]] = {
+            "program_change": {
+                "outcomes": {
+                    OUTCOME_READINESS: [],
+                    OUTCOME_STRENGTH_AGGREGATE: [],
+                },
+                "strength_by_exercise": defaultdict(list),
+            },
+            "nutrition_shift": {
+                "outcomes": {
+                    OUTCOME_READINESS: [],
+                    OUTCOME_STRENGTH_AGGREGATE: [],
+                },
+                "strength_by_exercise": defaultdict(list),
+            },
+            "sleep_intervention": {
+                "outcomes": {
+                    OUTCOME_READINESS: [],
+                    OUTCOME_STRENGTH_AGGREGATE: [],
+                },
+                "strength_by_exercise": defaultdict(list),
+            },
         }
 
         for idx in range(history_days_required, len(daily_context) - 1):
@@ -414,81 +663,275 @@ async def update_causal_inference(
                 [_safe_float(day.get("protein_g")) for day in history],
                 fallback=0.0,
             )
+            baseline_strength_aggregate = _mean(
+                [
+                    _safe_float(day.get("strength_aggregate_e1rm"), default=0.0)
+                    for day in history
+                    if day.get("strength_aggregate_e1rm") is not None
+                ],
+                fallback=0.0,
+            )
 
             sleep_shift = _safe_float(current.get("sleep_hours")) >= (baseline_sleep + 0.75)
             nutrition_shift = _safe_float(current.get("protein_g")) >= (baseline_protein + 20.0)
 
-            common = {
-                "outcome": _safe_float(next_day.get("readiness_score"), default=0.0),
-                "confounders": {
-                    "baseline_readiness": baseline_readiness,
-                    "baseline_sleep_hours": baseline_sleep,
-                    "baseline_load_volume": baseline_load,
-                    "baseline_protein_g": baseline_protein,
-                    "current_readiness": _safe_float(
-                        current.get("readiness_score"), default=0.0
-                    ),
-                    "current_sleep_hours": _safe_float(current.get("sleep_hours"), default=0.0),
-                    "current_load_volume": _safe_float(current.get("load_volume"), default=0.0),
-                    "current_protein_g": _safe_float(current.get("protein_g"), default=0.0),
-                    "current_calories": _safe_float(current.get("calories"), default=0.0),
-                },
+            current_readiness = _safe_float(current.get("readiness_score"), default=0.0)
+            current_strength_aggregate = (
+                _safe_float(current.get("strength_aggregate_e1rm"), default=0.0)
+                if current.get("strength_aggregate_e1rm") is not None
+                else None
+            )
+            next_strength_aggregate = (
+                _safe_float(next_day.get("strength_aggregate_e1rm"), default=0.0)
+                if next_day.get("strength_aggregate_e1rm") is not None
+                else None
+            )
+
+            segment_subgroup = _subgroup_bucket(current_readiness)
+            phase_info = weekly_phase_from_date(current.get("date"))
+            segment_phase = _phase_bucket(phase_info.get("phase"))
+
+            common_confounders = {
+                "baseline_readiness": baseline_readiness,
+                "baseline_sleep_hours": baseline_sleep,
+                "baseline_load_volume": baseline_load,
+                "baseline_protein_g": baseline_protein,
+                "baseline_strength_aggregate": baseline_strength_aggregate,
+                "current_readiness": current_readiness,
+                "current_sleep_hours": _safe_float(current.get("sleep_hours"), default=0.0),
+                "current_load_volume": _safe_float(current.get("load_volume"), default=0.0),
+                "current_protein_g": _safe_float(current.get("protein_g"), default=0.0),
+                "current_calories": _safe_float(current.get("calories"), default=0.0),
+                "current_strength_aggregate": current_strength_aggregate or 0.0,
             }
 
-            samples_by_intervention["program_change"].append(
-                {
-                    **common,
-                    "treated": 1 if bool(current.get("program_change_event")) else 0,
+            intervention_flags = {
+                "program_change": 1 if bool(current.get("program_change_event")) else 0,
+                "nutrition_shift": 1
+                if bool(current.get("nutrition_target_event")) or nutrition_shift
+                else 0,
+                "sleep_intervention": 1
+                if bool(current.get("sleep_target_event")) or sleep_shift
+                else 0,
+            }
+
+            readiness_outcome = _safe_float(next_day.get("readiness_score"), default=0.0)
+            strength_aggregate_delta: float | None = None
+            if current_strength_aggregate is not None and next_strength_aggregate is not None:
+                strength_aggregate_delta = next_strength_aggregate - current_strength_aggregate
+
+            current_strength_map = current.get("strength_by_exercise") or {}
+            next_strength_map = next_day.get("strength_by_exercise") or {}
+            exercise_deltas: dict[str, float] = {}
+            for exercise_id in set(current_strength_map).intersection(next_strength_map):
+                current_value = _safe_float(current_strength_map.get(exercise_id), default=0.0)
+                next_value = _safe_float(next_strength_map.get(exercise_id), default=current_value)
+                exercise_deltas[str(exercise_id)] = next_value - current_value
+
+            for intervention_name, treated_flag in intervention_flags.items():
+                bucket = samples_by_intervention[intervention_name]
+                outcome_bucket = bucket["outcomes"]
+
+                base_sample = {
+                    "treated": treated_flag,
+                    "confounders": dict(common_confounders),
+                    "subgroup": segment_subgroup,
+                    "phase": segment_phase,
                 }
-            )
-            samples_by_intervention["nutrition_shift"].append(
-                {
-                    **common,
-                    "treated": 1
-                    if bool(current.get("nutrition_target_event")) or nutrition_shift
-                    else 0,
-                }
-            )
-            samples_by_intervention["sleep_intervention"].append(
-                {
-                    **common,
-                    "treated": 1 if bool(current.get("sleep_target_event")) or sleep_shift else 0,
-                }
-            )
+
+                outcome_bucket[OUTCOME_READINESS].append(
+                    {
+                        **base_sample,
+                        "outcome": readiness_outcome,
+                    }
+                )
+                if strength_aggregate_delta is not None:
+                    outcome_bucket[OUTCOME_STRENGTH_AGGREGATE].append(
+                        {
+                            **base_sample,
+                            "outcome": strength_aggregate_delta,
+                        }
+                    )
+
+                for exercise_id, delta in exercise_deltas.items():
+                    per_exercise_confounders = dict(common_confounders)
+                    per_exercise_confounders["current_exercise_strength"] = _safe_float(
+                        current_strength_map.get(exercise_id),
+                        default=0.0,
+                    )
+                    bucket["strength_by_exercise"][exercise_id].append(
+                        {
+                            "treated": treated_flag,
+                            "outcome": delta,
+                            "confounders": per_exercise_confounders,
+                            "subgroup": segment_subgroup,
+                            "phase": segment_phase,
+                        }
+                    )
 
         min_samples = max(12, int(os.environ.get("KURA_CAUSAL_MIN_SAMPLES", "24")))
+        strength_min_samples = max(
+            12,
+            int(
+                os.environ.get(
+                    "KURA_CAUSAL_STRENGTH_MIN_SAMPLES",
+                    str(max(12, min_samples - 6)),
+                )
+            ),
+        )
+        segment_min_samples = max(
+            10,
+            int(
+                os.environ.get(
+                    "KURA_CAUSAL_SEGMENT_MIN_SAMPLES",
+                    str(max(10, min_samples // 2)),
+                )
+            ),
+        )
         bootstrap_samples = max(
-            80, int(os.environ.get("KURA_CAUSAL_BOOTSTRAP_SAMPLES", "250"))
+            80,
+            int(os.environ.get("KURA_CAUSAL_BOOTSTRAP_SAMPLES", "250")),
         )
 
         intervention_results: dict[str, Any] = {}
         treated_windows: dict[str, int] = {}
+        outcome_windows: dict[str, Any] = {}
         machine_caveats: list[dict[str, Any]] = []
         has_ok = False
+        insightful_outcomes = 0
 
-        for name, samples in samples_by_intervention.items():
+        for name, sample_payload in samples_by_intervention.items():
+            outcome_samples = sample_payload["outcomes"]
+            strength_by_exercise_samples = sample_payload["strength_by_exercise"]
+
+            readiness_samples = outcome_samples[OUTCOME_READINESS]
             treated_windows[name] = sum(
                 1
-                for sample in samples
+                for sample in readiness_samples
                 if int(_safe_float(sample.get("treated"), default=0.0)) == 1
             )
-            result = estimate_intervention_effect(
-                samples,
+
+            readiness_result = _estimate_effect(
+                readiness_samples,
                 min_samples=min_samples,
                 bootstrap_samples=bootstrap_samples,
             )
-            intervention_results[name] = result
-            has_ok = has_ok or result.get("status") == "ok"
+            strength_aggregate_samples = outcome_samples[OUTCOME_STRENGTH_AGGREGATE]
+            strength_aggregate_result = _estimate_effect(
+                strength_aggregate_samples,
+                min_samples=strength_min_samples,
+                bootstrap_samples=bootstrap_samples,
+            )
 
-            for caveat in result.get("caveats", []):
-                machine_caveats.append(
-                    {
-                        "intervention": name,
-                        "code": caveat.get("code"),
-                        "severity": caveat.get("severity"),
-                        "details": caveat.get("details", {}),
-                    }
+            strength_per_exercise_results: dict[str, dict[str, Any]] = {}
+            strength_per_exercise_windows: dict[str, int] = {}
+            for exercise_id, exercise_samples in sorted(
+                strength_by_exercise_samples.items(),
+                key=lambda item: item[0],
+            ):
+                strength_per_exercise_windows[exercise_id] = len(exercise_samples)
+                strength_per_exercise_results[exercise_id] = _estimate_effect(
+                    exercise_samples,
+                    min_samples=strength_min_samples,
+                    bootstrap_samples=bootstrap_samples,
                 )
+
+            heterogeneous_effects = {
+                "minimum_segment_samples": segment_min_samples,
+                OUTCOME_READINESS: {
+                    "subgroups": _estimate_segment_slices(
+                        readiness_samples,
+                        segment_key="subgroup",
+                        min_samples=segment_min_samples,
+                        bootstrap_samples=bootstrap_samples,
+                    ),
+                    "phases": _estimate_segment_slices(
+                        readiness_samples,
+                        segment_key="phase",
+                        min_samples=segment_min_samples,
+                        bootstrap_samples=bootstrap_samples,
+                    ),
+                },
+                OUTCOME_STRENGTH_AGGREGATE: {
+                    "subgroups": _estimate_segment_slices(
+                        strength_aggregate_samples,
+                        segment_key="subgroup",
+                        min_samples=segment_min_samples,
+                        bootstrap_samples=bootstrap_samples,
+                    ),
+                    "phases": _estimate_segment_slices(
+                        strength_aggregate_samples,
+                        segment_key="phase",
+                        min_samples=segment_min_samples,
+                        bootstrap_samples=bootstrap_samples,
+                    ),
+                },
+            }
+
+            _append_result_caveats(
+                machine_caveats,
+                intervention=name,
+                outcome=OUTCOME_READINESS,
+                result=readiness_result,
+            )
+            _append_result_caveats(
+                machine_caveats,
+                intervention=name,
+                outcome=OUTCOME_STRENGTH_AGGREGATE,
+                result=strength_aggregate_result,
+            )
+            for exercise_id, exercise_result in strength_per_exercise_results.items():
+                _append_result_caveats(
+                    machine_caveats,
+                    intervention=name,
+                    outcome=OUTCOME_STRENGTH_PER_EXERCISE,
+                    result=exercise_result,
+                    exercise_id=exercise_id,
+                )
+
+            for outcome_name in (OUTCOME_READINESS, OUTCOME_STRENGTH_AGGREGATE):
+                for segment_type, segment_results in (
+                    ("subgroup", heterogeneous_effects[outcome_name]["subgroups"]),
+                    ("phase", heterogeneous_effects[outcome_name]["phases"]),
+                ):
+                    for segment_label, segment_result in segment_results.items():
+                        _append_result_caveats(
+                            machine_caveats,
+                            intervention=name,
+                            outcome=outcome_name,
+                            result=segment_result,
+                            segment_type=segment_type,
+                            segment_label=segment_label,
+                        )
+
+            outcome_statuses = [
+                readiness_result.get("status") == "ok",
+                strength_aggregate_result.get("status") == "ok",
+                any(
+                    payload.get("status") == "ok"
+                    for payload in strength_per_exercise_results.values()
+                ),
+            ]
+            insightful_outcomes += sum(1 for status in outcome_statuses if status)
+            intervention_status = "ok" if any(outcome_statuses) else "insufficient_data"
+            has_ok = has_ok or intervention_status == "ok"
+
+            intervention_payload = dict(readiness_result)
+            intervention_payload["status"] = intervention_status
+            intervention_payload["primary_outcome"] = OUTCOME_READINESS
+            intervention_payload["outcomes"] = {
+                OUTCOME_READINESS: readiness_result,
+                OUTCOME_STRENGTH_AGGREGATE: strength_aggregate_result,
+                OUTCOME_STRENGTH_PER_EXERCISE: strength_per_exercise_results,
+            }
+            intervention_payload["heterogeneous_effects"] = heterogeneous_effects
+            intervention_results[name] = intervention_payload
+
+            outcome_windows[name] = {
+                OUTCOME_READINESS: len(readiness_samples),
+                OUTCOME_STRENGTH_AGGREGATE: len(strength_aggregate_samples),
+                OUTCOME_STRENGTH_PER_EXERCISE: strength_per_exercise_windows,
+            }
 
         projection_data = {
             "status": "ok" if has_ok else "insufficient_data",
@@ -498,8 +941,23 @@ async def update_causal_inference(
                 "metric": "next_day_readiness_score",
                 "horizon": "t+1 day",
                 "notes": (
-                    "Outcome is a readiness-style composite from sleep, energy, soreness, and load."
+                    "Primary outcome is readiness-style; additional strength deltas "
+                    "are estimated for aggregate and per-exercise views."
                 ),
+            },
+            "outcome_definitions": {
+                OUTCOME_READINESS: {
+                    "metric": "next_day_readiness_score",
+                    "horizon": "t+1 day",
+                },
+                OUTCOME_STRENGTH_AGGREGATE: {
+                    "metric": "next_day_strength_aggregate_delta_e1rm",
+                    "horizon": "t+1 day",
+                },
+                OUTCOME_STRENGTH_PER_EXERCISE: {
+                    "metric": "next_day_strength_delta_e1rm_per_exercise",
+                    "horizon": "t+1 day",
+                },
             },
             "assumptions": ASSUMPTIONS,
             "interventions": intervention_results,
@@ -508,12 +966,14 @@ async def update_causal_inference(
                 "days_considered": len(daily_context),
                 "windows_evaluated": windows_evaluated,
                 "history_days_required": history_days_required,
+                "minimum_segment_samples": segment_min_samples,
             },
             "daily_context": daily_context[-60:],
             "data_quality": {
                 "events_processed": len(rows),
                 "observed_days": len(observed_days),
                 "treated_windows": treated_windows,
+                "outcome_windows": outcome_windows,
             },
         }
 
@@ -542,9 +1002,12 @@ async def update_causal_inference(
             "observed_days": len(observed_days),
             "windows_evaluated": windows_evaluated,
             "treated_windows": treated_windows,
+            "outcome_windows": outcome_windows,
+            "minimum_segment_samples": segment_min_samples,
             "insightful_interventions": sum(
                 1 for payload in intervention_results.values() if payload.get("status") == "ok"
             ),
+            "insightful_outcomes": insightful_outcomes,
         }
         if not has_ok:
             telemetry_error_taxonomy = INFERENCE_ERROR_INSUFFICIENT_DATA

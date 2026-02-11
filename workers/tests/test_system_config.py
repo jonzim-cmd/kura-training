@@ -243,6 +243,8 @@ class TestConventions:
         assert "assumptions" in causal
         assert "caveat_codes" in causal
         assert "minimum_data" in causal
+        assert "minimum_segment_windows" in causal["minimum_data"]
+        assert "segment_insufficient_samples" in causal["caveat_codes"]
 
     def test_data_correction_has_rules(self):
         result = _get_conventions()

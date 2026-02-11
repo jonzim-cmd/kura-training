@@ -129,8 +129,10 @@ def _get_conventions() -> dict[str, Any]:
             ],
             "minimum_data": {
                 "intervention_windows": 24,
+                "strength_outcome_windows": 18,
                 "minimum_treated_windows": 4,
                 "minimum_control_windows": 4,
+                "minimum_segment_windows": 12,
             },
             "assumptions": [
                 "consistency",
@@ -148,6 +150,9 @@ def _get_conventions() -> dict[str, Any]:
                 "residual_confounding_risk": "Post-weighting covariate imbalance remains high.",
                 "low_outcome_variance": "Outcome variance is small; effect detectability is limited.",
                 "wide_interval": "Uncertainty interval is wide; directional claims are fragile.",
+                "segment_insufficient_samples": (
+                    "A subgroup/phase segment has too few windows for a stable estimate."
+                ),
             },
         },
     }

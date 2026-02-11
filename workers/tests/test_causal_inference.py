@@ -1,6 +1,12 @@
 """Tests for observational causal inference utilities."""
 
 from kura_workers.causal_inference import estimate_intervention_effect
+from kura_workers.handlers.causal_inference import (
+    OUTCOME_STRENGTH_PER_EXERCISE,
+    _append_result_caveats,
+    _estimate_segment_slices,
+    _manifest_contribution,
+)
 
 
 def test_causal_effect_insufficient_data():
@@ -86,3 +92,94 @@ def test_causal_effect_surfaces_overlap_related_caveats():
             "positivity_violation",
         }
     )
+
+
+def test_segment_slices_apply_minimum_sample_guardrail():
+    samples: list[dict] = []
+    for idx in range(18):
+        samples.append(
+            {
+                "treated": idx % 2,
+                "outcome": 0.42 + (0.05 * (idx % 2)) + (((idx % 4) - 1.5) / 60.0),
+                "confounders": {
+                    "baseline_readiness": 0.5 + (idx / 100.0),
+                    "baseline_sleep_hours": 6.5 + (idx / 50.0),
+                },
+                "subgroup": "low_readiness" if idx < 9 else "high_readiness",
+                "phase": "week_start" if idx % 3 == 0 else "recovery",
+            }
+        )
+
+    subgroup_results = _estimate_segment_slices(
+        samples,
+        segment_key="subgroup",
+        min_samples=10,
+        bootstrap_samples=80,
+    )
+    assert set(subgroup_results) == {"high_readiness", "low_readiness"}
+    for result in subgroup_results.values():
+        caveat_codes = {c["code"] for c in result["caveats"]}
+        assert "segment_insufficient_samples" in caveat_codes
+
+
+def test_caveat_propagation_keeps_outcome_and_segment_context():
+    machine_caveats: list[dict] = []
+    result = {
+        "caveats": [
+            {
+                "code": "weak_overlap",
+                "severity": "medium",
+                "details": {"overlap_width": 0.08},
+            }
+        ]
+    }
+
+    _append_result_caveats(
+        machine_caveats,
+        intervention="nutrition_shift",
+        outcome="strength_aggregate_delta_t_plus_1",
+        result=result,
+        exercise_id="bench_press",
+        segment_type="phase",
+        segment_label="recovery",
+    )
+
+    assert len(machine_caveats) == 1
+    caveat = machine_caveats[0]
+    assert caveat["intervention"] == "nutrition_shift"
+    assert caveat["outcome"] == "strength_aggregate_delta_t_plus_1"
+    assert caveat["exercise_id"] == "bench_press"
+    assert caveat["segment_type"] == "phase"
+    assert caveat["segment_label"] == "recovery"
+
+
+def test_manifest_contribution_prefers_strongest_strength_exercise_signal():
+    contribution = _manifest_contribution(
+        [
+            {
+                "data": {
+                    "interventions": {
+                        "program_change": {
+                            "status": "ok",
+                            "effect": {"mean_ate": 0.02},
+                            "outcomes": {
+                                "strength_aggregate_delta_t_plus_1": {
+                                    "effect": {"mean_ate": 0.05},
+                                },
+                                OUTCOME_STRENGTH_PER_EXERCISE: {
+                                    "bench_press": {"effect": {"mean_ate": 0.12}},
+                                    "squat": {"effect": {"mean_ate": 0.09}},
+                                },
+                            },
+                        }
+                    }
+                }
+            }
+        ]
+    )
+
+    strongest = contribution["strongest_signal"]
+    assert strongest["intervention"] == "program_change"
+    assert strongest["outcome"] == OUTCOME_STRENGTH_PER_EXERCISE
+    assert strongest["exercise_id"] == "bench_press"
+    assert strongest["mean_ate"] == 0.12
