@@ -226,6 +226,16 @@ class TestConventions:
         result = _get_conventions()
         assert "data_correction" in result
 
+    def test_has_semantic_resolution_conventions(self):
+        result = _get_conventions()
+        assert "semantic_resolution" in result
+        assert "confidence_bands" in result["semantic_resolution"]
+
+    def test_has_bayesian_inference_conventions(self):
+        result = _get_conventions()
+        assert "bayesian_inference" in result
+        assert "minimum_data" in result["bayesian_inference"]
+
     def test_data_correction_has_rules(self):
         result = _get_conventions()
         rules = result["data_correction"]["rules"]

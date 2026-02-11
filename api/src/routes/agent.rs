@@ -22,6 +22,9 @@ pub struct AgentContextParams {
     /// Maximum number of exercise_progression projections to include (default 5, max 100)
     #[serde(default)]
     pub exercise_limit: Option<i64>,
+    /// Maximum number of strength_inference projections to include (default 5, max 100)
+    #[serde(default)]
+    pub strength_limit: Option<i64>,
     /// Maximum number of custom projections to include (default 10, max 100)
     #[serde(default)]
     pub custom_limit: Option<i64>,
@@ -31,6 +34,7 @@ pub struct AgentContextParams {
 pub struct AgentContextMeta {
     pub generated_at: DateTime<Utc>,
     pub exercise_limit: i64,
+    pub strength_limit: i64,
     pub custom_limit: i64,
 }
 
@@ -49,8 +53,14 @@ pub struct AgentContextResponse {
     pub nutrition: Option<ProjectionResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub training_plan: Option<ProjectionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_memory: Option<ProjectionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readiness_inference: Option<ProjectionResponse>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub exercise_progression: Vec<ProjectionResponse>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub strength_inference: Vec<ProjectionResponse>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub custom: Vec<ProjectionResponse>,
     pub meta: AgentContextMeta,
@@ -202,6 +212,7 @@ pub async fn get_agent_context(
 ) -> Result<Json<AgentContextResponse>, AppError> {
     let user_id = auth.user_id;
     let exercise_limit = clamp_limit(params.exercise_limit, 5, 100);
+    let strength_limit = clamp_limit(params.strength_limit, 5, 100);
     let custom_limit = clamp_limit(params.custom_limit, 10, 100);
 
     let mut tx = state.db.begin().await?;
@@ -231,9 +242,14 @@ pub async fn get_agent_context(
     let recovery = fetch_projection(&mut tx, user_id, "recovery", "overview").await?;
     let nutrition = fetch_projection(&mut tx, user_id, "nutrition", "overview").await?;
     let training_plan = fetch_projection(&mut tx, user_id, "training_plan", "overview").await?;
+    let semantic_memory = fetch_projection(&mut tx, user_id, "semantic_memory", "overview").await?;
+    let readiness_inference =
+        fetch_projection(&mut tx, user_id, "readiness_inference", "overview").await?;
 
     let exercise_progression =
         fetch_projection_list(&mut tx, user_id, "exercise_progression", exercise_limit).await?;
+    let strength_inference =
+        fetch_projection_list(&mut tx, user_id, "strength_inference", strength_limit).await?;
     let custom = fetch_projection_list(&mut tx, user_id, "custom", custom_limit).await?;
 
     tx.commit().await?;
@@ -246,11 +262,15 @@ pub async fn get_agent_context(
         recovery,
         nutrition,
         training_plan,
+        semantic_memory,
+        readiness_inference,
         exercise_progression,
+        strength_inference,
         custom,
         meta: AgentContextMeta {
             generated_at: Utc::now(),
             exercise_limit,
+            strength_limit,
             custom_limit,
         },
     }))

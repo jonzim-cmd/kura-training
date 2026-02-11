@@ -455,6 +455,45 @@ fn add_standard_projection_targets(
                     true,
                 );
             }
+
+            add_projection_target(
+                candidates,
+                "readiness_inference",
+                "overview",
+                "set.logged contributes training load signal for readiness inference".to_string(),
+                false,
+                false,
+            );
+
+            add_projection_target(
+                candidates,
+                "semantic_memory",
+                "overview",
+                "set.logged contributes user exercise vocabulary for semantic indexing".to_string(),
+                false,
+                false,
+            );
+
+            if let Some(exercise_key) = extract_exercise_key(data) {
+                add_projection_target(
+                    candidates,
+                    "strength_inference",
+                    &exercise_key,
+                    "set.logged updates Bayesian strength inference per exercise".to_string(),
+                    false,
+                    false,
+                );
+            } else {
+                add_projection_target(
+                    candidates,
+                    "strength_inference",
+                    "*",
+                    "set.logged without exercise identifier cannot map to strength_inference key"
+                        .to_string(),
+                    false,
+                    true,
+                );
+            }
         }
         "exercise.alias_created" => {
             mapped = true;
@@ -489,6 +528,36 @@ fn add_standard_projection_targets(
                     true,
                 );
             }
+
+            add_projection_target(
+                candidates,
+                "semantic_memory",
+                "overview",
+                "exercise.alias_created contributes semantic alias memory".to_string(),
+                false,
+                false,
+            );
+
+            if let Some(exercise_key) = extract_exercise_key(data) {
+                add_projection_target(
+                    candidates,
+                    "strength_inference",
+                    &exercise_key,
+                    "exercise.alias_created can remap Bayesian strength inference keys".to_string(),
+                    false,
+                    false,
+                );
+            } else {
+                add_projection_target(
+                    candidates,
+                    "strength_inference",
+                    "*",
+                    "exercise.alias_created without exercise_id cannot map strength_inference key"
+                        .to_string(),
+                    false,
+                    true,
+                );
+            }
         }
         "bodyweight.logged" | "measurement.logged" | "weight_target.set" => {
             mapped = true;
@@ -507,7 +576,16 @@ fn add_standard_projection_targets(
                 candidates,
                 "recovery",
                 "overview",
-                format!("event_type '{}' updates recovery", event_type),
+                    format!("event_type '{}' updates recovery", event_type),
+                    false,
+                    false,
+                );
+
+            add_projection_target(
+                candidates,
+                "readiness_inference",
+                "overview",
+                format!("event_type '{}' contributes readiness inference signals", event_type),
                 false,
                 false,
             );
@@ -518,10 +596,21 @@ fn add_standard_projection_targets(
                 candidates,
                 "nutrition",
                 "overview",
-                format!("event_type '{}' updates nutrition", event_type),
-                false,
-                false,
-            );
+                    format!("event_type '{}' updates nutrition", event_type),
+                    false,
+                    false,
+                );
+
+            if event_type == "meal.logged" {
+                add_projection_target(
+                    candidates,
+                    "semantic_memory",
+                    "overview",
+                    "meal.logged contributes food vocabulary for semantic indexing".to_string(),
+                    false,
+                    false,
+                );
+            }
         }
         "training_plan.created"
         | "training_plan.updated"
@@ -1827,6 +1916,18 @@ mod tests {
         assert!(candidates.contains_key(&ProjectionTargetKey {
             projection_type: "user_profile".to_string(),
             key: "me".to_string(),
+        }));
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "readiness_inference".to_string(),
+            key: "overview".to_string(),
+        }));
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "strength_inference".to_string(),
+            key: "bench_press".to_string(),
+        }));
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "semantic_memory".to_string(),
+            key: "overview".to_string(),
         }));
     }
 

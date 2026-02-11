@@ -86,6 +86,31 @@ def _get_conventions() -> dict[str, Any]:
                 },
             ],
         },
+        "semantic_resolution": {
+            "rules": [
+                "Prefer exact user aliases first, then semantic candidates from semantic_memory.",
+                "If semantic confidence is medium/low, confirm with the user before committing canonical IDs.",
+                "Use semantic_memory candidates to create exercise.alias_created for stable future resolution.",
+                "For food terms, keep provenance text and attach canonical IDs when confidence is sufficient.",
+            ],
+            "confidence_bands": {
+                "high": ">= 0.86 — safe to apply with inferred confidence",
+                "medium": "0.78-0.85 — ask short confirmation",
+                "low": "< 0.78 — do not auto-apply",
+            },
+        },
+        "bayesian_inference": {
+            "rules": [
+                "Treat inference projections as probabilistic guidance, not deterministic truth.",
+                "When data is sparse, communicate uncertainty and request more observations.",
+                "Use readiness_inference for day-level decision framing, not medical conclusions.",
+                "When strength_inference indicates plateau risk, suggest interventions as hypotheses.",
+            ],
+            "minimum_data": {
+                "strength_inference_points": 3,
+                "readiness_inference_days": 5,
+            },
+        },
     }
 
 
