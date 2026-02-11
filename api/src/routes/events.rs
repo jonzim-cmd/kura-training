@@ -382,6 +382,7 @@ fn user_profile_handles_event(event_type: &str) -> bool {
     matches!(
         event_type,
         "set.logged"
+            | "set.corrected"
             | "exercise.alias_created"
             | "preference.set"
             | "goal.set"
@@ -400,6 +401,7 @@ fn user_profile_handles_event(event_type: &str) -> bool {
             | "nutrition_target.set"
             | "sleep_target.set"
             | "weight_target.set"
+            | "session.completed"
     )
 }
 
@@ -505,6 +507,34 @@ fn add_standard_projection_targets(
                 );
             }
         }
+        "set.corrected" => {
+            mapped = true;
+            add_projection_target(
+                candidates,
+                "training_timeline",
+                "overview",
+                "set.corrected can update effective set load in training timeline".to_string(),
+                false,
+                false,
+            );
+            add_projection_target(
+                candidates,
+                "exercise_progression",
+                "*",
+                "set.corrected can update per-exercise progression via corrected set values"
+                    .to_string(),
+                false,
+                true,
+            );
+            add_projection_target(
+                candidates,
+                "session_feedback",
+                "overview",
+                "set.corrected can update load-to-feedback alignment".to_string(),
+                false,
+                false,
+            );
+        }
         "exercise.alias_created" => {
             mapped = true;
             add_projection_target(
@@ -567,6 +597,17 @@ fn add_standard_projection_targets(
                     true,
                 );
             }
+        }
+        "session.completed" => {
+            mapped = true;
+            add_projection_target(
+                candidates,
+                "session_feedback",
+                "overview",
+                "session.completed updates subjective session feedback trends".to_string(),
+                false,
+                false,
+            );
         }
         "bodyweight.logged" | "measurement.logged" | "weight_target.set" => {
             mapped = true;
@@ -1974,6 +2015,56 @@ mod tests {
         assert!(candidates.contains_key(&ProjectionTargetKey {
             projection_type: "semantic_memory".to_string(),
             key: "overview".to_string(),
+        }));
+    }
+
+    #[test]
+    fn test_add_standard_projection_targets_for_set_corrected() {
+        let mut candidates: HashMap<ProjectionTargetKey, ProjectionTargetCandidate> =
+            HashMap::new();
+        let mapped = add_standard_projection_targets(
+            &mut candidates,
+            "set.corrected",
+            &json!({"target_event_id": "abc"}),
+        );
+
+        assert!(mapped);
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "training_timeline".to_string(),
+            key: "overview".to_string(),
+        }));
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "session_feedback".to_string(),
+            key: "overview".to_string(),
+        }));
+        let key = ProjectionTargetKey {
+            projection_type: "exercise_progression".to_string(),
+            key: "*".to_string(),
+        };
+        assert!(candidates.contains_key(&key));
+        assert!(
+            candidates
+                .get(&key)
+                .map(|candidate| candidate.unknown_target)
+                .unwrap_or(false)
+        );
+    }
+
+    #[test]
+    fn test_add_standard_projection_targets_for_session_completed() {
+        let mut candidates: HashMap<ProjectionTargetKey, ProjectionTargetCandidate> =
+            HashMap::new();
+        let mapped =
+            add_standard_projection_targets(&mut candidates, "session.completed", &json!({}));
+
+        assert!(mapped);
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "session_feedback".to_string(),
+            key: "overview".to_string(),
+        }));
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "user_profile".to_string(),
+            key: "me".to_string(),
         }));
     }
 

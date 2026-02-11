@@ -12,6 +12,7 @@ from . import semantic_memory  # noqa: F401
 from . import strength_inference  # noqa: F401
 from . import readiness_inference  # noqa: F401
 from . import causal_inference  # noqa: F401
+from . import session_feedback  # noqa: F401
 from . import inference_nightly  # noqa: F401
 from . import custom_projection  # noqa: F401
 from . import quality_health  # noqa: F401

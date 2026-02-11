@@ -144,7 +144,7 @@ class TestBuildSystemConfig:
 
     def test_event_conventions_count(self):
         result = build_system_config()
-        assert len(result["event_conventions"]) == 24
+        assert len(result["event_conventions"]) == 25
 
     def test_set_corrected_convention_requires_idempotency_key(self):
         result = build_system_config()
@@ -153,6 +153,14 @@ class TestBuildSystemConfig:
         assert "changed_fields" in convention["fields"]
         assert "metadata_fields" in convention
         assert "idempotency_key" in convention["metadata_fields"]
+
+    def test_session_completed_convention_declared(self):
+        result = build_system_config()
+        convention = result["event_conventions"]["session.completed"]
+        assert "enjoyment" in convention["fields"]
+        assert "perceived_quality" in convention["fields"]
+        assert "metadata_fields" in convention
+        assert "session_id" in convention["metadata_fields"]
 
     def test_interview_guide_structure(self):
         result = build_system_config()

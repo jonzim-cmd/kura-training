@@ -214,6 +214,40 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "phase": "week_1",
             },
         },
+        "session.completed": {
+            "description": (
+                "Post-session subjective feedback. Canonical event for enjoyment, "
+                "session quality, exertion summary, pain/discomfort, and context."
+            ),
+            "fields": {
+                "enjoyment": "number (optional, 1..5)",
+                "perceived_quality": "number (optional, 1..5)",
+                "perceived_exertion": "number (optional, 1..10, session summary)",
+                "pain_discomfort": "number (optional, 0..10)",
+                "pain_signal": "boolean|string (optional)",
+                "context": "string (optional, free text session reflection)",
+                "notes": "string (optional, alias of context)",
+                "summary": "string (optional, alias of context)",
+            },
+            "metadata_fields": {
+                "session_id": (
+                    "string (recommended). Must match the training session grouping "
+                    "used by set.logged for load-to-feedback alignment."
+                ),
+            },
+            "example": {
+                "enjoyment": 4,
+                "perceived_quality": 4,
+                "perceived_exertion": 7,
+                "pain_discomfort": 1,
+                "pain_signal": False,
+                "context": "Session felt good and focused; squat top set moved well.",
+            },
+            "backward_compatibility": (
+                "Legacy session.completed payloads with free-text fields (notes/summary/feeling) "
+                "remain supported; normalization maps them without data loss where feasible."
+            ),
+        },
         # --- Body composition ---
         "bodyweight.logged": {
             "description": "Body weight measurement",

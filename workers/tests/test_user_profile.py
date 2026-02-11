@@ -611,6 +611,15 @@ class TestOrphanedEventTypes:
         orphaned_types = {item["event_type"] for item in result}
         assert "learning.signal.logged" not in orphaned_types
 
+    def test_session_completed_is_not_marked_orphaned(self):
+        all_event_types = {
+            "session.completed": 8,
+            "set.logged": 3,
+        }
+        result = _find_orphaned_event_types(all_event_types)
+        orphaned_types = {item["event_type"] for item in result}
+        assert "session.completed" not in orphaned_types
+
     def test_empty_event_types(self):
         result = _find_orphaned_event_types({})
         assert result == []

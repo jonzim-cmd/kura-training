@@ -511,6 +511,7 @@ def _build_agenda(
     "nutrition_target.set",
     "sleep_target.set",
     "weight_target.set",
+    "session.completed",
 )
 async def update_user_profile(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
@@ -528,7 +529,7 @@ async def update_user_profile(
             WHERE user_id = %s
               AND event_type IN (
                   'set.logged', 'set.corrected', 'exercise.alias_created', 'preference.set',
-                  'goal.set', 'profile.updated', 'program.started', 'injury.reported'
+                  'goal.set', 'profile.updated', 'program.started', 'injury.reported', 'session.completed'
               )
             ORDER BY timestamp ASC
             """,

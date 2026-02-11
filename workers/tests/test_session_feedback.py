@@ -1,0 +1,120 @@
+"""Tests for session_feedback projection helpers (PDC.8)."""
+
+from datetime import datetime
+
+from kura_workers.handlers.session_feedback import (
+    _build_session_feedback_projection,
+    _compute_enjoyment_trend,
+    _compute_load_to_enjoyment_alignment,
+    _normalize_session_feedback_payload,
+)
+
+
+def _feedback_row(event_id: str, timestamp: str, data: dict, session_id: str | None = None) -> dict:
+    metadata = {}
+    if session_id is not None:
+        metadata["session_id"] = session_id
+    return {
+        "id": event_id,
+        "timestamp": datetime.fromisoformat(timestamp),
+        "data": data,
+        "metadata": metadata,
+    }
+
+
+def _set_row(event_id: str, timestamp: str, data: dict, session_id: str | None = None) -> dict:
+    metadata = {}
+    if session_id is not None:
+        metadata["session_id"] = session_id
+    return {
+        "id": event_id,
+        "timestamp": datetime.fromisoformat(timestamp),
+        "data": data,
+        "metadata": metadata,
+    }
+
+
+def test_normalize_feedback_maps_legacy_text_without_data_loss():
+    normalized = _normalize_session_feedback_payload(
+        {
+            "summary": "Training felt good and fun.",
+        }
+    )
+    assert normalized["context"] == "Training felt good and fun."
+    assert normalized["enjoyment"] == 4.0
+    assert normalized["perceived_quality"] is None
+
+
+def test_compute_enjoyment_trend_detects_improving():
+    entries = [
+        {"enjoyment": 2.0},
+        {"enjoyment": 2.0},
+        {"enjoyment": 2.5},
+        {"enjoyment": 2.5},
+        {"enjoyment": 3.5},
+        {"enjoyment": 4.0},
+        {"enjoyment": 4.0},
+        {"enjoyment": 4.5},
+    ]
+    assert _compute_enjoyment_trend(entries) == "improving"
+
+
+def test_load_to_enjoyment_alignment_positive_correlation():
+    entries = [
+        {"enjoyment": 2.0, "session_load": {"total_volume_kg": 600.0}},
+        {"enjoyment": 3.0, "session_load": {"total_volume_kg": 900.0}},
+        {"enjoyment": 4.0, "session_load": {"total_volume_kg": 1200.0}},
+    ]
+    alignment = _compute_load_to_enjoyment_alignment(entries)
+    assert alignment["status"] == "positive"
+    assert alignment["correlation"] is not None
+    assert alignment["correlation"] > 0
+
+
+def test_build_projection_includes_ingestion_output_and_trends():
+    feedback_rows = [
+        _feedback_row(
+            "fb-1",
+            "2026-02-10T18:00:00+00:00",
+            {
+                "summary": "Session felt good and fun",
+                "perceived_exertion": 7,
+            },
+            session_id="s1",
+        ),
+        _feedback_row(
+            "fb-2",
+            "2026-02-11T18:00:00+00:00",
+            {
+                "enjoyment": 3,
+                "perceived_quality": 4,
+                "pain_discomfort": 1,
+                "context": "Solid but a bit heavy",
+            },
+            session_id="s2",
+        ),
+    ]
+    set_rows = [
+        _set_row(
+            "set-1",
+            "2026-02-10T17:30:00+00:00",
+            {"exercise_id": "squat", "weight_kg": 100, "reps": 5},
+            session_id="s1",
+        ),
+        _set_row(
+            "set-2",
+            "2026-02-11T17:30:00+00:00",
+            {"exercise_id": "squat", "weight_kg": 110, "reps": 5},
+            session_id="s2",
+        ),
+    ]
+
+    projection = _build_session_feedback_projection(feedback_rows, set_rows)
+    recent = projection["recent_sessions"]
+
+    assert projection["counts"]["sessions_with_feedback"] == 2
+    assert recent[0]["session_id"] == "s1"
+    assert recent[0]["enjoyment"] == 4.0  # inferred from legacy summary text
+    assert recent[0]["session_load"]["total_sets"] == 1
+    assert recent[1]["perceived_quality"] == 4.0
+    assert projection["trends"]["enjoyment_trend"] == "insufficient_data"

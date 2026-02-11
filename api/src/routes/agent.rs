@@ -64,6 +64,8 @@ pub struct AgentContextResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub training_timeline: Option<ProjectionResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_feedback: Option<ProjectionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub body_composition: Option<ProjectionResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery: Option<ProjectionResponse>,
@@ -716,6 +718,10 @@ fn confidence_score(projection_type: &str, data: &Value) -> f64 {
                 json_f64(data, &["data_quality", "total_events_processed"]).unwrap_or(0.0);
             (total_events / 40.0).clamp(0.1, 1.0)
         }
+        "session_feedback" => {
+            let sessions = json_f64(data, &["counts", "sessions_with_feedback"]).unwrap_or(0.0);
+            (sessions / 12.0).clamp(0.1, 1.0)
+        }
         _ => 0.5,
     }
 }
@@ -745,6 +751,7 @@ fn intent_alignment_score(projection_type: &str, intent: IntentClass) -> f64 {
         IntentClass::Recovery => match projection_type {
             "readiness_inference" => 1.0,
             "recovery" => 0.95,
+            "session_feedback" => 0.75,
             "training_timeline" => 0.75,
             "strength_inference" => 0.55,
             "custom" => 0.6,
@@ -760,6 +767,7 @@ fn intent_alignment_score(projection_type: &str, intent: IntentClass) -> f64 {
         IntentClass::Planning => match projection_type {
             "training_plan" => 1.0,
             "training_timeline" => 0.9,
+            "session_feedback" => 0.85,
             "readiness_inference" => 0.65,
             "strength_inference" => 0.65,
             "exercise_progression" => 0.6,
@@ -782,6 +790,7 @@ fn intent_alignment_score(projection_type: &str, intent: IntentClass) -> f64 {
         IntentClass::General => match projection_type {
             "strength_inference" => 0.8,
             "exercise_progression" => 0.8,
+            "session_feedback" => 0.7,
             "custom" => 0.65,
             _ => 0.6,
         },
@@ -2350,6 +2359,8 @@ pub async fn get_agent_context(
 
     let training_timeline =
         fetch_projection(&mut tx, user_id, "training_timeline", "overview").await?;
+    let session_feedback =
+        fetch_projection(&mut tx, user_id, "session_feedback", "overview").await?;
     let body_composition =
         fetch_projection(&mut tx, user_id, "body_composition", "overview").await?;
     let recovery = fetch_projection(&mut tx, user_id, "recovery", "overview").await?;
@@ -2399,6 +2410,7 @@ pub async fn get_agent_context(
         system,
         user_profile,
         training_timeline,
+        session_feedback,
         body_composition,
         recovery,
         nutrition,
