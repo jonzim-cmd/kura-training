@@ -1,8 +1,7 @@
 """Unit tests for router retry logic, advisory locking, and concurrency safety."""
 
 import asyncio
-import json
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -115,6 +114,35 @@ class TestHandleProjectionUpdate:
         retry_payload = insert_call.args[1][1]  # Json object
         assert retry_payload.obj["handler_name"] == "update_body_composition"
         assert retry_payload.obj["event_type"] == "bodyweight.logged"
+
+    @pytest.mark.asyncio
+    async def test_failed_inference_handler_records_failed_run(self, mock_conn):
+        """Inference handler failures should persist failed telemetry runs."""
+        handler = AsyncMock(side_effect=ImportError("No module named 'pymc'"))
+        handler.__name__ = "update_strength_inference"
+        payload = {"event_type": "set.logged", "user_id": "user-1", "event_id": "evt-1"}
+
+        txn_cm = AsyncMock()
+        txn_cm.__aenter__ = AsyncMock()
+        txn_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_conn.transaction.return_value = txn_cm
+
+        with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[handler]), \
+             _no_custom_rules(), \
+             patch("kura_workers.handlers.router.safe_record_inference_run", new_callable=AsyncMock) as telemetry:
+            await handle_projection_update(mock_conn, payload)
+
+        telemetry.assert_awaited_once()
+        kwargs = telemetry.await_args.kwargs
+        assert kwargs["projection_type"] == "strength_inference"
+        assert kwargs["status"] == "failed"
+        assert kwargs["error_taxonomy"] == "engine_unavailable"
+
+        insert_calls = [
+            c for c in mock_conn.execute.call_args_list
+            if "INSERT INTO background_jobs" in c.args[0]
+        ]
+        assert len(insert_calls) == 1
 
     @pytest.mark.asyncio
     async def test_partial_failure_continues_other_handlers(self, mock_conn):

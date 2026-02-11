@@ -8,13 +8,18 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
 
 from ..inference_engine import run_readiness_inference
+from ..inference_telemetry import (
+    INFERENCE_ERROR_INSUFFICIENT_DATA,
+    classify_inference_error,
+    safe_record_inference_run,
+)
 from ..registry import projection_handler
 from ..utils import get_retracted_event_ids
 
@@ -94,154 +99,219 @@ async def update_readiness_inference(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
 ) -> None:
     user_id = payload["user_id"]
-    retracted_ids = await get_retracted_event_ids(conn, user_id)
+    event_type = payload.get("event_type", "")
+    started_at = datetime.now(timezone.utc)
+    telemetry_engine = "none"
 
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            """
-            SELECT id, timestamp, event_type, data
-            FROM events
-            WHERE user_id = %s
-              AND event_type IN ('set.logged', 'sleep.logged', 'soreness.logged', 'energy.logged')
-            ORDER BY timestamp ASC
-            """,
-            (user_id,),
+    async def _record(
+        status: str,
+        diagnostics: dict[str, Any],
+        *,
+        error_message: str | None = None,
+        error_taxonomy: str | None = None,
+    ) -> None:
+        await safe_record_inference_run(
+            conn,
+            user_id=user_id,
+            projection_type="readiness_inference",
+            key="overview",
+            engine=telemetry_engine,
+            status=status,
+            diagnostics=diagnostics,
+            error_message=error_message,
+            error_taxonomy=error_taxonomy,
+            started_at=started_at,
         )
-        rows = await cur.fetchall()
 
-    rows = [r for r in rows if str(r["id"]) not in retracted_ids]
-    if not rows:
-        async with conn.cursor() as cur:
+    try:
+        retracted_ids = await get_retracted_event_ids(conn, user_id)
+
+        async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                DELETE FROM projections
+                SELECT id, timestamp, event_type, data
+                FROM events
                 WHERE user_id = %s
-                  AND projection_type = 'readiness_inference'
-                  AND key = 'overview'
+                  AND event_type IN ('set.logged', 'sleep.logged', 'soreness.logged', 'energy.logged')
+                ORDER BY timestamp ASC
                 """,
                 (user_id,),
             )
-        return
+            rows = await cur.fetchall()
 
-    per_day: dict[str, dict[str, Any]] = defaultdict(dict)
-    load_values: list[float] = []
-
-    for row in rows:
-        ts = row["timestamp"]
-        d: date = ts.date()
-        key = d.isoformat()
-        data = row["data"] or {}
-        event_type = row["event_type"]
-        bucket = per_day[key]
-
-        if event_type == "sleep.logged":
-            try:
-                bucket["sleep_hours"] = float(data.get("duration_hours"))
-            except (TypeError, ValueError):
-                pass
-        elif event_type == "energy.logged":
-            try:
-                bucket["energy"] = float(data.get("level"))
-            except (TypeError, ValueError):
-                pass
-        elif event_type == "soreness.logged":
-            try:
-                sev = float(data.get("severity"))
-            except (TypeError, ValueError):
-                continue
-            prev = bucket.get("soreness_sum", 0.0) + sev
-            cnt = bucket.get("soreness_count", 0) + 1
-            bucket["soreness_sum"] = prev
-            bucket["soreness_count"] = cnt
-        elif event_type == "set.logged":
-            try:
-                weight = float(data.get("weight_kg", data.get("weight", 0)))
-                reps = float(data.get("reps", 0))
-            except (TypeError, ValueError):
-                continue
-            volume = max(0.0, weight * reps)
-            bucket["load_volume"] = bucket.get("load_volume", 0.0) + volume
-
-    for values in per_day.values():
-        if values.get("load_volume", 0.0) > 0.0:
-            load_values.append(float(values["load_volume"]))
-    load_baseline = max(1.0, _median(load_values))
-
-    observations: list[float] = []
-    daily_scores: list[dict[str, Any]] = []
-
-    for day in sorted(per_day):
-        values = per_day[day]
-        has_any = any(
-            key in values for key in ("sleep_hours", "energy", "soreness_sum", "load_volume")
-        )
-        if not has_any:
-            continue
-
-        sleep_score = _clamp(float(values.get("sleep_hours", 6.5)) / 8.0, 0.0, 1.2)
-        energy_score = _clamp(float(values.get("energy", 6.0)) / 10.0, 0.0, 1.0)
-        soreness_avg = 0.0
-        if values.get("soreness_count", 0):
-            soreness_avg = float(values.get("soreness_sum", 0.0)) / float(values["soreness_count"])
-        soreness_penalty = _clamp(soreness_avg / 5.0, 0.0, 1.0)
-
-        load = float(values.get("load_volume", 0.0))
-        load_penalty = _clamp(load / load_baseline, 0.0, 1.4)
-
-        score = (
-            0.45 * sleep_score
-            + 0.35 * energy_score
-            - 0.20 * soreness_penalty
-            - 0.15 * load_penalty
-            + 0.25
-        )
-        score = _clamp(score, 0.0, 1.0)
-        observations.append(score)
-
-        daily_scores.append(
-            {
-                "date": day,
-                "score": round(score, 3),
-                "components": {
-                    "sleep": round(sleep_score, 3),
-                    "energy": round(energy_score, 3),
-                    "soreness_penalty": round(soreness_penalty, 3),
-                    "load_penalty": round(load_penalty, 3),
+        rows = [r for r in rows if str(r["id"]) not in retracted_ids]
+        if not rows:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    DELETE FROM projections
+                    WHERE user_id = %s
+                      AND projection_type = 'readiness_inference'
+                      AND key = 'overview'
+                    """,
+                    (user_id,),
+                )
+            await _record(
+                "skipped",
+                {
+                    "skip_reason": "no_signals",
+                    "event_type": event_type,
                 },
-            }
+            )
+            return
+
+        per_day: dict[str, dict[str, Any]] = defaultdict(dict)
+        load_values: list[float] = []
+
+        for row in rows:
+            ts = row["timestamp"]
+            d: date = ts.date()
+            key = d.isoformat()
+            data = row["data"] or {}
+            row_event_type = row["event_type"]
+            bucket = per_day[key]
+
+            if row_event_type == "sleep.logged":
+                try:
+                    bucket["sleep_hours"] = float(data.get("duration_hours"))
+                except (TypeError, ValueError):
+                    pass
+            elif row_event_type == "energy.logged":
+                try:
+                    bucket["energy"] = float(data.get("level"))
+                except (TypeError, ValueError):
+                    pass
+            elif row_event_type == "soreness.logged":
+                try:
+                    sev = float(data.get("severity"))
+                except (TypeError, ValueError):
+                    continue
+                prev = bucket.get("soreness_sum", 0.0) + sev
+                cnt = bucket.get("soreness_count", 0) + 1
+                bucket["soreness_sum"] = prev
+                bucket["soreness_count"] = cnt
+            elif row_event_type == "set.logged":
+                try:
+                    weight = float(data.get("weight_kg", data.get("weight", 0)))
+                    reps = float(data.get("reps", 0))
+                except (TypeError, ValueError):
+                    continue
+                volume = max(0.0, weight * reps)
+                bucket["load_volume"] = bucket.get("load_volume", 0.0) + volume
+
+        for values in per_day.values():
+            if values.get("load_volume", 0.0) > 0.0:
+                load_values.append(float(values["load_volume"]))
+        load_baseline = max(1.0, _median(load_values))
+
+        observations: list[float] = []
+        daily_scores: list[dict[str, Any]] = []
+
+        for day in sorted(per_day):
+            values = per_day[day]
+            has_any = any(
+                key in values for key in ("sleep_hours", "energy", "soreness_sum", "load_volume")
+            )
+            if not has_any:
+                continue
+
+            sleep_score = _clamp(float(values.get("sleep_hours", 6.5)) / 8.0, 0.0, 1.2)
+            energy_score = _clamp(float(values.get("energy", 6.0)) / 10.0, 0.0, 1.0)
+            soreness_avg = 0.0
+            if values.get("soreness_count", 0):
+                soreness_avg = float(values.get("soreness_sum", 0.0)) / float(values["soreness_count"])
+            soreness_penalty = _clamp(soreness_avg / 5.0, 0.0, 1.0)
+
+            load = float(values.get("load_volume", 0.0))
+            load_penalty = _clamp(load / load_baseline, 0.0, 1.4)
+
+            score = (
+                0.45 * sleep_score
+                + 0.35 * energy_score
+                - 0.20 * soreness_penalty
+                - 0.15 * load_penalty
+                + 0.25
+            )
+            score = _clamp(score, 0.0, 1.0)
+            observations.append(score)
+
+            daily_scores.append(
+                {
+                    "date": day,
+                    "score": round(score, 3),
+                    "components": {
+                        "sleep": round(sleep_score, 3),
+                        "energy": round(energy_score, 3),
+                        "soreness_penalty": round(soreness_penalty, 3),
+                        "load_penalty": round(load_penalty, 3),
+                    },
+                }
+            )
+
+        inference = run_readiness_inference(observations)
+        telemetry_engine = str(inference.get("engine", "none") or "none")
+
+        projection_data: dict[str, Any] = {
+            "daily_scores": daily_scores[-60:],
+            "engine": inference.get("engine"),
+            "diagnostics": inference.get("diagnostics", {}),
+            "data_quality": {
+                "days_with_observations": len(observations),
+                "insufficient_data": inference.get("status") == "insufficient_data",
+            },
+        }
+
+        telemetry_status = "success"
+        telemetry_error_taxonomy: str | None = None
+        telemetry_diagnostics = dict(inference.get("diagnostics", {}))
+        if inference.get("status") == "insufficient_data":
+            projection_data["status"] = "insufficient_data"
+            projection_data["required_points"] = inference.get("required_points", 5)
+            projection_data["observed_points"] = inference.get("observed_points", len(observations))
+            telemetry_status = "skipped"
+            telemetry_error_taxonomy = INFERENCE_ERROR_INSUFFICIENT_DATA
+            telemetry_diagnostics.update(
+                {
+                    "skip_reason": "insufficient_data",
+                    "required_points": inference.get("required_points", 5),
+                    "observed_points": inference.get("observed_points", len(observations)),
+                }
+            )
+        else:
+            projection_data["readiness_today"] = inference["readiness_today"]
+            projection_data["baseline"] = inference["baseline"]
+
+        last_event_id = str(rows[-1]["id"])
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO projections (user_id, projection_type, key, data, version, last_event_id, updated_at)
+                VALUES (%s, 'readiness_inference', 'overview', %s, 1, %s, NOW())
+                ON CONFLICT (user_id, projection_type, key) DO UPDATE SET
+                    data = EXCLUDED.data,
+                    version = projections.version + 1,
+                    last_event_id = EXCLUDED.last_event_id,
+                    updated_at = NOW()
+                """,
+                (user_id, json.dumps(projection_data), last_event_id),
+            )
+
+        await _record(
+            telemetry_status,
+            {
+                **telemetry_diagnostics,
+                "event_type": event_type,
+                "days_with_observations": len(observations),
+            },
+            error_taxonomy=telemetry_error_taxonomy,
         )
-
-    inference = run_readiness_inference(observations)
-
-    projection_data: dict[str, Any] = {
-        "daily_scores": daily_scores[-60:],
-        "engine": inference.get("engine"),
-        "diagnostics": inference.get("diagnostics", {}),
-        "data_quality": {
-            "days_with_observations": len(observations),
-            "insufficient_data": inference.get("status") == "insufficient_data",
-        },
-    }
-
-    if inference.get("status") == "insufficient_data":
-        projection_data["status"] = "insufficient_data"
-        projection_data["required_points"] = inference.get("required_points", 5)
-        projection_data["observed_points"] = inference.get("observed_points", len(observations))
-    else:
-        projection_data["readiness_today"] = inference["readiness_today"]
-        projection_data["baseline"] = inference["baseline"]
-
-    last_event_id = str(rows[-1]["id"])
-    async with conn.cursor() as cur:
-        await cur.execute(
-            """
-            INSERT INTO projections (user_id, projection_type, key, data, version, last_event_id, updated_at)
-            VALUES (%s, 'readiness_inference', 'overview', %s, 1, %s, NOW())
-            ON CONFLICT (user_id, projection_type, key) DO UPDATE SET
-                data = EXCLUDED.data,
-                version = projections.version + 1,
-                last_event_id = EXCLUDED.last_event_id,
-                updated_at = NOW()
-            """,
-            (user_id, json.dumps(projection_data), last_event_id),
+    except Exception as exc:
+        await _record(
+            "failed",
+            {
+                "event_type": event_type,
+            },
+            error_message=str(exc),
+            error_taxonomy=classify_inference_error(exc),
         )
+        raise

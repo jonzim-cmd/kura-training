@@ -31,6 +31,7 @@ from kura_workers.handlers.strength_inference import update_strength_inference
 from kura_workers.handlers.training_plan import update_training_plan
 from kura_workers.handlers.training_timeline import update_training_timeline
 from kura_workers.handlers.user_profile import update_user_profile
+from kura_workers.eval_harness import run_eval_harness
 from kura_workers.scheduler import ensure_nightly_inference_scheduler
 from kura_workers.handlers.inference_nightly import handle_inference_nightly_refit
 from kura_workers.semantic_bootstrap import ensure_semantic_catalog
@@ -103,6 +104,52 @@ async def get_projection(conn, user_id, projection_type, key="overview"):
             (user_id, projection_type, key),
         )
         return await cur.fetchone()
+
+
+async def get_latest_inference_run(conn, user_id, projection_type, key):
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT *
+            FROM inference_runs
+            WHERE user_id = %s
+              AND projection_type = %s
+              AND key = %s
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            (user_id, projection_type, key),
+        )
+        return await cur.fetchone()
+
+
+async def get_latest_eval_run(conn, user_id):
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT *
+            FROM inference_eval_runs
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        return await cur.fetchone()
+
+
+async def get_eval_artifacts(conn, run_id):
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT *
+            FROM inference_eval_artifacts
+            WHERE run_id = %s
+            ORDER BY id ASC
+            """,
+            (run_id,),
+        )
+        return await cur.fetchall()
 
 
 async def prepare_nightly_scheduler_for_test(conn) -> None:
@@ -529,6 +576,157 @@ class TestInferenceIntegration:
         readiness_data = readiness["data"]
         assert readiness_data["data_quality"]["days_with_observations"] >= 5
         assert "readiness_today" in readiness_data
+
+        strength_run = await get_latest_inference_run(
+            db, test_user_id, "strength_inference", "bench_press"
+        )
+        assert strength_run is not None
+        assert strength_run["status"] == "success"
+        assert strength_run["engine"] in {"closed_form", "pymc"}
+
+        readiness_run = await get_latest_inference_run(
+            db, test_user_id, "readiness_inference", "overview"
+        )
+        assert readiness_run is not None
+        assert readiness_run["status"] == "success"
+        assert readiness_run["engine"] == "normal_normal"
+
+    async def test_inference_runs_mark_insufficient_data_as_skipped(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        last_set_event_id = None
+
+        for day in range(1, 3):
+            await insert_event(db, test_user_id, "sleep.logged", {
+                "duration_hours": 6.8 + (day * 0.1),
+            }, f"TIMESTAMP '2026-02-{day:02d} 07:00:00+01'")
+            await insert_event(db, test_user_id, "energy.logged", {
+                "level": 6 + day,
+            }, f"TIMESTAMP '2026-02-{day:02d} 08:00:00+01'")
+            await insert_event(db, test_user_id, "soreness.logged", {
+                "severity": 2,
+            }, f"TIMESTAMP '2026-02-{day:02d} 09:00:00+01'")
+            last_set_event_id = await insert_event(db, test_user_id, "set.logged", {
+                "exercise_id": "bench_press",
+                "exercise": "Bench Press",
+                "weight_kg": 85 + day,
+                "reps": 5,
+            }, f"TIMESTAMP '2026-02-{day:02d} 10:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_strength_inference(db, {
+            "user_id": test_user_id,
+            "event_type": "set.logged",
+            "event_id": last_set_event_id,
+        })
+        await update_readiness_inference(db, {
+            "user_id": test_user_id,
+            "event_type": "sleep.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        strength_run = await get_latest_inference_run(
+            db, test_user_id, "strength_inference", "bench_press"
+        )
+        assert strength_run is not None
+        assert strength_run["status"] == "skipped"
+        assert strength_run["diagnostics"]["skip_reason"] == "insufficient_data"
+        assert strength_run["diagnostics"]["error_taxonomy"] == "insufficient_data"
+
+        readiness_run = await get_latest_inference_run(
+            db, test_user_id, "readiness_inference", "overview"
+        )
+        assert readiness_run is not None
+        assert readiness_run["status"] == "skipped"
+        assert readiness_run["diagnostics"]["skip_reason"] == "insufficient_data"
+        assert readiness_run["diagnostics"]["error_taxonomy"] == "insufficient_data"
+
+    async def test_eval_harness_replays_event_store_and_persists_artifacts(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+
+        for day in range(1, 9):
+            await insert_event(db, test_user_id, "set.logged", {
+                "exercise_id": "bench_press",
+                "exercise": "Bench Press",
+                "weight_kg": 90 + day,
+                "reps": 5,
+            }, f"TIMESTAMP '2026-01-{day:02d} 10:00:00+01'")
+            await insert_event(db, test_user_id, "sleep.logged", {
+                "duration_hours": 7.0 + (day * 0.05),
+            }, f"TIMESTAMP '2026-02-{day:02d} 07:00:00+01'")
+            await insert_event(db, test_user_id, "energy.logged", {
+                "level": 6 + (day % 3),
+            }, f"TIMESTAMP '2026-02-{day:02d} 08:00:00+01'")
+            await insert_event(db, test_user_id, "soreness.logged", {
+                "severity": 2 + (day % 2),
+            }, f"TIMESTAMP '2026-02-{day:02d} 09:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        result = await run_eval_harness(
+            db,
+            user_id=test_user_id,
+            source="event_store",
+            strength_engine="closed_form",
+            persist=True,
+        )
+        await db.execute("RESET ROLE")
+
+        assert result["source"] == "event_store"
+        assert result["projection_rows"] >= 1
+        assert "run_id" in result
+
+        run_row = await get_latest_eval_run(db, test_user_id)
+        assert run_row is not None
+        assert str(run_row["id"]) == result["run_id"]
+        assert run_row["source"] == "event_store"
+        assert run_row["status"] in {"completed", "failed"}
+
+        artifacts = await get_eval_artifacts(db, result["run_id"])
+        assert len(artifacts) >= 1
+        assert all(a["source"] == "event_store" for a in artifacts)
+
+    async def test_eval_harness_combined_source_reports_by_source(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        last_set_event_id = None
+        for day in range(1, 7):
+            await insert_event(db, test_user_id, "sleep.logged", {
+                "duration_hours": 7.1 + (day * 0.05),
+            }, f"TIMESTAMP '2026-02-{day:02d} 07:00:00+01'")
+            await insert_event(db, test_user_id, "energy.logged", {
+                "level": 6 + (day % 3),
+            }, f"TIMESTAMP '2026-02-{day:02d} 08:00:00+01'")
+            await insert_event(db, test_user_id, "soreness.logged", {
+                "severity": 2 + (day % 2),
+            }, f"TIMESTAMP '2026-02-{day:02d} 09:00:00+01'")
+            last_set_event_id = await insert_event(db, test_user_id, "set.logged", {
+                "exercise_id": "bench_press",
+                "exercise": "Bench Press",
+                "weight_kg": 85 + day,
+                "reps": 5,
+            }, f"TIMESTAMP '2026-02-{day:02d} 10:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_strength_inference(db, {
+            "user_id": test_user_id,
+            "event_type": "set.logged",
+            "event_id": last_set_event_id,
+        })
+        await update_readiness_inference(db, {
+            "user_id": test_user_id,
+            "event_type": "sleep.logged",
+        })
+        result = await run_eval_harness(
+            db,
+            user_id=test_user_id,
+            source="both",
+            strength_engine="closed_form",
+            persist=False,
+        )
+        await db.execute("RESET ROLE")
+
+        assert result["source"] == "both"
+        assert "summary_by_source" in result
+        assert "projection_history" in result["summary_by_source"]
+        assert "event_store" in result["summary_by_source"]
 
     async def test_strength_projection_deleted_when_all_sets_retracted(self, db, test_user_id):
         await create_test_user(db, test_user_id)

@@ -18,15 +18,23 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from ..inference_telemetry import classify_inference_error, safe_record_inference_run
 from ..metrics import record_handler_invocation
 from ..registry import (
     get_projection_handler_by_name,
     get_projection_handlers,
     register,
-    registered_event_types,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _inference_target_for_handler(handler_name: str) -> tuple[str, str] | None:
+    if handler_name == "update_strength_inference":
+        return ("strength_inference", "unknown")
+    if handler_name == "update_readiness_inference":
+        return ("readiness_inference", "overview")
+    return None
 
 
 async def _resolve_retraction(
@@ -134,13 +142,31 @@ async def handle_projection_update(
                 await handler(conn, payload)
             duration_ms = (time.monotonic() - t0) * 1000
             record_handler_invocation(handler.__name__, duration_ms, success=True)
-        except Exception:
+        except Exception as exc:
             duration_ms = (time.monotonic() - t0) * 1000
             record_handler_invocation(handler.__name__, duration_ms, success=False)
             logger.exception(
                 "Projection handler %s failed for event_type=%s event_id=%s — scheduling retry",
                 handler.__name__, event_type, payload.get("event_id", "?"),
             )
+            inference_target = _inference_target_for_handler(handler.__name__)
+            if inference_target is not None:
+                projection_type, projection_key = inference_target
+                await safe_record_inference_run(
+                    conn,
+                    user_id=user_id,
+                    projection_type=projection_type,
+                    key=projection_key,
+                    engine="none",
+                    status="failed",
+                    diagnostics={
+                        "handler_name": handler.__name__,
+                        "event_type": event_type,
+                        "event_id": payload.get("event_id"),
+                    },
+                    error_message=str(exc),
+                    error_taxonomy=classify_inference_error(exc),
+                )
             # Enqueue a targeted retry job for this specific handler.
             # This INSERT is outside the failed handler's transaction block,
             # so it's part of the outer projection.update transaction that will commit.
