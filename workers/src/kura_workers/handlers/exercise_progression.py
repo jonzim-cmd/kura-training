@@ -1,6 +1,6 @@
 """Exercise Progression projection handler.
 
-Reacts to set.logged and exercise.alias_created events.
+Reacts to set.logged, set.corrected, and exercise.alias_created events.
 Computes per-exercise statistics:
 - Estimated 1RM (Epley formula)
 - Total sessions, sets, volume
@@ -23,6 +23,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
+from ..set_corrections import apply_set_correction_chain
 from ..training_core_fields import evaluate_set_context_rows
 from ..utils import (
     check_expected_fields,
@@ -99,7 +100,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     return {"exercises": [r["key"] for r in projection_rows]}
 
 
-@projection_handler("set.logged", "exercise.alias_created", dimension_meta={
+@projection_handler("set.logged", "set.corrected", "exercise.alias_created", dimension_meta={
     "name": "exercise_progression",
     "description": "Strength progression per exercise over time",
     "key_structure": "one per exercise (exercise_id as key)",
@@ -135,6 +136,8 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "tempo": "string (optional)",
             "tempo_source": "string (optional: explicit|session_default)",
             "set_type": "string (optional)",
+            "corrections": ["object (optional) — applied correction chain entries"],
+            "field_provenance": "object (optional) — latest provenance per corrected field",
             "session_id": "string (optional)",
             "extra": "object — unknown fields passed through (optional)",
         }],
@@ -179,6 +182,39 @@ async def update_exercise_progression(
         if not canonical:
             logger.warning("Alias event %s has no exercise_id, skipping", event_id)
             return
+    elif event_type == "set.corrected":
+        target_event_id = str(row["data"].get("target_event_id", "")).strip()
+        if not target_event_id:
+            logger.warning("Correction event %s has no target_event_id, skipping", event_id)
+            return
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT data
+                FROM events
+                WHERE user_id = %s
+                  AND id = %s
+                  AND event_type = 'set.logged'
+                """,
+                (user_id, target_event_id),
+            )
+            target_row = await cur.fetchone()
+        if target_row is None:
+            logger.warning(
+                "Correction event %s references missing set.logged target %s",
+                event_id,
+                target_event_id,
+            )
+            return
+        raw_key = resolve_exercise_key(target_row["data"])
+        if not raw_key:
+            logger.warning(
+                "Correction event %s target %s has no exercise field",
+                event_id,
+                target_event_id,
+            )
+            return
+        canonical = resolve_through_aliases(raw_key, alias_map)
     else:
         # set.logged: resolve the exercise key through aliases
         raw_key = resolve_exercise_key(row["data"])
@@ -211,6 +247,26 @@ async def update_exercise_progression(
 
     # Filter retracted events
     rows = [r for r in rows if str(r["id"]) not in retracted_ids]
+    row_ids = [str(r["id"]) for r in rows]
+    correction_rows: list[dict[str, Any]] = []
+    if row_ids:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT id, timestamp, data
+                FROM events
+                WHERE user_id = %s
+                  AND event_type = 'set.corrected'
+                  AND data->>'target_event_id' = ANY(%s)
+                ORDER BY timestamp ASC, id ASC
+                """,
+                (user_id, row_ids),
+            )
+            correction_rows = await cur.fetchall()
+    correction_rows = [
+        row for row in correction_rows if str(row["id"]) not in retracted_ids
+    ]
+    rows = apply_set_correction_chain(rows, correction_rows)
     context_by_event_id = {
         entry["event_id"]: entry
         for entry in evaluate_set_context_rows(rows)
@@ -254,7 +310,7 @@ async def update_exercise_progression(
     observed_attr_counts: dict[str, dict[str, int]] = {}
 
     for row in rows:
-        data = row["data"]
+        data = row.get("effective_data") or row["data"]
         metadata = row.get("metadata") or {}
         context_eval = context_by_event_id.get(str(row["id"]), {})
         effective_defaults = context_eval.get("effective_defaults") or {}
@@ -379,6 +435,10 @@ async def update_exercise_progression(
         # Decision 10: pass through unknown fields per set
         if unknown:
             set_entry["extra"] = unknown
+        if row.get("correction_history"):
+            set_entry["corrections"] = row["correction_history"]
+        if row.get("field_provenance"):
+            set_entry["field_provenance"] = row["field_provenance"]
 
         recent_sets.append(set_entry)
 
@@ -415,7 +475,8 @@ async def update_exercise_progression(
     # Decision 10: check for missing expected fields across all events
     # We only flag once per projection rebuild, using the last event as sample
     if rows:
-        field_hints = check_expected_fields(rows[-1]["data"], _EXPECTED_FIELDS)
+        latest_data = rows[-1].get("effective_data") or rows[-1]["data"]
+        field_hints = check_expected_fields(latest_data, _EXPECTED_FIELDS)
 
     projection_data: dict[str, Any] = {
         "exercise": canonical,

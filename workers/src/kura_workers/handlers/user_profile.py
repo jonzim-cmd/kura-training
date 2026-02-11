@@ -492,6 +492,7 @@ def _build_agenda(
 
 @projection_handler(
     "set.logged",
+    "set.corrected",
     "exercise.alias_created",
     "preference.set",
     "goal.set",
@@ -526,7 +527,7 @@ async def update_user_profile(
             FROM events
             WHERE user_id = %s
               AND event_type IN (
-                  'set.logged', 'exercise.alias_created', 'preference.set',
+                  'set.logged', 'set.corrected', 'exercise.alias_created', 'preference.set',
                   'goal.set', 'profile.updated', 'program.started', 'injury.reported'
               )
             ORDER BY timestamp ASC

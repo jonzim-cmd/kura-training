@@ -1,6 +1,6 @@
 """Training Timeline dimension handler.
 
-Reacts to set.logged events and computes temporal training patterns:
+Reacts to set.logged, set.corrected, and exercise.alias_created events and computes temporal training patterns:
 - Recent training days (last 30 with activity)
 - Weekly summaries (last 26 weeks)
 - Training frequency (rolling averages)
@@ -19,6 +19,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
+from ..set_corrections import apply_set_correction_chain
 from ..utils import (
     epley_1rm,
     get_alias_map,
@@ -200,7 +201,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     }
 
 
-@projection_handler("set.logged", "exercise.alias_created", dimension_meta={
+@projection_handler("set.logged", "set.corrected", "exercise.alias_created", dimension_meta={
     "name": "training_timeline",
     "description": "Training patterns: when, what, how much",
     "key_structure": "single overview per user",
@@ -251,6 +252,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         },
         "data_quality": {
             "observed_attributes": {"<event_type>": {"<field>": "integer — count"}},
+            "corrected_set_rows": "integer — number of rows with set.corrected overlays",
         },
     },
     "manifest_contribution": _manifest_contribution,
@@ -281,6 +283,26 @@ async def update_training_timeline(
 
     # Filter retracted events
     rows = [r for r in rows if str(r["id"]) not in retracted_ids]
+    row_ids = [str(r["id"]) for r in rows]
+    correction_rows: list[dict[str, Any]] = []
+    if row_ids:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT id, timestamp, data
+                FROM events
+                WHERE user_id = %s
+                  AND event_type = 'set.corrected'
+                  AND data->>'target_event_id' = ANY(%s)
+                ORDER BY timestamp ASC, id ASC
+                """,
+                (user_id, row_ids),
+            )
+            correction_rows = await cur.fetchall()
+    correction_rows = [
+        row for row in correction_rows if str(row["id"]) not in retracted_ids
+    ]
+    rows = apply_set_correction_chain(rows, correction_rows)
 
     if not rows:
         # Clean up: delete any existing projection (all events retracted)
@@ -305,10 +327,13 @@ async def update_training_timeline(
         lambda: {"date": None, "session_id": None, "exercises": set(), "total_sets": 0, "total_volume_kg": 0.0, "total_reps": 0, "top_sets": {}}
     )
     observed_attr_counts: dict[str, dict[str, int]] = {}
+    corrected_rows = 0
 
     for row in rows:
-        data = row["data"]
+        data = row.get("effective_data") or row["data"]
         metadata = row.get("metadata") or {}
+        if row.get("correction_history"):
+            corrected_rows += 1
         ts: datetime = row["timestamp"]
         d = ts.date()
         w = _iso_week(d)
@@ -385,6 +410,7 @@ async def update_training_timeline(
         "streak": _compute_streak(training_dates, reference_date),
         "data_quality": {
             "observed_attributes": observed_attr_counts,
+            "corrected_set_rows": corrected_rows,
         },
     }
 

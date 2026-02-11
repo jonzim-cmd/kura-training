@@ -24,6 +24,7 @@ from ..learning_telemetry import build_learning_signal_event
 from ..repair_provenance import build_repair_provenance, summarize_repair_provenance
 from ..registry import projection_handler
 from ..semantic_catalog import EXERCISE_CATALOG
+from ..set_corrections import apply_set_correction_chain
 from ..training_core_fields import evaluate_set_context_rows
 from ..utils import get_alias_map, get_retracted_event_ids
 
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 _INVARIANT_SOURCE_EVENT_TYPES = (
     "set.logged",
+    "set.corrected",
     "exercise.alias_created",
     "preference.set",
     "profile.updated",
@@ -205,7 +207,7 @@ def _has_jump_tracking_path(
 ) -> bool:
     jump_exercise_ids = {"countermovement_jump", "box_jump", "jump_squat"}
     for row in set_rows:
-        data = row.get("data") or {}
+        data = row.get("effective_data") or row.get("data") or {}
         exercise_id = _normalize(data.get("exercise_id"))
         exercise = _normalize(data.get("exercise"))
         if exercise_id in jump_exercise_ids:
@@ -1455,7 +1457,15 @@ def _evaluate_read_only_invariants(
     - INV-006 (baseline profile explicitness)
     """
     issues: list[dict[str, Any]] = []
-    set_rows = [r for r in event_rows if r["event_type"] == "set.logged"]
+    raw_set_rows = [r for r in event_rows if r["event_type"] == "set.logged"]
+    set_correction_rows = [
+        r for r in event_rows if r["event_type"] == "set.corrected"
+    ]
+    set_rows = apply_set_correction_chain(raw_set_rows, set_correction_rows)
+    set_rows = [
+        {**row, "data": row.get("effective_data") or row.get("data") or {}}
+        for row in set_rows
+    ]
     goal_rows = [r for r in event_rows if r["event_type"] == "goal.set"]
     prefs = _latest_preferences(event_rows)
     profile = _latest_profile(event_rows)

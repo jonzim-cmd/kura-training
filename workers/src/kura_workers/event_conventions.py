@@ -414,6 +414,50 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 },
             },
         },
+        "set.corrected": {
+            "description": (
+                "Patch-style correction for a previously logged set without "
+                "retract-and-relog. Keeps immutable history and applies overlay "
+                "in projections."
+            ),
+            "fields": {
+                "target_event_id": "string (required, UUID of target set.logged event)",
+                "changed_fields": (
+                    "object (required). Each key is a field to patch. "
+                    "Value can be scalar or {value, repair_provenance}."
+                ),
+                "reason": "string (optional)",
+                "repair_provenance": {
+                    "source_type": "string (optional: explicit|inferred|estimated|user_confirmed)",
+                    "confidence": "number (optional, 0..1)",
+                    "confidence_band": "string (optional: low|medium|high)",
+                    "applies_scope": "string (optional: single_set|exercise_session|session)",
+                    "reason": "string (optional)",
+                },
+            },
+            "metadata_fields": {
+                "idempotency_key": (
+                    "string (required in metadata). Use stable key to ensure duplicate "
+                    "correction submissions are idempotent."
+                ),
+            },
+            "example": {
+                "target_event_id": "01956abc-def0-7000-8000-000000000001",
+                "changed_fields": {
+                    "rest_seconds": {
+                        "value": 90,
+                        "repair_provenance": {
+                            "source_type": "explicit",
+                            "confidence": 1.0,
+                            "confidence_band": "high",
+                            "applies_scope": "single_set",
+                            "reason": "User clarified rest between work sets.",
+                        },
+                    }
+                },
+                "reason": "Add missing rest_seconds from explicit mention.",
+            },
+        },
         "event.retracted": {
             "description": (
                 "Retracts a previously logged event. The retracted event "
