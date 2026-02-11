@@ -23,6 +23,7 @@ import kura_workers.handlers  # noqa: F401
 from kura_workers.handlers.body_composition import update_body_composition
 from kura_workers.handlers.exercise_progression import update_exercise_progression
 from kura_workers.handlers.nutrition import update_nutrition
+from kura_workers.handlers.quality_health import update_quality_health
 from kura_workers.handlers.readiness_inference import update_readiness_inference
 from kura_workers.handlers.recovery import update_recovery
 from kura_workers.handlers.router import handle_projection_retry, handle_projection_update
@@ -1179,6 +1180,41 @@ class TestUserProfileIntegration:
         assert "orphaned_event_types" in data_quality
         orphans = data_quality["orphaned_event_types"]
         assert any(o["event_type"] == "totally.unknown.event" for o in orphans)
+
+
+# ---------------------------------------------------------------------------
+# Quality Health (Decision 13 Phase 0)
+# ---------------------------------------------------------------------------
+
+
+class TestQualityHealthIntegration:
+    async def test_detects_read_only_invariant_issues(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise": "Mystery Cable Move", "weight_kg": 25, "reps": 10,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+        await insert_event(db, test_user_id, "goal.set", {
+            "description": "Ich will dunken koennen",
+        }, "TIMESTAMP '2026-02-01 11:00:00+01'")
+        await insert_event(db, test_user_id, "preference.set", {
+            "key": "unit_system", "value": "metric",
+        }, "TIMESTAMP '2026-02-01 12:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_quality_health(db, {
+            "user_id": test_user_id, "event_type": "set.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "quality_health")
+        assert proj is not None
+        data = proj["data"]
+        assert data["invariant_mode"] == "read_only"
+        assert data["issues_open"] >= 1
+        assert data["score"] < 1.0
+        issue_types = {issue["type"] for issue in data["issues"]}
+        assert "unresolved_exercise_identity" in issue_types
+        assert "timezone_missing" in issue_types
 
 
 # ---------------------------------------------------------------------------

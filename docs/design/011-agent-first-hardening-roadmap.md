@@ -51,6 +51,26 @@ after context loss.
 - [x] E4. Optional dry-run simulation endpoint
   - Predict projection deltas before writing events.
 
+## Workstream F: Self-Healing Data Plane (Decision 13)
+
+- [ ] F1. Invariant evaluator (read-only mode)
+  - Implement typed invariant checks over events + projections.
+  - Emit quality issues without automatic mutation.
+- [ ] F2. Quality health projection
+  - Add `quality_health/overview` projection with score, open issues, and severity breakdown.
+- [ ] F3. Repair proposal + simulation bridge
+  - Generate proposed compensating event batches.
+  - Run all proposals through `/v1/events/simulate` before apply.
+- [ ] F4. Agent protocol hardening
+  - Enforce write receipts + read-after-write verification before "saved" claims.
+  - Add explicit uncertainty/deferred markers for low-confidence facts.
+- [ ] F5. Autonomous low-risk repair tier
+  - Auto-apply only deterministic Tier A repairs.
+  - Keep higher-risk repairs confirmation-gated.
+- [ ] F6. Integrity SLOs + autonomy throttling
+  - Define and monitor data-quality SLOs.
+  - Reduce agent autonomy automatically on sustained SLO regressions.
+
 ## Current execution order
 
 1. A1
