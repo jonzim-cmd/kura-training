@@ -98,6 +98,50 @@ pub struct BatchCreateEventsResponse {
     pub warnings: Vec<BatchEventWarning>,
 }
 
+/// Request to simulate a batch of events without writing to the event store.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SimulateEventsRequest {
+    pub events: Vec<CreateEventRequest>,
+}
+
+/// Predicted change type for a projection during simulation.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionImpactChange {
+    Create,
+    Update,
+    Delete,
+    Noop,
+    Unknown,
+}
+
+/// Predicted impact on a single projection key.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ProjectionImpact {
+    pub projection_type: String,
+    pub key: String,
+    pub change: ProjectionImpactChange,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_version: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub predicted_version: Option<i64>,
+    /// Why this projection is expected to change.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<String>,
+}
+
+/// Response for dry-run event simulation.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SimulateEventsResponse {
+    pub event_count: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<BatchEventWarning>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub projection_impacts: Vec<ProjectionImpact>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
 /// A warning for a specific event in a batch.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BatchEventWarning {

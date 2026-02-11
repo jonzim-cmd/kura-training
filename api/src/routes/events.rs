@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -12,7 +12,8 @@ use uuid::Uuid;
 use kura_core::error::ApiError;
 use kura_core::events::{
     BatchCreateEventsRequest, BatchCreateEventsResponse, BatchEventWarning, CreateEventRequest,
-    CreateEventResponse, Event, EventMetadata, EventWarning, PaginatedResponse,
+    CreateEventResponse, Event, EventMetadata, EventWarning, PaginatedResponse, ProjectionImpact,
+    ProjectionImpactChange, SimulateEventsRequest, SimulateEventsResponse,
 };
 
 use crate::auth::AuthenticatedUser;
@@ -23,6 +24,7 @@ pub fn write_router() -> Router<AppState> {
     Router::new()
         .route("/v1/events", post(create_event))
         .route("/v1/events/batch", post(create_events_batch))
+        .route("/v1/events/simulate", post(simulate_events))
 }
 
 pub fn read_router() -> Router<AppState> {
@@ -296,6 +298,518 @@ async fn insert_event(
     Ok(row.into_event())
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+struct ProjectionTargetKey {
+    projection_type: String,
+    key: String,
+}
+
+#[derive(Debug, Default, Clone)]
+struct ProjectionTargetCandidate {
+    reasons: Vec<String>,
+    delete_hint: bool,
+    unknown_target: bool,
+}
+
+#[derive(sqlx::FromRow)]
+struct ExistingProjectionVersionRow {
+    projection_type: String,
+    key: String,
+    version: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct RuleEventSimulationRow {
+    id: Uuid,
+    event_type: String,
+    data: serde_json::Value,
+}
+
+#[derive(sqlx::FromRow)]
+struct ResolvedEventRow {
+    event_type: String,
+    data: serde_json::Value,
+}
+
+fn add_projection_target(
+    candidates: &mut HashMap<ProjectionTargetKey, ProjectionTargetCandidate>,
+    projection_type: &str,
+    key: &str,
+    reason: String,
+    delete_hint: bool,
+    unknown_target: bool,
+) {
+    let entry = candidates
+        .entry(ProjectionTargetKey {
+            projection_type: projection_type.to_string(),
+            key: key.to_string(),
+        })
+        .or_default();
+
+    if !entry.reasons.iter().any(|r| r == &reason) {
+        entry.reasons.push(reason);
+    }
+    if delete_hint {
+        entry.delete_hint = true;
+    }
+    if unknown_target {
+        entry.unknown_target = true;
+    }
+}
+
+fn normalize_fallback_exercise_key(raw: &str) -> String {
+    raw.trim().to_lowercase().replace(' ', "_")
+}
+
+fn extract_exercise_key(data: &serde_json::Value) -> Option<String> {
+    if let Some(exercise_id) = data.get("exercise_id").and_then(|v| v.as_str()) {
+        let key = exercise_id.trim().to_lowercase();
+        if !key.is_empty() {
+            return Some(key);
+        }
+    }
+
+    if let Some(exercise) = data.get("exercise").and_then(|v| v.as_str()) {
+        let key = normalize_fallback_exercise_key(exercise);
+        if !key.is_empty() {
+            return Some(key);
+        }
+    }
+
+    None
+}
+
+fn user_profile_handles_event(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "set.logged"
+            | "exercise.alias_created"
+            | "preference.set"
+            | "goal.set"
+            | "profile.updated"
+            | "program.started"
+            | "injury.reported"
+            | "bodyweight.logged"
+            | "measurement.logged"
+            | "sleep.logged"
+            | "soreness.logged"
+            | "energy.logged"
+            | "meal.logged"
+            | "training_plan.created"
+            | "training_plan.updated"
+            | "training_plan.archived"
+            | "nutrition_target.set"
+            | "sleep_target.set"
+            | "weight_target.set"
+    )
+}
+
+fn add_standard_projection_targets(
+    candidates: &mut HashMap<ProjectionTargetKey, ProjectionTargetCandidate>,
+    event_type: &str,
+    data: &serde_json::Value,
+) -> bool {
+    let mut mapped = false;
+
+    if user_profile_handles_event(event_type) {
+        mapped = true;
+        add_projection_target(
+            candidates,
+            "user_profile",
+            "me",
+            format!("event_type '{}' triggers user_profile recompute", event_type),
+            false,
+            false,
+        );
+    }
+
+    match event_type {
+        "set.logged" => {
+            mapped = true;
+            add_projection_target(
+                candidates,
+                "training_timeline",
+                "overview",
+                "set.logged updates training timeline aggregates".to_string(),
+                false,
+                false,
+            );
+
+            if let Some(exercise_key) = extract_exercise_key(data) {
+                add_projection_target(
+                    candidates,
+                    "exercise_progression",
+                    &exercise_key,
+                    "set.logged updates per-exercise progression".to_string(),
+                    false,
+                    false,
+                );
+            } else {
+                add_projection_target(
+                    candidates,
+                    "exercise_progression",
+                    "*",
+                    "set.logged without exercise_id/exercise cannot map to a concrete exercise key"
+                        .to_string(),
+                    false,
+                    true,
+                );
+            }
+        }
+        "exercise.alias_created" => {
+            mapped = true;
+            add_projection_target(
+                candidates,
+                "training_timeline",
+                "overview",
+                "exercise.alias_created can remap historical exercise keys in timeline"
+                    .to_string(),
+                false,
+                false,
+            );
+
+            if let Some(exercise_key) = extract_exercise_key(data) {
+                add_projection_target(
+                    candidates,
+                    "exercise_progression",
+                    &exercise_key,
+                    "exercise.alias_created can trigger exercise progression consolidation"
+                        .to_string(),
+                    false,
+                    false,
+                );
+            } else {
+                add_projection_target(
+                    candidates,
+                    "exercise_progression",
+                    "*",
+                    "exercise.alias_created without exercise_id cannot map to a concrete exercise key"
+                        .to_string(),
+                    false,
+                    true,
+                );
+            }
+        }
+        "bodyweight.logged" | "measurement.logged" | "weight_target.set" => {
+            mapped = true;
+            add_projection_target(
+                candidates,
+                "body_composition",
+                "overview",
+                format!("event_type '{}' updates body composition", event_type),
+                false,
+                false,
+            );
+        }
+        "sleep.logged" | "soreness.logged" | "energy.logged" | "sleep_target.set" => {
+            mapped = true;
+            add_projection_target(
+                candidates,
+                "recovery",
+                "overview",
+                format!("event_type '{}' updates recovery", event_type),
+                false,
+                false,
+            );
+        }
+        "meal.logged" | "nutrition_target.set" => {
+            mapped = true;
+            add_projection_target(
+                candidates,
+                "nutrition",
+                "overview",
+                format!("event_type '{}' updates nutrition", event_type),
+                false,
+                false,
+            );
+        }
+        "training_plan.created"
+        | "training_plan.updated"
+        | "training_plan.archived"
+        | "program.started" => {
+            mapped = true;
+            add_projection_target(
+                candidates,
+                "training_plan",
+                "overview",
+                format!("event_type '{}' updates training plan state", event_type),
+                false,
+                false,
+            );
+        }
+        "projection_rule.created" => {
+            mapped = true;
+            if let Some(rule_name) = data.get("name").and_then(|v| v.as_str()) {
+                let key = rule_name.trim();
+                if !key.is_empty() {
+                    add_projection_target(
+                        candidates,
+                        "custom",
+                        key,
+                        "projection_rule.created creates or updates custom projection".to_string(),
+                        false,
+                        false,
+                    );
+                } else {
+                    add_projection_target(
+                        candidates,
+                        "custom",
+                        "*",
+                        "projection_rule.created has empty name; custom key cannot be determined"
+                            .to_string(),
+                        false,
+                        true,
+                    );
+                }
+            } else {
+                add_projection_target(
+                    candidates,
+                    "custom",
+                    "*",
+                    "projection_rule.created without name; custom key cannot be determined"
+                        .to_string(),
+                    false,
+                    true,
+                );
+            }
+        }
+        "projection_rule.archived" => {
+            mapped = true;
+            if let Some(rule_name) = data.get("name").and_then(|v| v.as_str()) {
+                let key = rule_name.trim();
+                if !key.is_empty() {
+                    add_projection_target(
+                        candidates,
+                        "custom",
+                        key,
+                        "projection_rule.archived deletes custom projection".to_string(),
+                        true,
+                        false,
+                    );
+                } else {
+                    add_projection_target(
+                        candidates,
+                        "custom",
+                        "*",
+                        "projection_rule.archived has empty name; custom key cannot be determined"
+                            .to_string(),
+                        true,
+                        true,
+                    );
+                }
+            } else {
+                add_projection_target(
+                    candidates,
+                    "custom",
+                    "*",
+                    "projection_rule.archived without name; custom key cannot be determined"
+                        .to_string(),
+                    true,
+                    true,
+                );
+            }
+        }
+        _ => {}
+    }
+
+    mapped
+}
+
+fn add_custom_rule_targets(
+    candidates: &mut HashMap<ProjectionTargetKey, ProjectionTargetCandidate>,
+    active_custom_rules: &HashMap<String, HashSet<String>>,
+    event_type: &str,
+) -> bool {
+    let mut mapped = false;
+
+    for (rule_name, source_events) in active_custom_rules {
+        if !source_events.contains(event_type) {
+            continue;
+        }
+
+        mapped = true;
+        add_projection_target(
+            candidates,
+            "custom",
+            rule_name,
+            format!(
+                "active custom rule '{}' matches event_type '{}'",
+                rule_name, event_type
+            ),
+            false,
+            false,
+        );
+    }
+
+    mapped
+}
+
+async fn fetch_retracted_event_ids_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+) -> Result<HashSet<Uuid>, AppError> {
+    let ids: Vec<String> = sqlx::query_scalar(
+        r#"
+        SELECT data->>'retracted_event_id'
+        FROM events
+        WHERE user_id = $1
+          AND event_type = 'event.retracted'
+          AND data->>'retracted_event_id' IS NOT NULL
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    Ok(ids
+        .into_iter()
+        .filter_map(|id| Uuid::parse_str(&id).ok())
+        .collect())
+}
+
+async fn load_active_custom_rules(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+) -> Result<HashMap<String, HashSet<String>>, AppError> {
+    let retracted_ids = fetch_retracted_event_ids_tx(tx, user_id).await?;
+
+    let rows = sqlx::query_as::<_, RuleEventSimulationRow>(
+        r#"
+        SELECT id, event_type, data
+        FROM events
+        WHERE user_id = $1
+          AND event_type IN ('projection_rule.created', 'projection_rule.archived')
+        ORDER BY timestamp ASC, id ASC
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let mut active: HashMap<String, HashSet<String>> = HashMap::new();
+
+    for row in rows {
+        if retracted_ids.contains(&row.id) {
+            continue;
+        }
+
+        let name = row
+            .data
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let Some(name) = name else {
+            continue;
+        };
+
+        if row.event_type == "projection_rule.archived" {
+            active.remove(&name);
+            continue;
+        }
+
+        let source_events = row
+            .data
+            .get("source_events")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.trim().to_lowercase())
+                    .filter(|s| !s.is_empty())
+                    .collect::<HashSet<String>>()
+            })
+            .unwrap_or_default();
+
+        active.insert(name, source_events);
+    }
+
+    Ok(active)
+}
+
+async fn resolve_retracted_event_for_simulation(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+    data: &serde_json::Value,
+) -> Result<(String, serde_json::Value, Option<String>), AppError> {
+    let fallback_type = data
+        .get("retracted_event_type")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    let Some(retracted_event_id) = data
+        .get("retracted_event_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
+        if let Some(event_type) = fallback_type {
+            return Ok((
+                event_type.clone(),
+                serde_json::json!({}),
+                Some(format!(
+                    "event.retracted fallback: used retracted_event_type='{}' (no retracted_event_id lookup).",
+                    event_type
+                )),
+            ));
+        }
+
+        return Ok((
+            "unknown".to_string(),
+            serde_json::json!({}),
+            Some(
+                "event.retracted could not be resolved (missing retracted_event_id and retracted_event_type)."
+                    .to_string(),
+            ),
+        ));
+    };
+
+    let resolved = sqlx::query_as::<_, ResolvedEventRow>(
+        r#"
+        SELECT event_type, data
+        FROM events
+        WHERE id = $1 AND user_id = $2
+        "#,
+    )
+    .bind(retracted_event_id)
+    .bind(user_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    if let Some(row) = resolved {
+        return Ok((
+            row.event_type,
+            row.data,
+            Some(format!(
+                "event.retracted resolved via retracted_event_id={}",
+                retracted_event_id
+            )),
+        ));
+    }
+
+    if let Some(event_type) = fallback_type {
+        return Ok((
+            event_type.clone(),
+            serde_json::json!({}),
+            Some(format!(
+                "event.retracted fallback: retracted_event_id={} not found, used retracted_event_type='{}'.",
+                retracted_event_id, event_type
+            )),
+        ));
+    }
+
+    Ok((
+        "unknown".to_string(),
+        serde_json::json!({}),
+        Some(format!(
+            "event.retracted target {} not found and no retracted_event_type provided; prediction may be incomplete.",
+            retracted_event_id
+        )),
+    ))
+}
+
 /// Create a single event
 ///
 /// Accepts an event and stores it immutably. The event_type is free-form —
@@ -509,6 +1023,242 @@ pub async fn create_events_batch(
             warnings: all_warnings,
         }),
     ))
+}
+
+/// Simulate a batch of events without writing to the database.
+///
+/// Validates event payloads and returns predicted projection impacts:
+/// - Which projection keys are likely to change
+/// - Expected change mode (create/update/delete/noop/unknown)
+/// - Predicted version increments (where determinable)
+#[utoipa::path(
+    post,
+    path = "/v1/events/simulate",
+    request_body = SimulateEventsRequest,
+    responses(
+        (status = 200, description = "Simulation result", body = SimulateEventsResponse),
+        (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "events"
+)]
+pub async fn simulate_events(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Json(req): Json<SimulateEventsRequest>,
+) -> Result<Json<SimulateEventsResponse>, AppError> {
+    let user_id = auth.user_id;
+
+    if req.events.is_empty() {
+        return Err(AppError::Validation {
+            message: "events array must not be empty".to_string(),
+            field: Some("events".to_string()),
+            received: None,
+            docs_hint: Some("Provide at least one event in the simulation batch".to_string()),
+        });
+    }
+
+    if req.events.len() > 100 {
+        return Err(AppError::Validation {
+            message: format!("Batch size {} exceeds maximum of 100", req.events.len()),
+            field: Some("events".to_string()),
+            received: Some(serde_json::json!(req.events.len())),
+            docs_hint: Some("Split large simulation batches into chunks of 100 or fewer".to_string()),
+        });
+    }
+
+    let mut known_ids = fetch_user_exercise_ids(&state.db, user_id).await?;
+    let mut warnings: Vec<BatchEventWarning> = Vec::new();
+    let mut candidates: HashMap<ProjectionTargetKey, ProjectionTargetCandidate> = HashMap::new();
+    let mut notes: Vec<String> = Vec::new();
+
+    let mut tx = state.db.begin().await?;
+
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+    let active_custom_rules = load_active_custom_rules(&mut tx, user_id).await?;
+
+    for (i, event) in req.events.iter().enumerate() {
+        validate_event(event).map_err(|e| match e {
+            AppError::Validation {
+                message,
+                field,
+                received,
+                docs_hint,
+            } => AppError::Validation {
+                message: format!("events[{}]: {}", i, message),
+                field: field.map(|f| format!("events[{}].{}", i, f)),
+                received,
+                docs_hint,
+            },
+            other => other,
+        })?;
+
+        for w in check_event_plausibility(&event.event_type, &event.data) {
+            warnings.push(BatchEventWarning {
+                event_index: i,
+                field: w.field,
+                message: w.message,
+                severity: w.severity,
+            });
+        }
+
+        for w in check_exercise_id_similarity(&event.event_type, &event.data, &known_ids) {
+            warnings.push(BatchEventWarning {
+                event_index: i,
+                field: w.field,
+                message: w.message,
+                severity: w.severity,
+            });
+        }
+
+        if let Some(eid) = event.data.get("exercise_id").and_then(|v| v.as_str()) {
+            let normalized = eid.trim().to_lowercase();
+            if !normalized.is_empty() {
+                known_ids.insert(normalized);
+            }
+        }
+
+        let (resolved_event_type, resolved_data, resolution_note) = if event.event_type == "event.retracted" {
+            resolve_retracted_event_for_simulation(&mut tx, user_id, &event.data).await?
+        } else {
+            (event.event_type.clone(), event.data.clone(), None)
+        };
+
+        if let Some(note) = resolution_note {
+            notes.push(note);
+        }
+
+        let mut mapped = add_standard_projection_targets(
+            &mut candidates,
+            &resolved_event_type,
+            &resolved_data,
+        );
+        mapped |= add_custom_rule_targets(
+            &mut candidates,
+            &active_custom_rules,
+            &resolved_event_type,
+        );
+
+        if !mapped {
+            notes.push(format!(
+                "No projection handlers matched simulated event_type '{}'.",
+                resolved_event_type
+            ));
+        }
+    }
+
+    let projection_types: HashSet<String> = candidates
+        .iter()
+        .filter(|(k, c)| k.key != "*" && !c.unknown_target)
+        .map(|(k, _)| k.projection_type.clone())
+        .collect();
+
+    let existing_rows = if projection_types.is_empty() {
+        Vec::new()
+    } else {
+        let projection_types: Vec<String> = projection_types.into_iter().collect();
+        sqlx::query_as::<_, ExistingProjectionVersionRow>(
+            r#"
+            SELECT projection_type, key, version
+            FROM projections
+            WHERE user_id = $1
+              AND projection_type = ANY($2)
+            "#,
+        )
+        .bind(user_id)
+        .bind(&projection_types)
+        .fetch_all(&mut *tx)
+        .await?
+    };
+
+    tx.commit().await?;
+
+    let existing_versions: HashMap<(String, String), i64> = existing_rows
+        .into_iter()
+        .map(|row| ((row.projection_type, row.key), row.version))
+        .collect();
+
+    let mut projection_impacts: Vec<ProjectionImpact> = candidates
+        .into_iter()
+        .map(|(key, candidate)| {
+            if candidate.unknown_target || key.key == "*" {
+                return ProjectionImpact {
+                    projection_type: key.projection_type,
+                    key: key.key,
+                    change: ProjectionImpactChange::Unknown,
+                    current_version: None,
+                    predicted_version: None,
+                    reasons: candidate.reasons,
+                };
+            }
+
+            let current_version = existing_versions
+                .get(&(key.projection_type.clone(), key.key.clone()))
+                .copied();
+
+            let (change, predicted_version, mut reasons) = if candidate.delete_hint {
+                match current_version {
+                    Some(_) => (
+                        ProjectionImpactChange::Delete,
+                        None,
+                        candidate.reasons,
+                    ),
+                    None => {
+                        let mut reasons = candidate.reasons;
+                        reasons.push("Projection does not exist yet; archive would be a no-op.".to_string());
+                        (ProjectionImpactChange::Noop, None, reasons)
+                    }
+                }
+            } else {
+                match current_version {
+                    Some(v) => (
+                        ProjectionImpactChange::Update,
+                        Some(v + 1),
+                        candidate.reasons,
+                    ),
+                    None => (
+                        ProjectionImpactChange::Create,
+                        Some(1),
+                        candidate.reasons,
+                    ),
+                }
+            };
+
+            if reasons.is_empty() {
+                reasons.push("No detailed reason captured for this projection impact.".to_string());
+            }
+
+            ProjectionImpact {
+                projection_type: key.projection_type,
+                key: key.key,
+                change,
+                current_version,
+                predicted_version,
+                reasons,
+            }
+        })
+        .collect();
+
+    projection_impacts.sort_by(|a, b| {
+        a.projection_type
+            .cmp(&b.projection_type)
+            .then(a.key.cmp(&b.key))
+    });
+
+    notes.sort();
+    notes.dedup();
+
+    Ok(Json(SimulateEventsResponse {
+        event_count: req.events.len(),
+        warnings,
+        projection_impacts,
+        notes,
+    }))
 }
 
 /// Query parameters for listing events
@@ -943,12 +1693,6 @@ mod tests {
 
     #[test]
     fn test_similarity_match_found() {
-        let ids = known_ids(&["lateral_raise", "bench_press"]);
-        let w = check_exercise_id_similarity(
-            "set.logged",
-            &json!({"exercise_id": "lu_raise"}),
-            &ids,
-        );
         // "lu_raise" is not similar enough to "lateral_raise" (jaro_winkler ~0.72)
         // so let's use a closer match
         let ids2 = known_ids(&["lateral_raise", "bench_press"]);
@@ -1051,5 +1795,57 @@ mod tests {
         assert_eq!(w.len(), 1);
         assert!(w[0].message.starts_with("New exercise_id 'bench_pres'. Similar existing:"));
         assert_eq!(w[0].severity, "warning");
+    }
+
+    #[test]
+    fn test_extract_exercise_key_prefers_exercise_id() {
+        let key = extract_exercise_key(&json!({
+            "exercise_id": "Barbell_Back_Squat",
+            "exercise": "Kniebeuge"
+        }));
+        assert_eq!(key.as_deref(), Some("barbell_back_squat"));
+    }
+
+    #[test]
+    fn test_add_standard_projection_targets_for_set_logged() {
+        let mut candidates: HashMap<ProjectionTargetKey, ProjectionTargetCandidate> = HashMap::new();
+        let mapped = add_standard_projection_targets(
+            &mut candidates,
+            "set.logged",
+            &json!({"exercise_id": "bench_press"}),
+        );
+
+        assert!(mapped);
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "training_timeline".to_string(),
+            key: "overview".to_string(),
+        }));
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "exercise_progression".to_string(),
+            key: "bench_press".to_string(),
+        }));
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "user_profile".to_string(),
+            key: "me".to_string(),
+        }));
+    }
+
+    #[test]
+    fn test_add_standard_projection_targets_for_rule_archive_sets_delete_hint() {
+        let mut candidates: HashMap<ProjectionTargetKey, ProjectionTargetCandidate> = HashMap::new();
+        let mapped = add_standard_projection_targets(
+            &mut candidates,
+            "projection_rule.archived",
+            &json!({"name": "hrv_tracking"}),
+        );
+
+        assert!(mapped);
+        let candidate = candidates
+            .get(&ProjectionTargetKey {
+                projection_type: "custom".to_string(),
+                key: "hrv_tracking".to_string(),
+            })
+            .expect("custom target should be present");
+        assert!(candidate.delete_hint);
     }
 }
