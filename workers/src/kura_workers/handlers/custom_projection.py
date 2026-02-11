@@ -1,8 +1,8 @@
 """Custom projection handler — Agent-Mediated Evolution (Phase 3, Decision 10).
 
 Processes projection_rule.created and projection_rule.archived events.
-When a rule is created, builds a custom projection from matching events
-using the ProjectionQueryBuilder. When archived, deletes the projection.
+When a rule is created, builds a custom projection from matching events.
+When archived, deletes the projection.
 
 Also provides recompute_matching_rules() for the router to call when
 regular events arrive that match active custom rules.
@@ -17,12 +17,10 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
-from ..query_builder import ProjectionQueryBuilder
 from ..registry import projection_handler
 from ..rule_models import (
     CategorizedTrackingRule,
     FieldTrackingRule,
-    ProjectionRule,
     validate_rule,
 )
 from ..utils import get_retracted_event_ids
@@ -36,7 +34,9 @@ logger = logging.getLogger(__name__)
 
 
 async def _load_active_rules(
-    conn: psycopg.AsyncConnection[Any], user_id: str
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+    retracted_ids: set[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Load all active projection rules for a user from events.
 
@@ -50,7 +50,7 @@ async def _load_active_rules(
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
-            SELECT event_type, data
+            SELECT id, event_type, data
             FROM events
             WHERE user_id = %s
               AND event_type IN ('projection_rule.created', 'projection_rule.archived')
@@ -62,6 +62,9 @@ async def _load_active_rules(
 
     active: dict[str, dict[str, Any]] = {}
     for row in rows:
+        if retracted_ids is not None and str(row["id"]) in retracted_ids:
+            continue
+
         data = row["data"]
         name = data.get("name")
         if not name:
@@ -401,9 +404,9 @@ async def update_custom_projections(
             logger.info("Deleted custom projection '%s' for user=%s", rule_name, user_id)
         return
 
-    # projection_rule.created — compute the new projection
-    active_rules = await _load_active_rules(conn, user_id)
     retracted_ids = await get_retracted_event_ids(conn, user_id)
+    # projection_rule.created — compute the new projection
+    active_rules = await _load_active_rules(conn, user_id, retracted_ids=retracted_ids)
 
     # Find the rule that was just created (from the event)
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -457,11 +460,10 @@ async def recompute_matching_rules(
     Called by the router when a regular event (e.g., sleep.logged) arrives and
     the user has active custom rules matching it.
     """
-    active_rules = await _load_active_rules(conn, user_id)
+    retracted_ids = await get_retracted_event_ids(conn, user_id)
+    active_rules = await _load_active_rules(conn, user_id, retracted_ids=retracted_ids)
     if not active_rules:
         return
-
-    retracted_ids = await get_retracted_event_ids(conn, user_id)
 
     for rule_name, rule_data in active_rules.items():
         source_events = rule_data.get("source_events", [])
@@ -486,23 +488,15 @@ async def has_matching_custom_rules(
 ) -> bool:
     """Quick check: does this user have active custom rules matching the event_type?
 
-    Reads from projections table (type='custom') and checks rule.source_events.
-    Faster than loading all rules from events.
+    Uses active rule events, not existing custom projections, so rules remain
+    live even if a custom projection row was deleted or not yet materialized.
     """
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            """
-            SELECT data->'rule'->'source_events' AS source_events
-            FROM projections
-            WHERE user_id = %s AND projection_type = 'custom'
-            """,
-            (user_id,),
-        )
-        rows = await cur.fetchall()
+    retracted_ids = await get_retracted_event_ids(conn, user_id)
+    active_rules = await _load_active_rules(conn, user_id, retracted_ids=retracted_ids)
 
-    for row in rows:
-        source_events = row.get("source_events")
-        if source_events and event_type in source_events:
+    for rule_data in active_rules.values():
+        source_events = rule_data.get("source_events", [])
+        if event_type in source_events:
             return True
 
     return False

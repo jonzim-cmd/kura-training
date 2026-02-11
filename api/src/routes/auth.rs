@@ -143,9 +143,11 @@ pub struct AuthorizeParams {
     tag = "auth"
 )]
 pub async fn authorize_form(
+    State(state): State<AppState>,
     Query(params): Query<AuthorizeParams>,
 ) -> Result<Html<String>, AppError> {
     validate_authorize_params(&params)?;
+    validate_oauth_client(&state.db, &params.client_id, &params.redirect_uri).await?;
 
     let html = render_login_form(
         &params.client_id,
@@ -185,6 +187,113 @@ fn validate_authorize_params(params: &AuthorizeParams) -> Result<(), AppError> {
         });
     }
     Ok(())
+}
+
+#[derive(sqlx::FromRow)]
+struct OAuthClientRow {
+    allowed_redirect_uris: Vec<String>,
+    allow_loopback_redirect: bool,
+    is_active: bool,
+}
+
+fn is_valid_loopback_redirect(redirect_uri: &str) -> bool {
+    let Ok(url) = url::Url::parse(redirect_uri) else {
+        return false;
+    };
+
+    if url.scheme() != "http" {
+        return false;
+    }
+
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+        return false;
+    }
+
+    if url.port().is_none() {
+        return false;
+    }
+
+    if url.path() != "/callback" {
+        return false;
+    }
+
+    if url.fragment().is_some() {
+        return false;
+    }
+
+    true
+}
+
+async fn validate_oauth_client(
+    pool: &sqlx::PgPool,
+    client_id: &str,
+    redirect_uri: &str,
+) -> Result<(), AppError> {
+    if client_id.trim().is_empty() {
+        return Err(AppError::Validation {
+            message: "client_id is required".to_string(),
+            field: Some("client_id".to_string()),
+            received: None,
+            docs_hint: Some("Register an OAuth client first.".to_string()),
+        });
+    }
+
+    if redirect_uri.trim().is_empty() {
+        return Err(AppError::Validation {
+            message: "redirect_uri is required".to_string(),
+            field: Some("redirect_uri".to_string()),
+            received: None,
+            docs_hint: Some("Provide a valid redirect URI for this client.".to_string()),
+        });
+    }
+
+    let row = sqlx::query_as::<_, OAuthClientRow>(
+        "SELECT allowed_redirect_uris, allow_loopback_redirect, is_active \
+         FROM oauth_clients WHERE client_id = $1",
+    )
+    .bind(client_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::Validation {
+        message: format!("Unknown OAuth client_id '{}'", client_id),
+        field: Some("client_id".to_string()),
+        received: Some(serde_json::Value::String(client_id.to_string())),
+        docs_hint: Some("Use a registered OAuth client_id.".to_string()),
+    })?;
+
+    if !row.is_active {
+        return Err(AppError::Unauthorized {
+            message: format!("OAuth client '{}' is inactive", client_id),
+            docs_hint: Some("Use an active OAuth client.".to_string()),
+        });
+    }
+
+    let exact_match = row
+        .allowed_redirect_uris
+        .iter()
+        .any(|allowed| allowed == redirect_uri);
+    if exact_match {
+        return Ok(());
+    }
+
+    if row.allow_loopback_redirect && is_valid_loopback_redirect(redirect_uri) {
+        return Ok(());
+    }
+
+    Err(AppError::Validation {
+        message: "redirect_uri is not allowed for this client".to_string(),
+        field: Some("redirect_uri".to_string()),
+        received: Some(serde_json::Value::String(redirect_uri.to_string())),
+        docs_hint: Some(
+            "Use one of the registered redirect URIs, or a loopback callback \
+             if this client allows loopback redirects."
+                .to_string(),
+        ),
+    })
 }
 
 fn html_escape(s: &str) -> String {
@@ -261,6 +370,16 @@ pub async fn authorize_submit(
     State(state): State<AppState>,
     Form(form): Form<AuthorizeSubmit>,
 ) -> Result<impl IntoResponse, AppError> {
+    if form.code_challenge.is_empty() {
+        return Err(AppError::Validation {
+            message: "code_challenge is required".to_string(),
+            field: Some("code_challenge".to_string()),
+            received: None,
+            docs_hint: Some("Generate a PKCE code_challenge using S256.".to_string()),
+        });
+    }
+    validate_oauth_client(&state.db, &form.client_id, &form.redirect_uri).await?;
+
     // Verify credentials
     let user = sqlx::query_as::<_, UserRow>(
         "SELECT id, password_hash FROM users WHERE email = $1 AND is_active = TRUE",
@@ -583,4 +702,32 @@ struct RefreshTokenRow {
     access_token_id: Uuid,
     client_id: String,
     expires_at: chrono::DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_valid_loopback_redirect;
+
+    #[test]
+    fn loopback_redirect_accepts_valid_localhost_callback() {
+        assert!(is_valid_loopback_redirect(
+            "http://127.0.0.1:45219/callback"
+        ));
+        assert!(is_valid_loopback_redirect(
+            "http://localhost:3000/callback"
+        ));
+    }
+
+    #[test]
+    fn loopback_redirect_rejects_non_loopback_or_invalid_path() {
+        assert!(!is_valid_loopback_redirect(
+            "http://example.com:3000/callback"
+        ));
+        assert!(!is_valid_loopback_redirect(
+            "https://127.0.0.1:3000/callback"
+        ));
+        assert!(!is_valid_loopback_redirect(
+            "http://127.0.0.1:3000/wrong"
+        ));
+    }
 }

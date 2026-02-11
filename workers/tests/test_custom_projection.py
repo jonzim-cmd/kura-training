@@ -310,24 +310,44 @@ class TestComputeRule:
 class TestHasMatchingCustomRules:
     async def test_no_projections(self):
         conn = AsyncMock()
-        cursor = _make_mock_cursor([])
-        conn.cursor = MagicMock(return_value=_MockCursorContext(cursor))
-
-        result = await has_matching_custom_rules(conn, "user-1", "sleep.logged")
+        with patch("kura_workers.handlers.custom_projection.get_retracted_event_ids",
+                   AsyncMock(return_value=set())), \
+             patch("kura_workers.handlers.custom_projection._load_active_rules",
+                   AsyncMock(return_value={})):
+            result = await has_matching_custom_rules(conn, "user-1", "sleep.logged")
         assert result is False
 
     async def test_matching_rule(self):
         conn = AsyncMock()
-        cursor = _make_mock_cursor([{"source_events": ["sleep.logged", "energy.logged"]}])
-        conn.cursor = MagicMock(return_value=_MockCursorContext(cursor))
-
-        result = await has_matching_custom_rules(conn, "user-1", "sleep.logged")
+        active = {
+            "hrv_tracking": {
+                "name": "hrv_tracking",
+                "type": "field_tracking",
+                "source_events": ["sleep.logged", "energy.logged"],
+                "fields": ["hrv_rmssd"],
+            }
+        }
+        with patch("kura_workers.handlers.custom_projection.get_retracted_event_ids",
+                   AsyncMock(return_value=set())), \
+             patch("kura_workers.handlers.custom_projection._load_active_rules",
+                   AsyncMock(return_value=active)):
+            result = await has_matching_custom_rules(conn, "user-1", "sleep.logged")
         assert result is True
 
     async def test_non_matching_rule(self):
         conn = AsyncMock()
-        cursor = _make_mock_cursor([{"source_events": ["supplement.logged"]}])
-        conn.cursor = MagicMock(return_value=_MockCursorContext(cursor))
-
-        result = await has_matching_custom_rules(conn, "user-1", "sleep.logged")
+        active = {
+            "supplement_tracking": {
+                "name": "supplement_tracking",
+                "type": "categorized_tracking",
+                "source_events": ["supplement.logged"],
+                "fields": ["name", "dose_mg"],
+                "group_by": "name",
+            }
+        }
+        with patch("kura_workers.handlers.custom_projection.get_retracted_event_ids",
+                   AsyncMock(return_value=set())), \
+             patch("kura_workers.handlers.custom_projection._load_active_rules",
+                   AsyncMock(return_value=active)):
+            result = await has_matching_custom_rules(conn, "user-1", "sleep.logged")
         assert result is False

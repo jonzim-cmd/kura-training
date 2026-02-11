@@ -34,6 +34,7 @@ mod state;
         routes::projections::snapshot,
         routes::projections::get_projection,
         routes::projections::list_projections,
+        routes::projection_rules::list_projection_rules,
         routes::system::get_system_config,
         routes::account::delete_own_account,
         routes::account::admin_delete_user,
@@ -58,6 +59,8 @@ mod state;
         kura_core::projections::Projection,
         kura_core::projections::ProjectionResponse,
         kura_core::projections::ProjectionMeta,
+        routes::projection_rules::ProjectionRuleItem,
+        routes::projection_rules::ProjectionRulesResponse,
         routes::system::SystemConfigResponse,
     )),
     modifiers(&SecurityAddon)
@@ -133,6 +136,9 @@ async fn main() {
         .merge(routes::events::write_router().layer(middleware::rate_limit::events_write_layer()))
         .merge(routes::events::read_router().layer(middleware::rate_limit::events_read_layer()))
         .merge(routes::projections::router().layer(middleware::rate_limit::projections_layer()))
+        .merge(
+            routes::projection_rules::router().layer(middleware::rate_limit::projections_layer()),
+        )
         .merge(routes::system::router().layer(middleware::rate_limit::projections_layer()))
         .merge(routes::auth::register_router().layer(middleware::rate_limit::register_layer()))
         .merge(routes::auth::authorize_router().layer(middleware::rate_limit::authorize_layer()))

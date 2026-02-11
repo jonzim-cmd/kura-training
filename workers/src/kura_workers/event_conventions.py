@@ -162,6 +162,20 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
             "example": {"plan_id": "default", "reason": "Switching to new program"},
         },
+        "program.started": {
+            "description": "Marks that the user started a named program",
+            "fields": {
+                "name": "string (required, program name)",
+                "program_id": "string (optional, external or internal identifier)",
+                "phase": "string (optional, e.g. week_1, accumulation)",
+                "notes": "string (optional)",
+            },
+            "example": {
+                "name": "5/3/1",
+                "program_id": "531-boring-but-big",
+                "phase": "week_1",
+            },
+        },
         # --- Body composition ---
         "bodyweight.logged": {
             "description": "Body weight measurement",

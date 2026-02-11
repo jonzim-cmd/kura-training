@@ -139,6 +139,7 @@ class TestEventConventions:
             "sleep.logged", "soreness.logged", "energy.logged",
             "meal.logged",
             "training_plan.created", "training_plan.updated", "training_plan.archived",
+            "program.started",
             "weight_target.set", "sleep_target.set", "nutrition_target.set",
             "profile.updated", "preference.set", "goal.set", "injury.reported",
             "event.retracted",

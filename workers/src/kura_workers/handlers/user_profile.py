@@ -331,6 +331,12 @@ def _compute_interview_coverage(
             else:
                 coverage.append({"area": area, "status": "uncovered"})
 
+        elif area == "communication_preferences":
+            if profile_data.get("communication_style"):
+                coverage.append({"area": area, "status": "covered"})
+            else:
+                coverage.append({"area": area, "status": "uncovered"})
+
         else:
             coverage.append({"area": area, "status": "uncovered"})
 
@@ -484,6 +490,7 @@ def _build_agenda(
     "preference.set",
     "goal.set",
     "profile.updated",
+    "program.started",
     "injury.reported",
     "bodyweight.logged",
     "measurement.logged",
@@ -514,7 +521,7 @@ async def update_user_profile(
             WHERE user_id = %s
               AND event_type IN (
                   'set.logged', 'exercise.alias_created', 'preference.set',
-                  'goal.set', 'profile.updated', 'injury.reported'
+                  'goal.set', 'profile.updated', 'program.started', 'injury.reported'
               )
             ORDER BY timestamp ASC
             """,
@@ -596,6 +603,17 @@ async def update_user_profile(
             # Delta merge: later events overwrite earlier per field
             for field_key, field_value in data.items():
                 profile_data[field_key] = field_value
+
+        elif event_type == "program.started":
+            # Keep current program in profile for interview coverage and context.
+            program_name = (
+                data.get("name")
+                or data.get("program_name")
+                or data.get("program")
+                or data.get("template")
+            )
+            if isinstance(program_name, str) and program_name.strip():
+                profile_data["current_program"] = program_name.strip()
 
         elif event_type == "injury.reported":
             injuries.append(data)

@@ -173,6 +173,14 @@ async fn fetch_user_exercise_ids(
     pool: &sqlx::PgPool,
     user_id: Uuid,
 ) -> Result<HashSet<String>, AppError> {
+    let mut tx = pool.begin().await?;
+
+    // Set RLS context so this read is guaranteed to stay user-scoped.
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
     let rows = sqlx::query_scalar::<_, String>(
         r#"
         SELECT DISTINCT lower(trim(data->>'exercise_id'))
@@ -183,8 +191,10 @@ async fn fetch_user_exercise_ids(
         "#,
     )
     .bind(user_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(rows.into_iter().collect())
 }
