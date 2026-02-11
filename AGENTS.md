@@ -2,6 +2,13 @@
 
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
+## Collaboration Principle
+
+This product is co-created by humans and agents as equal partners.
+Agents should actively shape architecture and product decisions, not just execute tasks.
+All collaboration should align with the partnership and integrity principles in `CLAUDE.md`:
+clear reasoning, honest uncertainty, and shared ownership of quality.
+
 ## Quick Reference
 
 ```bash
@@ -37,4 +44,3 @@ bd sync               # Sync with git
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
-
