@@ -20,8 +20,13 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from .causal_inference import ASSUMPTIONS, estimate_intervention_effect
 from .embeddings import cosine_similarity, get_embedding_provider
-from .inference_engine import run_readiness_inference, run_strength_inference
+from .inference_engine import (
+    run_readiness_inference,
+    run_strength_inference,
+    weekly_phase_from_date,
+)
 from .utils import (
     epley_1rm,
     get_alias_map,
@@ -30,7 +35,12 @@ from .utils import (
     resolve_through_aliases,
 )
 
-SUPPORTED_PROJECTION_TYPES = ("semantic_memory", "strength_inference", "readiness_inference")
+SUPPORTED_PROJECTION_TYPES = (
+    "semantic_memory",
+    "strength_inference",
+    "readiness_inference",
+    "causal_inference",
+)
 EVAL_SOURCE_PROJECTION_HISTORY = "projection_history"
 EVAL_SOURCE_EVENT_STORE = "event_store"
 EVAL_SOURCE_BOTH = "both"
@@ -47,6 +57,17 @@ EVAL_STATUS_FAILED = "failed"
 SEMANTIC_HIGH_CONFIDENCE_MIN = 0.86
 SEMANTIC_MEDIUM_CONFIDENCE_MIN = 0.78
 SEMANTIC_DEFAULT_TOP_K = 5
+
+CAUSAL_OUTCOME_READINESS = "readiness_score_t_plus_1"
+CAUSAL_OUTCOME_STRENGTH_AGGREGATE = "strength_aggregate_delta_t_plus_1"
+CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE = "strength_delta_by_exercise_t_plus_1"
+_CAUSAL_OVERLAP_CAVEAT_CODES = {
+    "weak_overlap",
+    "extreme_weights",
+    "low_effective_sample_size",
+    "positivity_violation",
+    "residual_confounding_risk",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -438,6 +459,871 @@ def evaluate_readiness_daily_scores(key: str, daily_scores: Any) -> dict[str, An
         "labeled_windows": labeled_windows,
         "engines_used": {"normal_normal": replay_windows} if replay_windows > 0 else {},
         "metrics": metrics,
+    }
+
+
+def _causal_metrics_template() -> dict[str, Any]:
+    return {
+        "ok_intervention_rate": None,
+        "ok_outcome_rate": None,
+        "segment_ok_rate": None,
+        "median_ci95_width": None,
+        "mean_abs_effect": None,
+        "directional_consistency": None,
+        "high_severity_caveat_rate": None,
+        "overlap_warning_rate": None,
+        "caveat_density_per_window": None,
+    }
+
+
+def _sum_numeric_leaves(value: Any) -> float:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return max(0.0, float(value))
+    if isinstance(value, dict):
+        return sum(_sum_numeric_leaves(v) for v in value.values())
+    if isinstance(value, list):
+        return sum(_sum_numeric_leaves(v) for v in value)
+    return 0.0
+
+
+def _iter_causal_outcomes(intervention_payload: dict[str, Any]) -> list[tuple[str, str | None, dict[str, Any]]]:
+    outcomes = intervention_payload.get("outcomes")
+    out: list[tuple[str, str | None, dict[str, Any]]] = []
+
+    if not isinstance(outcomes, dict):
+        out.append((CAUSAL_OUTCOME_READINESS, None, intervention_payload))
+        return out
+
+    readiness_payload = outcomes.get(CAUSAL_OUTCOME_READINESS)
+    if isinstance(readiness_payload, dict):
+        out.append((CAUSAL_OUTCOME_READINESS, None, readiness_payload))
+
+    strength_aggregate_payload = outcomes.get(CAUSAL_OUTCOME_STRENGTH_AGGREGATE)
+    if isinstance(strength_aggregate_payload, dict):
+        out.append((CAUSAL_OUTCOME_STRENGTH_AGGREGATE, None, strength_aggregate_payload))
+
+    per_exercise_payload = outcomes.get(CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE)
+    if isinstance(per_exercise_payload, dict):
+        for exercise_id, payload in sorted(per_exercise_payload.items(), key=lambda item: str(item[0])):
+            if not isinstance(payload, dict):
+                continue
+            out.append((CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE, str(exercise_id), payload))
+
+    return out
+
+
+def _iter_causal_segment_results(
+    intervention_payload: dict[str, Any],
+) -> list[tuple[str, str, str, dict[str, Any]]]:
+    heterogeneous = intervention_payload.get("heterogeneous_effects")
+    if not isinstance(heterogeneous, dict):
+        return []
+
+    out: list[tuple[str, str, str, dict[str, Any]]] = []
+    for outcome_name, outcome_payload in heterogeneous.items():
+        if outcome_name == "minimum_segment_samples":
+            continue
+        if not isinstance(outcome_payload, dict):
+            continue
+
+        subgroup_payload = outcome_payload.get("subgroups")
+        if isinstance(subgroup_payload, dict):
+            for segment_label, segment_result in sorted(
+                subgroup_payload.items(),
+                key=lambda item: str(item[0]),
+            ):
+                if isinstance(segment_result, dict):
+                    out.append((str(outcome_name), "subgroup", str(segment_label), segment_result))
+
+        phase_payload = outcome_payload.get("phases")
+        if isinstance(phase_payload, dict):
+            for segment_label, segment_result in sorted(
+                phase_payload.items(),
+                key=lambda item: str(item[0]),
+            ):
+                if isinstance(segment_result, dict):
+                    out.append((str(outcome_name), "phase", str(segment_label), segment_result))
+
+    return out
+
+
+def _estimate_causal_effect(
+    samples: list[dict[str, Any]],
+    *,
+    min_samples: int,
+    bootstrap_samples: int,
+) -> dict[str, Any]:
+    result = estimate_intervention_effect(
+        samples,
+        min_samples=min_samples,
+        bootstrap_samples=bootstrap_samples,
+    )
+    diagnostics = dict(result.get("diagnostics") or {})
+    diagnostics["observed_windows"] = len(samples)
+    result["diagnostics"] = diagnostics
+    return result
+
+
+def _ensure_causal_segment_guardrail(
+    result: dict[str, Any],
+    *,
+    observed_samples: int,
+    min_samples: int,
+    segment_type: str,
+    segment_label: str,
+) -> None:
+    if observed_samples >= min_samples:
+        return
+    caveats = result.setdefault("caveats", [])
+    if any(c.get("code") == "segment_insufficient_samples" for c in caveats):
+        return
+    caveats.append(
+        {
+            "code": "segment_insufficient_samples",
+            "severity": "medium",
+            "details": {
+                "segment_type": segment_type,
+                "segment_label": segment_label,
+                "required_samples": min_samples,
+                "observed_samples": observed_samples,
+            },
+        }
+    )
+
+
+def _estimate_causal_segment_slices(
+    samples: list[dict[str, Any]],
+    *,
+    segment_key: str,
+    min_samples: int,
+    bootstrap_samples: int,
+) -> dict[str, dict[str, Any]]:
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for sample in samples:
+        segment_label = str(sample.get(segment_key) or "unknown")
+        buckets.setdefault(segment_label, []).append(sample)
+
+    out: dict[str, dict[str, Any]] = {}
+    for segment_label, rows in sorted(buckets.items(), key=lambda item: item[0]):
+        base_rows = [
+            {
+                "treated": row.get("treated"),
+                "outcome": row.get("outcome"),
+                "confounders": row.get("confounders", {}),
+            }
+            for row in rows
+        ]
+        result = _estimate_causal_effect(
+            base_rows,
+            min_samples=min_samples,
+            bootstrap_samples=bootstrap_samples,
+        )
+        _ensure_causal_segment_guardrail(
+            result,
+            observed_samples=len(base_rows),
+            min_samples=min_samples,
+            segment_type=segment_key,
+            segment_label=segment_label,
+        )
+        diagnostics = dict(result.get("diagnostics") or {})
+        diagnostics["segment_type"] = segment_key
+        diagnostics["segment_label"] = segment_label
+        diagnostics["segment_samples"] = len(base_rows)
+        result["diagnostics"] = diagnostics
+        out[segment_label] = result
+    return out
+
+
+def _append_causal_caveats(
+    machine_caveats: list[dict[str, Any]],
+    *,
+    intervention: str,
+    outcome: str,
+    result: dict[str, Any],
+    exercise_id: str | None = None,
+    segment_type: str | None = None,
+    segment_label: str | None = None,
+) -> None:
+    for caveat in result.get("caveats", []):
+        payload: dict[str, Any] = {
+            "intervention": intervention,
+            "outcome": outcome,
+            "code": caveat.get("code"),
+            "severity": caveat.get("severity"),
+            "details": caveat.get("details", {}),
+        }
+        if exercise_id:
+            payload["exercise_id"] = exercise_id
+        if segment_type:
+            payload["segment_type"] = segment_type
+        if segment_label:
+            payload["segment_label"] = segment_label
+        machine_caveats.append(payload)
+
+
+def _causal_subgroup_bucket(readiness_score: float) -> str:
+    return "low_readiness" if readiness_score < 0.55 else "high_readiness"
+
+
+def _causal_phase_bucket(value: str | None) -> str:
+    phase = (value or "unknown").strip().lower()
+    if not phase:
+        return "unknown"
+    return phase
+
+
+def _round_strength_snapshot(values: dict[str, float]) -> dict[str, float]:
+    return {k: round(float(v), 2) for k, v in sorted(values.items())}
+
+
+def evaluate_causal_projection(key: str, projection_data: Any) -> dict[str, Any]:
+    data = projection_data if isinstance(projection_data, dict) else {}
+    interventions = data.get("interventions")
+    if not isinstance(interventions, dict):
+        interventions = {}
+
+    evidence_window = data.get("evidence_window")
+    if not isinstance(evidence_window, dict):
+        evidence_window = {}
+    data_quality = data.get("data_quality")
+    if not isinstance(data_quality, dict):
+        data_quality = {}
+
+    replay_windows = int(
+        _as_float(evidence_window.get("windows_evaluated"))
+        or _sum_numeric_leaves(data_quality.get("outcome_windows"))
+        or 0
+    )
+    series_points = int(
+        _as_float(evidence_window.get("days_considered"))
+        or _as_float(data_quality.get("observed_days"))
+        or 0
+    )
+
+    metrics = _causal_metrics_template()
+    if not interventions:
+        return {
+            "projection_type": "causal_inference",
+            "key": key,
+            "status": "insufficient_data",
+            "series_points": series_points,
+            "replay_windows": replay_windows,
+            "labeled_windows": 0,
+            "engines_used": {},
+            "metrics": metrics,
+        }
+
+    intervention_total = 0
+    intervention_ok = 0
+    outcome_total = 0
+    outcome_ok = 0
+    segment_total = 0
+    segment_ok = 0
+    ci_widths: list[float] = []
+    abs_effects: list[float] = []
+    direction_consistency: list[float] = []
+
+    fallback_caveat_total = 0
+    fallback_high_severity = 0
+    fallback_overlap_warnings = 0
+
+    for _, intervention_payload in sorted(interventions.items(), key=lambda item: str(item[0])):
+        if not isinstance(intervention_payload, dict):
+            continue
+        intervention_total += 1
+        if str(intervention_payload.get("status") or "") == "ok":
+            intervention_ok += 1
+
+        for _, _, outcome_payload in _iter_causal_outcomes(intervention_payload):
+            outcome_total += 1
+            if str(outcome_payload.get("status") or "") == "ok":
+                outcome_ok += 1
+
+                effect = outcome_payload.get("effect")
+                if isinstance(effect, dict):
+                    mean_ate = _as_float(effect.get("mean_ate"))
+                    if mean_ate is not None:
+                        abs_effects.append(abs(mean_ate))
+
+                    ci = _ci_bounds(effect.get("ci95"))
+                    if ci is not None:
+                        ci_widths.append(max(0.0, ci[1] - ci[0]))
+
+                    probability_positive = _as_float(effect.get("probability_positive"))
+                    direction = str(effect.get("direction") or "uncertain")
+                    if probability_positive is not None:
+                        if direction == "positive":
+                            direction_consistency.append(probability_positive)
+                        elif direction == "negative":
+                            direction_consistency.append(1.0 - probability_positive)
+                        else:
+                            direction_consistency.append(
+                                max(0.0, 1.0 - (2.0 * abs(probability_positive - 0.5)))
+                            )
+
+            for caveat in outcome_payload.get("caveats", []):
+                if not isinstance(caveat, dict):
+                    continue
+                fallback_caveat_total += 1
+                if str(caveat.get("severity") or "") == "high":
+                    fallback_high_severity += 1
+                if str(caveat.get("code") or "") in _CAUSAL_OVERLAP_CAVEAT_CODES:
+                    fallback_overlap_warnings += 1
+
+        for _, _, _, segment_result in _iter_causal_segment_results(intervention_payload):
+            segment_total += 1
+            if str(segment_result.get("status") or "") == "ok":
+                segment_ok += 1
+            for caveat in segment_result.get("caveats", []):
+                if not isinstance(caveat, dict):
+                    continue
+                fallback_caveat_total += 1
+                if str(caveat.get("severity") or "") == "high":
+                    fallback_high_severity += 1
+                if str(caveat.get("code") or "") in _CAUSAL_OVERLAP_CAVEAT_CODES:
+                    fallback_overlap_warnings += 1
+
+    machine_caveats = data.get("machine_caveats")
+    if isinstance(machine_caveats, list):
+        caveat_total = len(machine_caveats)
+        high_severity_caveats = sum(
+            1
+            for caveat in machine_caveats
+            if isinstance(caveat, dict) and str(caveat.get("severity") or "") == "high"
+        )
+        overlap_warnings = sum(
+            1
+            for caveat in machine_caveats
+            if isinstance(caveat, dict)
+            and str(caveat.get("code") or "") in _CAUSAL_OVERLAP_CAVEAT_CODES
+        )
+    else:
+        caveat_total = fallback_caveat_total
+        high_severity_caveats = fallback_high_severity
+        overlap_warnings = fallback_overlap_warnings
+
+    metrics["ok_intervention_rate"] = _round_or_none(
+        _safe_ratio(intervention_ok, intervention_total),
+        6,
+    )
+    metrics["ok_outcome_rate"] = _round_or_none(_safe_ratio(outcome_ok, outcome_total), 6)
+    metrics["segment_ok_rate"] = _round_or_none(_safe_ratio(segment_ok, segment_total), 6)
+    metrics["median_ci95_width"] = (
+        _round_or_none(_median(ci_widths), 6) if ci_widths else None
+    )
+    metrics["mean_abs_effect"] = _round_or_none(_safe_mean(abs_effects), 6)
+    metrics["directional_consistency"] = _round_or_none(
+        _safe_mean(direction_consistency),
+        6,
+    )
+    metrics["high_severity_caveat_rate"] = _round_or_none(
+        _safe_ratio(high_severity_caveats, max(1, outcome_total)),
+        6,
+    )
+    metrics["overlap_warning_rate"] = _round_or_none(
+        _safe_ratio(overlap_warnings, max(1, outcome_total)),
+        6,
+    )
+    metrics["caveat_density_per_window"] = (
+        _round_or_none(caveat_total / float(replay_windows), 6)
+        if replay_windows > 0
+        else None
+    )
+
+    if outcome_total == 0:
+        status = "insufficient_data"
+    elif outcome_ok == 0:
+        status = "insufficient_labels"
+    else:
+        status = "ok"
+
+    engine = str(data.get("engine") or "")
+    return {
+        "projection_type": "causal_inference",
+        "key": key,
+        "status": status,
+        "series_points": series_points,
+        "replay_windows": replay_windows,
+        "labeled_windows": outcome_ok,
+        "engines_used": ({engine: 1} if engine else {}),
+        "metrics": metrics,
+    }
+
+
+def build_causal_projection_from_event_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    alias_map: dict[str, str] = {}
+    for row in rows:
+        if row.get("event_type") != "exercise.alias_created":
+            continue
+        data = row.get("data") or {}
+        if not isinstance(data, dict):
+            continue
+        alias = str(data.get("alias") or "").strip().lower()
+        target = str(data.get("exercise_id") or "").strip().lower()
+        if alias and target:
+            alias_map[alias] = target
+
+    per_day: dict[date, dict[str, Any]] = {}
+    for row in rows:
+        ts = row.get("timestamp")
+        if not isinstance(ts, datetime):
+            continue
+        day = ts.date()
+        bucket = per_day.setdefault(
+            day,
+            {
+                "sleep_hours_sum": 0.0,
+                "sleep_entries": 0,
+                "energy_sum": 0.0,
+                "energy_entries": 0,
+                "soreness_sum": 0.0,
+                "soreness_entries": 0,
+                "load_volume": 0.0,
+                "protein_g": 0.0,
+                "calories": 0.0,
+                "program_events": 0,
+                "sleep_target_events": 0,
+                "nutrition_target_events": 0,
+                "strength_by_exercise": {},
+            },
+        )
+
+        event_type = str(row.get("event_type") or "")
+        data = row.get("data")
+        if not isinstance(data, dict):
+            data = {}
+
+        if event_type == "sleep.logged":
+            duration = _as_float(data.get("duration_hours"))
+            if duration is not None and duration > 0.0:
+                bucket["sleep_hours_sum"] += duration
+                bucket["sleep_entries"] += 1
+        elif event_type == "energy.logged":
+            energy = _as_float(data.get("level"))
+            if energy is not None and energy > 0.0:
+                bucket["energy_sum"] += energy
+                bucket["energy_entries"] += 1
+        elif event_type == "soreness.logged":
+            soreness = _as_float(data.get("severity"))
+            if soreness is not None and soreness > 0.0:
+                bucket["soreness_sum"] += soreness
+                bucket["soreness_entries"] += 1
+        elif event_type == "meal.logged":
+            protein = _as_float(data.get("protein_g"))
+            calories = _as_float(data.get("calories"))
+            bucket["protein_g"] += max(0.0, protein or 0.0)
+            bucket["calories"] += max(0.0, calories or 0.0)
+        elif event_type in {
+            "program.started",
+            "training_plan.created",
+            "training_plan.updated",
+            "training_plan.archived",
+        }:
+            bucket["program_events"] += 1
+        elif event_type == "sleep_target.set":
+            bucket["sleep_target_events"] += 1
+        elif event_type == "nutrition_target.set":
+            bucket["nutrition_target_events"] += 1
+        elif event_type == "set.logged":
+            weight = _as_float(data.get("weight_kg", data.get("weight")))
+            reps = _as_float(data.get("reps"))
+            if weight is not None and reps is not None and weight > 0.0 and reps > 0.0:
+                bucket["load_volume"] += weight * reps
+                raw_key = resolve_exercise_key(data)
+                if raw_key:
+                    canonical = resolve_through_aliases(raw_key, alias_map)
+                    e1rm = epley_1rm(weight, int(round(reps)))
+                    if canonical and e1rm > 0.0:
+                        previous = _as_float(
+                            bucket["strength_by_exercise"].get(canonical)
+                        ) or 0.0
+                        if e1rm > previous:
+                            bucket["strength_by_exercise"][canonical] = e1rm
+
+    observed_days = sorted(per_day)
+    load_values = [
+        float(per_day[day]["load_volume"])
+        for day in observed_days
+        if float(per_day[day]["load_volume"]) > 0.0
+    ]
+    load_baseline = max(1.0, _median(load_values))
+
+    daily_context: list[dict[str, Any]] = []
+    strength_state: dict[str, float] = {}
+    for day in observed_days:
+        bucket = per_day[day]
+
+        sleep_hours = (
+            bucket["sleep_hours_sum"] / bucket["sleep_entries"]
+            if bucket["sleep_entries"] > 0
+            else 6.5
+        )
+        energy = (
+            bucket["energy_sum"] / bucket["energy_entries"]
+            if bucket["energy_entries"] > 0
+            else 6.0
+        )
+        soreness_avg = (
+            bucket["soreness_sum"] / bucket["soreness_entries"]
+            if bucket["soreness_entries"] > 0
+            else 0.0
+        )
+        load_volume = float(bucket["load_volume"])
+        protein_g = float(bucket["protein_g"])
+
+        for exercise_id, value in (bucket["strength_by_exercise"] or {}).items():
+            strength_state[str(exercise_id)] = _as_float(value) or 0.0
+        strength_snapshot = dict(strength_state)
+        strength_aggregate = (
+            _safe_mean(strength_snapshot.values()) if strength_snapshot else None
+        )
+
+        sleep_score = _clamp(sleep_hours / 8.0, 0.0, 1.2)
+        energy_score = _clamp(energy / 10.0, 0.0, 1.0)
+        soreness_penalty = _clamp(soreness_avg / 5.0, 0.0, 1.0)
+        load_penalty = _clamp(load_volume / load_baseline, 0.0, 1.4)
+
+        readiness_score = _clamp(
+            (0.45 * sleep_score)
+            + (0.35 * energy_score)
+            - (0.20 * soreness_penalty)
+            - (0.15 * load_penalty)
+            + 0.25,
+            0.0,
+            1.0,
+        )
+
+        daily_context.append(
+            {
+                "date": day.isoformat(),
+                "readiness_score": round(readiness_score, 3),
+                "sleep_hours": round(sleep_hours, 2),
+                "load_volume": round(load_volume, 2),
+                "protein_g": round(protein_g, 2),
+                "calories": round(float(bucket["calories"]), 2),
+                "strength_aggregate_e1rm": (
+                    round(float(strength_aggregate), 2)
+                    if strength_aggregate is not None
+                    else None
+                ),
+                "strength_by_exercise": _round_strength_snapshot(strength_snapshot),
+                "program_change_event": bool(bucket["program_events"]),
+                "sleep_target_event": bool(bucket["sleep_target_events"]),
+                "nutrition_target_event": bool(bucket["nutrition_target_events"]),
+            }
+        )
+
+    history_days_required = 7
+    windows_evaluated = 0
+    samples_by_intervention: dict[str, dict[str, Any]] = {
+        "program_change": {
+            "outcomes": {
+                CAUSAL_OUTCOME_READINESS: [],
+                CAUSAL_OUTCOME_STRENGTH_AGGREGATE: [],
+            },
+            "strength_by_exercise": {},
+        },
+        "nutrition_shift": {
+            "outcomes": {
+                CAUSAL_OUTCOME_READINESS: [],
+                CAUSAL_OUTCOME_STRENGTH_AGGREGATE: [],
+            },
+            "strength_by_exercise": {},
+        },
+        "sleep_intervention": {
+            "outcomes": {
+                CAUSAL_OUTCOME_READINESS: [],
+                CAUSAL_OUTCOME_STRENGTH_AGGREGATE: [],
+            },
+            "strength_by_exercise": {},
+        },
+    }
+
+    for idx in range(history_days_required, len(daily_context) - 1):
+        current = daily_context[idx]
+        next_day = daily_context[idx + 1]
+        history = daily_context[idx - history_days_required:idx]
+        windows_evaluated += 1
+
+        baseline_readiness = _safe_mean(
+            _as_float(day.get("readiness_score")) or 0.0 for day in history
+        ) or 0.5
+        baseline_sleep = _safe_mean(
+            _as_float(day.get("sleep_hours")) or 0.0 for day in history
+        ) or 6.5
+        baseline_load = _safe_mean(
+            _as_float(day.get("load_volume")) or 0.0 for day in history
+        ) or 0.0
+        baseline_protein = _safe_mean(
+            _as_float(day.get("protein_g")) or 0.0 for day in history
+        ) or 0.0
+        baseline_strength_aggregate = _safe_mean(
+            (_as_float(day.get("strength_aggregate_e1rm")) or 0.0)
+            for day in history
+            if day.get("strength_aggregate_e1rm") is not None
+        ) or 0.0
+
+        current_readiness = _as_float(current.get("readiness_score")) or 0.0
+        current_strength_aggregate = (
+            _as_float(current.get("strength_aggregate_e1rm"))
+            if current.get("strength_aggregate_e1rm") is not None
+            else None
+        )
+        next_strength_aggregate = (
+            _as_float(next_day.get("strength_aggregate_e1rm"))
+            if next_day.get("strength_aggregate_e1rm") is not None
+            else None
+        )
+        readiness_outcome = _as_float(next_day.get("readiness_score")) or 0.0
+
+        sleep_shift = (_as_float(current.get("sleep_hours")) or 0.0) >= (baseline_sleep + 0.75)
+        nutrition_shift = (_as_float(current.get("protein_g")) or 0.0) >= (baseline_protein + 20.0)
+
+        subgroup = _causal_subgroup_bucket(current_readiness)
+        phase = _causal_phase_bucket(weekly_phase_from_date(current.get("date")).get("phase"))
+
+        common_confounders = {
+            "baseline_readiness": baseline_readiness,
+            "baseline_sleep_hours": baseline_sleep,
+            "baseline_load_volume": baseline_load,
+            "baseline_protein_g": baseline_protein,
+            "baseline_strength_aggregate": baseline_strength_aggregate,
+            "current_readiness": current_readiness,
+            "current_sleep_hours": _as_float(current.get("sleep_hours")) or 0.0,
+            "current_load_volume": _as_float(current.get("load_volume")) or 0.0,
+            "current_protein_g": _as_float(current.get("protein_g")) or 0.0,
+            "current_calories": _as_float(current.get("calories")) or 0.0,
+            "current_strength_aggregate": current_strength_aggregate or 0.0,
+        }
+
+        flags = {
+            "program_change": 1 if bool(current.get("program_change_event")) else 0,
+            "nutrition_shift": 1
+            if bool(current.get("nutrition_target_event")) or nutrition_shift
+            else 0,
+            "sleep_intervention": 1
+            if bool(current.get("sleep_target_event")) or sleep_shift
+            else 0,
+        }
+
+        aggregate_delta: float | None = None
+        if current_strength_aggregate is not None and next_strength_aggregate is not None:
+            aggregate_delta = next_strength_aggregate - current_strength_aggregate
+
+        current_strength_map = current.get("strength_by_exercise") or {}
+        next_strength_map = next_day.get("strength_by_exercise") or {}
+        exercise_deltas: dict[str, float] = {}
+        for exercise_id in set(current_strength_map).intersection(next_strength_map):
+            current_value = _as_float(current_strength_map.get(exercise_id)) or 0.0
+            next_value = _as_float(next_strength_map.get(exercise_id)) or current_value
+            exercise_deltas[str(exercise_id)] = next_value - current_value
+
+        for intervention_name, treated_flag in flags.items():
+            bucket = samples_by_intervention[intervention_name]
+            outcomes_bucket = bucket["outcomes"]
+            base_sample = {
+                "treated": treated_flag,
+                "confounders": dict(common_confounders),
+                "subgroup": subgroup,
+                "phase": phase,
+            }
+            outcomes_bucket[CAUSAL_OUTCOME_READINESS].append(
+                {**base_sample, "outcome": readiness_outcome}
+            )
+            if aggregate_delta is not None:
+                outcomes_bucket[CAUSAL_OUTCOME_STRENGTH_AGGREGATE].append(
+                    {**base_sample, "outcome": aggregate_delta}
+                )
+
+            strength_outcomes = bucket["strength_by_exercise"]
+            for exercise_id, delta in exercise_deltas.items():
+                per_ex_confounders = dict(common_confounders)
+                per_ex_confounders["current_exercise_strength"] = (
+                    _as_float(current_strength_map.get(exercise_id)) or 0.0
+                )
+                strength_outcomes.setdefault(exercise_id, []).append(
+                    {
+                        "treated": treated_flag,
+                        "outcome": delta,
+                        "confounders": per_ex_confounders,
+                        "subgroup": subgroup,
+                        "phase": phase,
+                    }
+                )
+
+    min_samples = max(12, int(os.environ.get("KURA_CAUSAL_MIN_SAMPLES", "24")))
+    strength_min_samples = max(
+        12,
+        int(
+            os.environ.get(
+                "KURA_CAUSAL_STRENGTH_MIN_SAMPLES",
+                str(max(12, min_samples - 6)),
+            )
+        ),
+    )
+    segment_min_samples = max(
+        10,
+        int(
+            os.environ.get(
+                "KURA_CAUSAL_SEGMENT_MIN_SAMPLES",
+                str(max(10, min_samples // 2)),
+            )
+        ),
+    )
+    bootstrap_samples = max(80, int(os.environ.get("KURA_CAUSAL_BOOTSTRAP_SAMPLES", "250")))
+
+    interventions: dict[str, Any] = {}
+    machine_caveats: list[dict[str, Any]] = []
+    treated_windows: dict[str, int] = {}
+    outcome_windows: dict[str, Any] = {}
+    has_ok = False
+
+    for intervention_name, sample_payload in samples_by_intervention.items():
+        outcome_samples = sample_payload["outcomes"]
+        per_ex_samples = sample_payload["strength_by_exercise"]
+        readiness_samples = outcome_samples[CAUSAL_OUTCOME_READINESS]
+        aggregate_samples = outcome_samples[CAUSAL_OUTCOME_STRENGTH_AGGREGATE]
+
+        treated_windows[intervention_name] = sum(
+            1
+            for sample in readiness_samples
+            if int(_as_float(sample.get("treated")) or 0) == 1
+        )
+
+        readiness_result = _estimate_causal_effect(
+            readiness_samples,
+            min_samples=min_samples,
+            bootstrap_samples=bootstrap_samples,
+        )
+        aggregate_result = _estimate_causal_effect(
+            aggregate_samples,
+            min_samples=strength_min_samples,
+            bootstrap_samples=bootstrap_samples,
+        )
+
+        per_ex_results: dict[str, Any] = {}
+        per_ex_windows: dict[str, int] = {}
+        for exercise_id, samples in sorted(per_ex_samples.items(), key=lambda item: item[0]):
+            per_ex_windows[exercise_id] = len(samples)
+            per_ex_results[exercise_id] = _estimate_causal_effect(
+                samples,
+                min_samples=strength_min_samples,
+                bootstrap_samples=bootstrap_samples,
+            )
+
+        hetero = {
+            "minimum_segment_samples": segment_min_samples,
+            CAUSAL_OUTCOME_READINESS: {
+                "subgroups": _estimate_causal_segment_slices(
+                    readiness_samples,
+                    segment_key="subgroup",
+                    min_samples=segment_min_samples,
+                    bootstrap_samples=bootstrap_samples,
+                ),
+                "phases": _estimate_causal_segment_slices(
+                    readiness_samples,
+                    segment_key="phase",
+                    min_samples=segment_min_samples,
+                    bootstrap_samples=bootstrap_samples,
+                ),
+            },
+            CAUSAL_OUTCOME_STRENGTH_AGGREGATE: {
+                "subgroups": _estimate_causal_segment_slices(
+                    aggregate_samples,
+                    segment_key="subgroup",
+                    min_samples=segment_min_samples,
+                    bootstrap_samples=bootstrap_samples,
+                ),
+                "phases": _estimate_causal_segment_slices(
+                    aggregate_samples,
+                    segment_key="phase",
+                    min_samples=segment_min_samples,
+                    bootstrap_samples=bootstrap_samples,
+                ),
+            },
+        }
+
+        _append_causal_caveats(
+            machine_caveats,
+            intervention=intervention_name,
+            outcome=CAUSAL_OUTCOME_READINESS,
+            result=readiness_result,
+        )
+        _append_causal_caveats(
+            machine_caveats,
+            intervention=intervention_name,
+            outcome=CAUSAL_OUTCOME_STRENGTH_AGGREGATE,
+            result=aggregate_result,
+        )
+        for exercise_id, result in per_ex_results.items():
+            _append_causal_caveats(
+                machine_caveats,
+                intervention=intervention_name,
+                outcome=CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE,
+                result=result,
+                exercise_id=exercise_id,
+            )
+        for outcome_name in (CAUSAL_OUTCOME_READINESS, CAUSAL_OUTCOME_STRENGTH_AGGREGATE):
+            for segment_type, bucket in (
+                ("subgroup", hetero[outcome_name]["subgroups"]),
+                ("phase", hetero[outcome_name]["phases"]),
+            ):
+                for segment_label, segment_result in bucket.items():
+                    _append_causal_caveats(
+                        machine_caveats,
+                        intervention=intervention_name,
+                        outcome=outcome_name,
+                        result=segment_result,
+                        segment_type=segment_type,
+                        segment_label=segment_label,
+                    )
+
+        statuses = [
+            readiness_result.get("status") == "ok",
+            aggregate_result.get("status") == "ok",
+            any(str(v.get("status")) == "ok" for v in per_ex_results.values()),
+        ]
+        intervention_status = "ok" if any(statuses) else "insufficient_data"
+        has_ok = has_ok or intervention_status == "ok"
+
+        intervention_payload = dict(readiness_result)
+        intervention_payload["status"] = intervention_status
+        intervention_payload["primary_outcome"] = CAUSAL_OUTCOME_READINESS
+        intervention_payload["outcomes"] = {
+            CAUSAL_OUTCOME_READINESS: readiness_result,
+            CAUSAL_OUTCOME_STRENGTH_AGGREGATE: aggregate_result,
+            CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE: per_ex_results,
+        }
+        intervention_payload["heterogeneous_effects"] = hetero
+        interventions[intervention_name] = intervention_payload
+
+        outcome_windows[intervention_name] = {
+            CAUSAL_OUTCOME_READINESS: len(readiness_samples),
+            CAUSAL_OUTCOME_STRENGTH_AGGREGATE: len(aggregate_samples),
+            CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE: per_ex_windows,
+        }
+
+    return {
+        "status": "ok" if has_ok else "insufficient_data",
+        "engine": "propensity_ipw_bootstrap",
+        "assumptions": ASSUMPTIONS,
+        "interventions": interventions,
+        "machine_caveats": machine_caveats,
+        "evidence_window": {
+            "days_considered": len(daily_context),
+            "windows_evaluated": windows_evaluated,
+            "history_days_required": history_days_required,
+            "minimum_segment_samples": segment_min_samples,
+        },
+        "daily_context": daily_context[-60:],
+        "data_quality": {
+            "events_processed": len(rows),
+            "observed_days": len(observed_days),
+            "treated_windows": treated_windows,
+            "outcome_windows": outcome_windows,
+        },
     }
 
 
@@ -870,6 +1756,12 @@ def evaluate_from_event_store_rows(
         result["source"] = EVAL_SOURCE_EVENT_STORE
         results.append(result)
 
+    if "causal_inference" in selected:
+        causal_projection = build_causal_projection_from_event_rows(active_rows)
+        result = evaluate_causal_projection("overview", causal_projection)
+        result["source"] = EVAL_SOURCE_EVENT_STORE
+        results.append(result)
+
     return results
 
 
@@ -979,6 +1871,10 @@ def build_shadow_mode_rollout_checks(
         ("readiness_inference", "mae_nowcast", "le", _metric_threshold("KURA_SHADOW_READINESS_MAE_MAX", 0.18)),
         ("semantic_memory", "top1_accuracy", "ge", _metric_threshold("KURA_SHADOW_SEMANTIC_TOP1_MIN", 0.6)),
         ("semantic_memory", "topk_recall", "ge", _metric_threshold("KURA_SHADOW_SEMANTIC_TOPK_MIN", 0.8)),
+        ("causal_inference", "ok_outcome_rate", "ge", _metric_threshold("KURA_SHADOW_CAUSAL_OUTCOME_OK_MIN", 0.34)),
+        ("causal_inference", "segment_ok_rate", "ge", _metric_threshold("KURA_SHADOW_CAUSAL_SEGMENT_OK_MIN", 0.2)),
+        ("causal_inference", "high_severity_caveat_rate", "le", _metric_threshold("KURA_SHADOW_CAUSAL_HIGH_SEVERITY_MAX", 0.6)),
+        ("causal_inference", "median_ci95_width", "le", _metric_threshold("KURA_SHADOW_CAUSAL_CI95_WIDTH_MAX", 0.35)),
     ]
 
     source_order = [source_mode]
@@ -1237,6 +2133,8 @@ async def _projection_history_results(
                 semantic_labels or {},
                 top_k=semantic_top_k,
             )
+        elif projection_type == "causal_inference":
+            eval_result = evaluate_causal_projection(key, data)
         else:
             continue
         eval_result["updated_at"] = (
@@ -1266,6 +2164,24 @@ async def _event_store_results(
     if "readiness_inference" in projection_types:
         event_types.update(
             ("set.logged", "sleep.logged", "soreness.logged", "energy.logged", "event.retracted")
+        )
+    if "causal_inference" in projection_types:
+        event_types.update(
+            (
+                "set.logged",
+                "sleep.logged",
+                "soreness.logged",
+                "energy.logged",
+                "meal.logged",
+                "nutrition_target.set",
+                "sleep_target.set",
+                "program.started",
+                "training_plan.created",
+                "training_plan.updated",
+                "training_plan.archived",
+                "exercise.alias_created",
+                "event.retracted",
+            )
         )
     if not event_types:
         return []
@@ -1308,6 +2224,12 @@ async def _event_store_results(
         eval_result = evaluate_readiness_daily_scores("overview", readiness_daily)
         eval_result["source"] = EVAL_SOURCE_EVENT_STORE
         results.append(eval_result)
+
+    if "causal_inference" in projection_types:
+        causal_projection = build_causal_projection_from_event_rows(active_rows)
+        causal_result = evaluate_causal_projection("overview", causal_projection)
+        causal_result["source"] = EVAL_SOURCE_EVENT_STORE
+        results.append(causal_result)
 
     if "semantic_memory" in projection_types:
         labels = build_semantic_labels_from_event_rows(active_rows)

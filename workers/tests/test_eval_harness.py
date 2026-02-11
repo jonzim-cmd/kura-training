@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from kura_workers.eval_harness import (
     build_semantic_labels_from_event_rows,
     build_shadow_mode_rollout_checks,
+    evaluate_causal_projection,
     evaluate_semantic_event_store_labels,
     evaluate_semantic_memory_projection_labels,
     evaluate_from_event_store_rows,
@@ -219,6 +220,202 @@ def test_evaluate_from_event_store_rows_builds_strength_and_readiness(monkeypatc
     assert readiness[0]["status"] == "ok"
 
 
+def test_evaluate_causal_projection_ok():
+    projection_data = {
+        "engine": "propensity_ipw_bootstrap",
+        "interventions": {
+            "program_change": {
+                "status": "ok",
+                "outcomes": {
+                    "readiness_score_t_plus_1": {
+                        "status": "ok",
+                        "effect": {
+                            "mean_ate": 0.08,
+                            "ci95": [0.01, 0.21],
+                            "direction": "positive",
+                            "probability_positive": 0.9,
+                        },
+                        "caveats": [],
+                    },
+                    "strength_aggregate_delta_t_plus_1": {
+                        "status": "ok",
+                        "effect": {
+                            "mean_ate": 0.12,
+                            "ci95": [0.03, 0.23],
+                            "direction": "positive",
+                            "probability_positive": 0.88,
+                        },
+                        "caveats": [],
+                    },
+                    "strength_delta_by_exercise_t_plus_1": {
+                        "bench_press": {
+                            "status": "ok",
+                            "effect": {
+                                "mean_ate": 0.15,
+                                "ci95": [0.04, 0.24],
+                                "direction": "positive",
+                                "probability_positive": 0.91,
+                            },
+                            "caveats": [],
+                        }
+                    },
+                },
+                "heterogeneous_effects": {
+                    "minimum_segment_samples": 6,
+                    "readiness_score_t_plus_1": {
+                        "subgroups": {
+                            "low_readiness": {"status": "ok"},
+                            "high_readiness": {"status": "ok"},
+                        },
+                        "phases": {
+                            "week_start": {"status": "ok"},
+                            "recovery": {"status": "insufficient_data"},
+                        },
+                    },
+                    "strength_aggregate_delta_t_plus_1": {
+                        "subgroups": {
+                            "low_readiness": {"status": "ok"},
+                            "high_readiness": {"status": "ok"},
+                        },
+                        "phases": {
+                            "week_start": {"status": "ok"},
+                            "recovery": {"status": "ok"},
+                        },
+                    },
+                },
+            }
+        },
+        "machine_caveats": [
+            {"code": "weak_overlap", "severity": "high"},
+            {"code": "wide_interval", "severity": "low"},
+        ],
+        "evidence_window": {"days_considered": 36, "windows_evaluated": 24},
+        "data_quality": {
+            "outcome_windows": {
+                "program_change": {
+                    "readiness_score_t_plus_1": 24,
+                    "strength_aggregate_delta_t_plus_1": 20,
+                    "strength_delta_by_exercise_t_plus_1": {"bench_press": 18},
+                }
+            }
+        },
+    }
+
+    result = evaluate_causal_projection("overview", projection_data)
+    assert result["projection_type"] == "causal_inference"
+    assert result["status"] == "ok"
+    assert result["metrics"]["ok_outcome_rate"] == 1.0
+    assert result["metrics"]["segment_ok_rate"] == 0.875
+    assert result["metrics"]["median_ci95_width"] == 0.2
+    assert result["metrics"]["high_severity_caveat_rate"] == 0.333333
+    assert result["metrics"]["overlap_warning_rate"] == 0.333333
+
+
+def test_evaluate_from_event_store_rows_builds_causal(monkeypatch):
+    monkeypatch.setenv("KURA_CAUSAL_MIN_SAMPLES", "10")
+    monkeypatch.setenv("KURA_CAUSAL_STRENGTH_MIN_SAMPLES", "8")
+    monkeypatch.setenv("KURA_CAUSAL_SEGMENT_MIN_SAMPLES", "4")
+    monkeypatch.setenv("KURA_CAUSAL_BOOTSTRAP_SAMPLES", "80")
+
+    rows = [
+        {
+            "id": "program-0",
+            "event_type": "program.started",
+            "timestamp": datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc),
+            "data": {"name": "base"},
+            "metadata": {},
+        }
+    ]
+    for i in range(25):
+        day = datetime(2026, 1, 1, 7, 0, tzinfo=timezone.utc) + timedelta(days=i)
+        rows.append(
+            {
+                "id": f"sleep-{i}",
+                "event_type": "sleep.logged",
+                "timestamp": day,
+                "data": {"duration_hours": 6.8 + (i % 5) * 0.2},
+                "metadata": {},
+            }
+        )
+        rows.append(
+            {
+                "id": f"energy-{i}",
+                "event_type": "energy.logged",
+                "timestamp": day + timedelta(hours=1),
+                "data": {"level": 6 + (i % 3)},
+                "metadata": {},
+            }
+        )
+        rows.append(
+            {
+                "id": f"soreness-{i}",
+                "event_type": "soreness.logged",
+                "timestamp": day + timedelta(hours=2),
+                "data": {"severity": 2 + (i % 2)},
+                "metadata": {},
+            }
+        )
+        rows.append(
+            {
+                "id": f"meal-{i}",
+                "event_type": "meal.logged",
+                "timestamp": day + timedelta(hours=3),
+                "data": {"protein_g": 120 + ((i % 4) * 15), "calories": 2200 + (i % 5) * 80},
+                "metadata": {},
+            }
+        )
+        rows.append(
+            {
+                "id": f"set-{i}",
+                "event_type": "set.logged",
+                "timestamp": day + timedelta(hours=4),
+                "data": {"exercise_id": "bench_press", "weight_kg": 90 + i, "reps": 5},
+                "metadata": {"session_id": f"s-{i}"},
+            }
+        )
+        if i % 5 == 0:
+            rows.append(
+                {
+                    "id": f"nt-{i}",
+                    "event_type": "nutrition_target.set",
+                    "timestamp": day + timedelta(hours=5),
+                    "data": {"protein_g": 160},
+                    "metadata": {},
+                }
+            )
+        if i % 6 == 0:
+            rows.append(
+                {
+                    "id": f"st-{i}",
+                    "event_type": "sleep_target.set",
+                    "timestamp": day + timedelta(hours=6),
+                    "data": {"duration_hours": 8},
+                    "metadata": {},
+                }
+            )
+        if i % 7 == 0:
+            rows.append(
+                {
+                    "id": f"tp-{i}",
+                    "event_type": "training_plan.updated",
+                    "timestamp": day + timedelta(hours=7),
+                    "data": {"version": i},
+                    "metadata": {},
+                }
+            )
+
+    results = evaluate_from_event_store_rows(
+        rows,
+        projection_types=["causal_inference"],
+    )
+    assert len(results) == 1
+    causal = results[0]
+    assert causal["projection_type"] == "causal_inference"
+    assert causal["source"] == "event_store"
+    assert causal["replay_windows"] > 0
+    assert causal["metrics"]["ok_outcome_rate"] is not None
+
+
 def test_summarize_projection_results_by_source():
     by_source = summarize_projection_results_by_source(
         [
@@ -336,6 +533,17 @@ def test_shadow_mode_rollout_checks():
             "projection_type": "semantic_memory",
             "status": "ok",
             "metrics": {"top1_accuracy": 0.8, "topk_recall": 0.95},
+        },
+        {
+            "source": "event_store",
+            "projection_type": "causal_inference",
+            "status": "ok",
+            "metrics": {
+                "ok_outcome_rate": 0.7,
+                "segment_ok_rate": 0.75,
+                "high_severity_caveat_rate": 0.2,
+                "median_ci95_width": 0.24,
+            },
         },
     ]
     shadow = build_shadow_mode_rollout_checks(results, source_mode="event_store")

@@ -26,7 +26,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--projection-type",
         action="append",
-        choices=("semantic_memory", "strength_inference", "readiness_inference"),
+        choices=("semantic_memory", "strength_inference", "readiness_inference", "causal_inference"),
         help="Optional projection type filter (repeatable). Defaults to both.",
     )
     parser.add_argument(
