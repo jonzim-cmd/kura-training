@@ -577,7 +577,13 @@ def _proposal_has_deterministic_source(proposal: dict[str, Any]) -> bool:
     )
 
 
-def _auto_apply_decision(proposal: dict[str, Any]) -> tuple[bool, str]:
+def _auto_apply_decision(
+    proposal: dict[str, Any],
+    *,
+    allow_tier_a_auto_apply: bool = True,
+) -> tuple[bool, str]:
+    if not allow_tier_a_auto_apply:
+        return False, "autonomy_throttled"
     if proposal.get("tier") != "A":
         return False, "tier_not_a"
     if proposal.get("state") != _REPAIR_STATE_SIMULATED_SAFE:
@@ -795,13 +801,18 @@ async def _auto_apply_tier_a_repairs(
     user_id: str,
     proposals: list[dict[str, Any]],
     evaluated_at: str,
+    *,
+    allow_tier_a_auto_apply: bool = True,
 ) -> dict[str, Any]:
     events_to_write: list[dict[str, Any]] = []
     results: list[dict[str, Any]] = []
 
     for proposal in proposals:
         state_before = str(proposal.get("state", _REPAIR_STATE_PROPOSED))
-        allowed, reason_code = _auto_apply_decision(proposal)
+        allowed, reason_code = _auto_apply_decision(
+            proposal,
+            allow_tier_a_auto_apply=allow_tier_a_auto_apply,
+        )
         if not allowed:
             proposal["state"] = _REPAIR_STATE_AUTO_APPLY_REJECTED
             proposal["state_history"].append(
@@ -927,6 +938,209 @@ async def _load_quality_source_rows(
             (user_id, list(_EVENT_TYPES)),
         )
         return await cur.fetchall()
+
+
+def _metric_status(
+    value: float,
+    healthy_max: float,
+    monitor_max: float,
+) -> str:
+    if value <= healthy_max:
+        return "healthy"
+    if value <= monitor_max:
+        return "monitor"
+    return "degraded"
+
+
+def _worst_status(*statuses: str) -> str:
+    valid = [status for status in statuses if status in _STATUS_ORDER]
+    if not valid:
+        return "healthy"
+    return max(valid, key=lambda status: _STATUS_ORDER[status])
+
+
+def _compute_save_claim_slo(
+    event_rows: list[dict[str, Any]],
+    window_start: datetime,
+) -> dict[str, Any]:
+    sampled = [
+        row
+        for row in event_rows
+        if row.get("event_type") == _QUALITY_EVENT_SAVE_CLAIM_CHECKED
+        and isinstance(row.get("timestamp"), datetime)
+        and row["timestamp"] >= window_start
+    ]
+    total_checks = len(sampled)
+    mismatches = 0
+    for row in sampled:
+        data = row.get("data") or {}
+        mismatch_detected = data.get("mismatch_detected")
+        if mismatch_detected is None:
+            mismatch_detected = not bool(data.get("allow_saved_claim", False))
+        mismatches += 1 if bool(mismatch_detected) else 0
+
+    mismatch_pct = (
+        round((mismatches / total_checks) * 100, 2) if total_checks else 0.0
+    )
+    status = _metric_status(
+        mismatch_pct,
+        _SLO_SAVE_CLAIM_MISMATCH_PCT_HEALTHY_MAX,
+        _SLO_SAVE_CLAIM_MISMATCH_PCT_MONITOR_MAX,
+    )
+
+    return {
+        "metric": "save_claim_mismatch_rate_pct",
+        "value": mismatch_pct,
+        "unit": "percent",
+        "status": status,
+        "window_days": _SLO_LOOKBACK_DAYS,
+        "target": {"healthy_max": 0.0, "monitor_max": 1.0},
+        "sample_count": total_checks,
+        "mismatch_count": mismatches,
+    }
+
+
+def _compute_repair_latency_slo(
+    event_rows: list[dict[str, Any]],
+    window_start: datetime,
+) -> dict[str, Any]:
+    applied_by_proposal: dict[str, datetime] = {}
+    latency_hours: list[float] = []
+
+    for row in event_rows:
+        timestamp = row.get("timestamp")
+        if not isinstance(timestamp, datetime):
+            continue
+        data = row.get("data") or {}
+        proposal_id = str(data.get("proposal_id", "")).strip()
+        if not proposal_id:
+            continue
+        event_type = str(row.get("event_type", "")).strip()
+
+        if event_type == _QUALITY_EVENT_FIX_APPLIED:
+            applied_by_proposal[proposal_id] = timestamp
+            continue
+
+        if (
+            event_type == _QUALITY_EVENT_ISSUE_CLOSED
+            and timestamp >= window_start
+            and proposal_id in applied_by_proposal
+        ):
+            applied_at = applied_by_proposal[proposal_id]
+            if timestamp >= applied_at:
+                latency_hours.append(
+                    (timestamp - applied_at).total_seconds() / 3600.0
+                )
+
+    p50_latency = round(statistics.median(latency_hours), 3) if latency_hours else 0.0
+    status = _metric_status(
+        p50_latency,
+        _SLO_REPAIR_LATENCY_HOURS_HEALTHY_MAX,
+        _SLO_REPAIR_LATENCY_HOURS_MONITOR_MAX,
+    )
+
+    return {
+        "metric": "repair_latency_hours_p50",
+        "value": p50_latency,
+        "unit": "hours",
+        "status": status,
+        "window_days": _SLO_LOOKBACK_DAYS,
+        "target": {"healthy_max": 24.0, "monitor_max": 48.0},
+        "sample_count": len(latency_hours),
+    }
+
+
+def _compute_integrity_slos(
+    event_rows: list[dict[str, Any]],
+    metrics: dict[str, Any],
+    evaluated_at: str,
+) -> dict[str, Any]:
+    evaluated_dt = datetime.fromisoformat(evaluated_at)
+    window_start = evaluated_dt - timedelta(days=_SLO_LOOKBACK_DAYS)
+
+    unresolved_pct = float(metrics.get("set_logged_unresolved_pct", 0.0) or 0.0)
+    unresolved_status = _metric_status(
+        unresolved_pct,
+        _SLO_UNRESOLVED_SET_PCT_HEALTHY_MAX,
+        _SLO_UNRESOLVED_SET_PCT_MONITOR_MAX,
+    )
+    unresolved_metric = {
+        "metric": "unresolved_set_logged_pct",
+        "value": round(unresolved_pct, 2),
+        "unit": "percent",
+        "status": unresolved_status,
+        "window_days": _SLO_LOOKBACK_DAYS,
+        "target": {"healthy_max": 2.0, "monitor_max": 5.0},
+        "sample_count": int(metrics.get("set_logged_total", 0) or 0),
+    }
+
+    save_claim_metric = _compute_save_claim_slo(event_rows, window_start)
+    repair_latency_metric = _compute_repair_latency_slo(event_rows, window_start)
+    overall_status = _worst_status(
+        unresolved_metric["status"],
+        save_claim_metric["status"],
+        repair_latency_metric["status"],
+    )
+    regressions = [
+        metric["metric"]
+        for metric in [unresolved_metric, save_claim_metric, repair_latency_metric]
+        if metric["status"] != "healthy"
+    ]
+
+    return {
+        "status": overall_status,
+        "window_days": _SLO_LOOKBACK_DAYS,
+        "evaluated_at": evaluated_at,
+        "metrics": {
+            unresolved_metric["metric"]: unresolved_metric,
+            save_claim_metric["metric"]: save_claim_metric,
+            repair_latency_metric["metric"]: repair_latency_metric,
+        },
+        "regressions": regressions,
+    }
+
+
+def _autonomy_policy_from_slos(integrity_slos: dict[str, Any]) -> dict[str, Any]:
+    slo_status = str(integrity_slos.get("status", "healthy"))
+    if slo_status == "degraded":
+        return {
+            "policy_version": _AUTONOMY_POLICY_VERSION,
+            "slo_status": slo_status,
+            "throttle_active": True,
+            "max_scope_level": "strict",
+            "require_confirmation_for_non_trivial_actions": True,
+            "require_confirmation_for_plan_updates": True,
+            "require_confirmation_for_repairs": True,
+            "repair_auto_apply_enabled": False,
+            "reason": (
+                "Integrity SLOs degraded: disable autonomous repair apply and require explicit confirmations."
+            ),
+        }
+    if slo_status == "monitor":
+        return {
+            "policy_version": _AUTONOMY_POLICY_VERSION,
+            "slo_status": slo_status,
+            "throttle_active": True,
+            "max_scope_level": "strict",
+            "require_confirmation_for_non_trivial_actions": True,
+            "require_confirmation_for_plan_updates": True,
+            "require_confirmation_for_repairs": False,
+            "repair_auto_apply_enabled": True,
+            "reason": (
+                "Integrity SLOs in monitor range: reduce scope and require confirmation for non-trivial actions."
+            ),
+        }
+    return {
+        "policy_version": _AUTONOMY_POLICY_VERSION,
+        "slo_status": "healthy",
+        "throttle_active": False,
+        "max_scope_level": "moderate",
+        "require_confirmation_for_non_trivial_actions": False,
+        "require_confirmation_for_plan_updates": False,
+        "require_confirmation_for_repairs": False,
+        "repair_auto_apply_enabled": True,
+        "reason": "Integrity SLOs healthy.",
+    }
 
 
 def _evaluate_read_only_invariants(
@@ -1092,9 +1306,13 @@ def _build_quality_projection_data(
     repair_apply_results: list[dict[str, Any]] | None = None,
     decision_phase: str = "phase_1_assisted_repairs",
     last_repair_at: str | None = None,
+    integrity_slos: dict[str, Any] | None = None,
+    autonomy_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     score = _compute_quality_score(issues)
-    status = _status_from_score(score, issues)
+    quality_status = _status_from_score(score, issues)
+    integrity_status = str((integrity_slos or {}).get("status", "healthy"))
+    status = _worst_status(quality_status, integrity_status)
     sev_counts = Counter(issue["severity"] for issue in issues)
     issues_by_severity = {
         "high": sev_counts.get("high", 0),
@@ -1140,6 +1358,8 @@ def _build_quality_projection_data(
 
     return {
         "score": score,
+        "quality_status": quality_status,
+        "integrity_slo_status": integrity_status,
         "status": status,
         "issues_open": len(enriched_issues),
         "issues_by_severity": issues_by_severity,
@@ -1178,6 +1398,15 @@ def _build_quality_projection_data(
         ),
         "invariants_evaluated": ["INV-001", "INV-003", "INV-005", "INV-006"],
         "metrics": metrics,
+        "integrity_slos": integrity_slos or {
+            "status": "healthy",
+            "window_days": _SLO_LOOKBACK_DAYS,
+            "evaluated_at": evaluated_at,
+            "metrics": {},
+            "regressions": [],
+        },
+        "autonomy_policy": autonomy_policy
+        or _autonomy_policy_from_slos({"status": "healthy"}),
         "last_repair_at": last_repair_at,
         "repair_apply_results": repair_apply_results or [],
         "repair_apply_results_total": len(repair_apply_results or []),
@@ -1211,6 +1440,10 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "applied"
         ),
         "quality_last_repair_at": data.get("last_repair_at"),
+        "quality_integrity_slo_status": data.get("integrity_slo_status"),
+        "quality_autonomy_throttle_active": data.get("autonomy_policy", {}).get(
+            "throttle_active"
+        ),
     }
 
 
@@ -1243,6 +1476,8 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "output_schema": {
             "score": "number (0..1)",
             "status": "string — healthy|monitor|degraded",
+            "quality_status": "string — healthy|monitor|degraded",
+            "integrity_slo_status": "string — healthy|monitor|degraded",
             "issues_open": "integer",
             "issues_by_severity": {"high": "integer", "medium": "integer", "low": "integer", "info": "integer"},
             "top_issues": [{"issue_id": "string", "type": "string", "severity": "string", "invariant_id": "string"}],
@@ -1309,6 +1544,27 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "invariant_mode": "string — read_only|policy_gated_auto_apply",
             "invariants_evaluated": ["string"],
             "metrics": "object",
+            "integrity_slos": {
+                "status": "string — healthy|monitor|degraded",
+                "window_days": "integer",
+                "regressions": ["string"],
+                "metrics": {
+                    "unresolved_set_logged_pct": "object",
+                    "save_claim_mismatch_rate_pct": "object",
+                    "repair_latency_hours_p50": "object",
+                },
+            },
+            "autonomy_policy": {
+                "policy_version": "string",
+                "slo_status": "string",
+                "throttle_active": "boolean",
+                "max_scope_level": "string — strict|moderate|proactive",
+                "require_confirmation_for_non_trivial_actions": "boolean",
+                "require_confirmation_for_plan_updates": "boolean",
+                "require_confirmation_for_repairs": "boolean",
+                "repair_auto_apply_enabled": "boolean",
+                "reason": "string",
+            },
             "last_repair_at": "ISO 8601 datetime | null",
             "last_evaluated_at": "ISO 8601 datetime",
             "decision_ref": "string",
@@ -1335,12 +1591,17 @@ async def update_quality_health(
     alias_map = await get_alias_map(conn, user_id, retracted_ids=retracted_ids)
     issues, metrics = _evaluate_read_only_invariants(rows, alias_map)
     now_iso = datetime.now(timezone.utc).isoformat()
+    initial_integrity_slos = _compute_integrity_slos(rows, metrics, now_iso)
+    initial_autonomy_policy = _autonomy_policy_from_slos(initial_integrity_slos)
     simulated_proposals = _build_simulated_repair_proposals(issues, now_iso)
     apply_cycle = await _auto_apply_tier_a_repairs(
         conn,
         user_id,
         simulated_proposals,
         now_iso,
+        allow_tier_a_auto_apply=bool(
+            initial_autonomy_policy.get("repair_auto_apply_enabled", True)
+        ),
     )
     apply_results = apply_cycle["results"]
 
@@ -1370,17 +1631,23 @@ async def update_quality_health(
         last_repair_at = verified_at
         now_iso = verified_at
 
+    final_integrity_slos = _compute_integrity_slos(rows, metrics, now_iso)
+    final_autonomy_policy = _autonomy_policy_from_slos(final_integrity_slos)
     final_proposals = _build_simulated_repair_proposals(issues, now_iso)
     projection_data = _build_quality_projection_data(
         issues,
         metrics,
         now_iso,
         proposals=final_proposals,
-        repair_apply_enabled=True,
+        repair_apply_enabled=bool(
+            final_autonomy_policy.get("repair_auto_apply_enabled", True)
+        ),
         repair_apply_gate=_AUTO_APPLY_POLICY_GATE,
         repair_apply_results=apply_results,
         decision_phase="phase_2_autonomous_tier_a",
         last_repair_at=last_repair_at,
+        integrity_slos=final_integrity_slos,
+        autonomy_policy=final_autonomy_policy,
     )
     last_event_id = str(rows[-1]["id"])
 

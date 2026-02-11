@@ -219,6 +219,15 @@ def _get_agent_behavior() -> dict[str, Any]:
                     "pending_verification",
                 ],
             },
+            "autonomy_throttling": {
+                "source_projection": "quality_health/overview",
+                "policy_field": "autonomy_policy",
+                "rules": [
+                    "When autonomy_policy.throttle_active=true, enforce max_scope_level and require explicit confirmations.",
+                    "Treat monitor/degraded SLO status as a hard behavioral boundary, not a suggestion.",
+                    "Never escalate autonomy above the policy-defined max_scope_level.",
+                ],
+            },
         },
     }
 

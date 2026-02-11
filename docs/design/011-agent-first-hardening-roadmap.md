@@ -67,7 +67,7 @@ after context loss.
 - [x] F5. Autonomous low-risk repair tier
   - Auto-apply only deterministic Tier A repairs.
   - Keep higher-risk repairs confirmation-gated.
-- [ ] F6. Integrity SLOs + autonomy throttling
+- [x] F6. Integrity SLOs + autonomy throttling
   - Define and monitor data-quality SLOs.
   - Reduce agent autonomy automatically on sustained SLO regressions.
 

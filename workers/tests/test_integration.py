@@ -1227,7 +1227,10 @@ class TestQualityHealthIntegration:
         assert proj is not None
         data = proj["data"]
         assert data["invariant_mode"] == "policy_gated_auto_apply"
-        assert data["repair_apply_enabled"] is True
+        assert data["repair_apply_enabled"] is False
+        assert data["integrity_slo_status"] == "degraded"
+        assert data["autonomy_policy"]["throttle_active"] is True
+        assert data["autonomy_policy"]["max_scope_level"] == "strict"
         assert data["issues_open"] >= 1
         assert data["score"] < 1.0
         issue_types = {issue["type"] for issue in data["issues"]}
@@ -1235,6 +1238,7 @@ class TestQualityHealthIntegration:
         assert data["repair_proposals_total"] >= 1
         assert data["simulate_bridge"]["target_endpoint"] == "/v1/events/simulate"
         assert data["simulate_bridge"]["decision_phase"] == "phase_2_autonomous_tier_a"
+        assert data["repair_apply_results_by_decision"]["applied"] == 0
         proposal_states = {proposal["state"] for proposal in data["repair_proposals"]}
         assert "simulated_risky" in proposal_states
 
@@ -1326,6 +1330,40 @@ class TestQualityHealthIntegration:
             data_value="timezone",
         ) == 0
         assert await count_events(db, test_user_id, "quality.fix.rejected") >= 1
+
+    async def test_save_claim_mismatch_slo_drives_autonomy_throttle(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "barbell_back_squat", "weight_kg": 105, "reps": 5,
+        }, "TIMESTAMP '2026-02-11 09:00:00+00'")
+        await insert_event(db, test_user_id, "preference.set", {
+            "key": "timezone", "value": "Europe/Berlin",
+        }, "TIMESTAMP '2026-02-11 09:05:00+00'")
+        await insert_event(db, test_user_id, "profile.updated", {
+            "age_deferred": True, "bodyweight_deferred": True,
+        }, "TIMESTAMP '2026-02-11 09:10:00+00'")
+        await insert_event(db, test_user_id, "quality.save_claim.checked", {
+            "mismatch_detected": True, "allow_saved_claim": False,
+        }, "TIMESTAMP '2026-02-11 09:15:00+00'")
+        await insert_event(db, test_user_id, "quality.save_claim.checked", {
+            "mismatch_detected": False, "allow_saved_claim": True,
+        }, "TIMESTAMP '2026-02-11 09:20:00+00'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_quality_health(db, {
+            "user_id": test_user_id, "event_type": "quality.save_claim.checked",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "quality_health")
+        assert proj is not None
+        data = proj["data"]
+        mismatch = data["integrity_slos"]["metrics"]["save_claim_mismatch_rate_pct"]
+        assert mismatch["sample_count"] == 2
+        assert mismatch["mismatch_count"] == 1
+        assert mismatch["value"] == 50.0
+        assert data["integrity_slo_status"] == "degraded"
+        assert data["autonomy_policy"]["throttle_active"] is True
 
 
 # ---------------------------------------------------------------------------

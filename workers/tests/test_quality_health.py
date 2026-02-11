@@ -1,9 +1,13 @@
 """Tests for quality_health read-only invariant evaluation (Decision 13 Phase 0)."""
 
+from datetime import datetime
+
 from kura_workers.handlers.quality_health import (
+    _autonomy_policy_from_slos,
     _auto_apply_decision,
     _build_quality_projection_data,
     _build_simulated_repair_proposals,
+    _compute_integrity_slos,
     _compute_quality_score,
     _evaluate_read_only_invariants,
     _generate_repair_proposals,
@@ -13,6 +17,14 @@ from kura_workers.handlers.quality_health import (
 
 def _row(event_type: str, data: dict) -> dict:
     return {"event_type": event_type, "data": data}
+
+
+def _event_row(event_type: str, data: dict, iso_ts: str) -> dict:
+    return {
+        "event_type": event_type,
+        "data": data,
+        "timestamp": datetime.fromisoformat(iso_ts),
+    }
 
 
 class TestEvaluateReadOnlyInvariants:
@@ -256,3 +268,68 @@ class TestAutoApplyPolicy:
         allowed, reason = _auto_apply_decision(proposal)
         assert allowed is False
         assert reason == "non_deterministic_source"
+
+    def test_auto_apply_can_be_disabled_by_autonomy_throttle(self):
+        proposal = {
+            "proposal_id": "repair:INV-001:unresolved_exercise_identity",
+            "issue_id": "INV-001:unresolved_exercise_identity",
+            "invariant_id": "INV-001",
+            "issue_type": "unresolved_exercise_identity",
+            "tier": "A",
+            "state": "simulated_safe",
+            "candidate_sources": ["catalog_variant_exact"],
+            "simulate": {"warnings": [], "projection_impacts": []},
+            "proposed_event_batch": {
+                "events": [
+                    {
+                        "event_type": "exercise.alias_created",
+                        "data": {"alias": "x", "exercise_id": "barbell_bench_press"},
+                        "metadata": {"idempotency_key": "k"},
+                    }
+                ]
+            },
+        }
+        allowed, reason = _auto_apply_decision(
+            proposal,
+            allow_tier_a_auto_apply=False,
+        )
+        assert allowed is False
+        assert reason == "autonomy_throttled"
+
+
+class TestIntegritySlos:
+    def test_slo_status_degrades_on_mismatch_and_high_unresolved_rate(self):
+        rows = [
+            _event_row(
+                "quality.save_claim.checked",
+                {"mismatch_detected": True, "allow_saved_claim": False},
+                "2026-02-11T09:00:00+00:00",
+            ),
+            _event_row(
+                "quality.save_claim.checked",
+                {"mismatch_detected": False, "allow_saved_claim": True},
+                "2026-02-11T09:05:00+00:00",
+            ),
+        ]
+        slos = _compute_integrity_slos(
+            rows,
+            metrics={"set_logged_unresolved_pct": 12.0, "set_logged_total": 10},
+            evaluated_at="2026-02-11T10:00:00+00:00",
+        )
+        assert slos["status"] == "degraded"
+        assert "unresolved_set_logged_pct" in slos["regressions"]
+        assert (
+            slos["metrics"]["save_claim_mismatch_rate_pct"]["value"] == 50.0
+        )
+
+    def test_autonomy_policy_throttles_on_degraded_slos(self):
+        policy = _autonomy_policy_from_slos({"status": "degraded"})
+        assert policy["throttle_active"] is True
+        assert policy["max_scope_level"] == "strict"
+        assert policy["repair_auto_apply_enabled"] is False
+
+    def test_autonomy_policy_is_relaxed_when_slos_healthy(self):
+        policy = _autonomy_policy_from_slos({"status": "healthy"})
+        assert policy["throttle_active"] is False
+        assert policy["max_scope_level"] == "moderate"
+        assert policy["repair_auto_apply_enabled"] is True

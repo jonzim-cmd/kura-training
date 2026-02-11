@@ -156,6 +156,7 @@ Every step is inspectable and evented.
 - `quality.fix.applied`
 - `quality.fix.rejected`
 - `quality.issue.closed`
+- `quality.save_claim.checked`
 
 These do not mutate historical truth directly; they orchestrate compensating events.
 
@@ -265,4 +266,3 @@ Decision 13 is successful when:
 1. backend remains queryable and consistent under diverse user/agent behavior,
 2. known agent failure modes are detected and corrected without manual firefighting,
 3. users can trust "saved", "tracked", and "progressing" statements by construction.
-

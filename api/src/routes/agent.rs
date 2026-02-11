@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
-use kura_core::events::{BatchEventWarning, CreateEventRequest};
+use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
@@ -74,6 +74,8 @@ pub struct AgentContextResponse {
     pub readiness_inference: Option<ProjectionResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub causal_inference: Option<ProjectionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_health: Option<ProjectionResponse>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub exercise_progression: Vec<ProjectionResponse>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -81,6 +83,19 @@ pub struct AgentContextResponse {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub custom: Vec<ProjectionResponse>,
     pub meta: AgentContextMeta,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentAutonomyPolicy {
+    pub policy_version: String,
+    pub slo_status: String,
+    pub throttle_active: bool,
+    pub max_scope_level: String,
+    pub require_confirmation_for_non_trivial_actions: bool,
+    pub require_confirmation_for_plan_updates: bool,
+    pub require_confirmation_for_repairs: bool,
+    pub repair_auto_apply_enabled: bool,
+    pub reason: String,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -139,6 +154,7 @@ pub struct AgentWriteClaimGuard {
     pub uncertainty_markers: Vec<String>,
     pub deferred_markers: Vec<String>,
     pub recommended_user_phrase: String,
+    pub autonomy_policy: AgentAutonomyPolicy,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -683,6 +699,20 @@ async fn fetch_projection(
     Ok(row.map(|r| r.into_response(now)))
 }
 
+async fn fetch_quality_health_projection(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<Option<ProjectionResponse>, AppError> {
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let projection = fetch_projection(&mut tx, user_id, "quality_health", "overview").await?;
+    tx.commit().await?;
+    Ok(projection)
+}
+
 async fn fetch_projection_list(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
@@ -734,11 +764,86 @@ fn all_read_after_write_verified(checks: &[AgentReadAfterWriteCheck]) -> bool {
     checks.iter().all(|check| check.status == "verified")
 }
 
+fn default_autonomy_policy() -> AgentAutonomyPolicy {
+    AgentAutonomyPolicy {
+        policy_version: "phase_3_integrity_slo_v1".to_string(),
+        slo_status: "healthy".to_string(),
+        throttle_active: false,
+        max_scope_level: "moderate".to_string(),
+        require_confirmation_for_non_trivial_actions: false,
+        require_confirmation_for_plan_updates: false,
+        require_confirmation_for_repairs: false,
+        repair_auto_apply_enabled: true,
+        reason: "No quality_health autonomy policy available; using healthy defaults."
+            .to_string(),
+    }
+}
+
+fn autonomy_policy_from_quality_health(
+    quality_health: Option<&ProjectionResponse>,
+) -> AgentAutonomyPolicy {
+    let Some(projection) = quality_health else {
+        return default_autonomy_policy();
+    };
+    let Some(policy) = projection
+        .projection
+        .data
+        .get("autonomy_policy")
+        .and_then(Value::as_object)
+    else {
+        return default_autonomy_policy();
+    };
+
+    AgentAutonomyPolicy {
+        policy_version: policy
+            .get("policy_version")
+            .and_then(Value::as_str)
+            .unwrap_or("phase_3_integrity_slo_v1")
+            .to_string(),
+        slo_status: policy
+            .get("slo_status")
+            .and_then(Value::as_str)
+            .unwrap_or("healthy")
+            .to_string(),
+        throttle_active: policy
+            .get("throttle_active")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        max_scope_level: policy
+            .get("max_scope_level")
+            .and_then(Value::as_str)
+            .unwrap_or("moderate")
+            .to_string(),
+        require_confirmation_for_non_trivial_actions: policy
+            .get("require_confirmation_for_non_trivial_actions")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        require_confirmation_for_plan_updates: policy
+            .get("require_confirmation_for_plan_updates")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        require_confirmation_for_repairs: policy
+            .get("require_confirmation_for_repairs")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        repair_auto_apply_enabled: policy
+            .get("repair_auto_apply_enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        reason: policy
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("Autonomy policy derived from quality_health.")
+            .to_string(),
+    }
+}
+
 fn build_claim_guard(
     receipts: &[AgentWriteReceipt],
     requested_event_count: usize,
     checks: &[AgentReadAfterWriteCheck],
     warnings: &[BatchEventWarning],
+    autonomy_policy: AgentAutonomyPolicy,
 ) -> AgentWriteClaimGuard {
     let mut uncertainty_markers = Vec::new();
     let mut deferred_markers = Vec::new();
@@ -762,8 +867,21 @@ fn build_claim_guard(
         uncertainty_markers.push("plausibility_warnings_present".to_string());
     }
 
+    if autonomy_policy.throttle_active {
+        uncertainty_markers.push("autonomy_throttled_by_integrity_slo".to_string());
+        deferred_markers.push("confirm_non_trivial_actions_due_to_slo_regression".to_string());
+    }
+
     let allow_saved_claim = receipts_complete && read_after_write_ok;
-    let (claim_status, recommended_user_phrase) = if allow_saved_claim {
+    let (claim_status, recommended_user_phrase) = if allow_saved_claim && autonomy_policy.throttle_active {
+        (
+            "verified".to_string(),
+            format!(
+                "Saved and verified in the read model. Integrity status '{}' requires explicit confirmation before non-trivial follow-up actions.",
+                autonomy_policy.slo_status
+            ),
+        )
+    } else if allow_saved_claim {
         (
             "verified".to_string(),
             "Saved and verified in the read model.".to_string(),
@@ -782,6 +900,46 @@ fn build_claim_guard(
         uncertainty_markers,
         deferred_markers,
         recommended_user_phrase,
+        autonomy_policy,
+    }
+}
+
+fn build_save_claim_checked_event(
+    requested_event_count: usize,
+    receipts: &[AgentWriteReceipt],
+    verification: &AgentWriteVerificationSummary,
+    claim_guard: &AgentWriteClaimGuard,
+) -> CreateEventRequest {
+    let mismatch_detected = !claim_guard.allow_saved_claim;
+    let event_data = serde_json::json!({
+        "requested_event_count": requested_event_count,
+        "receipt_count": receipts.len(),
+        "allow_saved_claim": claim_guard.allow_saved_claim,
+        "claim_status": claim_guard.claim_status,
+        "verification_status": verification.status,
+        "required_checks": verification.required_checks,
+        "verified_checks": verification.verified_checks,
+        "mismatch_detected": mismatch_detected,
+        "uncertainty_markers": claim_guard.uncertainty_markers,
+        "deferred_markers": claim_guard.deferred_markers,
+        "autonomy_policy": {
+            "slo_status": claim_guard.autonomy_policy.slo_status,
+            "throttle_active": claim_guard.autonomy_policy.throttle_active,
+            "max_scope_level": claim_guard.autonomy_policy.max_scope_level,
+        },
+    });
+
+    CreateEventRequest {
+        timestamp: Utc::now(),
+        event_type: "quality.save_claim.checked".to_string(),
+        data: event_data,
+        metadata: EventMetadata {
+            source: Some("agent_write_with_proof".to_string()),
+            agent: Some("api".to_string()),
+            device: None,
+            session_id: Some("quality:save-claim".to_string()),
+            idempotency_key: format!("quality-save-claim-checked-{}", Uuid::now_v7()),
+        },
     }
 }
 
@@ -940,26 +1098,37 @@ pub async fn write_with_proof(
         "pending".to_string()
     };
 
+    let quality_health = fetch_quality_health_projection(&state, user_id).await?;
+    let autonomy_policy = autonomy_policy_from_quality_health(quality_health.as_ref());
+    let verification = AgentWriteVerificationSummary {
+        status: verification_status,
+        checked_at: Utc::now(),
+        waited_ms,
+        required_checks: checks.len(),
+        verified_checks,
+        checks,
+    };
     let claim_guard = build_claim_guard(
         &receipts,
         requested_event_count,
-        &checks,
+        &verification.checks,
         &batch_result.warnings,
+        autonomy_policy,
     );
+    let quality_signal = build_save_claim_checked_event(
+        requested_event_count,
+        &receipts,
+        &verification,
+        &claim_guard,
+    );
+    let _ = create_events_batch_internal(&state, user_id, &[quality_signal]).await;
 
     Ok((
         StatusCode::CREATED,
         Json(AgentWriteWithProofResponse {
             receipts,
             warnings: batch_result.warnings,
-            verification: AgentWriteVerificationSummary {
-                status: verification_status,
-                checked_at: Utc::now(),
-                waited_ms,
-                required_checks: checks.len(),
-                verified_checks,
-                checks,
-            },
+            verification,
             claim_guard,
         }),
     ))
@@ -1032,6 +1201,8 @@ pub async fn get_agent_context(
         fetch_projection(&mut tx, user_id, "readiness_inference", "overview").await?;
     let causal_inference =
         fetch_projection(&mut tx, user_id, "causal_inference", "overview").await?;
+    let quality_health =
+        fetch_projection(&mut tx, user_id, "quality_health", "overview").await?;
 
     let ranking_context =
         RankingContext::from_task_intent(task_intent.clone(), semantic_memory.as_ref());
@@ -1077,6 +1248,7 @@ pub async fn get_agent_context(
         semantic_memory,
         readiness_inference,
         causal_inference,
+        quality_health,
         exercise_progression,
         strength_inference,
         custom,
@@ -1097,8 +1269,8 @@ mod tests {
     use super::{
         AgentReadAfterWriteCheck, AgentReadAfterWriteTarget, AgentWriteReceipt, IntentClass,
         ProjectionResponse, RankingContext, bootstrap_user_profile, build_claim_guard, clamp_limit,
-        clamp_verify_timeout_ms, normalize_read_after_write_targets, rank_projection_list,
-        ranking_candidate_limit,
+        clamp_verify_timeout_ms, default_autonomy_policy, normalize_read_after_write_targets,
+        rank_projection_list, ranking_candidate_limit,
     };
     use chrono::{Duration, Utc};
     use kura_core::events::BatchEventWarning;
@@ -1295,7 +1467,7 @@ mod tests {
             detail: "ok".to_string(),
         }];
 
-        let guard = build_claim_guard(&receipts, 1, &checks, &[]);
+        let guard = build_claim_guard(&receipts, 1, &checks, &[], default_autonomy_policy());
         assert!(guard.allow_saved_claim);
         assert_eq!(guard.claim_status, "verified");
         assert!(guard.uncertainty_markers.is_empty());
@@ -1324,7 +1496,13 @@ mod tests {
             severity: "warning".to_string(),
         }];
 
-        let guard = build_claim_guard(&receipts, 1, &checks, &warnings);
+        let guard = build_claim_guard(
+            &receipts,
+            1,
+            &checks,
+            &warnings,
+            default_autonomy_policy(),
+        );
         assert!(!guard.allow_saved_claim);
         assert_eq!(guard.claim_status, "deferred");
         assert!(
@@ -1344,6 +1522,41 @@ mod tests {
                 .uncertainty_markers
                 .iter()
                 .any(|marker| marker == "plausibility_warnings_present")
+        );
+    }
+
+    #[test]
+    fn claim_guard_marks_autonomy_throttle_when_policy_requires_confirmation() {
+        let event_id = Uuid::now_v7();
+        let receipts = vec![AgentWriteReceipt {
+            event_id,
+            event_type: "set.logged".to_string(),
+            idempotency_key: "abc-123".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "user_profile".to_string(),
+            key: "me".to_string(),
+            status: "verified".to_string(),
+            observed_projection_version: Some(4),
+            observed_last_event_id: Some(event_id),
+            detail: "ok".to_string(),
+        }];
+        let mut policy = default_autonomy_policy();
+        policy.slo_status = "degraded".to_string();
+        policy.throttle_active = true;
+        policy.max_scope_level = "strict".to_string();
+        policy.require_confirmation_for_non_trivial_actions = true;
+
+        let guard = build_claim_guard(&receipts, 1, &checks, &[], policy);
+        assert!(guard.allow_saved_claim);
+        assert_eq!(guard.claim_status, "verified");
+        assert_eq!(guard.autonomy_policy.slo_status, "degraded");
+        assert!(
+            guard
+                .uncertainty_markers
+                .iter()
+                .any(|marker| marker == "autonomy_throttled_by_integrity_slo")
         );
     }
 }
