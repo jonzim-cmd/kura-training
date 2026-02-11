@@ -88,6 +88,13 @@ async def insert_event(conn, user_id, event_type, data, timestamp="NOW()"):
         return str(row["id"])
 
 
+async def retract_event(conn, user_id, retracted_event_id, retracted_event_type=None, timestamp="NOW()"):
+    data = {"retracted_event_id": retracted_event_id}
+    if retracted_event_type:
+        data["retracted_event_type"] = retracted_event_type
+    return await insert_event(conn, user_id, "event.retracted", data, timestamp)
+
+
 async def get_projection(conn, user_id, projection_type, key="overview"):
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -416,6 +423,32 @@ class TestSemanticMemoryIntegration:
         assert "exercise_candidates" in data
         assert "food_candidates" in data
 
+    async def test_semantic_memory_deletes_when_all_inputs_retracted(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        event_id = await insert_event(db, test_user_id, "set.logged", {
+            "exercise": "Kniebeuge", "weight_kg": 100, "reps": 5,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await ensure_semantic_catalog(db)
+        await update_semantic_memory(db, {
+            "user_id": test_user_id, "event_type": "set.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        assert await get_projection(db, test_user_id, "semantic_memory") is not None
+
+        await retract_event(db, test_user_id, event_id, "set.logged",
+                            "TIMESTAMP '2026-02-02 08:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_semantic_memory(db, {
+            "user_id": test_user_id, "event_type": "set.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        assert await get_projection(db, test_user_id, "semantic_memory") is None
+
 
 class TestInferenceIntegration:
     async def test_strength_and_readiness_projections(self, db, test_user_id):
@@ -463,6 +496,89 @@ class TestInferenceIntegration:
         assert readiness_data["data_quality"]["days_with_observations"] >= 5
         assert "readiness_today" in readiness_data
 
+    async def test_strength_projection_deleted_when_all_sets_retracted(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        event_ids = []
+        for day in range(1, 4):
+            event_id = await insert_event(db, test_user_id, "set.logged", {
+                "exercise_id": "bench_press",
+                "exercise": "Bench Press",
+                "weight_kg": 80 + day,
+                "reps": 5,
+            }, f"TIMESTAMP '2026-02-{day:02d} 10:00:00+01'")
+            event_ids.append(event_id)
+
+        await db.execute("SET ROLE app_worker")
+        await update_strength_inference(db, {
+            "user_id": test_user_id,
+            "event_type": "set.logged",
+            "event_id": event_ids[-1],
+        })
+        await db.execute("RESET ROLE")
+
+        assert await get_projection(db, test_user_id, "strength_inference", "bench_press") is not None
+
+        for event_id in event_ids:
+            await retract_event(db, test_user_id, event_id, "set.logged",
+                                "TIMESTAMP '2026-02-10 08:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_strength_inference(db, {
+            "user_id": test_user_id,
+            "event_type": "set.logged",
+            "event_id": event_ids[-1],
+        })
+        await db.execute("RESET ROLE")
+
+        assert await get_projection(db, test_user_id, "strength_inference", "bench_press") is None
+
+    async def test_readiness_projection_deleted_when_all_signals_retracted(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        inserted_events = []
+
+        for day in range(1, 6):
+            sleep_event_id = await insert_event(db, test_user_id, "sleep.logged", {
+                "duration_hours": 7.0 + (day * 0.1),
+            }, f"TIMESTAMP '2026-02-{day:02d} 07:00:00+01'")
+            inserted_events.append((sleep_event_id, "sleep.logged"))
+
+            energy_event_id = await insert_event(db, test_user_id, "energy.logged", {
+                "level": 6 + (day % 3),
+            }, f"TIMESTAMP '2026-02-{day:02d} 08:00:00+01'")
+            inserted_events.append((energy_event_id, "energy.logged"))
+
+            soreness_event_id = await insert_event(db, test_user_id, "soreness.logged", {
+                "severity": 2 + (day % 2),
+            }, f"TIMESTAMP '2026-02-{day:02d} 09:00:00+01'")
+            inserted_events.append((soreness_event_id, "soreness.logged"))
+
+        await db.execute("SET ROLE app_worker")
+        await update_readiness_inference(db, {
+            "user_id": test_user_id,
+            "event_type": "sleep.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        assert await get_projection(db, test_user_id, "readiness_inference") is not None
+
+        for event_id, event_type in inserted_events:
+            await retract_event(
+                db,
+                test_user_id,
+                event_id,
+                event_type,
+                "TIMESTAMP '2026-02-10 08:00:00+01'",
+            )
+
+        await db.execute("SET ROLE app_worker")
+        await update_readiness_inference(db, {
+            "user_id": test_user_id,
+            "event_type": "sleep.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        assert await get_projection(db, test_user_id, "readiness_inference") is None
+
 
 class TestInferenceNightlyRefitIntegration:
     async def test_nightly_refit_enqueues_projection_updates(self, db, test_user_id):
@@ -474,6 +590,28 @@ class TestInferenceNightlyRefitIntegration:
             "duration_hours": 7.5,
         }, "TIMESTAMP '2026-02-01 07:00:00+01'")
 
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM background_jobs
+                WHERE user_id = %s
+                  AND job_type = 'projection.update'
+                """,
+                (test_user_id,),
+            )
+            projection_count_before = int((await cur.fetchone())["count"])
+
+            await cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM background_jobs
+                WHERE job_type = 'inference.nightly_refit'
+                  AND payload->>'interval_hours' = '12'
+                """,
+            )
+            nightly_count_before = int((await cur.fetchone())["count"])
+
         await db.execute("SET ROLE app_worker")
         await handle_inference_nightly_refit(db, {"interval_hours": 12})
         await db.execute("RESET ROLE")
@@ -481,24 +619,31 @@ class TestInferenceNightlyRefitIntegration:
         async with db.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                SELECT job_type, payload
+                SELECT payload
                 FROM background_jobs
                 WHERE user_id = %s
-                  AND job_type IN ('projection.update', 'inference.nightly_refit')
+                  AND job_type = 'projection.update'
                 """,
                 (test_user_id,),
             )
-            rows = await cur.fetchall()
+            projection_rows = await cur.fetchall()
 
-        projection_updates = [r for r in rows if r["job_type"] == "projection.update"]
-        assert len(projection_updates) >= 2
-        event_types = {row["payload"]["event_type"] for row in projection_updates}
+            await cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM background_jobs
+                WHERE job_type = 'inference.nightly_refit'
+                  AND payload->>'interval_hours' = '12'
+                """,
+            )
+            nightly_count_after = int((await cur.fetchone())["count"])
+
+        assert len(projection_rows) - projection_count_before == 2
+        event_types = {row["payload"]["event_type"] for row in projection_rows}
         assert "set.logged" in event_types
         assert "sleep.logged" in event_types
 
-        nightly_jobs = [r for r in rows if r["job_type"] == "inference.nightly_refit"]
-        assert len(nightly_jobs) == 1
-        assert nightly_jobs[0]["payload"]["interval_hours"] == 12
+        assert nightly_count_after - nightly_count_before == 1
 
 
 # ---------------------------------------------------------------------------
@@ -798,9 +943,6 @@ class TestProjectionRetryIntegration:
         await db.execute("SET ROLE app_worker")
 
         # Monkeypatch body_composition handler to fail
-        original_handler = update_body_composition.__wrapped__ if hasattr(update_body_composition, '__wrapped__') else None
-
-        from unittest.mock import patch
         from kura_workers.registry import get_projection_handlers
 
         # Get the actual handlers for bodyweight.logged

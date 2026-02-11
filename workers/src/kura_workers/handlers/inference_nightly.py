@@ -95,7 +95,7 @@ async def handle_inference_nightly_refit(
                 (
                     user_ids[0],
                     Json({"interval_hours": interval_h}),
-                    float(interval_h),
+                    interval_h,
                 ),
             )
 
