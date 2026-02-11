@@ -216,6 +216,12 @@ class TestRepairProposals:
         assert len(events) == 1
         assert events[0]["event_type"] == "exercise.alias_created"
         assert events[0]["data"]["exercise_id"] == "barbell_bench_press"
+        provenance = proposals[0]["repair_provenance"]
+        assert provenance["summary"]["by_source_type"]["inferred"] >= 1
+        assert events[0]["data"]["repair_provenance"]["source_type"] in {
+            "inferred",
+            "estimated",
+        }
 
     def test_inv003_is_simulated_risky(self):
         issues = [
@@ -382,6 +388,45 @@ class TestAutoApplyPolicy:
         )
         assert allowed is False
         assert reason == "autonomy_throttled"
+
+    def test_low_confidence_repair_is_rejected(self):
+        proposal = {
+            "proposal_id": "repair:INV-001:unresolved_exercise_identity",
+            "issue_id": "INV-001:unresolved_exercise_identity",
+            "invariant_id": "INV-001",
+            "issue_type": "unresolved_exercise_identity",
+            "tier": "A",
+            "state": "simulated_safe",
+            "candidate_sources": ["catalog_variant_exact"],
+            "simulate": {"warnings": [], "projection_impacts": []},
+            "repair_provenance": {
+                "entries": [{
+                    "source_type": "estimated",
+                    "confidence": 0.3,
+                    "confidence_band": "low",
+                    "applies_scope": "session",
+                    "reason": "guess",
+                }],
+                "summary": {
+                    "entries": 1,
+                    "by_source_type": {"estimated": 1},
+                    "by_confidence_band": {"low": 1},
+                    "low_confidence_entries": 1,
+                },
+            },
+            "proposed_event_batch": {
+                "events": [
+                    {
+                        "event_type": "exercise.alias_created",
+                        "data": {"alias": "x", "exercise_id": "barbell_bench_press"},
+                        "metadata": {"idempotency_key": "k"},
+                    }
+                ]
+            },
+        }
+        allowed, reason = _auto_apply_decision(proposal)
+        assert allowed is False
+        assert reason == "low_confidence_repair"
 
 
 class TestIntegritySlos:

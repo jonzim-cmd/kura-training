@@ -79,6 +79,8 @@ def _get_conventions() -> dict[str, Any]:
                 "the retraction efficiently.",
                 "To clear a profile field, send profile.updated with the field "
                 "set to null.",
+                "For repair-generated events, include repair_provenance "
+                "(source_type, confidence, applies_scope, reason).",
             ],
             "example_batch": [
                 {

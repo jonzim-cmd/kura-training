@@ -21,6 +21,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from ..learning_telemetry import build_learning_signal_event
+from ..repair_provenance import build_repair_provenance, summarize_repair_provenance
 from ..registry import projection_handler
 from ..semantic_catalog import EXERCISE_CATALOG
 from ..training_core_fields import evaluate_set_context_rows
@@ -359,6 +360,7 @@ def _build_issue_proposal_base(
     tier: str,
     rationale: str,
     assumptions: list[str] | None = None,
+    repair_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     issue_id = str(issue["issue_id"])
     return {
@@ -372,6 +374,11 @@ def _build_issue_proposal_base(
         "auto_apply_eligible": tier == "A",
         "rationale": rationale,
         "assumptions": assumptions or [],
+        "repair_provenance": repair_provenance
+        or {
+            "entries": [],
+            "summary": summarize_repair_provenance([]),
+        },
         "proposed_at": evaluated_at,
         "proposed_event_batch": {"events": []},
         "simulate": None,
@@ -395,6 +402,7 @@ def _propose_inv001_issue(
     events: list[dict[str, Any]] = []
     unmatched_terms: list[str] = []
     confidence_sources: list[str] = []
+    provenance_entries: list[dict[str, Any]] = []
 
     for item in unresolved_terms:
         term = _normalize(item.get("term"))
@@ -420,6 +428,28 @@ def _propose_inv001_issue(
             continue
 
         confidence_sources.append(source)
+        if source == "catalog_variant_exact":
+            provenance = build_repair_provenance(
+                source_type="inferred",
+                confidence=0.95,
+                applies_scope="exercise_session",
+                reason="Catalog variant exact match for unresolved alias.",
+            )
+        elif source == "catalog_key_slug_match":
+            provenance = build_repair_provenance(
+                source_type="inferred",
+                confidence=0.9,
+                applies_scope="exercise_session",
+                reason="Catalog key slug match for unresolved alias.",
+            )
+        else:
+            provenance = build_repair_provenance(
+                source_type="estimated",
+                confidence=0.55,
+                applies_scope="exercise_session",
+                reason="Slug fallback guess for unresolved alias.",
+            )
+        provenance_entries.append(provenance)
         events.append(
             {
                 "timestamp": evaluated_at,
@@ -428,6 +458,7 @@ def _propose_inv001_issue(
                     "alias": term,
                     "exercise_id": canonical,
                     "confidence": "inferred",
+                    "repair_provenance": provenance,
                 },
                 "metadata": {
                     "source": "quality_health",
@@ -457,6 +488,10 @@ def _propose_inv001_issue(
             "to restore identity consistency (INV-001)."
         ),
         assumptions=assumptions,
+        repair_provenance={
+            "entries": provenance_entries,
+            "summary": summarize_repair_provenance(provenance_entries),
+        },
     )
     proposal["proposed_event_batch"]["events"] = events
     if unmatched_terms:
@@ -466,6 +501,12 @@ def _propose_inv001_issue(
 
 
 def _propose_inv003_issue(issue: dict[str, Any], evaluated_at: str) -> dict[str, Any]:
+    provenance = build_repair_provenance(
+        source_type="estimated",
+        confidence=0.45,
+        applies_scope="session",
+        reason="Timezone fallback requires confirmation from user.",
+    )
     proposal = _build_issue_proposal_base(
         issue=issue,
         evaluated_at=evaluated_at,
@@ -475,6 +516,10 @@ def _propose_inv003_issue(issue: dict[str, Any], evaluated_at: str) -> dict[str,
             "(INV-003)."
         ),
         assumptions=["Default timezone assumed as UTC until user confirms."],
+        repair_provenance={
+            "entries": [provenance],
+            "summary": summarize_repair_provenance([provenance]),
+        },
     )
     proposal["proposed_event_batch"]["events"] = [
         {
@@ -483,6 +528,7 @@ def _propose_inv003_issue(issue: dict[str, Any], evaluated_at: str) -> dict[str,
             "data": {
                 "key": "timezone",
                 "value": "UTC",
+                "repair_provenance": provenance,
             },
             "metadata": {
                 "source": "quality_health",
@@ -579,6 +625,18 @@ def _proposal_has_deterministic_source(proposal: dict[str, Any]) -> bool:
     )
 
 
+def _proposal_confidence_band(proposal: dict[str, Any]) -> str:
+    summary = (proposal.get("repair_provenance") or {}).get("summary") or {}
+    by_band = summary.get("by_confidence_band") or {}
+    if by_band.get("low", 0) > 0:
+        return "low"
+    if by_band.get("medium", 0) > 0:
+        return "medium"
+    if by_band.get("high", 0) > 0:
+        return "high"
+    return "unknown"
+
+
 def _auto_apply_decision(
     proposal: dict[str, Any],
     *,
@@ -597,6 +655,8 @@ def _auto_apply_decision(
         return False, "unknown_projection_impacts"
     if not _proposal_has_deterministic_source(proposal):
         return False, "non_deterministic_source"
+    if _proposal_confidence_band(proposal) == "low":
+        return False, "low_confidence_repair"
     events = proposal.get("proposed_event_batch", {}).get("events") or []
     if not events:
         return False, "empty_event_batch"
@@ -623,6 +683,9 @@ def _build_quality_fix_applied_event(
     idempotency_key = (
         f"quality-fix-applied-{_stable_idempotency_suffix(str(proposal['proposal_id']))}"
     )
+    provenance_summary = (
+        (proposal.get("repair_provenance") or {}).get("summary") or {}
+    )
     return {
         "timestamp": evaluated_at,
         "event_type": _QUALITY_EVENT_FIX_APPLIED,
@@ -636,6 +699,7 @@ def _build_quality_fix_applied_event(
             "policy_version": _AUTO_APPLY_POLICY_VERSION,
             "repair_event_count": len(repair_idempotency_keys),
             "repair_event_idempotency_keys": repair_idempotency_keys,
+            "repair_provenance_summary": provenance_summary,
         },
         "metadata": {
             "source": "quality_health",
@@ -656,6 +720,9 @@ def _build_quality_fix_rejected_event(
     idempotency_key = (
         f"quality-fix-rejected-{_stable_idempotency_suffix(idempotency_seed)}"
     )
+    provenance_summary = (
+        (proposal.get("repair_provenance") or {}).get("summary") or {}
+    )
     return {
         "timestamp": evaluated_at,
         "event_type": _QUALITY_EVENT_FIX_REJECTED,
@@ -671,6 +738,7 @@ def _build_quality_fix_rejected_event(
             "unknown_projection_impacts": _has_unknown_projection_impacts(simulation),
             "policy_gate": _AUTO_APPLY_POLICY_GATE,
             "policy_version": _AUTO_APPLY_POLICY_VERSION,
+            "repair_provenance_summary": provenance_summary,
         },
         "metadata": {
             "source": "quality_health",
@@ -1614,6 +1682,20 @@ def _build_quality_projection_data(
         for proposal in proposals
     )
     apply_ready = [p["proposal_id"] for p in proposals if p.get("safe_for_apply")]
+    confidence_bands = {
+        proposal["proposal_id"]: _proposal_confidence_band(proposal)
+        for proposal in proposals
+    }
+    high_confidence_ids = [
+        proposal_id
+        for proposal_id, band in confidence_bands.items()
+        if band == "high"
+    ]
+    low_confidence_ids = [
+        proposal_id
+        for proposal_id, band in confidence_bands.items()
+        if band == "low"
+    ]
 
     enriched_issues = [
         {
@@ -1658,6 +1740,10 @@ def _build_quality_projection_data(
             ),
         },
         "repair_apply_ready_ids": apply_ready,
+        "repair_confidence_filters": {
+            "high_confidence_ids": high_confidence_ids,
+            "low_confidence_ids": low_confidence_ids,
+        },
         "repair_apply_enabled": repair_apply_enabled,
         "repair_apply_gate": repair_apply_gate
         or "tier_a_only_and_state_simulated_safe; auto-apply disabled in phase_1",
@@ -1782,6 +1868,16 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                 "auto_apply_eligible": "boolean",
                 "rationale": "string",
                 "assumptions": ["string"],
+                "repair_provenance": {
+                    "entries": [{
+                        "source_type": "string — explicit|inferred|estimated|user_confirmed",
+                        "confidence": "number 0..1",
+                        "confidence_band": "string — low|medium|high",
+                        "applies_scope": "string — single_set|exercise_session|session",
+                        "reason": "string",
+                    }],
+                    "summary": "object",
+                },
                 "proposed_event_batch": {"events": ["CreateEventRequest-like object"]},
                 "simulate": {
                     "event_count": "integer",
@@ -1801,6 +1897,10 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                 "verified_closed": "integer",
             },
             "repair_apply_ready_ids": ["string"],
+            "repair_confidence_filters": {
+                "high_confidence_ids": ["string"],
+                "low_confidence_ids": ["string"],
+            },
             "repair_apply_enabled": "boolean",
             "repair_apply_gate": "string",
             "repair_apply_results": [{
@@ -1808,6 +1908,8 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                 "issue_id": "string",
                 "decision": "string — applied|rejected",
                 "reason_code": "string",
+                "repair_events_inserted": "integer",
+                "repair_events_preexisting": "integer",
                 "proposal_state_after_verify": "string | null",
             }],
             "repair_apply_results_total": "integer",

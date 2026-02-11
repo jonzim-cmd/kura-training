@@ -43,7 +43,17 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
         },
         "preference.set": {
             "description": "User preference (latest per key wins)",
-            "fields": {"key": "string (required)", "value": "any (required)"},
+            "fields": {
+                "key": "string (required)",
+                "value": "any (required)",
+                "repair_provenance": {
+                    "source_type": "string (optional: explicit|inferred|estimated|user_confirmed)",
+                    "confidence": "number (optional, 0..1)",
+                    "confidence_band": "string (optional: low|medium|high)",
+                    "applies_scope": "string (optional: single_set|exercise_session|session)",
+                    "reason": "string (optional)",
+                },
+            },
             "example": {"key": "unit_system", "value": "metric"},
             "common_keys": [
                 "unit_system",
@@ -131,6 +141,13 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "alias": "string (required, what the user says)",
                 "exercise_id": "string (required, canonical ID)",
                 "confidence": "string (confirmed or inferred)",
+                "repair_provenance": {
+                    "source_type": "string (optional: explicit|inferred|estimated|user_confirmed)",
+                    "confidence": "number (optional, 0..1)",
+                    "confidence_band": "string (optional: low|medium|high)",
+                    "applies_scope": "string (optional: single_set|exercise_session|session)",
+                    "reason": "string (optional)",
+                },
             },
             "example": {
                 "alias": "Kniebeuge",
@@ -410,6 +427,13 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                     "— enables efficient processing without DB lookup)"
                 ),
                 "reason": "string (optional, why the retraction is being made)",
+                "repair_provenance": {
+                    "source_type": "string (optional: explicit|inferred|estimated|user_confirmed)",
+                    "confidence": "number (optional, 0..1)",
+                    "confidence_band": "string (optional: low|medium|high)",
+                    "applies_scope": "string (optional: single_set|exercise_session|session)",
+                    "reason": "string (optional)",
+                },
             },
             "example": {
                 "retracted_event_id": "01956abc-def0-7000-8000-000000000001",
