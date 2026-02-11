@@ -16,7 +16,14 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
-from ..utils import get_retracted_event_ids, merge_observed_attributes, separate_known_unknown
+from ..utils import (
+    get_retracted_event_ids,
+    load_timezone_preference,
+    local_date_for_timezone,
+    merge_observed_attributes,
+    resolve_timezone_context,
+    separate_known_unknown,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +75,12 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "stress_factors",
     ],
     "output_schema": {
+        "timezone_context": {
+            "timezone": "IANA timezone used for day/week grouping (e.g. Europe/Berlin)",
+            "source": "preference|assumed_default",
+            "assumed": "boolean",
+            "assumption_disclosure": "string|null",
+        },
         "sleep": {
             "recent_entries": [{"date": "ISO 8601 date", "duration_hours": "number", "quality": "string (optional)", "bed_time": "string (optional)", "wake_time": "string (optional)"}],
             "weekly_average": [{"week": "ISO 8601 week", "avg_duration_hours": "number", "entries": "integer"}],
@@ -97,6 +110,9 @@ async def update_recovery(
     """Full recompute of recovery projection."""
     user_id = payload["user_id"]
     retracted_ids = await get_retracted_event_ids(conn, user_id)
+    timezone_pref = await load_timezone_preference(conn, user_id, retracted_ids)
+    timezone_context = resolve_timezone_context(timezone_pref)
+    timezone_name = timezone_context["timezone"]
 
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -166,7 +182,7 @@ async def update_recovery(
     for row in rows:
         data = row["data"]
         ts = row["timestamp"]
-        d = ts.date()
+        d = local_date_for_timezone(ts, timezone_name)
         event_type = row["event_type"]
 
         if event_type == "sleep.logged":
@@ -317,6 +333,7 @@ async def update_recovery(
         }
 
     projection_data: dict[str, Any] = {
+        "timezone_context": timezone_context,
         "sleep": sleep_data,
         "soreness": soreness_data,
         "energy": energy_data,
@@ -344,6 +361,14 @@ async def update_recovery(
         )
 
     logger.info(
-        "Updated recovery for user=%s (sleep=%d, soreness=%d, energy=%d)",
-        user_id, len(sleep_entries), len(soreness_entries), len(energy_entries),
+        (
+            "Updated recovery for user=%s "
+            "(sleep=%d, soreness=%d, energy=%d, timezone=%s, assumed=%s)"
+        ),
+        user_id,
+        len(sleep_entries),
+        len(soreness_entries),
+        len(energy_entries),
+        timezone_name,
+        timezone_context["assumed"],
     )

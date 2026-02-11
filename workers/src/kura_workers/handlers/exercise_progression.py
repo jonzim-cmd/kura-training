@@ -31,8 +31,11 @@ from ..utils import (
     find_all_keys_for_canonical,
     get_alias_map,
     get_retracted_event_ids,
+    load_timezone_preference,
+    local_date_for_timezone,
     merge_observed_attributes,
     resolve_exercise_key,
+    resolve_timezone_context,
     resolve_through_aliases,
     separate_known_unknown,
 )
@@ -123,6 +126,12 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "total_sessions": "integer — distinct training sessions",
         "total_sets": "integer",
         "total_volume_kg": "number — sum(weight_kg * reps)",
+        "timezone_context": {
+            "timezone": "IANA timezone used for day/week grouping (e.g. Europe/Berlin)",
+            "source": "preference|assumed_default",
+            "assumed": "boolean",
+            "assumption_disclosure": "string|null",
+        },
         "recent_sessions": [{
             "timestamp": "ISO 8601 datetime",
             "weight_kg": "number",
@@ -167,6 +176,9 @@ async def update_exercise_progression(
     # Load retracted event IDs and alias map (retraction-aware)
     retracted_ids = await get_retracted_event_ids(conn, user_id)
     alias_map = await get_alias_map(conn, user_id, retracted_ids=retracted_ids)
+    timezone_pref = await load_timezone_preference(conn, user_id, retracted_ids)
+    timezone_context = resolve_timezone_context(timezone_pref)
+    timezone_name = timezone_context["timezone"]
 
     # Determine which canonical exercise to recompute
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -315,10 +327,11 @@ async def update_exercise_progression(
         context_eval = context_by_event_id.get(str(row["id"]), {})
         effective_defaults = context_eval.get("effective_defaults") or {}
         ts: datetime = row["timestamp"]
+        local_day = local_date_for_timezone(ts, timezone_name)
 
         # Session key: use metadata.session_id if present, fallback to date
         session_id = metadata.get("session_id")
-        session_key = session_id or ts.date().isoformat()
+        session_key = session_id or local_day.isoformat()
 
         # Decision 10: separate known from unknown fields
         _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS)
@@ -339,7 +352,7 @@ async def update_exercise_progression(
                 "field": "weight_kg",
                 "value": weight,
                 "expected_range": [0, 500],
-                "message": f"Weight {weight}kg outside plausible range on {ts.date().isoformat()}",
+                "message": f"Weight {weight}kg outside plausible range on {local_day.isoformat()}",
             })
         if reps < 0 or reps > 100:
             anomalies.append({
@@ -347,7 +360,7 @@ async def update_exercise_progression(
                 "field": "reps",
                 "value": reps,
                 "expected_range": [0, 100],
-                "message": f"{reps} reps in a single set on {ts.date().isoformat()}",
+                "message": f"{reps} reps in a single set on {local_day.isoformat()}",
             })
 
         volume = weight * reps
@@ -366,7 +379,7 @@ async def update_exercise_progression(
                 "expected_range": [0, round(best_1rm * 2, 1)],
                 "message": (
                     f"1RM jumped from {best_1rm:.1f}kg to {e1rm:.1f}kg "
-                    f"({(e1rm / best_1rm - 1) * 100:.0f}% increase) on {ts.date().isoformat()}"
+                    f"({(e1rm / best_1rm - 1) * 100:.0f}% increase) on {local_day.isoformat()}"
                 ),
             })
 
@@ -375,7 +388,7 @@ async def update_exercise_progression(
             best_1rm_date = ts
 
         # Weekly aggregation
-        week_key = _iso_week(ts.date())
+        week_key = _iso_week(local_day)
         w = week_data[week_key]
         w["total_sets"] += 1
         w["total_volume_kg"] += volume
@@ -485,6 +498,7 @@ async def update_exercise_progression(
         "total_sessions": len(session_keys),
         "total_sets": total_sets,
         "total_volume_kg": round(total_volume_kg, 1),
+        "timezone_context": timezone_context,
         "recent_sessions": recent_sessions,
         "weekly_history": weekly_history,
         "data_quality": {
@@ -528,6 +542,14 @@ async def update_exercise_progression(
         )
 
     logger.info(
-        "Updated exercise_progression for user=%s exercise=%s (sets=%d, 1rm=%.1f)",
-        user_id, canonical, total_sets, best_1rm,
+        (
+            "Updated exercise_progression for user=%s exercise=%s "
+            "(sets=%d, 1rm=%.1f, timezone=%s, assumed=%s)"
+        ),
+        user_id,
+        canonical,
+        total_sets,
+        best_1rm,
+        timezone_name,
+        timezone_context["assumed"],
     )

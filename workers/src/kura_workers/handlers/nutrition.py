@@ -18,7 +18,14 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
-from ..utils import get_retracted_event_ids, merge_observed_attributes, separate_known_unknown
+from ..utils import (
+    get_retracted_event_ids,
+    load_timezone_preference,
+    local_date_for_timezone,
+    merge_observed_attributes,
+    resolve_timezone_context,
+    separate_known_unknown,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +79,12 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "total_meals": "integer",
         "tracking_days": "integer",
         "latest_date": "ISO 8601 date or null",
+        "timezone_context": {
+            "timezone": "IANA timezone used for day/week grouping (e.g. Europe/Berlin)",
+            "source": "preference|assumed_default",
+            "assumed": "boolean",
+            "assumption_disclosure": "string|null",
+        },
         "daily_totals": [{
             "date": "ISO 8601 date",
             "calories": "number",
@@ -112,6 +125,9 @@ async def update_nutrition(
     """Full recompute of nutrition projection."""
     user_id = payload["user_id"]
     retracted_ids = await get_retracted_event_ids(conn, user_id)
+    timezone_pref = await load_timezone_preference(conn, user_id, retracted_ids)
+    timezone_context = resolve_timezone_context(timezone_pref)
+    timezone_name = timezone_context["timezone"]
 
     # Fetch meal events
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -195,7 +211,7 @@ async def update_nutrition(
     for row in rows:
         data = row["data"]
         ts = row["timestamp"]
-        d = ts.date()
+        d = local_date_for_timezone(ts, timezone_name)
         w = _iso_week(d)
 
         # Decision 10: track unknown fields
@@ -313,6 +329,7 @@ async def update_nutrition(
         "total_meals": len(all_meals),
         "tracking_days": len(day_data),
         "latest_date": max(day_data.keys()).isoformat() if day_data else None,
+        "timezone_context": timezone_context,
         "daily_totals": daily_totals,
         "weekly_average": weekly_average,
         "recent_meals": recent_meals,
@@ -340,6 +357,10 @@ async def update_nutrition(
         )
 
     logger.info(
-        "Updated nutrition for user=%s (meals=%d, days=%d)",
-        user_id, len(all_meals), len(day_data),
+        "Updated nutrition for user=%s (meals=%d, days=%d, timezone=%s, assumed=%s)",
+        user_id,
+        len(all_meals),
+        len(day_data),
+        timezone_name,
+        timezone_context["assumed"],
     )

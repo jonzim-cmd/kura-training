@@ -275,6 +275,36 @@ class TestBodyCompositionIntegration:
         assert data["measurements"]["waist"]["current_cm"] == 84.0
         assert data["measurement_types"] == ["waist"]
 
+    async def test_timezone_preference_controls_bodyweight_day_grouping(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "preference.set", {
+            "key": "timezone", "value": "America/Los_Angeles",
+        }, "TIMESTAMP '2026-02-08 07:00:00+00'")
+        await insert_event(db, test_user_id, "bodyweight.logged", {
+            "weight_kg": 82.4,
+        }, "TIMESTAMP '2026-02-08 07:30:00+00'")  # 2026-02-07 23:30 local
+        await insert_event(db, test_user_id, "bodyweight.logged", {
+            "weight_kg": 82.2,
+        }, "TIMESTAMP '2026-02-08 08:30:00+00'")  # 2026-02-08 00:30 local
+
+        await db.execute("SET ROLE app_worker")
+        await update_body_composition(db, {
+            "user_id": test_user_id, "event_type": "bodyweight.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "body_composition")
+        assert proj is not None
+        data = proj["data"]
+        assert data["timezone_context"]["timezone"] == "America/Los_Angeles"
+        assert data["timezone_context"]["source"] == "preference"
+        assert data["timezone_context"]["assumed"] is False
+        assert [e["date"] for e in data["weight_trend"]["recent_entries"]] == [
+            "2026-02-07", "2026-02-08",
+        ]
+        assert data["weight_trend"]["all_time"]["first_date"] == "2026-02-07"
+        assert data["weight_trend"]["all_time"]["latest_date"] == "2026-02-08"
+
 
 # ---------------------------------------------------------------------------
 # Exercise Progression (needs event_id in payload)
@@ -356,6 +386,35 @@ class TestExerciseProgressionIntegration:
         # Old alias-named projection should be deleted
         old = await get_projection(db, test_user_id, "exercise_progression", "kniebeuge")
         assert old is None
+
+    async def test_timezone_preference_controls_session_day_fallback(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "preference.set", {
+            "key": "timezone", "value": "America/Los_Angeles",
+        }, "TIMESTAMP '2026-02-08 07:00:00+00'")
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise": "Bench Press", "exercise_id": "bench_press",
+            "weight_kg": 80, "reps": 5,
+        }, "TIMESTAMP '2026-02-08 07:30:00+00'")  # 2026-02-07 23:30 local
+        event_id = await insert_event(db, test_user_id, "set.logged", {
+            "exercise": "Bench Press", "exercise_id": "bench_press",
+            "weight_kg": 82.5, "reps": 5,
+        }, "TIMESTAMP '2026-02-08 08:30:00+00'")  # 2026-02-08 00:30 local
+
+        await db.execute("SET ROLE app_worker")
+        await update_exercise_progression(db, {
+            "user_id": test_user_id, "event_type": "set.logged",
+            "event_id": event_id,
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "exercise_progression", "bench_press")
+        assert proj is not None
+        data = proj["data"]
+        assert data["timezone_context"]["timezone"] == "America/Los_Angeles"
+        assert data["timezone_context"]["source"] == "preference"
+        assert data["timezone_context"]["assumed"] is False
+        assert data["total_sessions"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -484,6 +543,34 @@ class TestRecoveryIntegration:
         data = proj["data"]
         assert data["targets"]["sleep"]["duration_hours"] == 8
 
+    async def test_timezone_preference_controls_recovery_day_grouping(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "preference.set", {
+            "key": "timezone", "value": "America/Los_Angeles",
+        }, "TIMESTAMP '2026-02-08 07:00:00+00'")
+        await insert_event(db, test_user_id, "sleep.logged", {
+            "duration_hours": 7.0,
+        }, "TIMESTAMP '2026-02-08 07:30:00+00'")  # 2026-02-07 23:30 local
+        await insert_event(db, test_user_id, "sleep.logged", {
+            "duration_hours": 7.8,
+        }, "TIMESTAMP '2026-02-08 08:30:00+00'")  # 2026-02-08 00:30 local
+
+        await db.execute("SET ROLE app_worker")
+        await update_recovery(db, {
+            "user_id": test_user_id, "event_type": "sleep.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "recovery")
+        assert proj is not None
+        data = proj["data"]
+        assert data["timezone_context"]["timezone"] == "America/Los_Angeles"
+        assert data["timezone_context"]["source"] == "preference"
+        assert data["timezone_context"]["assumed"] is False
+        assert [e["date"] for e in data["sleep"]["recent_entries"]] == [
+            "2026-02-07", "2026-02-08",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Nutrition
@@ -537,6 +624,52 @@ class TestNutritionIntegration:
         data = proj["data"]
         assert data["target"]["calories"] == 2500
         assert data["target"]["protein_g"] == 180
+
+    async def test_timezone_preference_controls_nutrition_day_grouping(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "preference.set", {
+            "key": "timezone", "value": "America/Los_Angeles",
+        }, "TIMESTAMP '2026-02-08 07:00:00+00'")
+        await insert_event(db, test_user_id, "meal.logged", {
+            "calories": 600, "protein_g": 40, "meal_type": "late_snack",
+        }, "TIMESTAMP '2026-02-08 07:30:00+00'")  # 2026-02-07 23:30 local
+        await insert_event(db, test_user_id, "meal.logged", {
+            "calories": 700, "protein_g": 45, "meal_type": "breakfast",
+        }, "TIMESTAMP '2026-02-08 08:30:00+00'")  # 2026-02-08 00:30 local
+
+        await db.execute("SET ROLE app_worker")
+        await update_nutrition(db, {
+            "user_id": test_user_id, "event_type": "meal.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "nutrition")
+        assert proj is not None
+        data = proj["data"]
+        assert data["timezone_context"]["timezone"] == "America/Los_Angeles"
+        assert data["timezone_context"]["source"] == "preference"
+        assert data["timezone_context"]["assumed"] is False
+        assert [d["date"] for d in data["daily_totals"]] == ["2026-02-07", "2026-02-08"]
+
+    async def test_missing_timezone_uses_explicit_utc_assumption(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "meal.logged", {
+            "calories": 500, "protein_g": 30,
+        }, "TIMESTAMP '2026-02-01 08:00:00+00'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_nutrition(db, {
+            "user_id": test_user_id, "event_type": "meal.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "nutrition")
+        assert proj is not None
+        context = proj["data"]["timezone_context"]
+        assert context["timezone"] == "UTC"
+        assert context["source"] == "assumed_default"
+        assert context["assumed"] is True
+        assert "UTC" in context["assumption_disclosure"]
 
 
 # ---------------------------------------------------------------------------

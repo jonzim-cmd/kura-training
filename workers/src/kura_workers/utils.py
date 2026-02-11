@@ -1,12 +1,19 @@
 """Shared utility functions for Kura workers."""
 
 import logging
+from datetime import date, datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import psycopg
 from psycopg.rows import dict_row
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_ASSUMED_TIMEZONE = "UTC"
+TIMEZONE_ASSUMPTION_DISCLOSURE = (
+    "No explicit timezone preference found; using UTC until the user confirms one."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +86,78 @@ def check_expected_fields(
         for field, hint in expected.items()
         if field not in data
     ]
+
+
+def normalize_timezone_name(value: Any) -> str | None:
+    """Normalize timezone preference and verify it's a valid IANA name."""
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    if raw.upper() == "UTC":
+        return "UTC"
+    try:
+        ZoneInfo(raw)
+    except ZoneInfoNotFoundError:
+        return None
+    return raw
+
+
+def resolve_timezone_context(timezone_pref: Any) -> dict[str, Any]:
+    """Return timezone context with explicit assumption disclosure when missing."""
+    normalized = normalize_timezone_name(timezone_pref)
+    if normalized:
+        return {
+            "timezone": normalized,
+            "source": "preference",
+            "assumed": False,
+            "assumption_disclosure": None,
+        }
+    return {
+        "timezone": DEFAULT_ASSUMED_TIMEZONE,
+        "source": "assumed_default",
+        "assumed": True,
+        "assumption_disclosure": TIMEZONE_ASSUMPTION_DISCLOSURE,
+    }
+
+
+def local_date_for_timezone(ts: datetime, timezone_name: str) -> date:
+    """Project event timestamp into the configured local date."""
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(ZoneInfo(timezone_name)).date()
+
+
+async def load_timezone_preference(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+    retracted_ids: set[str],
+) -> str | None:
+    """Load latest non-retracted timezone preference for day/week semantics."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT id, data
+            FROM events
+            WHERE user_id = %s
+              AND event_type = 'preference.set'
+              AND data->>'key' IN ('timezone', 'time_zone')
+            ORDER BY timestamp DESC, id DESC
+            LIMIT 64
+            """,
+            (user_id,),
+        )
+        pref_rows = await cur.fetchall()
+
+    for row in pref_rows:
+        if str(row["id"]) in retracted_ids:
+            continue
+        data = row.get("data") or {}
+        normalized = normalize_timezone_name(data.get("value"))
+        if normalized:
+            return normalized
+    return None
 
 
 async def get_retracted_event_ids(

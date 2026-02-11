@@ -23,7 +23,12 @@ from ..rule_models import (
     FieldTrackingRule,
     validate_rule,
 )
-from ..utils import get_retracted_event_ids
+from ..utils import (
+    get_retracted_event_ids,
+    load_timezone_preference,
+    local_date_for_timezone,
+    resolve_timezone_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +106,10 @@ async def _compute_field_tracking(
     - weekly_summary: weekly averages
     - all_time: overall stats per field
     """
+    timezone_pref = await load_timezone_preference(conn, user_id, retracted_ids)
+    timezone_context = resolve_timezone_context(timezone_pref)
+    timezone_name = timezone_context["timezone"]
+
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
@@ -119,6 +128,7 @@ async def _compute_field_tracking(
     if not rows:
         return {
             "rule": rule.model_dump(),
+            "timezone_context": timezone_context,
             "recent_entries": [],
             "weekly_summary": [],
             "all_time": {},
@@ -131,7 +141,7 @@ async def _compute_field_tracking(
 
     for row in rows:
         data = row["data"]
-        day_key = row["timestamp"].date().isoformat()
+        day_key = local_date_for_timezone(row["timestamp"], timezone_name).isoformat()
         entry: dict[str, Any] = {}
         has_any = False
         for field in rule.fields:
@@ -195,6 +205,7 @@ async def _compute_field_tracking(
 
     return {
         "rule": rule.model_dump(),
+        "timezone_context": timezone_context,
         "recent_entries": recent_entries,
         "weekly_summary": weekly_summary,
         "all_time": all_time,

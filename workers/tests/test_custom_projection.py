@@ -3,7 +3,7 @@
 Unit tests using mock DB connections. Integration tests require a running database.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,8 +14,6 @@ from kura_workers.handlers.custom_projection import (
     _compute_rule,
     _load_active_rules,
     has_matching_custom_rules,
-    recompute_matching_rules,
-    update_custom_projections,
 )
 from kura_workers.rule_models import CategorizedTrackingRule, FieldTrackingRule
 
@@ -199,6 +197,30 @@ class TestComputeFieldTracking:
 
         result = await _compute_field_tracking(conn, "user-1", rule, set())
         assert len(result["recent_entries"]) == 30
+
+    async def test_timezone_preference_controls_day_grouping(self, rule):
+        preference_rows = [
+            {"id": "pref-1", "data": {"key": "timezone", "value": "America/Los_Angeles"}},
+        ]
+        events = [
+            _make_event("sleep.logged", {"hrv_rmssd": 55.0},
+                        "2026-02-08T07:30:00+00:00", "evt-1"),  # 2026-02-07 23:30 local
+            _make_event("sleep.logged", {"hrv_rmssd": 60.0},
+                        "2026-02-08T08:30:00+00:00", "evt-2"),  # 2026-02-08 00:30 local
+        ]
+        cursor = AsyncMock()
+        cursor.execute = AsyncMock()
+        cursor.fetchall = AsyncMock(side_effect=[preference_rows, events])
+        conn = AsyncMock()
+        conn.cursor = MagicMock(return_value=_MockCursorContext(cursor))
+
+        result = await _compute_field_tracking(conn, "user-1", rule, set())
+        assert result["timezone_context"]["timezone"] == "America/Los_Angeles"
+        assert result["timezone_context"]["source"] == "preference"
+        assert result["timezone_context"]["assumed"] is False
+        assert [entry["date"] for entry in result["recent_entries"]] == [
+            "2026-02-07", "2026-02-08",
+        ]
 
 
 # ---------------------------------------------------------------------------

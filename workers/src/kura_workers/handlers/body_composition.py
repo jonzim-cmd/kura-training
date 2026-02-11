@@ -16,7 +16,14 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
-from ..utils import get_retracted_event_ids, merge_observed_attributes, separate_known_unknown
+from ..utils import (
+    get_retracted_event_ids,
+    load_timezone_preference,
+    local_date_for_timezone,
+    merge_observed_attributes,
+    resolve_timezone_context,
+    separate_known_unknown,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +73,12 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     "output_schema": {
         "current_weight_kg": "number or null",
         "total_weigh_ins": "integer",
+        "timezone_context": {
+            "timezone": "IANA timezone used for day/week grouping (e.g. Europe/Berlin)",
+            "source": "preference|assumed_default",
+            "assumed": "boolean",
+            "assumption_disclosure": "string|null",
+        },
         "weight_trend": {
             "recent_entries": [{"date": "ISO 8601 date", "weight_kg": "number", "time_of_day": "string (optional)", "conditions": "string (optional)"}],
             "weekly_average": [{"week": "ISO 8601 week", "avg_weight_kg": "number", "measurements": "integer"}],
@@ -94,6 +107,9 @@ async def update_body_composition(
     """Full recompute of body_composition projection."""
     user_id = payload["user_id"]
     retracted_ids = await get_retracted_event_ids(conn, user_id)
+    timezone_pref = await load_timezone_preference(conn, user_id, retracted_ids)
+    timezone_context = resolve_timezone_context(timezone_pref)
+    timezone_name = timezone_context["timezone"]
 
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -162,7 +178,7 @@ async def update_body_composition(
     for row in rows:
         data = row["data"]
         ts = row["timestamp"]
-        d = ts.date()
+        d = local_date_for_timezone(ts, timezone_name)
         event_type = row["event_type"]
 
         if event_type == "bodyweight.logged":
@@ -290,6 +306,7 @@ async def update_body_composition(
     projection_data: dict[str, Any] = {
         "current_weight_kg": all_weights[-1]["weight_kg"] if all_weights else None,
         "total_weigh_ins": len(all_weights),
+        "timezone_context": timezone_context,
         "weight_trend": weight_trend,
         "measurements": measurements,
         "measurement_types": sorted(measurements_by_type.keys()),
@@ -317,6 +334,13 @@ async def update_body_composition(
         )
 
     logger.info(
-        "Updated body_composition for user=%s (weigh_ins=%d, measurement_types=%d)",
-        user_id, len(all_weights), len(measurements_by_type),
+        (
+            "Updated body_composition for user=%s "
+            "(weigh_ins=%d, measurement_types=%d, timezone=%s, assumed=%s)"
+        ),
+        user_id,
+        len(all_weights),
+        len(measurements_by_type),
+        timezone_name,
+        timezone_context["assumed"],
     )
