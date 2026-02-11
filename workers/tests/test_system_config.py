@@ -236,6 +236,14 @@ class TestConventions:
         assert "bayesian_inference" in result
         assert "minimum_data" in result["bayesian_inference"]
 
+    def test_has_causal_inference_conventions(self):
+        result = _get_conventions()
+        assert "causal_inference" in result
+        causal = result["causal_inference"]
+        assert "assumptions" in causal
+        assert "caveat_codes" in causal
+        assert "minimum_data" in causal
+
     def test_data_correction_has_rules(self):
         result = _get_conventions()
         rules = result["data_correction"]["rules"]

@@ -120,6 +120,36 @@ def _get_conventions() -> dict[str, Any]:
                 },
             },
         },
+        "causal_inference": {
+            "rules": [
+                "Treat intervention effects as observational estimates, not randomized truth.",
+                "Always communicate assumptions and caveats alongside effect sizes.",
+                "Use causal outputs for prioritization and hypothesis ranking, not diagnosis.",
+                "When overlap is weak or weights are extreme, lower confidence in recommendations.",
+            ],
+            "minimum_data": {
+                "intervention_windows": 24,
+                "minimum_treated_windows": 4,
+                "minimum_control_windows": 4,
+            },
+            "assumptions": [
+                "consistency",
+                "no_unmeasured_confounding",
+                "positivity",
+                "no_interference",
+                "model_specification",
+            ],
+            "caveat_codes": {
+                "insufficient_samples": "Not enough treated/control windows to estimate stable effects.",
+                "positivity_violation": "Treatment assignment is too deterministic for adjustment.",
+                "weak_overlap": "Treated and control propensity distributions overlap weakly.",
+                "extreme_weights": "IPW weights are heavy-tailed; point estimates may be unstable.",
+                "low_effective_sample_size": "Weighted effective sample size is small.",
+                "residual_confounding_risk": "Post-weighting covariate imbalance remains high.",
+                "low_outcome_variance": "Outcome variance is small; effect detectability is limited.",
+                "wide_interval": "Uncertainty interval is wide; directional claims are fragile.",
+            },
+        },
     }
 
 
