@@ -50,6 +50,38 @@ Purpose:
 - Reduce repetitive clarification loops
 - Keep all behavior inspectable and reversible
 
+### D12.6 Semantic Resolve API Contract
+
+Endpoint: `POST /v1/semantic/resolve`
+
+Purpose:
+- Let agents submit free-text terms for `exercise`/`food`
+- Return ranked canonical candidates with confidence bands and provenance
+- Reuse semantic foundation artifacts instead of embedding logic in each agent
+
+Request (batch-friendly):
+
+```json
+{
+  "queries": [
+    { "term": "Kniebeuge", "domain": "exercise" },
+    { "term": "Haferflocken", "domain": "food" }
+  ],
+  "top_k": 5
+}
+```
+
+Resolution strategy (in order):
+1. Exact term hits from `semantic_memory/overview` candidates
+2. Exact catalog/variant matches from `semantic_catalog` + `semantic_variants`
+3. Embedding similarity via `semantic_user_embeddings` + `semantic_catalog_embeddings`
+   - If provider is `hashing` and no stored user embedding exists, runtime hashing fallback is used
+
+Response characteristics:
+- Per-query ranked candidates (`score`, `confidence`)
+- Candidate `provenance` entries indicate source (`semantic_memory_projection`, `catalog_exact_match`, embedding similarity sources)
+- Response `meta` includes provider/model and similarity threshold used during ranking
+
 ### D12.4 Bayesian Inference Projections
 
 New projection: `strength_inference/<exercise_id>`

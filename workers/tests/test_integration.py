@@ -23,11 +23,16 @@ import kura_workers.handlers  # noqa: F401
 from kura_workers.handlers.body_composition import update_body_composition
 from kura_workers.handlers.exercise_progression import update_exercise_progression
 from kura_workers.handlers.nutrition import update_nutrition
+from kura_workers.handlers.readiness_inference import update_readiness_inference
 from kura_workers.handlers.recovery import update_recovery
 from kura_workers.handlers.router import handle_projection_retry, handle_projection_update
+from kura_workers.handlers.semantic_memory import update_semantic_memory
+from kura_workers.handlers.strength_inference import update_strength_inference
 from kura_workers.handlers.training_plan import update_training_plan
 from kura_workers.handlers.training_timeline import update_training_timeline
 from kura_workers.handlers.user_profile import update_user_profile
+from kura_workers.handlers.inference_nightly import handle_inference_nightly_refit
+from kura_workers.semantic_bootstrap import ensure_semantic_catalog
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL not set")
@@ -378,6 +383,122 @@ class TestNutritionIntegration:
         data = proj["data"]
         assert data["target"]["calories"] == 2500
         assert data["target"]["protein_g"] == 180
+
+
+# ---------------------------------------------------------------------------
+# Semantic + Inference Foundation
+# ---------------------------------------------------------------------------
+
+
+class TestSemanticMemoryIntegration:
+    async def test_semantic_memory_projection_created(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise": "Kniebeuge", "weight_kg": 100, "reps": 5,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+        await insert_event(db, test_user_id, "meal.logged", {
+            "food": "Haferflocken", "calories": 350, "protein_g": 12,
+        }, "TIMESTAMP '2026-02-01 12:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await ensure_semantic_catalog(db)
+        await update_semantic_memory(db, {
+            "user_id": test_user_id, "event_type": "set.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "semantic_memory")
+        assert proj is not None
+        data = proj["data"]
+        assert data["indexed_terms"]["exercise"] >= 1
+        assert data["indexed_terms"]["food"] >= 1
+        assert "provider" in data
+        assert "exercise_candidates" in data
+        assert "food_candidates" in data
+
+
+class TestInferenceIntegration:
+    async def test_strength_and_readiness_projections(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+
+        last_set_event_id = None
+        for day in range(1, 6):
+            await insert_event(db, test_user_id, "sleep.logged", {
+                "duration_hours": 7.0 + (day * 0.1),
+            }, f"TIMESTAMP '2026-02-{day:02d} 07:00:00+01'")
+            await insert_event(db, test_user_id, "energy.logged", {
+                "level": 6 + (day % 3),
+            }, f"TIMESTAMP '2026-02-{day:02d} 08:00:00+01'")
+            await insert_event(db, test_user_id, "soreness.logged", {
+                "severity": 2 + (day % 2),
+            }, f"TIMESTAMP '2026-02-{day:02d} 09:00:00+01'")
+            last_set_event_id = await insert_event(db, test_user_id, "set.logged", {
+                "exercise_id": "bench_press",
+                "exercise": "Bench Press",
+                "weight_kg": 80 + day,
+                "reps": 5,
+            }, f"TIMESTAMP '2026-02-{day:02d} 10:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_strength_inference(db, {
+            "user_id": test_user_id,
+            "event_type": "set.logged",
+            "event_id": last_set_event_id,
+        })
+        await update_readiness_inference(db, {
+            "user_id": test_user_id,
+            "event_type": "sleep.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        strength = await get_projection(db, test_user_id, "strength_inference", "bench_press")
+        assert strength is not None
+        strength_data = strength["data"]
+        assert strength_data["exercise_id"] == "bench_press"
+        assert strength_data["data_quality"]["sessions_used"] >= 3
+
+        readiness = await get_projection(db, test_user_id, "readiness_inference")
+        assert readiness is not None
+        readiness_data = readiness["data"]
+        assert readiness_data["data_quality"]["days_with_observations"] >= 5
+        assert "readiness_today" in readiness_data
+
+
+class TestInferenceNightlyRefitIntegration:
+    async def test_nightly_refit_enqueues_projection_updates(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "bench_press", "weight_kg": 90, "reps": 5,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+        await insert_event(db, test_user_id, "sleep.logged", {
+            "duration_hours": 7.5,
+        }, "TIMESTAMP '2026-02-01 07:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await handle_inference_nightly_refit(db, {"interval_hours": 12})
+        await db.execute("RESET ROLE")
+
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT job_type, payload
+                FROM background_jobs
+                WHERE user_id = %s
+                  AND job_type IN ('projection.update', 'inference.nightly_refit')
+                """,
+                (test_user_id,),
+            )
+            rows = await cur.fetchall()
+
+        projection_updates = [r for r in rows if r["job_type"] == "projection.update"]
+        assert len(projection_updates) >= 2
+        event_types = {row["payload"]["event_type"] for row in projection_updates}
+        assert "set.logged" in event_types
+        assert "sleep.logged" in event_types
+
+        nightly_jobs = [r for r in rows if r["job_type"] == "inference.nightly_refit"]
+        assert len(nightly_jobs) == 1
+        assert nightly_jobs[0]["payload"]["interval_hours"] == 12
 
 
 # ---------------------------------------------------------------------------

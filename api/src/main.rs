@@ -25,6 +25,7 @@ mod state;
     paths(
         routes::health::health_check,
         routes::agent::get_agent_context,
+        routes::semantic::resolve_semantic_terms,
         routes::events::create_event,
         routes::events::create_events_batch,
         routes::events::simulate_events,
@@ -50,6 +51,16 @@ mod state;
         routes::account::AccountDeletedResponse,
         routes::agent::AgentContextMeta,
         routes::agent::AgentContextResponse,
+        routes::semantic::SemanticDomain,
+        routes::semantic::SemanticConfidenceBand,
+        routes::semantic::SemanticProviderInfo,
+        routes::semantic::SemanticResolveRequest,
+        routes::semantic::SemanticResolveQuery,
+        routes::semantic::SemanticResolveResponse,
+        routes::semantic::SemanticResolveResult,
+        routes::semantic::SemanticResolveCandidate,
+        routes::semantic::SemanticResolveProvenance,
+        routes::semantic::SemanticResolveMeta,
         kura_core::error::ApiError,
         kura_core::events::Event,
         kura_core::events::EventMetadata,
@@ -159,6 +170,7 @@ async fn main() {
         .merge(SwaggerUi::new("/swagger-ui").url("/api-doc/openapi.json", ApiDoc::openapi()))
         .merge(routes::health::router())
         .merge(routes::agent::router().layer(middleware::rate_limit::projections_layer()))
+        .merge(routes::semantic::router().layer(middleware::rate_limit::projections_layer()))
         .merge(routes::events::write_router().layer(middleware::rate_limit::events_write_layer()))
         .merge(routes::events::read_router().layer(middleware::rate_limit::events_read_layer()))
         .merge(routes::projections::router().layer(middleware::rate_limit::projections_layer()))
