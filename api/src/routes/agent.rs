@@ -116,7 +116,7 @@ pub struct AgentWriteWithProofRequest {
     pub verify_timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AgentWriteReceipt {
     pub event_id: Uuid,
     pub event_type: String,
@@ -139,10 +139,12 @@ pub struct AgentReadAfterWriteCheck {
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AgentWriteVerificationSummary {
-    /// verified | pending
+    /// verified | pending | failed
     pub status: String,
     pub checked_at: DateTime<Utc>,
     pub waited_ms: u64,
+    /// fresh_write | idempotent_retry
+    pub write_path: String,
     pub required_checks: usize,
     pub verified_checks: usize,
     pub checks: Vec<AgentReadAfterWriteCheck>,
@@ -151,7 +153,7 @@ pub struct AgentWriteVerificationSummary {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AgentWriteClaimGuard {
     pub allow_saved_claim: bool,
-    /// verified | deferred
+    /// saved_verified | pending | failed
     pub claim_status: String,
     pub uncertainty_markers: Vec<String>,
     pub deferred_markers: Vec<String>,
@@ -211,6 +213,88 @@ struct SystemConfigRow {
     data: Value,
     version: i64,
     updated_at: DateTime<Utc>,
+}
+
+#[derive(sqlx::FromRow)]
+struct ExistingWriteReceiptRow {
+    id: Uuid,
+    event_type: String,
+    timestamp: DateTime<Utc>,
+    metadata: Value,
+}
+
+fn recover_receipts_for_idempotent_retry(
+    requested_events: &[CreateEventRequest],
+    recovered_by_key: &HashMap<String, AgentWriteReceipt>,
+) -> Vec<AgentWriteReceipt> {
+    let mut receipts = Vec::with_capacity(requested_events.len());
+    for event in requested_events {
+        let key = event.metadata.idempotency_key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        if let Some(receipt) = recovered_by_key.get(key) {
+            receipts.push(receipt.clone());
+        }
+    }
+    receipts
+}
+
+async fn fetch_existing_receipts_by_idempotency_keys(
+    state: &AppState,
+    user_id: Uuid,
+    keys: &[String],
+) -> Result<HashMap<String, AgentWriteReceipt>, AppError> {
+    if keys.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+    let rows = sqlx::query_as::<_, ExistingWriteReceiptRow>(
+        r#"
+        SELECT id, event_type, timestamp, metadata
+        FROM events
+        WHERE user_id = $1
+          AND metadata->>'idempotency_key' = ANY($2)
+        ORDER BY timestamp ASC, id ASC
+        "#,
+    )
+    .bind(user_id)
+    .bind(keys)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    let mut recovered = HashMap::new();
+    for row in rows {
+        let key = row
+            .metadata
+            .get("idempotency_key")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        if key.is_empty() || recovered.contains_key(&key) {
+            continue;
+        }
+        recovered.insert(
+            key.clone(),
+            AgentWriteReceipt {
+                event_id: row.id,
+                event_type: row.event_type,
+                idempotency_key: key,
+                event_timestamp: row.timestamp,
+            },
+        );
+    }
+
+    Ok(recovered)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -929,7 +1013,7 @@ fn build_claim_guard(
         && autonomy_policy.throttle_active
     {
         (
-            "verified".to_string(),
+            "saved_verified".to_string(),
             autonomy_policy
                 .confirmation_templates
                 .get("post_save_followup")
@@ -943,12 +1027,17 @@ fn build_claim_guard(
         )
     } else if allow_saved_claim {
         (
-            "verified".to_string(),
+            "saved_verified".to_string(),
             "Saved and verified in the read model.".to_string(),
+        )
+    } else if !receipts_complete {
+        (
+            "failed".to_string(),
+            "Write proof incomplete (missing durable receipts). Avoid a saved claim and retry with the same idempotency keys.".to_string(),
         )
     } else {
         (
-            "deferred".to_string(),
+            "pending".to_string(),
             "Write accepted; verification still pending, so avoid a definitive 'saved' claim."
                 .to_string(),
         )
@@ -978,6 +1067,7 @@ fn build_save_claim_checked_event(
         "allow_saved_claim": claim_guard.allow_saved_claim,
         "claim_status": claim_guard.claim_status,
         "verification_status": verification.status,
+        "write_path": verification.write_path,
         "required_checks": verification.required_checks,
         "verified_checks": verification.verified_checks,
         "mismatch_detected": mismatch_detected,
@@ -1092,6 +1182,7 @@ fn build_learning_signal_event(
             "allow_saved_claim": claim_guard.allow_saved_claim,
             "claim_status": claim_guard.claim_status,
             "verification_status": verification.status,
+            "write_path": verification.write_path,
             "required_checks": verification.required_checks,
             "verified_checks": verification.verified_checks,
             "mismatch_detected": !claim_guard.allow_saved_claim,
@@ -1276,17 +1367,57 @@ pub async fn write_with_proof(
         });
     }
 
-    let batch_result = create_events_batch_internal(&state, user_id, &req.events).await?;
-    let receipts: Vec<AgentWriteReceipt> = batch_result
-        .events
-        .iter()
-        .map(|event| AgentWriteReceipt {
-            event_id: event.id,
-            event_type: event.event_type.clone(),
-            idempotency_key: event.metadata.idempotency_key.clone(),
-            event_timestamp: event.timestamp,
-        })
-        .collect();
+    let mut warnings: Vec<BatchEventWarning> = Vec::new();
+    let mut write_path = "fresh_write".to_string();
+    let receipts: Vec<AgentWriteReceipt> = match create_events_batch_internal(
+        &state,
+        user_id,
+        &req.events,
+    )
+    .await
+    {
+        Ok(batch_result) => {
+            warnings = batch_result.warnings;
+            batch_result
+                .events
+                .iter()
+                .map(|event| AgentWriteReceipt {
+                    event_id: event.id,
+                    event_type: event.event_type.clone(),
+                    idempotency_key: event.metadata.idempotency_key.clone(),
+                    event_timestamp: event.timestamp,
+                })
+                .collect()
+        }
+        Err(AppError::IdempotencyConflict { .. }) => {
+            write_path = "idempotent_retry".to_string();
+            let requested_keys: Vec<String> = req
+                .events
+                .iter()
+                .map(|event| event.metadata.idempotency_key.clone())
+                .collect();
+            let recovered_by_key =
+                fetch_existing_receipts_by_idempotency_keys(&state, user_id, &requested_keys)
+                    .await?;
+            let recovered = recover_receipts_for_idempotent_retry(&req.events, &recovered_by_key);
+            let recovered_count = recovered.len();
+            let recovery_message = if recovered_count == requested_event_count {
+                "Idempotent retry detected; reused existing write receipts.".to_string()
+            } else {
+                format!(
+                    "Idempotent retry detected but recovery is incomplete ({recovered_count}/{requested_event_count} receipts)."
+                )
+            };
+            warnings.push(BatchEventWarning {
+                event_index: 0,
+                field: "metadata.idempotency_key".to_string(),
+                message: recovery_message,
+                severity: "warning".to_string(),
+            });
+            recovered
+        }
+        Err(err) => return Err(err),
+    };
     let event_ids: HashSet<Uuid> = receipts.iter().map(|receipt| receipt.event_id).collect();
 
     let (checks, waited_ms) = verify_read_after_write_until_timeout(
@@ -1302,7 +1433,13 @@ pub async fn write_with_proof(
         .iter()
         .filter(|check| check.status == "verified")
         .count();
-    let verification_status = if verified_checks == checks.len() {
+    let receipts_complete = receipts.len() == requested_event_count
+        && receipts
+            .iter()
+            .all(|receipt| !receipt.idempotency_key.trim().is_empty());
+    let verification_status = if !receipts_complete {
+        "failed".to_string()
+    } else if verified_checks == checks.len() {
         "verified".to_string()
     } else {
         "pending".to_string()
@@ -1314,6 +1451,7 @@ pub async fn write_with_proof(
         status: verification_status,
         checked_at: Utc::now(),
         waited_ms,
+        write_path,
         required_checks: checks.len(),
         verified_checks,
         checks,
@@ -1322,7 +1460,7 @@ pub async fn write_with_proof(
         &receipts,
         requested_event_count,
         &verification.checks,
-        &batch_result.warnings,
+        &warnings,
         autonomy_policy,
     );
     let quality_signal = build_save_claim_checked_event(
@@ -1345,7 +1483,7 @@ pub async fn write_with_proof(
         StatusCode::CREATED,
         Json(AgentWriteWithProofResponse {
             receipts,
-            warnings: batch_result.warnings,
+            warnings,
             verification,
             claim_guard,
         }),
@@ -1484,14 +1622,14 @@ pub async fn get_agent_context(
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentReadAfterWriteCheck, AgentReadAfterWriteTarget, AgentWriteReceipt, IntentClass,
-        ProjectionResponse, RankingContext, bootstrap_user_profile, build_claim_guard,
-        build_save_handshake_learning_signal_events, clamp_limit, clamp_verify_timeout_ms,
-        default_autonomy_policy, normalize_read_after_write_targets, rank_projection_list,
-        ranking_candidate_limit,
+        bootstrap_user_profile, build_claim_guard, build_save_handshake_learning_signal_events,
+        clamp_limit, clamp_verify_timeout_ms, default_autonomy_policy,
+        normalize_read_after_write_targets, rank_projection_list, ranking_candidate_limit,
+        recover_receipts_for_idempotent_retry, AgentReadAfterWriteCheck, AgentReadAfterWriteTarget,
+        AgentWriteReceipt, IntentClass, ProjectionResponse, RankingContext,
     };
     use chrono::{Duration, Utc};
-    use kura_core::events::BatchEventWarning;
+    use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
     use kura_core::projections::{Projection, ProjectionFreshness, ProjectionMeta};
     use serde_json::json;
     use uuid::Uuid;
@@ -1668,6 +1806,82 @@ mod tests {
     }
 
     #[test]
+    fn recover_receipts_for_idempotent_retry_preserves_request_order() {
+        let now = Utc::now();
+        let requested = vec![
+            CreateEventRequest {
+                timestamp: now,
+                event_type: "set.logged".to_string(),
+                data: json!({"exercise_id": "squat", "reps": 5}),
+                metadata: EventMetadata {
+                    source: Some("api".to_string()),
+                    agent: Some("test".to_string()),
+                    device: None,
+                    session_id: Some("s1".to_string()),
+                    idempotency_key: "k-1".to_string(),
+                },
+            },
+            CreateEventRequest {
+                timestamp: now,
+                event_type: "set.logged".to_string(),
+                data: json!({"exercise_id": "bench", "reps": 5}),
+                metadata: EventMetadata {
+                    source: Some("api".to_string()),
+                    agent: Some("test".to_string()),
+                    device: None,
+                    session_id: Some("s1".to_string()),
+                    idempotency_key: "k-2".to_string(),
+                },
+            },
+        ];
+
+        let mut recovered_by_key = std::collections::HashMap::new();
+        recovered_by_key.insert(
+            "k-2".to_string(),
+            AgentWriteReceipt {
+                event_id: Uuid::now_v7(),
+                event_type: "set.logged".to_string(),
+                idempotency_key: "k-2".to_string(),
+                event_timestamp: now,
+            },
+        );
+        recovered_by_key.insert(
+            "k-1".to_string(),
+            AgentWriteReceipt {
+                event_id: Uuid::now_v7(),
+                event_type: "set.logged".to_string(),
+                idempotency_key: "k-1".to_string(),
+                event_timestamp: now,
+            },
+        );
+
+        let recovered = recover_receipts_for_idempotent_retry(&requested, &recovered_by_key);
+        assert_eq!(recovered.len(), 2);
+        assert_eq!(recovered[0].idempotency_key, "k-1");
+        assert_eq!(recovered[1].idempotency_key, "k-2");
+    }
+
+    #[test]
+    fn recover_receipts_for_idempotent_retry_skips_missing_keys() {
+        let now = Utc::now();
+        let requested = vec![CreateEventRequest {
+            timestamp: now,
+            event_type: "set.logged".to_string(),
+            data: json!({"exercise_id": "squat", "reps": 5}),
+            metadata: EventMetadata {
+                source: Some("api".to_string()),
+                agent: Some("test".to_string()),
+                device: None,
+                session_id: Some("s1".to_string()),
+                idempotency_key: "k-missing".to_string(),
+            },
+        }];
+        let recovered =
+            recover_receipts_for_idempotent_retry(&requested, &std::collections::HashMap::new());
+        assert!(recovered.is_empty());
+    }
+
+    #[test]
     fn claim_guard_is_verified_only_when_receipts_and_readback_complete() {
         let event_id = Uuid::now_v7();
         let receipts = vec![AgentWriteReceipt {
@@ -1687,7 +1901,7 @@ mod tests {
 
         let guard = build_claim_guard(&receipts, 1, &checks, &[], default_autonomy_policy());
         assert!(guard.allow_saved_claim);
-        assert_eq!(guard.claim_status, "verified");
+        assert_eq!(guard.claim_status, "saved_verified");
         assert!(guard.uncertainty_markers.is_empty());
         assert!(guard.next_action_confirmation_prompt.is_none());
     }
@@ -1717,25 +1931,19 @@ mod tests {
 
         let guard = build_claim_guard(&receipts, 1, &checks, &warnings, default_autonomy_policy());
         assert!(!guard.allow_saved_claim);
-        assert_eq!(guard.claim_status, "deferred");
-        assert!(
-            guard
-                .uncertainty_markers
-                .iter()
-                .any(|marker| marker == "read_after_write_unverified")
-        );
-        assert!(
-            guard
-                .deferred_markers
-                .iter()
-                .any(|marker| marker == "defer_saved_claim_until_projection_readback")
-        );
-        assert!(
-            guard
-                .uncertainty_markers
-                .iter()
-                .any(|marker| marker == "plausibility_warnings_present")
-        );
+        assert_eq!(guard.claim_status, "pending");
+        assert!(guard
+            .uncertainty_markers
+            .iter()
+            .any(|marker| marker == "read_after_write_unverified"));
+        assert!(guard
+            .deferred_markers
+            .iter()
+            .any(|marker| marker == "defer_saved_claim_until_projection_readback"));
+        assert!(guard
+            .uncertainty_markers
+            .iter()
+            .any(|marker| marker == "plausibility_warnings_present"));
     }
 
     #[test]
@@ -1763,7 +1971,7 @@ mod tests {
 
         let guard = build_claim_guard(&receipts, 1, &checks, &[], policy);
         assert!(guard.allow_saved_claim);
-        assert_eq!(guard.claim_status, "verified");
+        assert_eq!(guard.claim_status, "saved_verified");
         assert_eq!(guard.autonomy_policy.slo_status, "degraded");
         assert!(
             guard
@@ -1773,12 +1981,30 @@ mod tests {
                 .len()
                 > 10
         );
-        assert!(
-            guard
-                .uncertainty_markers
-                .iter()
-                .any(|marker| marker == "autonomy_throttled_by_integrity_slo")
-        );
+        assert!(guard
+            .uncertainty_markers
+            .iter()
+            .any(|marker| marker == "autonomy_throttled_by_integrity_slo"));
+    }
+
+    #[test]
+    fn claim_guard_returns_failed_when_receipts_are_incomplete() {
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "user_profile".to_string(),
+            key: "me".to_string(),
+            status: "verified".to_string(),
+            observed_projection_version: Some(1),
+            observed_last_event_id: Some(Uuid::now_v7()),
+            detail: "ok".to_string(),
+        }];
+
+        let guard = build_claim_guard(&[], 1, &checks, &[], default_autonomy_policy());
+        assert!(!guard.allow_saved_claim);
+        assert_eq!(guard.claim_status, "failed");
+        assert!(guard
+            .deferred_markers
+            .iter()
+            .any(|marker| marker == "defer_saved_claim_until_receipt_complete"));
     }
 
     #[test]
@@ -1803,6 +2029,7 @@ mod tests {
             status: "verified".to_string(),
             checked_at: Utc::now(),
             waited_ms: 10,
+            write_path: "fresh_write".to_string(),
             required_checks: 1,
             verified_checks: 1,
             checks: checks.clone(),
@@ -1848,6 +2075,7 @@ mod tests {
             status: "pending".to_string(),
             checked_at: Utc::now(),
             waited_ms: 40,
+            write_path: "fresh_write".to_string(),
             required_checks: 1,
             verified_checks: 0,
             checks: checks.clone(),
@@ -1874,10 +2102,8 @@ mod tests {
             })
             .collect();
         assert!(signal_types.iter().any(|v| v == "save_handshake_pending"));
-        assert!(
-            signal_types
-                .iter()
-                .any(|v| v == "save_claim_mismatch_attempt")
-        );
+        assert!(signal_types
+            .iter()
+            .any(|v| v == "save_claim_mismatch_attempt"));
     }
 }
