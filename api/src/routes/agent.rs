@@ -116,6 +116,10 @@ pub struct AgentWriteWithProofRequest {
     /// Max verification wait (default 1200ms, clamped to 100..10000).
     #[serde(default)]
     pub verify_timeout_ms: Option<u64>,
+    /// Include technical repair diagnostics (event IDs, field diffs, command trace).
+    /// Default: false (plain-language feedback only).
+    #[serde(default)]
+    pub include_repair_technical_details: bool,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -176,6 +180,58 @@ pub struct AgentSessionAuditSummary {
     pub clarification_question: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentRepairReceipt {
+    /// none | repaired | needs_clarification
+    pub status: String,
+    pub changed_fields_count: usize,
+    pub unchanged_metrics: HashMap<String, Value>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct AgentUndoEventTemplate {
+    pub timestamp: DateTime<Utc>,
+    pub event_type: String,
+    pub data: Value,
+    pub metadata: EventMetadata,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct AgentRepairUndoAction {
+    pub available: bool,
+    pub detail: String,
+    pub events: Vec<AgentUndoEventTemplate>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentRepairFieldDiff {
+    pub target_event_id: String,
+    pub field: String,
+    pub value: Value,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentRepairTechnicalDetails {
+    pub repair_event_ids: Vec<Uuid>,
+    pub target_event_ids: Vec<String>,
+    pub field_diffs: Vec<AgentRepairFieldDiff>,
+    pub command_trace: Vec<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct AgentRepairFeedback {
+    /// none | repaired | needs_clarification
+    pub status: String,
+    pub summary: String,
+    pub receipt: AgentRepairReceipt,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clarification_question: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub undo: Option<AgentRepairUndoAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub technical: Option<AgentRepairTechnicalDetails>,
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AgentWriteWithProofResponse {
     pub receipts: Vec<AgentWriteReceipt>,
@@ -184,6 +240,7 @@ pub struct AgentWriteWithProofResponse {
     pub verification: AgentWriteVerificationSummary,
     pub claim_guard: AgentWriteClaimGuard,
     pub session_audit: AgentSessionAuditSummary,
+    pub repair_feedback: AgentRepairFeedback,
 }
 
 #[derive(sqlx::FromRow)]
@@ -1840,6 +1897,167 @@ fn build_session_audit_artifacts(
     }
 }
 
+fn build_repair_feedback_summary(summary: &AgentSessionAuditSummary) -> String {
+    match summary.status.as_str() {
+        "clean" => {
+            "Keine Reparatur nötig. Alle mention-gebundenen Felder sind konsistent gespeichert."
+                .to_string()
+        }
+        "repaired" => format!(
+            "Ich habe {} fehlende Felder automatisch ergänzt. Bestehende Daten bleiben unverändert.",
+            summary.mismatch_repaired
+        ),
+        "needs_clarification" if summary.mismatch_repaired > 0 => format!(
+            "Ich habe {} Felder ergänzt. Für {} Punkt(e) brauche ich noch eine kurze Rückmeldung.",
+            summary.mismatch_repaired, summary.mismatch_unresolved
+        ),
+        _ => "Ich brauche eine kurze Rückfrage, bevor ich fehlende Felder sicher speichern kann."
+            .to_string(),
+    }
+}
+
+fn build_undo_event_templates(
+    repair_receipts: &[AgentWriteReceipt],
+) -> Vec<AgentUndoEventTemplate> {
+    let mut events = Vec::with_capacity(repair_receipts.len());
+    for receipt in repair_receipts {
+        let seed = format!("session_audit_undo|{}", receipt.event_id);
+        let idempotency_key = format!("session-audit-undo-{}", stable_hash_suffix(&seed, 20));
+        events.push(AgentUndoEventTemplate {
+            timestamp: Utc::now(),
+            event_type: "event.retracted".to_string(),
+            data: serde_json::json!({
+                "target_event_id": receipt.event_id,
+                "reason": "Undo session-audit auto-repair batch."
+            }),
+            metadata: EventMetadata {
+                source: Some("agent_write_with_proof".to_string()),
+                agent: Some("api".to_string()),
+                device: None,
+                session_id: Some("session_audit:undo".to_string()),
+                idempotency_key,
+            },
+        });
+    }
+    events
+}
+
+fn build_repair_technical_details(
+    repair_events: &[CreateEventRequest],
+    repair_receipts: &[AgentWriteReceipt],
+) -> AgentRepairTechnicalDetails {
+    let mut target_event_ids: BTreeMap<String, ()> = BTreeMap::new();
+    let mut field_diffs = Vec::new();
+
+    for event in repair_events {
+        let target_event_id = event
+            .data
+            .get("target_event_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if !target_event_id.is_empty() {
+            target_event_ids.insert(target_event_id.clone(), ());
+        }
+
+        if let Some(changed_fields) = event.data.get("changed_fields").and_then(Value::as_object) {
+            for (field, raw) in changed_fields {
+                let value = raw.get("value").cloned().unwrap_or(Value::Null);
+                field_diffs.push(AgentRepairFieldDiff {
+                    target_event_id: target_event_id.clone(),
+                    field: field.clone(),
+                    value,
+                });
+            }
+        }
+    }
+
+    AgentRepairTechnicalDetails {
+        repair_event_ids: repair_receipts
+            .iter()
+            .map(|receipt| receipt.event_id)
+            .collect(),
+        target_event_ids: target_event_ids.into_keys().collect(),
+        field_diffs,
+        command_trace: vec![
+            "session_audit.scan_mentions".to_string(),
+            "session_audit.apply_set_corrected".to_string(),
+            "session_audit.prepare_undo".to_string(),
+        ],
+    }
+}
+
+fn build_repair_feedback(
+    include_technical_details: bool,
+    session_audit_summary: &AgentSessionAuditSummary,
+    repair_events: &[CreateEventRequest],
+    repair_receipts: &[AgentWriteReceipt],
+    requested_event_count: usize,
+    verification: &AgentWriteVerificationSummary,
+    claim_guard: &AgentWriteClaimGuard,
+) -> AgentRepairFeedback {
+    let status = if session_audit_summary.status == "clean" {
+        "none".to_string()
+    } else {
+        session_audit_summary.status.clone()
+    };
+    let mut unchanged_metrics = HashMap::new();
+    unchanged_metrics.insert(
+        "requested_event_count".to_string(),
+        serde_json::json!(requested_event_count),
+    );
+    unchanged_metrics.insert(
+        "required_checks".to_string(),
+        serde_json::json!(verification.required_checks),
+    );
+    unchanged_metrics.insert(
+        "verified_checks".to_string(),
+        serde_json::json!(verification.verified_checks),
+    );
+    unchanged_metrics.insert(
+        "verification_status".to_string(),
+        serde_json::json!(verification.status),
+    );
+    unchanged_metrics.insert(
+        "claim_status".to_string(),
+        serde_json::json!(claim_guard.claim_status),
+    );
+
+    let undo_events = build_undo_event_templates(repair_receipts);
+    let undo = if undo_events.is_empty() {
+        None
+    } else {
+        Some(AgentRepairUndoAction {
+            available: true,
+            detail: "Undo verfügbar: sende `undo.events` als Batch an `/v1/events/batch`."
+                .to_string(),
+            events: undo_events,
+        })
+    };
+
+    let technical = if include_technical_details {
+        Some(build_repair_technical_details(
+            repair_events,
+            repair_receipts,
+        ))
+    } else {
+        None
+    };
+
+    AgentRepairFeedback {
+        status: status.clone(),
+        summary: build_repair_feedback_summary(session_audit_summary),
+        receipt: AgentRepairReceipt {
+            status,
+            changed_fields_count: session_audit_summary.mismatch_repaired,
+            unchanged_metrics,
+        },
+        clarification_question: session_audit_summary.clarification_question.clone(),
+        undo,
+        technical,
+    }
+}
+
 async fn evaluate_read_after_write_checks(
     state: &AppState,
     user_id: Uuid,
@@ -1975,16 +2193,23 @@ pub async fn write_with_proof(
     } = build_session_audit_artifacts(user_id, &req.events, &receipts, &autonomy_policy);
 
     let mut event_ids: HashSet<Uuid> = receipts.iter().map(|receipt| receipt.event_id).collect();
+    let mut repair_receipts: Vec<AgentWriteReceipt> = Vec::new();
     if !repair_events.is_empty() {
-        let (repair_receipts, repair_warnings, _repair_write_path) = write_events_with_receipts(
-            &state,
-            user_id,
-            &repair_events,
-            "session_audit.idempotency_key",
-        )
-        .await?;
+        let (written_repair_receipts, repair_warnings, _repair_write_path) =
+            write_events_with_receipts(
+                &state,
+                user_id,
+                &repair_events,
+                "session_audit.idempotency_key",
+            )
+            .await?;
         warnings.extend(repair_warnings);
-        event_ids.extend(repair_receipts.iter().map(|receipt| receipt.event_id));
+        event_ids.extend(
+            written_repair_receipts
+                .iter()
+                .map(|receipt| receipt.event_id),
+        );
+        repair_receipts = written_repair_receipts;
     }
 
     let (checks, waited_ms) = verify_read_after_write_until_timeout(
@@ -2045,6 +2270,15 @@ pub async fn write_with_proof(
     ));
     quality_events.extend(telemetry_events);
     let _ = create_events_batch_internal(&state, user_id, &quality_events).await;
+    let repair_feedback = build_repair_feedback(
+        req.include_repair_technical_details,
+        &session_audit_summary,
+        &repair_events,
+        &repair_receipts,
+        requested_event_count,
+        &verification,
+        &claim_guard,
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -2054,6 +2288,7 @@ pub async fn write_with_proof(
             verification,
             claim_guard,
             session_audit: session_audit_summary,
+            repair_feedback,
         }),
     ))
 }
@@ -2192,9 +2427,10 @@ mod tests {
     use super::{
         AgentReadAfterWriteCheck, AgentReadAfterWriteTarget, AgentWriteReceipt, IntentClass,
         ProjectionResponse, RankingContext, bootstrap_user_profile, build_claim_guard,
-        build_save_handshake_learning_signal_events, build_session_audit_artifacts, clamp_limit,
-        clamp_verify_timeout_ms, default_autonomy_policy, normalize_read_after_write_targets,
-        rank_projection_list, ranking_candidate_limit, recover_receipts_for_idempotent_retry,
+        build_repair_feedback, build_save_handshake_learning_signal_events,
+        build_session_audit_artifacts, clamp_limit, clamp_verify_timeout_ms,
+        default_autonomy_policy, normalize_read_after_write_targets, rank_projection_list,
+        ranking_candidate_limit, recover_receipts_for_idempotent_retry,
     };
     use chrono::{Duration, Utc};
     use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
@@ -2244,6 +2480,25 @@ mod tests {
                 session_id: session_id.map(|value| value.to_string()),
                 idempotency_key: idempotency_key.to_string(),
             },
+        }
+    }
+
+    fn make_verification(
+        status: &str,
+        checks: Vec<AgentReadAfterWriteCheck>,
+    ) -> super::AgentWriteVerificationSummary {
+        let verified_checks = checks
+            .iter()
+            .filter(|check| check.status == "verified")
+            .count();
+        super::AgentWriteVerificationSummary {
+            status: status.to_string(),
+            checked_at: Utc::now(),
+            waited_ms: 15,
+            write_path: "fresh_write".to_string(),
+            required_checks: checks.len(),
+            verified_checks,
+            checks,
         }
     }
 
@@ -2628,6 +2883,182 @@ mod tests {
         assert_eq!(artifacts.summary.mismatch_unresolved, 1);
         assert!(artifacts.summary.clarification_question.is_some());
         assert!(artifacts.repair_events.is_empty());
+    }
+
+    #[test]
+    fn repair_feedback_default_view_hides_technical_details() {
+        let user_id = Uuid::now_v7();
+        let event_id = Uuid::now_v7();
+        let requested = vec![make_set_event(
+            json!({
+                "exercise_id": "barbell_back_squat",
+                "reps": 5,
+                "notes": "rest 90 sec"
+            }),
+            Some("session-1"),
+            "k-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id,
+            event_type: "set.logged".to_string(),
+            idempotency_key: "k-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let repair_receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.corrected".to_string(),
+            idempotency_key: "repair-k-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let policy = default_autonomy_policy();
+        let artifacts = build_session_audit_artifacts(user_id, &requested, &receipts, &policy);
+
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "user_profile".to_string(),
+            key: "me".to_string(),
+            status: "verified".to_string(),
+            observed_projection_version: Some(2),
+            observed_last_event_id: Some(event_id),
+            detail: "ok".to_string(),
+        }];
+        let verification = make_verification("verified", checks.clone());
+        let guard = build_claim_guard(
+            &receipts,
+            requested.len(),
+            &checks,
+            &[],
+            default_autonomy_policy(),
+        );
+
+        let feedback = build_repair_feedback(
+            false,
+            &artifacts.summary,
+            &artifacts.repair_events,
+            &repair_receipts,
+            requested.len(),
+            &verification,
+            &guard,
+        );
+
+        assert_eq!(feedback.status, "repaired");
+        assert!(feedback.summary.contains("automatisch ergänzt"));
+        assert_eq!(feedback.receipt.changed_fields_count, 1);
+        assert!(feedback.technical.is_none());
+        assert!(feedback.undo.is_some());
+    }
+
+    #[test]
+    fn repair_feedback_power_view_includes_technical_details() {
+        let user_id = Uuid::now_v7();
+        let event_id = Uuid::now_v7();
+        let requested = vec![make_set_event(
+            json!({
+                "exercise_id": "barbell_back_squat",
+                "reps": 5,
+                "notes": "rest 90 sec"
+            }),
+            Some("session-1"),
+            "k-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id,
+            event_type: "set.logged".to_string(),
+            idempotency_key: "k-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let repair_receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.corrected".to_string(),
+            idempotency_key: "repair-k-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let policy = default_autonomy_policy();
+        let artifacts = build_session_audit_artifacts(user_id, &requested, &receipts, &policy);
+
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "user_profile".to_string(),
+            key: "me".to_string(),
+            status: "verified".to_string(),
+            observed_projection_version: Some(2),
+            observed_last_event_id: Some(event_id),
+            detail: "ok".to_string(),
+        }];
+        let verification = make_verification("verified", checks.clone());
+        let guard = build_claim_guard(
+            &receipts,
+            requested.len(),
+            &checks,
+            &[],
+            default_autonomy_policy(),
+        );
+
+        let feedback = build_repair_feedback(
+            true,
+            &artifacts.summary,
+            &artifacts.repair_events,
+            &repair_receipts,
+            requested.len(),
+            &verification,
+            &guard,
+        );
+
+        let technical = feedback
+            .technical
+            .expect("technical details expected for power-user view");
+        assert!(!technical.repair_event_ids.is_empty());
+        assert!(!technical.field_diffs.is_empty());
+        assert!(
+            technical
+                .command_trace
+                .iter()
+                .any(|step| step == "session_audit.apply_set_corrected")
+        );
+    }
+
+    #[test]
+    fn repair_feedback_exposes_undo_events_for_last_repair_batch() {
+        let summary = super::AgentSessionAuditSummary {
+            status: "repaired".to_string(),
+            mismatch_detected: 1,
+            mismatch_repaired: 1,
+            mismatch_unresolved: 0,
+            clarification_question: None,
+        };
+        let repair_receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.corrected".to_string(),
+            idempotency_key: "repair-k-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "user_profile".to_string(),
+            key: "me".to_string(),
+            status: "verified".to_string(),
+            observed_projection_version: Some(2),
+            observed_last_event_id: Some(Uuid::now_v7()),
+            detail: "ok".to_string(),
+        }];
+        let verification = make_verification("verified", checks.clone());
+        let guard = build_claim_guard(&[], 0, &checks, &[], default_autonomy_policy());
+
+        let feedback = build_repair_feedback(
+            false,
+            &summary,
+            &[],
+            &repair_receipts,
+            0,
+            &verification,
+            &guard,
+        );
+
+        let undo = feedback.undo.expect("undo expected");
+        assert!(undo.available);
+        assert_eq!(undo.events.len(), 1);
+        assert_eq!(undo.events[0].event_type, "event.retracted");
+        assert_eq!(
+            undo.events[0].data["target_event_id"],
+            json!(repair_receipts[0].event_id)
+        );
     }
 
     #[test]
