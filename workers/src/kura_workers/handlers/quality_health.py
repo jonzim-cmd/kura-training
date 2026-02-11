@@ -10,9 +10,10 @@ import hashlib
 import json
 import logging
 import re
+import statistics
 import uuid
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import psycopg
@@ -25,7 +26,7 @@ from ..utils import get_alias_map, get_retracted_event_ids
 
 logger = logging.getLogger(__name__)
 
-_EVENT_TYPES = (
+_INVARIANT_SOURCE_EVENT_TYPES = (
     "set.logged",
     "exercise.alias_created",
     "preference.set",
@@ -35,6 +36,15 @@ _EVENT_TYPES = (
     "projection_rule.created",
     "projection_rule.archived",
 )
+
+_QUALITY_SIGNAL_EVENT_TYPES = (
+    "quality.save_claim.checked",
+    "quality.fix.applied",
+    "quality.fix.rejected",
+    "quality.issue.closed",
+)
+
+_EVENT_TYPES = _INVARIANT_SOURCE_EVENT_TYPES + _QUALITY_SIGNAL_EVENT_TYPES
 
 _SEVERITY_WEIGHT = {
     "high": 0.25,
@@ -63,13 +73,23 @@ _AUTO_APPLY_POLICY_GATE = (
     "tier_a_only_and_state_simulated_safe_and_no_warnings_and_no_unknown_impacts_and_deterministic_source"
 )
 _AUTO_APPLY_POLICY_VERSION = "phase_2_tier_a_v1"
+_AUTONOMY_POLICY_VERSION = "phase_3_integrity_slo_v1"
 _QUALITY_EVENT_FIX_APPLIED = "quality.fix.applied"
 _QUALITY_EVENT_FIX_REJECTED = "quality.fix.rejected"
 _QUALITY_EVENT_ISSUE_CLOSED = "quality.issue.closed"
+_QUALITY_EVENT_SAVE_CLAIM_CHECKED = "quality.save_claim.checked"
 _DETERMINISTIC_PROPOSAL_SOURCES = {
     "catalog_variant_exact",
     "catalog_key_slug_match",
 }
+_SLO_LOOKBACK_DAYS = 7
+_SLO_UNRESOLVED_SET_PCT_HEALTHY_MAX = 2.0
+_SLO_UNRESOLVED_SET_PCT_MONITOR_MAX = 5.0
+_SLO_SAVE_CLAIM_MISMATCH_PCT_HEALTHY_MAX = 0.0
+_SLO_SAVE_CLAIM_MISMATCH_PCT_MONITOR_MAX = 1.0
+_SLO_REPAIR_LATENCY_HOURS_HEALTHY_MAX = 24.0
+_SLO_REPAIR_LATENCY_HOURS_MONITOR_MAX = 48.0
+_STATUS_ORDER = {"healthy": 0, "monitor": 1, "degraded": 2}
 
 _OVERVIEW_KEY_BY_PROJECTION = {
     "body_composition",
