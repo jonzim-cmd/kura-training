@@ -1,6 +1,11 @@
 # Agent Instructions
 
-This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
+This project uses **bd** (beads) for issue tracking.
+
+## Issue Tracking
+
+Run `bd prime` for workflow context, or install hooks (`bd hooks install`) for auto-injection.
+For full workflow details: `bd prime`.
 
 ## Collaboration Principle
 
