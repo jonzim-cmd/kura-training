@@ -87,6 +87,47 @@ class TestEvaluateReadOnlyInvariants:
 
         assert all(issue["invariant_id"] != "INV-006" for issue in issues)
 
+    def test_detects_mention_bound_fields_missing_from_set_payload(self):
+        rows = [
+            _row(
+                "set.logged",
+                {
+                    "exercise_id": "barbell_back_squat",
+                    "reps": 5,
+                    "notes": "Pause 90 sec, same for next sets",
+                },
+            ),
+            _row("preference.set", {"key": "timezone", "value": "Europe/Berlin"}),
+            _row("profile.updated", {"age_deferred": True, "bodyweight_deferred": True}),
+        ]
+        issues, metrics = _evaluate_read_only_invariants(rows, alias_map={})
+
+        mention_issue = next(
+            (issue for issue in issues if issue["type"] == "mention_field_missing"),
+            None,
+        )
+        assert mention_issue is not None
+        assert mention_issue["invariant_id"] == "INV-008"
+        assert metrics["mention_field_missing_total"] >= 1
+        assert mention_issue["metrics"]["sample_missing_fields"] == ["rest_seconds"]
+
+    def test_no_mention_bound_issue_when_rest_is_persisted(self):
+        rows = [
+            _row(
+                "set.logged",
+                {
+                    "exercise_id": "barbell_back_squat",
+                    "reps": 5,
+                    "notes": "Pause 90 sec",
+                    "rest_seconds": 90,
+                },
+            ),
+            _row("preference.set", {"key": "timezone", "value": "Europe/Berlin"}),
+            _row("profile.updated", {"age_deferred": True, "bodyweight_deferred": True}),
+        ]
+        issues, _ = _evaluate_read_only_invariants(rows, alias_map={})
+        assert all(issue["type"] != "mention_field_missing" for issue in issues)
+
 
 class TestQualityProjectionData:
     def test_quality_score_penalizes_by_severity(self):

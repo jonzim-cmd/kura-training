@@ -23,6 +23,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
+from ..training_core_fields import evaluate_set_context_rows
 from ..utils import (
     check_expected_fields,
     epley_1rm,
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Everything else is passed through as observed_attributes (Decision 10).
 _KNOWN_FIELDS: set[str] = {
     "exercise", "exercise_id", "weight_kg", "weight", "reps",
-    "rpe", "rir", "set_type", "set_number",
+    "rpe", "rir", "rest_seconds", "tempo", "set_type", "set_number",
 }
 
 # Fields we *expect* for typical strength sets. Missing = data_quality hint.
@@ -121,17 +122,21 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "total_sessions": "integer — distinct training sessions",
         "total_sets": "integer",
         "total_volume_kg": "number — sum(weight_kg * reps)",
-            "recent_sessions": [{
-                "timestamp": "ISO 8601 datetime",
-                "weight_kg": "number",
-                "reps": "integer",
-                "estimated_1rm": "number — Epley formula",
-                "rpe": "number (optional)",
-                "rir": "number (optional)",
-                "rir_source": "string (optional: explicit|inferred_from_rpe)",
-                "set_type": "string (optional)",
-                "session_id": "string (optional)",
-                "extra": "object — unknown fields passed through (optional)",
+        "recent_sessions": [{
+            "timestamp": "ISO 8601 datetime",
+            "weight_kg": "number",
+            "reps": "integer",
+            "estimated_1rm": "number — Epley formula",
+            "rpe": "number (optional)",
+            "rir": "number (optional)",
+            "rir_source": "string (optional: explicit|inferred_from_rpe|session_default)",
+            "rest_seconds": "number (optional)",
+            "rest_seconds_source": "string (optional: explicit|session_default)",
+            "tempo": "string (optional)",
+            "tempo_source": "string (optional: explicit|session_default)",
+            "set_type": "string (optional)",
+            "session_id": "string (optional)",
+            "extra": "object — unknown fields passed through (optional)",
         }],
         "weekly_history": [{
             "week": "ISO 8601 week (e.g. 2026-W06)",
@@ -206,6 +211,11 @@ async def update_exercise_progression(
 
     # Filter retracted events
     rows = [r for r in rows if str(r["id"]) not in retracted_ids]
+    context_by_event_id = {
+        entry["event_id"]: entry
+        for entry in evaluate_set_context_rows(rows)
+        if entry.get("event_id")
+    }
 
     if not rows:
         # All events for this exercise were retracted — clean up projection
@@ -246,6 +256,8 @@ async def update_exercise_progression(
     for row in rows:
         data = row["data"]
         metadata = row.get("metadata") or {}
+        context_eval = context_by_event_id.get(str(row["id"]), {})
+        effective_defaults = context_eval.get("effective_defaults") or {}
         ts: datetime = row["timestamp"]
 
         # Session key: use metadata.session_id if present, fallback to date
@@ -332,12 +344,35 @@ async def update_exercise_progression(
             except (ValueError, TypeError):
                 pass
         parsed_rir, rir_source = _resolve_set_rir(data, parsed_rpe)
+        if parsed_rir is None and effective_defaults.get("rir") is not None:
+            parsed_rir = _normalize_rir(effective_defaults.get("rir"))
+            rir_source = "session_default"
         if parsed_rir is not None:
             set_entry["rir"] = parsed_rir
             if rir_source and rir_source != "explicit":
                 set_entry["rir_source"] = rir_source
+
+        explicit_rest = _as_optional_float(data.get("rest_seconds"))
+        if explicit_rest is not None:
+            set_entry["rest_seconds"] = round(explicit_rest, 2)
+        elif effective_defaults.get("rest_seconds") is not None:
+            default_rest = _as_optional_float(effective_defaults.get("rest_seconds"))
+            if default_rest is not None:
+                set_entry["rest_seconds"] = round(default_rest, 2)
+                set_entry["rest_seconds_source"] = "session_default"
+
+        if isinstance(data.get("tempo"), str) and data["tempo"].strip():
+            set_entry["tempo"] = data["tempo"].strip().lower()
+        elif isinstance(effective_defaults.get("tempo"), str):
+            default_tempo = str(effective_defaults.get("tempo")).strip().lower()
+            if default_tempo:
+                set_entry["tempo"] = default_tempo
+                set_entry["tempo_source"] = "session_default"
+
         if "set_type" in data:
             set_entry["set_type"] = data["set_type"]
+        elif effective_defaults.get("set_type") is not None:
+            set_entry["set_type"] = effective_defaults.get("set_type")
         if session_id is not None:
             set_entry["session_id"] = session_id
 

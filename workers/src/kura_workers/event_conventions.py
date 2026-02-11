@@ -92,6 +92,12 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "reps": "number (required)",
                 "rpe": "number (optional, 1-10)",
                 "rir": "number (optional, 0-10 reps in reserve)",
+                "rest_seconds": (
+                    "number (optional by default, mention-bound: required to persist when pause/rest is mentioned)"
+                ),
+                "tempo": (
+                    "string (optional by default, mention-bound: required to persist when tempo is mentioned)"
+                ),
                 "set_type": "string (optional: warmup, working, backoff, amrap)",
             },
             "example": {
@@ -101,6 +107,8 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "reps": 5,
                 "rpe": 8,
                 "rir": 2,
+                "rest_seconds": 120,
+                "tempo": "3-1-1-0",
             },
             "normalization": (
                 "ALWAYS set exercise_id when you recognize the exercise. "

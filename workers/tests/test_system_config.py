@@ -226,6 +226,14 @@ class TestConventions:
         result = _get_conventions()
         assert "data_correction" in result
 
+    def test_has_training_core_fields_v1(self):
+        result = _get_conventions()
+        assert "training_core_fields_v1" in result
+        registry = result["training_core_fields_v1"]["modality_registry"]
+        assert "strength" in registry
+        assert "mention_bound" in registry["strength"]
+        assert "rest_seconds" in registry["strength"]["mention_bound"]
+
     def test_has_semantic_resolution_conventions(self):
         result = _get_conventions()
         assert "semantic_resolution" in result

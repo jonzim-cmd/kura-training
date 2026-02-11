@@ -23,6 +23,7 @@ from psycopg.types.json import Json
 from ..learning_telemetry import build_learning_signal_event
 from ..registry import projection_handler
 from ..semantic_catalog import EXERCISE_CATALOG
+from ..training_core_fields import evaluate_set_context_rows
 from ..utils import get_alias_map, get_retracted_event_ids
 
 logger = logging.getLogger(__name__)
@@ -1105,7 +1106,7 @@ async def _load_quality_source_rows(
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
-            SELECT id, timestamp, event_type, data
+            SELECT id, timestamp, event_type, data, metadata
             FROM events
             WHERE user_id = %s
               AND event_type = ANY(%s)
@@ -1391,6 +1392,7 @@ def _evaluate_read_only_invariants(
     prefs = _latest_preferences(event_rows)
     profile = _latest_profile(event_rows)
     active_custom_rules = _active_custom_rule_names(event_rows)
+    mention_eval = evaluate_set_context_rows(set_rows)
 
     total_set_logged = len(set_rows)
     unresolved_terms: Counter[str] = Counter()
@@ -1495,6 +1497,46 @@ def _evaluate_read_only_invariants(
             )
         )
 
+    mention_missing_rows = [
+        row for row in mention_eval if row.get("missing_fields")
+    ]
+    if mention_missing_rows:
+        sample = mention_missing_rows[:3]
+        hints = sorted(
+            {
+                hint
+                for row in sample
+                for hint in (row.get("hint_messages") or [])
+            }
+        )
+        issues.append(
+            _issue(
+                "INV-008",
+                "mention_field_missing",
+                "medium",
+                (
+                    f"{len(mention_missing_rows)} set.logged rows contain mention-bound "
+                    "context that was not persisted into structured fields."
+                ),
+                metrics={
+                    "affected_rows": len(mention_missing_rows),
+                    "sample_event_ids": [
+                        row.get("event_id")
+                        for row in sample
+                        if row.get("event_id")
+                    ],
+                    "sample_missing_fields": sorted(
+                        {
+                            field
+                            for row in sample
+                            for field in (row.get("missing_fields") or [])
+                        }
+                    ),
+                    "remediation_hints": hints,
+                },
+            )
+        )
+
     metrics = {
         "total_events": len(event_rows),
         "set_logged_total": total_set_logged,
@@ -1503,6 +1545,7 @@ def _evaluate_read_only_invariants(
         "goal_total": len(goal_rows),
         "active_custom_rule_count": len(active_custom_rules),
         "timezone_configured": bool(timezone_pref),
+        "mention_field_missing_total": len(mention_missing_rows),
     }
     return issues, metrics
 
@@ -1626,7 +1669,13 @@ def _build_quality_projection_data(
         "invariant_mode": (
             "policy_gated_auto_apply" if repair_apply_enabled else "read_only"
         ),
-        "invariants_evaluated": ["INV-001", "INV-003", "INV-005", "INV-006"],
+        "invariants_evaluated": [
+            "INV-001",
+            "INV-003",
+            "INV-005",
+            "INV-006",
+            "INV-008",
+        ],
         "metrics": metrics,
         "integrity_slos": integrity_slos or {
             "status": "healthy",

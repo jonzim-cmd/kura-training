@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # Fields actively processed by this handler for set.logged events.
 _KNOWN_FIELDS: set[str] = {
     "exercise", "exercise_id", "weight_kg", "weight", "reps",
-    "rpe", "rir", "set_type", "set_number",
+    "rpe", "rir", "rest_seconds", "tempo", "set_type", "set_number",
 }
 
 

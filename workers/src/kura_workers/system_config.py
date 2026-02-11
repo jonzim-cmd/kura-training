@@ -18,6 +18,7 @@ from psycopg.types.json import Json
 from .event_conventions import get_event_conventions
 from .interview_guide import get_interview_guide
 from .registry import get_dimension_metadata
+from .training_core_fields import core_field_registry
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,18 @@ def _get_conventions() -> dict[str, Any]:
                     },
                 },
             ],
+        },
+        "training_core_fields_v1": {
+            "rules": [
+                "Mention-to-field extraction must be deterministic (regex/rules, not hidden heuristics).",
+                "Optional fields remain unset unless explicitly provided or deterministically mentioned.",
+                "Mention-bound fields (e.g. rest_seconds, tempo, RIR context) become mandatory to persist once mentioned.",
+                "Session defaults apply within the same session + exercise scope until overridden.",
+            ],
+            "modality_registry": core_field_registry(),
+            "note": (
+                "Quality checks flag mention-present/field-missing mismatches with remediation hints."
+            ),
         },
         "data_correction": {
             "rules": [
