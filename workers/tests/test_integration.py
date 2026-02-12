@@ -395,11 +395,11 @@ class TestExerciseProgressionIntegration:
         await insert_event(db, test_user_id, "set.logged", {
             "exercise": "Bench Press", "exercise_id": "bench_press",
             "weight_kg": 80, "reps": 5,
-        }, "TIMESTAMP '2026-02-08 07:30:00+00'")  # 2026-02-07 23:30 local
+        }, "TIMESTAMP '2026-02-08 06:00:00+00'")  # 2026-02-07 22:00 local
         event_id = await insert_event(db, test_user_id, "set.logged", {
             "exercise": "Bench Press", "exercise_id": "bench_press",
             "weight_kg": 82.5, "reps": 5,
-        }, "TIMESTAMP '2026-02-08 08:30:00+00'")  # 2026-02-08 00:30 local
+        }, "TIMESTAMP '2026-02-08 14:00:00+00'")  # 2026-02-08 06:00 local (gap 8h > 3h threshold)
 
         await db.execute("SET ROLE app_worker")
         await update_exercise_progression(db, {
