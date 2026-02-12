@@ -272,6 +272,60 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "remain supported; normalization maps them without data loss where feasible."
             ),
         },
+        "observation.logged": {
+            "description": (
+                "Open-world observation contract for session facts that do not fit "
+                "fixed schemas. Validation tier is inferred from dimension naming."
+            ),
+            "fields": {
+                "dimension": (
+                    "string (required). Canonical key for what is observed; "
+                    "known dimensions use stable names, provisional dimensions should "
+                    "start with x_/custom./provisional."
+                ),
+                "value": "any (required)",
+                "unit": "string (optional)",
+                "scale": "object|string|number (optional)",
+                "context_text": "string (optional, raw evidence-preserving snippet)",
+                "tags": "list[string] (optional)",
+                "confidence": "number (optional, 0..1; defaults to 0.5)",
+                "provenance": {
+                    "source_type": (
+                        "string (recommended: explicit|inferred|estimated|user_confirmed)"
+                    ),
+                    "source_event_id": "string (optional, UUID)",
+                    "source_claim_id": "string (optional, evidence.claim.logged claim_id)",
+                },
+                "scope": {
+                    "level": "string (optional: session|exercise|set; defaults to session)",
+                    "session_id": "string (optional)",
+                    "exercise_id": "string (optional)",
+                },
+            },
+            "example": {
+                "dimension": "motivation_pre",
+                "value": 4,
+                "scale": {"min": 1, "max": 5},
+                "context_text": "Motivation ist heute bei 4 von 5.",
+                "tags": ["pre_session", "self_report"],
+                "confidence": 0.95,
+                "provenance": {
+                    "source_type": "explicit",
+                    "source_claim_id": "claim_87c9156a21f5b2014f431ba3",
+                },
+                "scope": {"level": "session", "session_id": "session-2026-02-12-a"},
+            },
+            "known_dimensions": [
+                "motivation_pre",
+                "discomfort_signal",
+                "jump_baseline",
+            ],
+            "validation_tiers": {
+                "known": "dimension is in known registry and gets typed normalization",
+                "provisional": "dimension starts with x_/custom./provisional.",
+                "unknown": "dimension is stored safely with quality flags",
+            },
+        },
         "external.activity_imported": {
             "description": (
                 "Canonical external activity import artifact produced by the "

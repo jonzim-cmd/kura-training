@@ -154,6 +154,7 @@ class TestEventConventions:
             "workflow.onboarding.closed", "workflow.onboarding.override_granted",
             "projection_rule.created", "projection_rule.archived",
             "external.activity_imported",
+            "observation.logged",
             "evidence.claim.logged",
         }
         assert set(conventions.keys()) == expected

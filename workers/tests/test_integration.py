@@ -23,6 +23,7 @@ import kura_workers.handlers  # noqa: F401
 from kura_workers.handlers.body_composition import update_body_composition
 from kura_workers.handlers.exercise_progression import update_exercise_progression
 from kura_workers.handlers.nutrition import update_nutrition
+from kura_workers.handlers.open_observations import update_open_observations
 from kura_workers.handlers.quality_health import update_quality_health
 from kura_workers.handlers.readiness_inference import update_readiness_inference
 from kura_workers.handlers.session_feedback import update_session_feedback
@@ -1784,6 +1785,123 @@ class TestSessionFeedbackIntegration:
         # "schlecht" and "müde" are negative hints → enjoyment = 2.0
         assert recent[0]["enjoyment"] == 2.0
         assert recent[0]["context"] == "Training war heute richtig schlecht und müde"
+
+
+class TestOpenObservationsIntegration:
+    async def test_known_dimensions_project_to_per_dimension_keys(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+
+        await insert_event(db, test_user_id, "observation.logged", {
+            "dimension": "motivation_pre",
+            "value": 4,
+            "scale": {"min": 1, "max": 5},
+            "context_text": "Motivation heute 4 von 5.",
+            "confidence": 0.95,
+            "provenance": {"source_type": "explicit"},
+            "scope": {"level": "session", "session_id": "s-open-1"},
+        }, "TIMESTAMP '2026-02-12 07:00:00+01'")
+        await insert_event(db, test_user_id, "observation.logged", {
+            "dimension": "discomfort_signal",
+            "value": 2,
+            "scale": {"min": 0, "max": 10},
+            "context_text": "Nur leichtes Ziehen.",
+            "confidence": 0.8,
+            "provenance": {"source_type": "explicit"},
+            "scope": {"level": "session", "session_id": "s-open-1"},
+        }, "TIMESTAMP '2026-02-12 07:02:00+01'")
+        await insert_event(db, test_user_id, "observation.logged", {
+            "dimension": "jump_baseline",
+            "value": 0.45,
+            "unit": "m",
+            "context_text": "Sprungbaseline bei 0.45 m.",
+            "confidence": 0.86,
+            "provenance": {"source_type": "explicit"},
+            "scope": {"level": "exercise", "exercise_id": "box_jump"},
+        }, "TIMESTAMP '2026-02-12 07:05:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_open_observations(db, {
+            "user_id": test_user_id, "event_type": "observation.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        motivation = await get_projection(db, test_user_id, "open_observations", "motivation_pre")
+        discomfort = await get_projection(db, test_user_id, "open_observations", "discomfort_signal")
+        jump = await get_projection(db, test_user_id, "open_observations", "jump_baseline")
+
+        assert motivation is not None
+        assert discomfort is not None
+        assert jump is not None
+
+        assert motivation["data"]["tier"] == "known"
+        assert motivation["data"]["summary"]["latest_value"] == 4.0
+        assert discomfort["data"]["summary"]["latest_value"] == 2.0
+        assert jump["data"]["summary"]["latest_value"] == 45.0
+        assert jump["data"]["summary"]["latest_unit"] == "cm"
+
+    async def test_unknown_dimension_is_stored_without_data_loss(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+
+        await insert_event(db, test_user_id, "observation.logged", {
+            "dimension": "coach.note.experimental",
+            "value": {"text": "ankle stiffness"},
+            "context_text": "Coach note: ankle stiffness in warmup.",
+            "confidence": 1.2,
+            "tags": ["coach", "warmup", "coach"],
+        }, "TIMESTAMP '2026-02-12 08:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_open_observations(db, {
+            "user_id": test_user_id, "event_type": "observation.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        projection = await get_projection(db, test_user_id, "open_observations", "coach.note.experimental")
+        assert projection is not None
+
+        latest = projection["data"]["entries"][-1]
+        assert latest["tier"] == "unknown"
+        assert latest["context_text"] == "Coach note: ankle stiffness in warmup."
+        assert latest["value"] == {"text": "ankle stiffness"}
+        assert latest["confidence"] == 1.0
+        assert latest["tags"] == ["coach", "warmup"]
+        assert "unknown_dimension" in latest["quality_flags"]
+        assert "confidence_clamped_high" in latest["quality_flags"]
+        assert "missing_provenance" in latest["quality_flags"]
+
+    async def test_retraction_removes_dimension_projection(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+
+        event_id = await insert_event(db, test_user_id, "observation.logged", {
+            "dimension": "motivation_pre",
+            "value": 3,
+            "context_text": "Motivation moderat.",
+            "confidence": 0.7,
+            "provenance": {"source_type": "explicit"},
+        }, "TIMESTAMP '2026-02-12 09:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_open_observations(db, {
+            "user_id": test_user_id, "event_type": "observation.logged",
+        })
+        await db.execute("RESET ROLE")
+        assert await get_projection(db, test_user_id, "open_observations", "motivation_pre") is not None
+
+        await retract_event(
+            db,
+            test_user_id,
+            event_id,
+            "observation.logged",
+            "TIMESTAMP '2026-02-12 09:30:00+01'",
+        )
+
+        await db.execute("SET ROLE app_worker")
+        await update_open_observations(db, {
+            "user_id": test_user_id, "event_type": "observation.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        assert await get_projection(db, test_user_id, "open_observations", "motivation_pre") is None
 
 
 class TestSetCorrectionIntegration:

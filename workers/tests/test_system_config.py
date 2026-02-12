@@ -258,6 +258,14 @@ class TestConventions:
         assert evidence["event_type"] == "evidence.claim.logged"
         assert "provenance.source_text_span" in evidence["required_fields"]
 
+    def test_has_open_observation_v1_conventions(self):
+        result = _get_conventions()
+        assert "open_observation_v1" in result
+        observation = result["open_observation_v1"]
+        assert observation["event_type"] == "observation.logged"
+        assert observation["projection_type"] == "open_observations"
+        assert "motivation_pre" in observation["validation_tiers"]["known"]
+
     def test_has_visualization_policy_conventions(self):
         result = _get_conventions()
         assert "visualization_policy" in result

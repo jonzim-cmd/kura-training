@@ -90,6 +90,29 @@ def _get_conventions() -> dict[str, Any]:
                 "lineage.event_id",
             ],
         },
+        "open_observation_v1": {
+            "rules": [
+                "Use observation.logged when a useful fact does not fit fixed event schemas.",
+                "Always preserve raw context_text and provenance when available.",
+                "Known dimensions get typed normalization; provisional/unknown stay open-world with quality flags.",
+                "Keep confidence explicit (0..1); if unknown, set a conservative default.",
+            ],
+            "event_type": "observation.logged",
+            "projection_type": "open_observations",
+            "registry_version": "open_observation.v1",
+            "validation_tiers": {
+                "known": ["motivation_pre", "discomfort_signal", "jump_baseline"],
+                "provisional_prefixes": ["x_", "custom.", "provisional."],
+                "unknown_behavior": "store_with_quality_flags",
+            },
+            "required_fields": [
+                "dimension",
+                "value",
+                "confidence",
+                "context_text",
+                "provenance",
+            ],
+        },
         "visualization_policy": {
             "rules": [
                 "Only visualize when policy triggers are present or the user explicitly asks.",

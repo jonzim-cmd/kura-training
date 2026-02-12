@@ -649,6 +649,16 @@ fn extract_exercise_key(data: &serde_json::Value) -> Option<String> {
     None
 }
 
+fn extract_observation_dimension(data: &serde_json::Value) -> Option<String> {
+    let raw = data.get("dimension").and_then(|v| v.as_str())?;
+    let normalized = raw.trim().to_lowercase().replace(' ', "_");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
 fn user_profile_handles_event(event_type: &str) -> bool {
     matches!(
         event_type,
@@ -879,6 +889,30 @@ fn add_standard_projection_targets(
                 false,
                 false,
             );
+        }
+        "observation.logged" => {
+            mapped = true;
+            if let Some(dimension) = extract_observation_dimension(data) {
+                add_projection_target(
+                    candidates,
+                    "open_observations",
+                    &dimension,
+                    "observation.logged updates open observation projection for the given dimension"
+                        .to_string(),
+                    false,
+                    false,
+                );
+            } else {
+                add_projection_target(
+                    candidates,
+                    "open_observations",
+                    "*",
+                    "observation.logged without dimension cannot map to a concrete open_observations key"
+                        .to_string(),
+                    false,
+                    true,
+                );
+            }
         }
         "bodyweight.logged" | "measurement.logged" | "weight_target.set" => {
             mapped = true;
@@ -2500,6 +2534,44 @@ mod tests {
             projection_type: "user_profile".to_string(),
             key: "me".to_string(),
         }));
+    }
+
+    #[test]
+    fn test_add_standard_projection_targets_for_observation_logged() {
+        let mut candidates: HashMap<ProjectionTargetKey, ProjectionTargetCandidate> =
+            HashMap::new();
+        let mapped = add_standard_projection_targets(
+            &mut candidates,
+            "observation.logged",
+            &json!({"dimension": "Motivation Pre"}),
+        );
+
+        assert!(mapped);
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "open_observations".to_string(),
+            key: "motivation_pre".to_string(),
+        }));
+    }
+
+    #[test]
+    fn test_add_standard_projection_targets_for_observation_logged_without_dimension() {
+        let mut candidates: HashMap<ProjectionTargetKey, ProjectionTargetCandidate> =
+            HashMap::new();
+        let mapped =
+            add_standard_projection_targets(&mut candidates, "observation.logged", &json!({}));
+
+        assert!(mapped);
+        let key = ProjectionTargetKey {
+            projection_type: "open_observations".to_string(),
+            key: "*".to_string(),
+        };
+        assert!(candidates.contains_key(&key));
+        assert!(
+            candidates
+                .get(&key)
+                .map(|candidate| candidate.unknown_target)
+                .unwrap_or(false)
+        );
     }
 
     #[test]
