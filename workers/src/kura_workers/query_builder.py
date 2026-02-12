@@ -111,7 +111,6 @@ class ProjectionQueryBuilder:
         where_parts: list[sql.Composable] = []
         group_parts: list[sql.Composable] = []
         params: list = []
-        param_idx = 0
 
         # --- Time grouping column ---
         if self._group_by_time_col is not None:

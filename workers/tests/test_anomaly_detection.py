@@ -12,7 +12,6 @@ The anomaly contract:
 - anomalies are WARNINGS — the event is still processed
 """
 
-import pytest
 
 
 class TestAnomalyStructure:

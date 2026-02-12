@@ -2040,8 +2040,6 @@ async def update_quality_health(
     alias_map = await get_alias_map(conn, user_id, retracted_ids=retracted_ids)
     issues, metrics = _evaluate_read_only_invariants(rows, alias_map)
     now_iso = datetime.now(timezone.utc).isoformat()
-    initial_integrity_slos = _compute_integrity_slos(rows, metrics, now_iso)
-    initial_autonomy_policy = _autonomy_policy_from_slos(initial_integrity_slos)
     simulated_proposals = _build_simulated_repair_proposals(issues, now_iso)
     detection_telemetry_events = _build_detection_learning_signal_events(
         str(user_id),

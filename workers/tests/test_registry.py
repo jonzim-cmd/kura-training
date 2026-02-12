@@ -78,7 +78,8 @@ class TestDimensionMeta:
         assert "plain" not in meta
 
     def test_preserves_all_fields(self):
-        contrib_fn = lambda rows: {"x": 1}
+        def contrib_fn(rows):
+            return {"x": 1}
 
         @projection_handler("e.f", dimension_meta={
             "name": "rich_dim",
