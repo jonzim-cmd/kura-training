@@ -26,14 +26,16 @@ from ..registry import projection_handler
 from ..set_corrections import apply_set_correction_chain
 from ..training_core_fields import evaluate_set_context_rows
 from ..utils import (
+    SessionBoundaryState,
     check_expected_fields,
     epley_1rm,
     find_all_keys_for_canonical,
     get_alias_map,
     get_retracted_event_ids,
     load_timezone_preference,
-    local_date_for_timezone,
     merge_observed_attributes,
+    next_fallback_session_key,
+    normalize_temporal_point,
     resolve_exercise_key,
     resolve_timezone_context,
     resolve_through_aliases,
@@ -161,6 +163,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "anomalies": [{"event_id": "string", "field": "string", "value": "any", "expected_range": "[min, max]", "message": "string"}],
             "field_hints": [{"field": "string", "hint": "string"}],
             "observed_attributes": {"<event_type>": {"<field>": "integer — count"}},
+            "temporal_conflicts": {"<conflict_type>": "integer — number of events with that conflict"},
         },
     },
     "manifest_contribution": _manifest_contribution,
@@ -320,18 +323,38 @@ async def update_exercise_progression(
     anomalies: list[dict[str, Any]] = []
     field_hints: list[dict[str, Any]] = []
     observed_attr_counts: dict[str, dict[str, int]] = {}
+    temporal_conflicts: dict[str, int] = {}
+    fallback_session_state: SessionBoundaryState | None = None
 
     for row in rows:
         data = row.get("effective_data") or row["data"]
         metadata = row.get("metadata") or {}
         context_eval = context_by_event_id.get(str(row["id"]), {})
         effective_defaults = context_eval.get("effective_defaults") or {}
-        ts: datetime = row["timestamp"]
-        local_day = local_date_for_timezone(ts, timezone_name)
+        temporal = normalize_temporal_point(
+            row["timestamp"],
+            timezone_name=timezone_name,
+            data=data,
+            metadata=metadata,
+        )
+        ts = temporal.timestamp_utc
+        local_day = temporal.local_date
 
-        # Session key: use metadata.session_id if present, fallback to date
-        session_id = metadata.get("session_id")
-        session_key = session_id or local_day.isoformat()
+        for conflict in temporal.conflicts:
+            temporal_conflicts[conflict] = temporal_conflicts.get(conflict, 0) + 1
+
+        # Session key: use metadata.session_id if present, fallback to boundary-aware day key
+        raw_session_id = str(metadata.get("session_id") or "").strip()
+        session_id = raw_session_id or None
+        if session_id is not None:
+            session_key = session_id
+            fallback_session_state = None
+        else:
+            session_key, fallback_session_state = next_fallback_session_key(
+                local_date=local_day,
+                timestamp_utc=ts,
+                state=fallback_session_state,
+            )
 
         # Decision 10: separate known from unknown fields
         _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS)
@@ -388,7 +411,7 @@ async def update_exercise_progression(
             best_1rm_date = ts
 
         # Weekly aggregation
-        week_key = _iso_week(local_day)
+        week_key = temporal.iso_week
         w = week_data[week_key]
         w["total_sets"] += 1
         w["total_volume_kg"] += volume
@@ -505,6 +528,7 @@ async def update_exercise_progression(
             "anomalies": anomalies,
             "field_hints": field_hints,
             "observed_attributes": observed_attr_counts,
+            "temporal_conflicts": temporal_conflicts,
         },
     }
 

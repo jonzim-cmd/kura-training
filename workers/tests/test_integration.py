@@ -490,6 +490,53 @@ class TestTrainingTimelineIntegration:
         assert context["assumed"] is True
         assert "UTC" in context["assumption_disclosure"]
 
+    async def test_session_boundary_bridges_overnight_when_gap_is_short(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "squat", "weight_kg": 100, "reps": 5,
+        }, "TIMESTAMP '2026-02-08 23:30:00+00'")
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "squat", "weight_kg": 102, "reps": 5,
+        }, "TIMESTAMP '2026-02-09 00:40:00+00'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_training_timeline(db, {
+            "user_id": test_user_id, "event_type": "set.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "training_timeline")
+        assert proj is not None
+        data = proj["data"]
+        assert data["total_training_days"] == 2
+        assert len(data["recent_sessions"]) == 1
+        assert data["recent_sessions"][0]["date"] == "2026-02-08"
+        assert data["recent_sessions"][0]["total_sets"] == 2
+
+    async def test_session_boundary_splits_overnight_when_gap_is_large(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "squat", "weight_kg": 100, "reps": 5,
+        }, "TIMESTAMP '2026-02-08 23:30:00+00'")
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "squat", "weight_kg": 102, "reps": 5,
+        }, "TIMESTAMP '2026-02-09 05:40:00+00'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_training_timeline(db, {
+            "user_id": test_user_id, "event_type": "set.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "training_timeline")
+        assert proj is not None
+        data = proj["data"]
+        assert len(data["recent_sessions"]) == 2
+        assert [session["date"] for session in data["recent_sessions"]] == [
+            "2026-02-08",
+            "2026-02-09",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Recovery

@@ -12,9 +12,8 @@ Full recompute on every event — idempotent by design.
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime, date, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import psycopg
 from psycopg.rows import dict_row
@@ -22,11 +21,18 @@ from psycopg.rows import dict_row
 from ..registry import projection_handler
 from ..set_corrections import apply_set_correction_chain
 from ..utils import (
+    SessionBoundaryState,
     epley_1rm,
     get_alias_map,
     get_retracted_event_ids,
+    load_timezone_preference,
+    local_date_for_timezone,
     merge_observed_attributes,
+    next_fallback_session_key,
+    normalize_temporal_point,
+    normalize_timezone_name,
     resolve_exercise_key,
+    resolve_timezone_context,
     resolve_through_aliases,
     separate_known_unknown,
 )
@@ -38,48 +44,18 @@ _KNOWN_FIELDS: set[str] = {
     "exercise", "exercise_id", "weight_kg", "weight", "reps",
     "rpe", "rir", "rest_seconds", "tempo", "set_type", "set_number",
 }
-_DEFAULT_ASSUMED_TIMEZONE = "UTC"
-_TIMEZONE_ASSUMPTION_DISCLOSURE = (
-    "No explicit timezone preference found; using UTC until the user confirms one."
-)
 
 
 def _normalize_timezone_name(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    raw = value.strip()
-    if not raw:
-        return None
-    if raw.upper() == "UTC":
-        return "UTC"
-    try:
-        ZoneInfo(raw)
-    except ZoneInfoNotFoundError:
-        return None
-    return raw
+    return normalize_timezone_name(value)
 
 
 def _resolve_timezone_context(timezone_pref: Any) -> dict[str, Any]:
-    normalized = _normalize_timezone_name(timezone_pref)
-    if normalized:
-        return {
-            "timezone": normalized,
-            "source": "preference",
-            "assumed": False,
-            "assumption_disclosure": None,
-        }
-    return {
-        "timezone": _DEFAULT_ASSUMED_TIMEZONE,
-        "source": "assumed_default",
-        "assumed": True,
-        "assumption_disclosure": _TIMEZONE_ASSUMPTION_DISCLOSURE,
-    }
+    return resolve_timezone_context(timezone_pref)
 
 
 def _local_date_for_timezone(ts: datetime, timezone_name: str) -> date:
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    return ts.astimezone(ZoneInfo(timezone_name)).date()
+    return local_date_for_timezone(ts, timezone_name)
 
 
 def _iso_week(d: date) -> str:
@@ -244,37 +220,6 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     }
 
 
-async def _load_timezone_preference(
-    conn: psycopg.AsyncConnection[Any],
-    user_id: str,
-    retracted_ids: set[str],
-) -> str | None:
-    """Load latest valid timezone preference (Decision 13 INV-003)."""
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            """
-            SELECT id, data
-            FROM events
-            WHERE user_id = %s
-              AND event_type = 'preference.set'
-              AND data->>'key' IN ('timezone', 'time_zone')
-            ORDER BY timestamp DESC, id DESC
-            LIMIT 64
-            """,
-            (user_id,),
-        )
-        pref_rows = await cur.fetchall()
-
-    for row in pref_rows:
-        if str(row["id"]) in retracted_ids:
-            continue
-        data = row.get("data") or {}
-        normalized = _normalize_timezone_name(data.get("value"))
-        if normalized:
-            return normalized
-    return None
-
-
 @projection_handler("set.logged", "set.corrected", "exercise.alias_created", dimension_meta={
     "name": "training_timeline",
     "description": "Training patterns: when, what, how much",
@@ -333,6 +278,7 @@ async def _load_timezone_preference(
         "data_quality": {
             "observed_attributes": {"<event_type>": {"<field>": "integer — count"}},
             "corrected_set_rows": "integer — number of rows with set.corrected overlays",
+            "temporal_conflicts": {"<conflict_type>": "integer — number of events with that conflict"},
         },
     },
     "manifest_contribution": _manifest_contribution,
@@ -346,7 +292,7 @@ async def update_training_timeline(
 
     # Load alias map for resolving exercise names (retraction-aware)
     alias_map = await get_alias_map(conn, user_id, retracted_ids=retracted_ids)
-    timezone_pref = await _load_timezone_preference(conn, user_id, retracted_ids)
+    timezone_pref = await load_timezone_preference(conn, user_id, retracted_ids)
     timezone_context = _resolve_timezone_context(timezone_pref)
     timezone_name = timezone_context["timezone"]
 
@@ -411,19 +357,39 @@ async def update_training_timeline(
     )
     observed_attr_counts: dict[str, dict[str, int]] = {}
     corrected_rows = 0
+    temporal_conflicts: dict[str, int] = {}
+    fallback_session_state: SessionBoundaryState | None = None
 
     for row in rows:
         data = row.get("effective_data") or row["data"]
         metadata = row.get("metadata") or {}
         if row.get("correction_history"):
             corrected_rows += 1
-        ts: datetime = row["timestamp"]
-        d = _local_date_for_timezone(ts, timezone_name)
-        w = _iso_week(d)
+        temporal = normalize_temporal_point(
+            row["timestamp"],
+            timezone_name=timezone_name,
+            data=data,
+            metadata=metadata,
+        )
+        d = temporal.local_date
+        w = temporal.iso_week
 
-        # Session key: use metadata.session_id if present, fallback to date
-        session_id = metadata.get("session_id")
-        session_key = session_id or d.isoformat()
+        for conflict in temporal.conflicts:
+            temporal_conflicts[conflict] = temporal_conflicts.get(conflict, 0) + 1
+
+        # Session key: explicit session_id wins; fallback is day-based with
+        # overnight boundary handling for cross-midnight sessions.
+        raw_session_id = str(metadata.get("session_id") or "").strip()
+        session_id = raw_session_id or None
+        if session_id is not None:
+            session_key = session_id
+            fallback_session_state = None
+        else:
+            session_key, fallback_session_state = next_fallback_session_key(
+                local_date=d,
+                timestamp_utc=temporal.timestamp_utc,
+                state=fallback_session_state,
+            )
 
         # Decision 10: track unknown fields
         _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS)
@@ -462,7 +428,9 @@ async def update_training_timeline(
         week_data[w]["exercises"].add(exercise_key)
 
         # Session aggregation
-        session_data[session_key]["date"] = d.isoformat()
+        current_session_date = session_data[session_key]["date"]
+        if current_session_date is None or d.isoformat() < current_session_date:
+            session_data[session_key]["date"] = d.isoformat()
         session_data[session_key]["session_id"] = session_id
         session_data[session_key]["exercises"].add(exercise_key)
         session_data[session_key]["total_sets"] += 1
@@ -495,6 +463,7 @@ async def update_training_timeline(
         "data_quality": {
             "observed_attributes": observed_attr_counts,
             "corrected_set_rows": corrected_rows,
+            "temporal_conflicts": temporal_conflicts,
         },
     }
 
@@ -513,6 +482,11 @@ async def update_training_timeline(
         )
 
     logger.info(
-        "Updated training_timeline for user=%s (days=%d, weeks=%d, timezone=%s, assumed=%s)",
-        user_id, len(training_dates), len(week_data), timezone_name, timezone_context["assumed"],
+        "Updated training_timeline for user=%s (days=%d, weeks=%d, timezone=%s, assumed=%s, temporal_conflicts=%s)",
+        user_id,
+        len(training_dates),
+        len(week_data),
+        timezone_name,
+        timezone_context["assumed"],
+        temporal_conflicts,
     )

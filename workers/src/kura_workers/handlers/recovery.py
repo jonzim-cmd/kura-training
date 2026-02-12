@@ -19,8 +19,8 @@ from ..registry import projection_handler
 from ..utils import (
     get_retracted_event_ids,
     load_timezone_preference,
-    local_date_for_timezone,
     merge_observed_attributes,
+    normalize_temporal_point,
     resolve_timezone_context,
     separate_known_unknown,
 )
@@ -100,6 +100,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "data_quality": {
             "anomalies": [{"event_id": "string", "field": "string", "value": "any", "expected_range": "[min, max]", "message": "string"}],
             "observed_attributes": {"<event_type>": {"<field>": "integer — count"}},
+            "temporal_conflicts": {"<conflict_type>": "integer — number of events with that conflict"},
         },
     },
     "manifest_contribution": _manifest_contribution,
@@ -117,7 +118,7 @@ async def update_recovery(
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
-            SELECT id, timestamp, event_type, data
+            SELECT id, timestamp, event_type, data, metadata
             FROM events
             WHERE user_id = %s
               AND event_type IN ('sleep.logged', 'soreness.logged', 'energy.logged')
@@ -178,11 +179,19 @@ async def update_recovery(
 
     anomalies: list[dict[str, Any]] = []
     observed_attr_counts: dict[str, dict[str, int]] = {}
+    temporal_conflicts: dict[str, int] = {}
 
     for row in rows:
         data = row["data"]
-        ts = row["timestamp"]
-        d = local_date_for_timezone(ts, timezone_name)
+        temporal = normalize_temporal_point(
+            row["timestamp"],
+            timezone_name=timezone_name,
+            data=data,
+            metadata=row.get("metadata") or {},
+        )
+        d = temporal.local_date
+        for conflict in temporal.conflicts:
+            temporal_conflicts[conflict] = temporal_conflicts.get(conflict, 0) + 1
         event_type = row["event_type"]
 
         if event_type == "sleep.logged":
@@ -340,6 +349,7 @@ async def update_recovery(
         "data_quality": {
             "anomalies": anomalies,
             "observed_attributes": observed_attr_counts,
+            "temporal_conflicts": temporal_conflicts,
         },
     }
 

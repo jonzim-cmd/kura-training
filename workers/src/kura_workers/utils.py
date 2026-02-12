@@ -1,7 +1,8 @@
 """Shared utility functions for Kura workers."""
 
 import logging
-from datetime import date, datetime, timezone
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -14,6 +15,55 @@ DEFAULT_ASSUMED_TIMEZONE = "UTC"
 TIMEZONE_ASSUMPTION_DISCLOSURE = (
     "No explicit timezone preference found; using UTC until the user confirms one."
 )
+TEMPORAL_DRIFT_THRESHOLD_SECONDS = 300
+SESSION_BOUNDARY_OVERNIGHT_GAP_HOURS = 3.0
+SESSION_BOUNDARY_MAX_DURATION_HOURS = 8.0
+
+_TEMPORAL_TIMEZONE_FIELDS: tuple[str, ...] = (
+    "source_timezone",
+    "provider_timezone",
+    "device_timezone",
+    "timezone",
+    "time_zone",
+)
+_TEMPORAL_PROVIDER_TIMESTAMP_FIELDS: tuple[str, ...] = (
+    "source_timestamp_utc",
+    "provider_timestamp_utc",
+    "source_timestamp",
+    "provider_timestamp",
+    "occurred_at",
+    "started_at",
+    "start_time_utc",
+    "start_time",
+)
+_TEMPORAL_DEVICE_TIMESTAMP_FIELDS: tuple[str, ...] = (
+    "device_timestamp",
+    "device_time",
+    "device_local_time",
+    "recorded_at_local",
+)
+_TEMPORAL_GENERIC_TIMESTAMP_FIELDS: tuple[str, ...] = ("timestamp",)
+
+
+@dataclass(frozen=True)
+class TemporalPoint:
+    """Canonical temporal representation for projection grouping."""
+
+    timestamp_utc: datetime
+    local_date: date
+    iso_week: str
+    source: str
+    conflicts: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SessionBoundaryState:
+    """State for fallback session grouping without explicit session_id."""
+
+    session_key: str
+    session_start_utc: datetime
+    last_event_utc: datetime
+    last_local_date: date
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +177,210 @@ def local_date_for_timezone(ts: datetime, timezone_name: str) -> date:
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     return ts.astimezone(ZoneInfo(timezone_name)).date()
+
+
+def _iso_week(d: date) -> str:
+    iso = d.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+
+def _as_utc(ts: datetime) -> datetime:
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
+
+
+def _parse_temporal_timestamp(
+    value: Any,
+    timezone_hint: str | None,
+) -> tuple[datetime, bool] | None:
+    if isinstance(value, datetime):
+        return _as_utc(value), False
+
+    raw: str | None = None
+    if isinstance(value, (int, float)):
+        epoch = float(value)
+        if epoch > 1_000_000_000_000:
+            epoch /= 1000.0
+        return datetime.fromtimestamp(epoch, tz=timezone.utc), False
+    if isinstance(value, str):
+        raw = value.strip()
+    if not raw:
+        return None
+
+    numeric = raw.replace(".", "", 1)
+    if numeric.isdigit():
+        epoch = float(raw)
+        if epoch > 1_000_000_000_000:
+            epoch /= 1000.0
+        return datetime.fromtimestamp(epoch, tz=timezone.utc), False
+
+    normalized_raw = raw.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized_raw)
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        if not timezone_hint:
+            return None
+        parsed = parsed.replace(tzinfo=ZoneInfo(timezone_hint))
+        return parsed.astimezone(timezone.utc), True
+    return parsed.astimezone(timezone.utc), False
+
+
+def _extract_timezone_hint(data: dict[str, Any], metadata: dict[str, Any]) -> str | None:
+    for container in (metadata, data):
+        for field in _TEMPORAL_TIMEZONE_FIELDS:
+            normalized = normalize_timezone_name(container.get(field))
+            if normalized:
+                return normalized
+    return None
+
+
+def _pick_timestamp_candidate(
+    data: dict[str, Any],
+    metadata: dict[str, Any],
+    fields: tuple[str, ...],
+    timezone_hint: str | None,
+) -> tuple[datetime, str, bool] | None:
+    for container_name, container in (("metadata", metadata), ("data", data)):
+        for field in fields:
+            parsed = _parse_temporal_timestamp(container.get(field), timezone_hint)
+            if parsed is None:
+                continue
+            ts_utc, assumed_timezone = parsed
+            return ts_utc, f"{container_name}.{field}", assumed_timezone
+    return None
+
+
+def normalize_temporal_point(
+    event_timestamp: datetime,
+    *,
+    timezone_name: str,
+    data: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+    drift_threshold_seconds: int = TEMPORAL_DRIFT_THRESHOLD_SECONDS,
+) -> TemporalPoint:
+    """Resolve canonical timestamp/day/week with drift-aware conflict tags."""
+    data_payload = data or {}
+    metadata_payload = metadata or {}
+    event_ts_utc = _as_utc(event_timestamp)
+    timezone_hint = _extract_timezone_hint(data_payload, metadata_payload)
+
+    provider_candidate = _pick_timestamp_candidate(
+        data_payload,
+        metadata_payload,
+        _TEMPORAL_PROVIDER_TIMESTAMP_FIELDS,
+        timezone_hint,
+    )
+    device_candidate = _pick_timestamp_candidate(
+        data_payload,
+        metadata_payload,
+        _TEMPORAL_DEVICE_TIMESTAMP_FIELDS,
+        timezone_hint,
+    )
+    generic_candidate = _pick_timestamp_candidate(
+        data_payload,
+        metadata_payload,
+        _TEMPORAL_GENERIC_TIMESTAMP_FIELDS,
+        timezone_hint,
+    )
+
+    chosen = provider_candidate or device_candidate or generic_candidate
+    if chosen is None:
+        canonical_ts_utc = event_ts_utc
+        source = "event.timestamp"
+        assumed_timezone = False
+    else:
+        canonical_ts_utc, source, assumed_timezone = chosen
+
+    threshold_seconds = max(int(drift_threshold_seconds), 0)
+    conflicts: list[str] = []
+
+    if (
+        provider_candidate is not None
+        and device_candidate is not None
+        and abs(
+            (provider_candidate[0] - device_candidate[0]).total_seconds()
+        ) > threshold_seconds
+    ):
+        conflicts.append("provider_device_drift")
+
+    if source != "event.timestamp" and abs(
+        (canonical_ts_utc - event_ts_utc).total_seconds()
+    ) > threshold_seconds:
+        conflicts.append("event_store_drift")
+
+    if assumed_timezone:
+        conflicts.append("naive_timestamp_assumed_timezone")
+
+    local_day = local_date_for_timezone(canonical_ts_utc, timezone_name)
+    return TemporalPoint(
+        timestamp_utc=canonical_ts_utc,
+        local_date=local_day,
+        iso_week=_iso_week(local_day),
+        source=source,
+        conflicts=tuple(dict.fromkeys(conflicts)),
+    )
+
+
+def next_fallback_session_key(
+    *,
+    local_date: date,
+    timestamp_utc: datetime,
+    state: SessionBoundaryState | None,
+    overnight_gap_hours: float = SESSION_BOUNDARY_OVERNIGHT_GAP_HOURS,
+    max_session_hours: float = SESSION_BOUNDARY_MAX_DURATION_HOURS,
+) -> tuple[str, SessionBoundaryState]:
+    """Infer session key when no explicit session_id exists.
+
+    Backward compatibility default stays day-based. We only keep a session across
+    midnight when events are close in time and the whole inferred session does
+    not exceed max_session_hours.
+    """
+    ts_utc = _as_utc(timestamp_utc)
+    day_key = local_date.isoformat()
+
+    if state is None:
+        next_state = SessionBoundaryState(
+            session_key=day_key,
+            session_start_utc=ts_utc,
+            last_event_utc=ts_utc,
+            last_local_date=local_date,
+        )
+        return day_key, next_state
+
+    if local_date == state.last_local_date:
+        next_state = SessionBoundaryState(
+            session_key=state.session_key,
+            session_start_utc=state.session_start_utc,
+            last_event_utc=ts_utc,
+            last_local_date=local_date,
+        )
+        return state.session_key, next_state
+
+    overnight_gap = timedelta(hours=max(overnight_gap_hours, 0.0))
+    max_duration = timedelta(hours=max(max_session_hours, 0.0))
+    gap = ts_utc - state.last_event_utc
+    duration = ts_utc - state.session_start_utc
+
+    if gap <= overnight_gap and duration <= max_duration:
+        next_state = SessionBoundaryState(
+            session_key=state.session_key,
+            session_start_utc=state.session_start_utc,
+            last_event_utc=ts_utc,
+            last_local_date=local_date,
+        )
+        return state.session_key, next_state
+
+    next_state = SessionBoundaryState(
+        session_key=day_key,
+        session_start_utc=ts_utc,
+        last_event_utc=ts_utc,
+        last_local_date=local_date,
+    )
+    return day_key, next_state
 
 
 async def load_timezone_preference(

@@ -26,7 +26,7 @@ from ..rule_models import (
 from ..utils import (
     get_retracted_event_ids,
     load_timezone_preference,
-    local_date_for_timezone,
+    normalize_temporal_point,
     resolve_timezone_context,
 )
 
@@ -113,7 +113,7 @@ async def _compute_field_tracking(
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
-            SELECT id, timestamp, data
+            SELECT id, timestamp, data, metadata
             FROM events
             WHERE user_id = %s
               AND event_type = ANY(%s)
@@ -132,16 +132,29 @@ async def _compute_field_tracking(
             "recent_entries": [],
             "weekly_summary": [],
             "all_time": {},
-            "data_quality": {"total_events_processed": 0, "fields_present": {}},
+            "data_quality": {
+                "total_events_processed": 0,
+                "fields_present": {},
+                "temporal_conflicts": {},
+            },
         }
 
     # Per-day aggregation
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     field_counts: dict[str, int] = {f: 0 for f in rule.fields}
+    temporal_conflicts: dict[str, int] = {}
 
     for row in rows:
         data = row["data"]
-        day_key = local_date_for_timezone(row["timestamp"], timezone_name).isoformat()
+        temporal = normalize_temporal_point(
+            row["timestamp"],
+            timezone_name=timezone_name,
+            data=data,
+            metadata=row.get("metadata") or {},
+        )
+        day_key = temporal.local_date.isoformat()
+        for conflict in temporal.conflicts:
+            temporal_conflicts[conflict] = temporal_conflicts.get(conflict, 0) + 1
         entry: dict[str, Any] = {}
         has_any = False
         for field in rule.fields:
@@ -212,6 +225,7 @@ async def _compute_field_tracking(
         "data_quality": {
             "total_events_processed": len(rows),
             "fields_present": field_counts,
+            "temporal_conflicts": temporal_conflicts,
         },
     }
 
@@ -235,7 +249,7 @@ async def _compute_categorized_tracking(
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
-            SELECT id, timestamp, data
+            SELECT id, timestamp, data, metadata
             FROM events
             WHERE user_id = %s
               AND event_type = ANY(%s)
