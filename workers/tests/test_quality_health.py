@@ -257,6 +257,7 @@ class TestQualityProjectionData:
         assert data["issues_by_severity"]["high"] == 1
         assert data["top_issues"][0]["invariant_id"] == "INV-003"
         assert data["invariant_mode"] == "read_only"
+        assert "extraction_calibration" in data
 
     def test_projection_includes_repair_proposals(self):
         issues = [
@@ -564,3 +565,23 @@ class TestIntegritySlos:
         assert policy["max_scope_level"] == "moderate"
         assert policy["repair_auto_apply_enabled"] is True
         assert "post_save_followup" in policy["confirmation_templates"]
+
+    def test_autonomy_policy_disables_repair_auto_apply_when_calibration_degraded(self):
+        policy = _autonomy_policy_from_slos(
+            {"status": "healthy"},
+            calibration_status="degraded",
+        )
+        assert policy["calibration_status"] == "degraded"
+        assert policy["throttle_active"] is True
+        assert policy["repair_auto_apply_enabled"] is False
+        assert policy["require_confirmation_for_repairs"] is True
+
+    def test_autonomy_policy_throttles_repair_when_calibration_monitor(self):
+        policy = _autonomy_policy_from_slos(
+            {"status": "healthy"},
+            calibration_status="monitor",
+        )
+        assert policy["calibration_status"] == "monitor"
+        assert policy["throttle_active"] is True
+        assert policy["require_confirmation_for_repairs"] is True
+        assert policy["repair_auto_apply_enabled"] is False

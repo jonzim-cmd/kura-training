@@ -281,6 +281,21 @@ class TestConventions:
         assert controls["min_unique_users_default"] >= 1
         assert "confidence_band_policy" in controls
 
+    def test_has_extraction_calibration_v1_conventions(self):
+        result = _get_conventions()
+        assert "extraction_calibration_v1" in result
+        calibration = result["extraction_calibration_v1"]
+        assert calibration["source_event_type"] == "evidence.claim.logged"
+        assert calibration["output_table"] == "extraction_calibration_metrics"
+        assert "brier_score" in calibration["metrics"]
+
+    def test_extraction_calibration_v1_policy_integration_contract(self):
+        result = _get_conventions()
+        integration = result["extraction_calibration_v1"]["policy_integration"]
+        assert integration["autonomy_policy_field"] == "calibration_status"
+        assert integration["degraded_effect"] == "disable_auto_repair"
+        assert integration["monitor_effect"] == "throttle_auto_repair"
+
     def test_has_visualization_policy_conventions(self):
         result = _get_conventions()
         assert "visualization_policy" in result

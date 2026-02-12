@@ -151,6 +151,7 @@ pub struct AgentCapabilitiesResponse {
 pub struct AgentAutonomyPolicy {
     pub policy_version: String,
     pub slo_status: String,
+    pub calibration_status: String,
     pub throttle_active: bool,
     pub max_scope_level: String,
     pub require_confirmation_for_non_trivial_actions: bool,
@@ -3047,6 +3048,7 @@ fn default_autonomy_policy() -> AgentAutonomyPolicy {
     AgentAutonomyPolicy {
         policy_version: "phase_3_integrity_slo_v1".to_string(),
         slo_status: "healthy".to_string(),
+        calibration_status: "healthy".to_string(),
         throttle_active: false,
         max_scope_level: "moderate".to_string(),
         require_confirmation_for_non_trivial_actions: false,
@@ -3101,6 +3103,11 @@ fn autonomy_policy_from_quality_health(
             .to_string(),
         slo_status: policy
             .get("slo_status")
+            .and_then(Value::as_str)
+            .unwrap_or("healthy")
+            .to_string(),
+        calibration_status: policy
+            .get("calibration_status")
             .and_then(Value::as_str)
             .unwrap_or("healthy")
             .to_string(),
@@ -3644,6 +3651,9 @@ fn build_visualization_learning_signal_events(
 }
 
 fn session_audit_auto_repair_allowed(policy: &AgentAutonomyPolicy) -> bool {
+    if policy.calibration_status.eq_ignore_ascii_case("degraded") {
+        return false;
+    }
     policy.repair_auto_apply_enabled && !policy.require_confirmation_for_repairs
 }
 
@@ -7011,6 +7021,7 @@ mod tests {
     fn autonomy_policy_returns_defaults_when_no_quality_health() {
         let policy = super::autonomy_policy_from_quality_health(None);
         assert_eq!(policy.slo_status, "healthy");
+        assert_eq!(policy.calibration_status, "healthy");
         assert!(!policy.throttle_active);
         assert_eq!(policy.max_scope_level, "moderate");
         assert!(policy.repair_auto_apply_enabled);
@@ -7028,6 +7039,7 @@ mod tests {
                 "autonomy_policy": {
                     "policy_version": "phase_3_integrity_slo_v1",
                     "slo_status": "degraded",
+                    "calibration_status": "degraded",
                     "throttle_active": true,
                     "max_scope_level": "strict",
                     "require_confirmation_for_non_trivial_actions": true,
@@ -7041,6 +7053,7 @@ mod tests {
 
         let policy = super::autonomy_policy_from_quality_health(Some(&projection));
         assert_eq!(policy.slo_status, "degraded");
+        assert_eq!(policy.calibration_status, "degraded");
         assert!(policy.throttle_active);
         assert_eq!(policy.max_scope_level, "strict");
         assert!(!policy.repair_auto_apply_enabled);
@@ -7065,6 +7078,7 @@ mod tests {
 
         let policy = super::autonomy_policy_from_quality_health(Some(&projection));
         assert_eq!(policy.slo_status, "monitor");
+        assert_eq!(policy.calibration_status, "healthy");
         // All other fields should use defaults
         assert!(!policy.throttle_active);
         assert_eq!(policy.max_scope_level, "moderate");
@@ -7083,7 +7097,15 @@ mod tests {
 
         let policy = super::autonomy_policy_from_quality_health(Some(&projection));
         assert_eq!(policy.slo_status, "healthy");
+        assert_eq!(policy.calibration_status, "healthy");
         assert!(!policy.throttle_active);
+    }
+
+    #[test]
+    fn session_audit_auto_repair_is_blocked_when_calibration_is_degraded() {
+        let mut policy = super::default_autonomy_policy();
+        policy.calibration_status = "degraded".to_string();
+        assert!(!super::session_audit_auto_repair_allowed(&policy));
     }
 
     #[test]

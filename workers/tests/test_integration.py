@@ -34,6 +34,10 @@ from kura_workers.handlers.strength_inference import update_strength_inference
 from kura_workers.handlers.training_plan import update_training_plan
 from kura_workers.handlers.training_timeline import update_training_timeline
 from kura_workers.handlers.user_profile import update_user_profile
+from kura_workers.extraction_calibration import (
+    refresh_extraction_calibration,
+    resolve_extraction_calibration_status,
+)
 from kura_workers.eval_harness import run_eval_harness
 from kura_workers.scheduler import ensure_nightly_inference_scheduler
 from kura_workers.handlers.inference_nightly import handle_inference_nightly_refit
@@ -1263,6 +1267,82 @@ class TestInferenceNightlyRefitIntegration:
             assert float(row["score"]) > 0.0
             assert "summary" in row["cluster_data"]
             assert "affected_workflow_phases" in row["cluster_data"]
+
+    async def test_extraction_calibration_refresh_reports_underperforming_class(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+
+        for minute in (0, 5, 10):
+            target_event_id = await insert_event(
+                db,
+                test_user_id,
+                "set.logged",
+                {
+                    "exercise_id": "barbell_back_squat",
+                    "reps": 5,
+                    "rest_seconds": 90,
+                },
+                f"TIMESTAMP '2026-02-12 10:{minute:02d}:00+01'",
+            )
+            await insert_event(
+                db,
+                test_user_id,
+                "evidence.claim.logged",
+                {
+                    "claim_id": f"claim-{minute}",
+                    "claim_type": "set_context.rest_seconds",
+                    "value": 90,
+                    "scope": {"level": "set", "event_type": "set.logged"},
+                    "confidence": 0.95,
+                    "provenance": {
+                        "source_field": "utterance",
+                        "source_text": "rest 90 sec",
+                        "source_text_span": {"start": 0, "end": 11, "text": "rest 90 sec"},
+                        "parser_version": "mention_parser.v1",
+                    },
+                    "lineage": {
+                        "event_id": target_event_id,
+                        "event_type": "set.logged",
+                        "lineage_type": "supports",
+                    },
+                },
+                f"TIMESTAMP '2026-02-12 10:{minute:02d}:20+01'",
+            )
+            await insert_event(
+                db,
+                test_user_id,
+                "set.corrected",
+                {
+                    "target_event_id": target_event_id,
+                    "changed_fields": {
+                        "rest_seconds": {"from": 90, "to": 60}
+                    },
+                },
+                f"TIMESTAMP '2026-02-12 10:{minute:02d}:40+01'",
+            )
+
+        await db.execute("SET ROLE app_worker")
+        summary = await refresh_extraction_calibration(db)
+        calibration_status = await resolve_extraction_calibration_status(db)
+        await db.execute("RESET ROLE")
+
+        assert summary["metrics_written"] >= 2  # day + week rows
+        assert summary["underperforming_written"] >= 1
+        assert calibration_status["status"] in {"degraded", "monitor"}
+        assert any(
+            item["claim_class"] == "set_context.rest_seconds"
+            for item in calibration_status["underperforming_classes"]
+        )
+
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM extraction_underperforming_classes
+                WHERE claim_class = 'set_context.rest_seconds'
+                """
+            )
+            row = await cur.fetchone()
+        assert int(row["count"]) >= 1
 
     async def test_durable_scheduler_recovers_after_failed_in_flight_job(self, db, test_user_id):
         await create_test_user(db, test_user_id)

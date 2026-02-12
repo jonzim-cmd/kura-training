@@ -20,6 +20,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from ..extraction_calibration import resolve_extraction_calibration_status
 from ..learning_telemetry import build_learning_signal_event
 from ..repair_provenance import build_repair_provenance, summarize_repair_provenance
 from ..registry import projection_handler
@@ -1374,7 +1375,11 @@ def _compute_integrity_slos(
     }
 
 
-def _autonomy_policy_from_slos(integrity_slos: dict[str, Any]) -> dict[str, Any]:
+def _autonomy_policy_from_slos(
+    integrity_slos: dict[str, Any],
+    *,
+    calibration_status: str = "healthy",
+) -> dict[str, Any]:
     def confirmation_templates(status: str) -> dict[str, str]:
         if status == "degraded":
             return {
@@ -1427,46 +1432,63 @@ def _autonomy_policy_from_slos(integrity_slos: dict[str, Any]) -> dict[str, Any]
         }
 
     slo_status = str(integrity_slos.get("status", "healthy"))
-    if slo_status == "degraded":
+    calibration_state = str(calibration_status or "healthy")
+    effective_status = _worst_status(slo_status, calibration_state)
+
+    if effective_status == "degraded":
+        reason = (
+            "Autonomy throttled: integrity/calibration status is degraded "
+            f"(integrity={slo_status}, calibration={calibration_state})."
+        )
         return {
             "policy_version": _AUTONOMY_POLICY_VERSION,
             "slo_status": slo_status,
+            "calibration_status": calibration_state,
             "throttle_active": True,
             "max_scope_level": "strict",
             "require_confirmation_for_non_trivial_actions": True,
             "require_confirmation_for_plan_updates": True,
             "require_confirmation_for_repairs": True,
             "repair_auto_apply_enabled": False,
-            "reason": (
-                "Integrity SLOs degraded: disable autonomous repair apply and require explicit confirmations."
-            ),
+            "reason": reason,
             "confirmation_templates": confirmation_templates("degraded"),
         }
-    if slo_status == "monitor":
+
+    if effective_status == "monitor":
+        calibration_guard = calibration_state == "monitor"
+        require_repair_confirmation = calibration_guard
+        repair_auto_apply_enabled = not calibration_guard
+        reason = (
+            "Autonomy in monitor mode due to integrity/calibration signals "
+            f"(integrity={slo_status}, calibration={calibration_state})."
+        )
         return {
             "policy_version": _AUTONOMY_POLICY_VERSION,
             "slo_status": slo_status,
+            "calibration_status": calibration_state,
             "throttle_active": True,
             "max_scope_level": "strict",
             "require_confirmation_for_non_trivial_actions": True,
             "require_confirmation_for_plan_updates": True,
-            "require_confirmation_for_repairs": False,
-            "repair_auto_apply_enabled": True,
-            "reason": (
-                "Integrity SLOs in monitor range: reduce scope and require confirmation for non-trivial actions."
-            ),
+            "require_confirmation_for_repairs": require_repair_confirmation,
+            "repair_auto_apply_enabled": repair_auto_apply_enabled,
+            "reason": reason,
             "confirmation_templates": confirmation_templates("monitor"),
         }
+
     return {
         "policy_version": _AUTONOMY_POLICY_VERSION,
-        "slo_status": "healthy",
+        "slo_status": slo_status,
+        "calibration_status": calibration_state,
         "throttle_active": False,
         "max_scope_level": "moderate",
         "require_confirmation_for_non_trivial_actions": False,
         "require_confirmation_for_plan_updates": False,
         "require_confirmation_for_repairs": False,
         "repair_auto_apply_enabled": True,
-        "reason": "Integrity SLOs healthy.",
+        "reason": (
+            "Integrity and extraction calibration are healthy; autonomous repairs remain enabled."
+        ),
         "confirmation_templates": confirmation_templates("healthy"),
     }
 
@@ -1875,6 +1897,7 @@ def _build_quality_projection_data(
     last_repair_at: str | None = None,
     integrity_slos: dict[str, Any] | None = None,
     autonomy_policy: dict[str, Any] | None = None,
+    extraction_calibration: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     score = _compute_quality_score(issues)
     quality_status = _status_from_score(score, issues)
@@ -1998,8 +2021,23 @@ def _build_quality_projection_data(
             "metrics": {},
             "regressions": [],
         },
+        "extraction_calibration": extraction_calibration
+        or {
+            "status": "healthy",
+            "period_key": None,
+            "classes_total": 0,
+            "degraded_count": 0,
+            "monitor_count": 0,
+            "drift_alert_count": 0,
+            "underperforming_classes": [],
+        },
         "autonomy_policy": autonomy_policy
-        or _autonomy_policy_from_slos({"status": "healthy"}),
+        or _autonomy_policy_from_slos(
+            {"status": "healthy"},
+            calibration_status=(
+                extraction_calibration or {}
+            ).get("status", "healthy"),
+        ),
         "last_repair_at": last_repair_at,
         "repair_apply_results": repair_apply_results or [],
         "repair_apply_results_total": len(repair_apply_results or []),
@@ -2163,9 +2201,27 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                     "repair_latency_hours_p50": "object",
                 },
             },
+            "extraction_calibration": {
+                "status": "string — healthy|monitor|degraded",
+                "period_key": "string | null (ISO week key)",
+                "classes_total": "integer",
+                "degraded_count": "integer",
+                "monitor_count": "integer",
+                "drift_alert_count": "integer",
+                "underperforming_classes": [{
+                    "claim_class": "string",
+                    "parser_version": "string",
+                    "status": "string",
+                    "drift_status": "string",
+                    "brier_score": "number",
+                    "precision_high_conf": "number | null",
+                    "sample_count": "integer",
+                }],
+            },
             "autonomy_policy": {
                 "policy_version": "string",
                 "slo_status": "string",
+                "calibration_status": "string — healthy|monitor|degraded",
                 "throttle_active": "boolean",
                 "max_scope_level": "string — strict|moderate|proactive",
                 "require_confirmation_for_non_trivial_actions": "boolean",
@@ -2264,7 +2320,11 @@ async def update_quality_health(
         now_iso = verified_at
 
     final_integrity_slos = _compute_integrity_slos(rows, metrics, now_iso)
-    final_autonomy_policy = _autonomy_policy_from_slos(final_integrity_slos)
+    extraction_calibration = await resolve_extraction_calibration_status(conn)
+    final_autonomy_policy = _autonomy_policy_from_slos(
+        final_integrity_slos,
+        calibration_status=str(extraction_calibration.get("status", "healthy")),
+    )
     final_proposals = _build_simulated_repair_proposals(issues, now_iso)
     projection_data = _build_quality_projection_data(
         issues,
@@ -2280,6 +2340,7 @@ async def update_quality_health(
         last_repair_at=last_repair_at,
         integrity_slos=final_integrity_slos,
         autonomy_policy=final_autonomy_policy,
+        extraction_calibration=extraction_calibration,
     )
     last_event_id = str(rows[-1]["id"])
 

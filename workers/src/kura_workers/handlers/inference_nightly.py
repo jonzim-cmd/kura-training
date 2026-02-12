@@ -9,6 +9,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from ..extraction_calibration import refresh_extraction_calibration
 from ..issue_clustering import refresh_issue_clusters
 from ..population_priors import refresh_population_prior_profiles
 from ..registry import register
@@ -131,6 +132,12 @@ async def handle_inference_nightly_refit(
     except Exception as exc:
         logger.warning("Issue clustering refresh skipped due to error: %s", exc)
 
+    extraction_calibration_summary: dict[str, Any] | None = None
+    try:
+        extraction_calibration_summary = await refresh_extraction_calibration(conn)
+    except Exception as exc:
+        logger.warning("Extraction calibration refresh skipped due to error: %s", exc)
+
     if scheduler_key:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -149,11 +156,12 @@ async def handle_inference_nightly_refit(
             )
 
     logger.info(
-        "Nightly refit enqueued %d projection.update jobs across %d users (interval_h=%d, missed_runs=%d, population_priors=%s, issue_clusters=%s)",
+        "Nightly refit enqueued %d projection.update jobs across %d users (interval_h=%d, missed_runs=%d, population_priors=%s, issue_clusters=%s, extraction_calibration=%s)",
         enqueued,
         len(user_ids),
         interval_h,
         max(0, missed_runs),
         population_prior_summary or {"status": "failed"},
         issue_cluster_summary or {"status": "failed"},
+        extraction_calibration_summary or {"status": "failed"},
     )

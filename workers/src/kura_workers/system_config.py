@@ -142,6 +142,40 @@ def _get_conventions() -> dict[str, Any]:
                 ),
             },
         },
+        "extraction_calibration_v1": {
+            "rules": [
+                "Evaluate evidence.claim.logged confidence against correction/retraction outcomes.",
+                "Compute deterministic calibration metrics per claim_class and parser_version.",
+                "Emit weekly underperforming classes when brier/precision or drift thresholds are breached.",
+                "Feed calibration status into autonomy policy to throttle auto-repair aggressiveness.",
+            ],
+            "source_event_type": "evidence.claim.logged",
+            "refresh_job": "inference.nightly_refit",
+            "output_table": "extraction_calibration_metrics",
+            "underperforming_table": "extraction_underperforming_classes",
+            "run_table": "extraction_calibration_runs",
+            "period_granularities": ["day", "week"],
+            "metrics": [
+                "brier_score",
+                "precision_high_conf",
+                "recall_high_conf",
+                "sample_count",
+            ],
+            "defaults": {
+                "high_conf_threshold": 0.86,
+                "min_samples_for_status": 3,
+                "brier_monitor_max": 0.20,
+                "brier_degraded_max": 0.30,
+                "precision_monitor_min": 0.70,
+                "precision_degraded_min": 0.55,
+                "drift_delta_brier_alert": 0.06,
+            },
+            "policy_integration": {
+                "autonomy_policy_field": "calibration_status",
+                "degraded_effect": "disable_auto_repair",
+                "monitor_effect": "throttle_auto_repair",
+            },
+        },
         "visualization_policy": {
             "rules": [
                 "Only visualize when policy triggers are present or the user explicitly asks.",
