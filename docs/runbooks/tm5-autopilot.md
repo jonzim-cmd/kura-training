@@ -7,7 +7,7 @@ Last updated: 2026-02-12
 - `kura-training-tm5.1`: completed
 - `kura-training-tm5.3`: completed
 - `kura-training-tm5.2`: completed
-- `kura-training-tm5.5`: pending
+- `kura-training-tm5.5`: completed
 - `kura-training-tm5.6`: pending
 - `kura-training-tm5.7`: pending
 - `kura-training-tm5.9`: pending
@@ -15,7 +15,7 @@ Last updated: 2026-02-12
 
 ## Last Commit
 
-- `de6f90d` (`feat(kura-training-tm5.3): implement source identity and dedup policy`)
+- `a59ffaf` (`feat(kura-training-tm5.2): add provider adapter envelope v1`)
 
 ## Tested Commands
 
@@ -25,6 +25,8 @@ Last updated: 2026-02-12
 - `cd workers && uv run pytest -q tests/test_external_identity.py` (green)
 - `cd workers && uv run ruff check src/kura_workers/external_adapter.py tests/test_external_adapter.py` (green)
 - `cd workers && uv run pytest -q tests/test_external_adapter.py tests/test_external_activity_contract.py tests/test_external_identity.py` (green)
+- `cd workers && uv run ruff check src/kura_workers/external_mapping_matrix.py tests/test_external_mapping_matrix.py` (green)
+- `cd workers && uv run pytest -q tests/test_external_mapping_matrix.py tests/test_external_activity_contract.py` (green)
 
 ## Open Risks
 
@@ -32,4 +34,4 @@ Last updated: 2026-02-12
 
 ## Next Step
 
-- Start `kura-training-tm5.5` with Garmin/Strava/TrainingPeaks mapping matrix and mapping tests.
+- Start `kura-training-tm5.6` with async import pipeline/job receipts and idempotent re-import flow.
