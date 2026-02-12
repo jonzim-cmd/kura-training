@@ -6,5 +6,6 @@ pub mod auth;
 pub mod eval;
 pub mod event;
 pub mod health;
+pub mod mcp;
 pub mod projection;
 pub mod system;
