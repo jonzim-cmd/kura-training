@@ -10,12 +10,12 @@ Last updated: 2026-02-12
 - `kura-training-tm5.5`: completed
 - `kura-training-tm5.6`: completed
 - `kura-training-tm5.7`: completed
-- `kura-training-tm5.9`: pending
+- `kura-training-tm5.9`: completed
 - `kura-training-tm5.8`: completed (post-launch)
 
 ## Last Commit
 
-- `acb6a95` (`feat(kura-training-tm5.7): integrate external projections and quality signals`)
+- `7738786` (`feat(kura-training-tm5.8): add provider connection domain model`)
 
 ## Tested Commands
 
@@ -41,4 +41,4 @@ Last updated: 2026-02-12
 
 ## Next Step
 
-- Close and checkpoint `kura-training-tm5.9` rollout plan docs.
+- TM5 chain is complete; next step is optional DB-backed API integration tests for import/provider endpoints.
