@@ -35,3 +35,6 @@ htmlcov/
 # Database
 *.db
 *.sqlite3
+
+# Beads export-state metadata (local, volatile per worktree)
+.beads/export-state/*.json
