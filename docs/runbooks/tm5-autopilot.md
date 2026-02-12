@@ -6,7 +6,7 @@ Last updated: 2026-02-12
 
 - `kura-training-tm5.1`: completed
 - `kura-training-tm5.3`: completed
-- `kura-training-tm5.2`: pending
+- `kura-training-tm5.2`: completed
 - `kura-training-tm5.5`: pending
 - `kura-training-tm5.6`: pending
 - `kura-training-tm5.7`: pending
@@ -15,7 +15,7 @@ Last updated: 2026-02-12
 
 ## Last Commit
 
-- `793ea43` (`feat(kura-training-tm5.1): add canonical external activity contract v1`)
+- `de6f90d` (`feat(kura-training-tm5.3): implement source identity and dedup policy`)
 
 ## Tested Commands
 
@@ -23,6 +23,8 @@ Last updated: 2026-02-12
 - `cd workers && uv run pytest -q tests/test_external_activity_contract.py` (green)
 - `cd workers && uv run ruff check src/kura_workers/external_identity.py tests/test_external_identity.py` (green)
 - `cd workers && uv run pytest -q tests/test_external_identity.py` (green)
+- `cd workers && uv run ruff check src/kura_workers/external_adapter.py tests/test_external_adapter.py` (green)
+- `cd workers && uv run pytest -q tests/test_external_adapter.py tests/test_external_activity_contract.py tests/test_external_identity.py` (green)
 
 ## Open Risks
 
@@ -30,4 +32,4 @@ Last updated: 2026-02-12
 
 ## Next Step
 
-- Start `kura-training-tm5.2` with adapter interface + ingestion envelope on top of tm5.1/tm5.3.
+- Start `kura-training-tm5.5` with Garmin/Strava/TrainingPeaks mapping matrix and mapping tests.
