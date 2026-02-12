@@ -543,6 +543,64 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 },
             },
         },
+        "evidence.claim.logged": {
+            "description": (
+                "Lineage evidence for deterministic free-text extraction. "
+                "Links a parsed claim to the persisted target event."
+            ),
+            "fields": {
+                "claim_id": "string (required, deterministic claim identifier)",
+                "claim_type": "string (required, e.g. set_context.rest_seconds)",
+                "value": "any (required, normalized claim value)",
+                "unit": "string (optional)",
+                "scope": {
+                    "level": "string (required: session|set|exercise)",
+                    "event_type": "string (required)",
+                    "session_id": "string (optional)",
+                    "exercise_id": "string (optional)",
+                },
+                "confidence": "number (required, 0..1)",
+                "provenance": {
+                    "source_field": "string (required: notes|context_text|utterance)",
+                    "source_text": "string (required, raw utterance fragment)",
+                    "source_text_span": {
+                        "start": "number (required, 0-based char index)",
+                        "end": "number (required, exclusive char index)",
+                        "text": "string (required, matched text)",
+                    },
+                    "parser_version": "string (required)",
+                },
+                "lineage": {
+                    "event_id": "string (required, UUID target event)",
+                    "event_type": "string (required)",
+                    "lineage_type": "string (required: supports|corrects|supersedes)",
+                },
+            },
+            "example": {
+                "claim_id": "claim_87c9156a21f5b2014f431ba3",
+                "claim_type": "set_context.rest_seconds",
+                "value": 90,
+                "unit": "seconds",
+                "scope": {
+                    "level": "set",
+                    "event_type": "set.logged",
+                    "session_id": "session-2026-02-12",
+                    "exercise_id": "barbell_back_squat",
+                },
+                "confidence": 0.95,
+                "provenance": {
+                    "source_field": "utterance",
+                    "source_text": "3x5 squat, rest 90 sec, rir 2, tempo 3-1-x-0",
+                    "source_text_span": {"start": 11, "end": 22, "text": "rest 90 sec"},
+                    "parser_version": "mention_parser.v1",
+                },
+                "lineage": {
+                    "event_id": "01956abc-def0-7000-8000-000000000001",
+                    "event_type": "set.logged",
+                    "lineage_type": "supports",
+                },
+            },
+        },
         "set.corrected": {
             "description": (
                 "Patch-style correction for a previously logged set without "

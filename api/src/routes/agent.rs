@@ -1,4 +1,4 @@
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -27,6 +27,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/agent/capabilities", get(get_agent_capabilities))
         .route("/v1/agent/context", get(get_agent_context))
+        .route(
+            "/v1/agent/evidence/event/{event_id}",
+            get(get_event_evidence_lineage),
+        )
         .route(
             "/v1/agent/visualization/resolve",
             post(resolve_visualization),
@@ -419,6 +423,28 @@ pub struct AgentWriteWithProofResponse {
     pub repair_feedback: AgentRepairFeedback,
 }
 
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentEvidenceClaim {
+    pub claim_event_id: Uuid,
+    pub claim_id: String,
+    pub claim_type: String,
+    pub value: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    pub scope: Value,
+    pub confidence: f64,
+    pub provenance: Value,
+    pub lineage: Value,
+    pub recorded_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct AgentEventEvidenceResponse {
+    pub event_id: Uuid,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub claims: Vec<AgentEvidenceClaim>,
+}
+
 #[derive(sqlx::FromRow)]
 struct ProjectionRow {
     id: Uuid,
@@ -460,6 +486,13 @@ struct SystemConfigRow {
     data: Value,
     version: i64,
     updated_at: DateTime<Utc>,
+}
+
+#[derive(sqlx::FromRow)]
+struct EvidenceClaimEventRow {
+    id: Uuid,
+    timestamp: DateTime<Utc>,
+    data: Value,
 }
 
 #[derive(sqlx::FromRow)]
@@ -2186,6 +2219,8 @@ fn build_auto_onboarding_close_event(events: &[CreateEventRequest]) -> CreateEve
 
 const SESSION_AUDIT_MENTION_BOUND_FIELDS: [&str; 4] = ["rest_seconds", "tempo", "rir", "set_type"];
 const SESSION_AUDIT_INVARIANT_ID: &str = "INV-008";
+const EVIDENCE_PARSER_VERSION: &str = "mention_parser.v1";
+const EVIDENCE_CLAIM_EVENT_TYPE: &str = "evidence.claim.logged";
 
 static TEMPO_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\btempo\s*[:=]?\s*(\d-[\dx]-[\dx]-[\dx])\b").expect("valid tempo regex")
@@ -2218,6 +2253,33 @@ static REST_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(?:rest|pause|break|satzpause)\s*[:=]?\s*(\d{1,3})\b")
         .expect("valid rest number regex")
 });
+static SET_TYPE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(warm[\s-]?up|back[\s-]?off|amrap|working)\b")
+        .expect("valid set type regex")
+});
+
+#[derive(Debug, Clone)]
+struct MentionValueWithSpan {
+    value: Value,
+    unit: Option<String>,
+    span_start: usize,
+    span_end: usize,
+    span_text: String,
+    confidence: f64,
+}
+
+#[derive(Debug, Clone)]
+struct EvidenceClaimDraft {
+    claim_type: String,
+    value: Value,
+    unit: Option<String>,
+    confidence: f64,
+    source_field: String,
+    source_text: String,
+    span_start: usize,
+    span_end: usize,
+    span_text: String,
+}
 
 fn round_to_two(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
@@ -2237,11 +2299,20 @@ fn normalize_rir(value: f64) -> Option<f64> {
     Some(round_to_two(value.clamp(0.0, 10.0)))
 }
 
-fn parse_rest_seconds_from_text(text: &str) -> Option<f64> {
+fn parse_rest_with_span(text: &str) -> Option<MentionValueWithSpan> {
     if let Some(caps) = REST_MMSS_RE.captures(text) {
         let minutes = caps.get(1)?.as_str().parse::<f64>().ok()?;
         let seconds = caps.get(2)?.as_str().parse::<f64>().ok()?;
-        return normalize_rest_seconds((minutes * 60.0) + seconds);
+        let value = normalize_rest_seconds((minutes * 60.0) + seconds)?;
+        let full = caps.get(0)?;
+        return Some(MentionValueWithSpan {
+            value: mention_value_from_number(value)?,
+            unit: Some("seconds".to_string()),
+            span_start: full.start(),
+            span_end: full.end(),
+            span_text: full.as_str().to_string(),
+            confidence: 0.95,
+        });
     }
     if let Some(caps) = REST_SECONDS_RE.captures(text) {
         let raw = caps
@@ -2249,7 +2320,16 @@ fn parse_rest_seconds_from_text(text: &str) -> Option<f64> {
             .or_else(|| caps.get(2))
             .map(|m| m.as_str())
             .and_then(|raw| raw.parse::<f64>().ok())?;
-        return normalize_rest_seconds(raw);
+        let value = normalize_rest_seconds(raw)?;
+        let full = caps.get(0)?;
+        return Some(MentionValueWithSpan {
+            value: mention_value_from_number(value)?,
+            unit: Some("seconds".to_string()),
+            span_start: full.start(),
+            span_end: full.end(),
+            span_text: full.as_str().to_string(),
+            confidence: 0.95,
+        });
     }
     if let Some(caps) = REST_MINUTES_RE.captures(text) {
         let raw = caps
@@ -2257,35 +2337,82 @@ fn parse_rest_seconds_from_text(text: &str) -> Option<f64> {
             .or_else(|| caps.get(2))
             .map(|m| m.as_str())
             .and_then(|raw| raw.parse::<f64>().ok())?;
-        return normalize_rest_seconds(raw * 60.0);
+        let value = normalize_rest_seconds(raw * 60.0)?;
+        let full = caps.get(0)?;
+        return Some(MentionValueWithSpan {
+            value: mention_value_from_number(value)?,
+            unit: Some("seconds".to_string()),
+            span_start: full.start(),
+            span_end: full.end(),
+            span_text: full.as_str().to_string(),
+            confidence: 0.93,
+        });
     }
     if let Some(caps) = REST_NUMBER_RE.captures(text) {
         let raw = caps.get(1)?.as_str().parse::<f64>().ok()?;
-        return normalize_rest_seconds(raw);
+        let value = normalize_rest_seconds(raw)?;
+        let full = caps.get(0)?;
+        return Some(MentionValueWithSpan {
+            value: mention_value_from_number(value)?,
+            unit: Some("seconds".to_string()),
+            span_start: full.start(),
+            span_end: full.end(),
+            span_text: full.as_str().to_string(),
+            confidence: 0.9,
+        });
     }
     None
 }
 
-fn parse_rir_from_text(text: &str) -> Option<f64> {
+fn parse_rest_seconds_from_text(text: &str) -> Option<f64> {
+    parse_rest_with_span(text).and_then(|parsed| parsed.value.as_f64())
+}
+
+fn parse_rir_with_span(text: &str) -> Option<MentionValueWithSpan> {
     let caps = RIR_RE.captures(text)?;
     let raw = caps
         .get(1)
         .or_else(|| caps.get(2))
         .or_else(|| caps.get(3))
         .map(|m| m.as_str())?;
-    normalize_rir(raw.parse::<f64>().ok()?)
+    let value = normalize_rir(raw.parse::<f64>().ok()?)?;
+    let full = caps.get(0)?;
+    Some(MentionValueWithSpan {
+        value: mention_value_from_number(value)?,
+        unit: Some("reps_in_reserve".to_string()),
+        span_start: full.start(),
+        span_end: full.end(),
+        span_text: full.as_str().to_string(),
+        confidence: 0.95,
+    })
 }
 
-fn parse_tempo_from_text(text: &str) -> Option<String> {
+fn parse_rir_from_text(text: &str) -> Option<f64> {
+    parse_rir_with_span(text).and_then(|parsed| parsed.value.as_f64())
+}
+
+fn parse_tempo_with_span(text: &str) -> Option<MentionValueWithSpan> {
     let caps = TEMPO_RE
         .captures(text)
         .or_else(|| TEMPO_BARE_RE.captures(text))?;
     let raw = caps.get(1)?.as_str().trim().to_lowercase();
     if raw.is_empty() {
-        None
-    } else {
-        Some(raw)
+        return None;
     }
+    let full = caps.get(0)?;
+    Some(MentionValueWithSpan {
+        value: Value::String(raw),
+        unit: None,
+        span_start: full.start(),
+        span_end: full.end(),
+        span_text: full.as_str().to_string(),
+        confidence: 0.95,
+    })
+}
+
+fn parse_tempo_from_text(text: &str) -> Option<String> {
+    parse_tempo_with_span(text)
+        .and_then(|parsed| parsed.value.as_str().map(str::to_string))
 }
 
 fn normalize_set_type(value: &str) -> Option<String> {
@@ -2306,6 +2433,20 @@ fn normalize_set_type(value: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn parse_set_type_with_span(text: &str) -> Option<MentionValueWithSpan> {
+    let captures = SET_TYPE_RE.captures(text)?;
+    let matched = captures.get(1)?;
+    let canonical = normalize_set_type(matched.as_str())?;
+    Some(MentionValueWithSpan {
+        value: Value::String(canonical),
+        unit: None,
+        span_start: matched.start(),
+        span_end: matched.end(),
+        span_text: matched.as_str().to_string(),
+        confidence: 0.9,
+    })
 }
 
 fn mention_value_from_number(value: f64) -> Option<Value> {
@@ -2338,16 +2479,175 @@ fn extract_set_context_mentions_from_text(text: &str) -> HashMap<&'static str, V
 }
 
 fn event_text_candidates(event: &CreateEventRequest) -> Vec<&str> {
+    event_text_candidates_with_source(event)
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect()
+}
+
+fn event_text_candidates_with_source(event: &CreateEventRequest) -> Vec<(&'static str, &str)> {
     let mut out = Vec::new();
     for key in ["notes", "context_text", "utterance"] {
         if let Some(text) = event.data.get(key).and_then(Value::as_str) {
             let trimmed = text.trim();
             if !trimmed.is_empty() {
-                out.push(trimmed);
+                out.push((key, trimmed));
             }
         }
     }
     out
+}
+
+fn extract_evidence_claim_drafts(event: &CreateEventRequest) -> Vec<EvidenceClaimDraft> {
+    let mut drafts = Vec::new();
+    for (source_field, source_text) in event_text_candidates_with_source(event) {
+        if let Some(parsed) = parse_rest_with_span(source_text) {
+            drafts.push(EvidenceClaimDraft {
+                claim_type: "set_context.rest_seconds".to_string(),
+                value: parsed.value,
+                unit: parsed.unit,
+                confidence: parsed.confidence,
+                source_field: source_field.to_string(),
+                source_text: source_text.to_string(),
+                span_start: parsed.span_start,
+                span_end: parsed.span_end,
+                span_text: parsed.span_text,
+            });
+        }
+        if let Some(parsed) = parse_rir_with_span(source_text) {
+            drafts.push(EvidenceClaimDraft {
+                claim_type: "set_context.rir".to_string(),
+                value: parsed.value,
+                unit: parsed.unit,
+                confidence: parsed.confidence,
+                source_field: source_field.to_string(),
+                source_text: source_text.to_string(),
+                span_start: parsed.span_start,
+                span_end: parsed.span_end,
+                span_text: parsed.span_text,
+            });
+        }
+        if let Some(parsed) = parse_tempo_with_span(source_text) {
+            drafts.push(EvidenceClaimDraft {
+                claim_type: "set_context.tempo".to_string(),
+                value: parsed.value,
+                unit: parsed.unit,
+                confidence: parsed.confidence,
+                source_field: source_field.to_string(),
+                source_text: source_text.to_string(),
+                span_start: parsed.span_start,
+                span_end: parsed.span_end,
+                span_text: parsed.span_text,
+            });
+        }
+        if let Some(parsed) = parse_set_type_with_span(source_text) {
+            drafts.push(EvidenceClaimDraft {
+                claim_type: "set_context.set_type".to_string(),
+                value: parsed.value,
+                unit: parsed.unit,
+                confidence: parsed.confidence,
+                source_field: source_field.to_string(),
+                source_text: source_text.to_string(),
+                span_start: parsed.span_start,
+                span_end: parsed.span_end,
+                span_text: parsed.span_text,
+            });
+        }
+    }
+    drafts
+}
+
+fn evidence_scope_for_event(event: &CreateEventRequest) -> Value {
+    let scope_level = if event.event_type.trim().eq_ignore_ascii_case("set.logged") {
+        "set"
+    } else {
+        "session"
+    };
+    let session_id = event.metadata.session_id.clone();
+    let exercise_id = event
+        .data
+        .get("exercise_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    serde_json::json!({
+        "level": scope_level,
+        "event_type": event.event_type,
+        "session_id": session_id,
+        "exercise_id": exercise_id,
+    })
+}
+
+fn build_evidence_claim_events(
+    user_id: Uuid,
+    events: &[CreateEventRequest],
+    receipts: &[AgentWriteReceipt],
+) -> Vec<CreateEventRequest> {
+    let mut claim_events = Vec::new();
+    let mut seen_idempotency_keys: HashSet<String> = HashSet::new();
+
+    for (index, event) in events.iter().enumerate() {
+        let Some(receipt) = receipts.get(index) else {
+            continue;
+        };
+        for draft in extract_evidence_claim_drafts(event) {
+            let value_fingerprint = canonical_mention_value(&draft.value);
+            let seed = format!(
+                "{}|{}|{}|{}|{}|{}|{}|{}",
+                user_id,
+                receipt.event_id,
+                draft.claim_type,
+                value_fingerprint,
+                draft.source_field,
+                draft.span_start,
+                draft.span_end,
+                EVIDENCE_PARSER_VERSION
+            );
+            let claim_id = format!("claim_{}", stable_hash_suffix(&seed, 24));
+            let idempotency_key = format!("evidence-claim-{claim_id}");
+            if !seen_idempotency_keys.insert(idempotency_key.clone()) {
+                continue;
+            }
+
+            claim_events.push(CreateEventRequest {
+                timestamp: event.timestamp,
+                event_type: EVIDENCE_CLAIM_EVENT_TYPE.to_string(),
+                data: serde_json::json!({
+                    "claim_id": claim_id,
+                    "claim_type": draft.claim_type,
+                    "value": draft.value,
+                    "unit": draft.unit,
+                    "scope": evidence_scope_for_event(event),
+                    "confidence": draft.confidence,
+                    "provenance": {
+                        "source_field": draft.source_field,
+                        "source_text": draft.source_text,
+                        "source_text_span": {
+                            "start": draft.span_start,
+                            "end": draft.span_end,
+                            "text": draft.span_text,
+                        },
+                        "parser_version": EVIDENCE_PARSER_VERSION,
+                    },
+                    "lineage": {
+                        "event_id": receipt.event_id,
+                        "event_type": receipt.event_type,
+                        "lineage_type": "supports",
+                    },
+                }),
+                metadata: EventMetadata {
+                    source: Some("agent_write_with_proof".to_string()),
+                    agent: Some("api".to_string()),
+                    device: None,
+                    session_id: event.metadata.session_id.clone(),
+                    idempotency_key,
+                },
+            });
+        }
+    }
+
+    claim_events
 }
 
 fn event_structured_field_present(event: &CreateEventRequest, field: &str) -> bool {
@@ -3700,6 +4000,88 @@ pub async fn resolve_visualization(
     }))
 }
 
+/// Explain lineage claims for a persisted event.
+#[utoipa::path(
+    get,
+    path = "/v1/agent/evidence/event/{event_id}",
+    params(
+        ("event_id" = Uuid, Path, description = "Target event ID to inspect evidence claims for")
+    ),
+    responses(
+        (status = 200, description = "Evidence lineage for the target event", body = AgentEventEvidenceResponse),
+        (status = 401, description = "Unauthorized", body = ApiError)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "system"
+)]
+pub async fn get_event_evidence_lineage(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Path(event_id): Path<Uuid>,
+) -> Result<Json<AgentEventEvidenceResponse>, AppError> {
+    let user_id = auth.user_id;
+    let mut tx = state.db.begin().await?;
+
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+    let rows = sqlx::query_as::<_, EvidenceClaimEventRow>(
+        r#"
+        SELECT id, timestamp, data
+        FROM events
+        WHERE user_id = $1
+          AND event_type = 'evidence.claim.logged'
+          AND data->'lineage'->>'event_id' = $2
+        ORDER BY timestamp ASC, id ASC
+        LIMIT 512
+        "#,
+    )
+    .bind(user_id)
+    .bind(event_id.to_string())
+    .fetch_all(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    let claims = rows
+        .into_iter()
+        .map(|row| AgentEvidenceClaim {
+            claim_event_id: row.id,
+            claim_id: row
+                .data
+                .get("claim_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            claim_type: row
+                .data
+                .get("claim_type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            value: row.data.get("value").cloned().unwrap_or(Value::Null),
+            unit: row
+                .data
+                .get("unit")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            scope: row.data.get("scope").cloned().unwrap_or(Value::Null),
+            confidence: row
+                .data
+                .get("confidence")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0),
+            provenance: row.data.get("provenance").cloned().unwrap_or(Value::Null),
+            lineage: row.data.get("lineage").cloned().unwrap_or(Value::Null),
+            recorded_at: row.timestamp,
+        })
+        .collect();
+
+    Ok(Json(AgentEventEvidenceResponse { event_id, claims }))
+}
+
 /// Write events with durable receipts and read-after-write verification.
 ///
 /// This endpoint enforces Decision 13.5 protocol semantics:
@@ -3906,6 +4288,10 @@ pub async fn write_with_proof(
     }
     quality_events.extend(telemetry_events);
     let _ = create_events_batch_internal(&state, user_id, &quality_events).await;
+    let evidence_events = build_evidence_claim_events(user_id, &req.events, &receipts);
+    if !evidence_events.is_empty() {
+        let _ = create_events_batch_internal(&state, user_id, &evidence_events).await;
+    }
     let repair_feedback = build_repair_feedback(
         req.include_repair_technical_details,
         &session_audit_summary,
@@ -4084,11 +4470,15 @@ mod tests {
     use super::{
         bind_visualization_source, bootstrap_user_profile, build_agent_capabilities,
         build_auto_onboarding_close_event, build_claim_guard, build_repair_feedback,
+        build_evidence_claim_events,
         build_save_handshake_learning_signal_events, build_session_audit_artifacts,
         build_visualization_outputs, clamp_limit, clamp_verify_timeout_ms, default_autonomy_policy,
-        extract_set_context_mentions_from_text, missing_onboarding_close_requirements,
+        extract_evidence_claim_drafts, extract_set_context_mentions_from_text,
+        missing_onboarding_close_requirements,
         normalize_read_after_write_targets, normalize_set_type, normalize_visualization_spec,
-        parse_rest_seconds_from_text, parse_rir_from_text, parse_tempo_from_text,
+        parse_rest_seconds_from_text, parse_rest_with_span, parse_rir_from_text,
+        parse_rir_with_span, parse_set_type_with_span, parse_tempo_from_text,
+        parse_tempo_with_span,
         rank_projection_list, ranking_candidate_limit, recover_receipts_for_idempotent_retry,
         resolve_visualization, visualization_policy_decision, workflow_gate_from_request,
         AgentReadAfterWriteCheck, AgentReadAfterWriteTarget, AgentResolveVisualizationRequest,
@@ -4100,7 +4490,7 @@ mod tests {
     use crate::auth::{AuthMethod, AuthenticatedUser};
     use crate::error::AppError;
     use crate::state::AppState;
-    use axum::{extract::State, Json};
+    use axum::{extract::{Path, State}, Json};
     use chrono::{Duration, Utc};
     use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
     use kura_core::projections::{Projection, ProjectionFreshness, ProjectionMeta};
@@ -4267,6 +4657,31 @@ mod tests {
         .into_iter()
         .flatten()
         .collect()
+    }
+
+    async fn insert_test_event(
+        pool: &sqlx::PgPool,
+        user_id: Uuid,
+        event_type: &str,
+        data: Value,
+        metadata: Value,
+    ) -> Uuid {
+        let event_id = Uuid::now_v7();
+        sqlx::query(
+            r#"
+            INSERT INTO events (id, user_id, timestamp, event_type, data, metadata)
+            VALUES ($1, $2, NOW(), $3, $4, $5)
+            "#,
+        )
+        .bind(event_id)
+        .bind(user_id)
+        .bind(event_type)
+        .bind(data)
+        .bind(metadata)
+        .execute(pool)
+        .await
+        .expect("insert test event");
+        event_id
     }
 
     #[test]
@@ -5023,6 +5438,73 @@ mod tests {
         assert!(signal_types.iter().any(|signal| signal == "viz_skipped"));
     }
 
+    #[tokio::test]
+    async fn evidence_lineage_endpoint_returns_claims_for_target_event() {
+        let Some((state, auth, user_id)) = integration_state_if_available().await else {
+            return;
+        };
+
+        let target_event_id = insert_test_event(
+            &state.db,
+            user_id,
+            "set.logged",
+            json!({
+                "exercise_id": "barbell_back_squat",
+                "reps": 5,
+                "utterance": "3x5 squat, rest 90 sec"
+            }),
+            json!({"idempotency_key": format!("target-{}", Uuid::now_v7())}),
+        )
+        .await;
+
+        let claim_id = "claim_test_evidence_01";
+        insert_test_event(
+            &state.db,
+            user_id,
+            "evidence.claim.logged",
+            json!({
+                "claim_id": claim_id,
+                "claim_type": "set_context.rest_seconds",
+                "value": 90,
+                "unit": "seconds",
+                "scope": {"level": "set", "event_type": "set.logged", "exercise_id": "barbell_back_squat"},
+                "confidence": 0.95,
+                "provenance": {
+                    "source_field": "utterance",
+                    "source_text": "3x5 squat, rest 90 sec",
+                    "source_text_span": {"start": 10, "end": 21, "text": "rest 90 sec"},
+                    "parser_version": "mention_parser.v1"
+                },
+                "lineage": {
+                    "event_id": target_event_id,
+                    "event_type": "set.logged",
+                    "lineage_type": "supports"
+                }
+            }),
+            json!({"idempotency_key": format!("evidence-{}", Uuid::now_v7())}),
+        )
+        .await;
+
+        let response = super::get_event_evidence_lineage(
+            State(state),
+            auth,
+            Path(target_event_id),
+        )
+        .await
+        .expect("evidence endpoint should succeed")
+        .0;
+
+        assert_eq!(response.event_id, target_event_id);
+        assert_eq!(response.claims.len(), 1);
+        assert_eq!(response.claims[0].claim_id, claim_id);
+        assert_eq!(response.claims[0].claim_type, "set_context.rest_seconds");
+        assert_eq!(
+            response.claims[0].provenance["source_text_span"]["text"],
+            json!("rest 90 sec")
+        );
+        assert_eq!(response.claims[0].lineage["event_id"], json!(target_event_id));
+    }
+
     #[test]
     fn session_audit_is_clean_when_no_missing_mention_bound_fields() {
         let user_id = Uuid::now_v7();
@@ -5667,6 +6149,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_mentions_with_span_tracks_offsets() {
+        let text = "3x5 squat, rest 90 sec, rir 2, tempo 3-1-x-0, warmup";
+
+        let rest = parse_rest_with_span(text).expect("rest span");
+        assert_eq!(rest.value.as_f64(), Some(90.0));
+        assert_eq!(rest.span_text.to_lowercase(), "rest 90 sec");
+        assert!(rest.span_end > rest.span_start);
+
+        let rir = parse_rir_with_span(text).expect("rir span");
+        assert_eq!(rir.value.as_f64(), Some(2.0));
+        assert_eq!(rir.span_text.to_lowercase(), "rir 2");
+
+        let tempo = parse_tempo_with_span(text).expect("tempo span");
+        assert_eq!(tempo.value.as_str(), Some("3-1-x-0"));
+        assert_eq!(tempo.span_text.to_lowercase(), "tempo 3-1-x-0");
+
+        let set_type = parse_set_type_with_span(text).expect("set_type span");
+        assert_eq!(set_type.value.as_str(), Some("warmup"));
+        assert_eq!(set_type.span_text.to_lowercase(), "warmup");
+    }
+
+    #[test]
     fn normalize_set_type_maps_known_types() {
         assert_eq!(normalize_set_type("warmup"), Some("warmup".to_string()));
         assert_eq!(normalize_set_type("Warm-Up"), Some("warmup".to_string()));
@@ -5710,6 +6214,81 @@ mod tests {
     fn extract_set_context_mentions_empty_text_returns_empty() {
         let mentions = extract_set_context_mentions_from_text("");
         assert!(mentions.is_empty());
+    }
+
+    #[test]
+    fn extract_evidence_claim_drafts_contains_source_field_and_span() {
+        let event = make_set_event(
+            json!({
+                "exercise_id": "barbell_back_squat",
+                "utterance": "3x5 squat, rest 90 sec, rir 2, tempo 3-1-x-0, warmup"
+            }),
+            Some("session-42"),
+            "idem-evidence-1",
+        );
+
+        let drafts = extract_evidence_claim_drafts(&event);
+        assert!(drafts.iter().any(|claim| {
+            claim.claim_type == "set_context.rest_seconds"
+                && claim.value.as_f64() == Some(90.0)
+                && claim.source_field == "utterance"
+                && claim.span_text.to_lowercase() == "rest 90 sec"
+        }));
+        assert!(drafts.iter().any(|claim| {
+            claim.claim_type == "set_context.rir"
+                && claim.value.as_f64() == Some(2.0)
+                && claim.span_text.to_lowercase() == "rir 2"
+        }));
+    }
+
+    #[test]
+    fn evidence_claim_events_are_deterministic_for_replay_snippet() {
+        let user_id = Uuid::parse_str("00000000-0000-0000-0000-000000000123").unwrap();
+        let event_id = Uuid::parse_str("00000000-0000-0000-0000-000000000456").unwrap();
+        let ts = chrono::DateTime::parse_from_rfc3339("2026-02-12T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let build_event = || CreateEventRequest {
+            timestamp: ts,
+            event_type: "set.logged".to_string(),
+            data: json!({
+                "exercise_id": "barbell_back_squat",
+                "utterance": "3x5 squat, rest 90 sec, rir 2, tempo 3-1-x-0, warmup",
+            }),
+            metadata: EventMetadata {
+                source: Some("agent_write_with_proof".to_string()),
+                agent: Some("api".to_string()),
+                device: None,
+                session_id: Some("session-42".to_string()),
+                idempotency_key: "idem-constant".to_string(),
+            },
+        };
+        let receipt = AgentWriteReceipt {
+            event_id,
+            event_type: "set.logged".to_string(),
+            idempotency_key: "idem-constant".to_string(),
+            event_timestamp: ts,
+        };
+
+        let first = build_evidence_claim_events(
+            user_id,
+            &[build_event()],
+            std::slice::from_ref(&receipt),
+        );
+        let second = build_evidence_claim_events(
+            user_id,
+            &[build_event()],
+            std::slice::from_ref(&receipt),
+        );
+
+        assert!(!first.is_empty());
+        assert_eq!(first.len(), second.len());
+        for (left, right) in first.iter().zip(second.iter()) {
+            assert_eq!(left.event_type, "evidence.claim.logged");
+            assert_eq!(left.metadata.idempotency_key, right.metadata.idempotency_key);
+            assert_eq!(left.data, right.data);
+        }
     }
 
     // -----------------------------------------------------------------------

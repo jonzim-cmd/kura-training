@@ -71,6 +71,25 @@ def _get_conventions() -> dict[str, Any]:
                 "Quality checks flag mention-present/field-missing mismatches with remediation hints."
             ),
         },
+        "evidence_layer_v1": {
+            "rules": [
+                "Deterministic parsers must emit claim lineage for mention-derived fields.",
+                "Each claim must include confidence plus source_text_span provenance.",
+                "Evidence claims link to the persisted target event via lineage.event_id.",
+            ],
+            "parser_version": "mention_parser.v1",
+            "event_type": "evidence.claim.logged",
+            "required_fields": [
+                "claim_id",
+                "claim_type",
+                "value",
+                "scope",
+                "confidence",
+                "provenance.source_text_span",
+                "provenance.parser_version",
+                "lineage.event_id",
+            ],
+        },
         "visualization_policy": {
             "rules": [
                 "Only visualize when policy triggers are present or the user explicitly asks.",

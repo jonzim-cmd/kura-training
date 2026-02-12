@@ -250,6 +250,14 @@ class TestConventions:
         assert "mention_bound" in registry["strength"]
         assert "rest_seconds" in registry["strength"]["mention_bound"]
 
+    def test_has_evidence_layer_v1_conventions(self):
+        result = _get_conventions()
+        assert "evidence_layer_v1" in result
+        evidence = result["evidence_layer_v1"]
+        assert evidence["parser_version"] == "mention_parser.v1"
+        assert evidence["event_type"] == "evidence.claim.logged"
+        assert "provenance.source_text_span" in evidence["required_fields"]
+
     def test_has_visualization_policy_conventions(self):
         result = _get_conventions()
         assert "visualization_policy" in result
