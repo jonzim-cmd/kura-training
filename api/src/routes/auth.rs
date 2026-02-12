@@ -27,6 +27,27 @@ pub fn token_router() -> Router<AppState> {
     Router::new().route("/v1/auth/token", post(token))
 }
 
+const AGENT_ACCESS_TOKEN_TTL_MINUTES: i64 = 30;
+
+fn default_agent_token_scopes() -> Vec<String> {
+    vec![
+        "agent:read".to_string(),
+        "agent:write".to_string(),
+        "agent:resolve".to_string(),
+    ]
+}
+
+fn normalize_scopes(scopes: Vec<String>) -> Vec<String> {
+    let mut normalized: Vec<String> = scopes
+        .into_iter()
+        .map(|scope| scope.trim().to_lowercase())
+        .filter(|scope| !scope.is_empty())
+        .collect();
+    normalized.sort();
+    normalized.dedup();
+    normalized
+}
+
 // ──────────────────────────────────────────────
 // POST /v1/auth/register
 // ──────────────────────────────────────────────
@@ -579,7 +600,13 @@ async fn exchange_authorization_code(
         .map_err(AppError::Database)?;
 
     // Issue tokens
-    issue_tokens(pool, auth_code.user_id, client_id).await
+    issue_tokens(
+        pool,
+        auth_code.user_id,
+        client_id,
+        default_agent_token_scopes(),
+    )
+    .await
 }
 
 async fn refresh_tokens(
@@ -590,7 +617,7 @@ async fn refresh_tokens(
     let token_hash = auth::hash_token(refresh_token);
 
     let rt = sqlx::query_as::<_, RefreshTokenRow>(
-        "SELECT id, user_id, access_token_id, client_id, expires_at \
+        "SELECT id, user_id, access_token_id, client_id, scopes, expires_at \
          FROM oauth_refresh_tokens WHERE token_hash = $1 AND is_revoked = FALSE",
     )
     .bind(&token_hash)
@@ -630,26 +657,34 @@ async fn refresh_tokens(
         .map_err(AppError::Database)?;
 
     // Issue new tokens
-    issue_tokens(pool, rt.user_id, client_id).await
+    let scopes = normalize_scopes(rt.scopes);
+    let effective_scopes = if scopes.is_empty() {
+        default_agent_token_scopes()
+    } else {
+        scopes
+    };
+    issue_tokens(pool, rt.user_id, client_id, effective_scopes).await
 }
 
 async fn issue_tokens(
     pool: &sqlx::PgPool,
     user_id: Uuid,
     client_id: &str,
+    scopes: Vec<String>,
 ) -> Result<Json<TokenResponse>, AppError> {
     let access_token_id = Uuid::now_v7();
     let (access_token, access_hash) = auth::generate_access_token();
-    let access_expires = Utc::now() + Duration::hours(1);
+    let access_expires = Utc::now() + Duration::minutes(AGENT_ACCESS_TOKEN_TTL_MINUTES);
 
     sqlx::query(
-        "INSERT INTO oauth_access_tokens (id, user_id, token_hash, client_id, expires_at) \
-         VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO oauth_access_tokens (id, user_id, token_hash, client_id, scopes, expires_at) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(access_token_id)
     .bind(user_id)
     .bind(&access_hash)
     .bind(client_id)
+    .bind(scopes.clone())
     .bind(access_expires)
     .execute(pool)
     .await
@@ -661,14 +696,15 @@ async fn issue_tokens(
 
     sqlx::query(
         "INSERT INTO oauth_refresh_tokens \
-         (id, user_id, token_hash, access_token_id, client_id, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
+         (id, user_id, token_hash, access_token_id, client_id, scopes, expires_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(refresh_token_id)
     .bind(user_id)
     .bind(&refresh_hash)
     .bind(access_token_id)
     .bind(client_id)
+    .bind(scopes)
     .bind(refresh_expires)
     .execute(pool)
     .await
@@ -678,7 +714,7 @@ async fn issue_tokens(
         access_token,
         refresh_token,
         token_type: "Bearer".to_string(),
-        expires_in: 3600,
+        expires_in: AGENT_ACCESS_TOKEN_TTL_MINUTES * 60,
     }))
 }
 
@@ -705,6 +741,7 @@ struct RefreshTokenRow {
     user_id: Uuid,
     access_token_id: Uuid,
     client_id: String,
+    scopes: Vec<String>,
     expires_at: chrono::DateTime<Utc>,
 }
 

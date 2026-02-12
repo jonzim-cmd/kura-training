@@ -13,6 +13,7 @@ mod auth;
 mod error;
 mod middleware;
 mod routes;
+mod security_profile;
 mod state;
 
 #[derive(OpenApi)]
@@ -54,6 +55,18 @@ mod state;
         routes::system::get_system_config,
         routes::account::delete_own_account,
         routes::account::admin_delete_user,
+        routes::security::get_kill_switch_status,
+        routes::security::activate_kill_switch,
+        routes::security::deactivate_kill_switch,
+        routes::security::list_kill_switch_audit,
+        routes::security::list_security_abuse_telemetry,
+        routes::security::get_security_profile_rollout,
+        routes::security::update_security_profile_rollout,
+        routes::security::upsert_security_profile_override,
+        routes::security::delete_security_profile_override,
+        routes::security::record_rollout_decision,
+        routes::security::list_rollout_decisions,
+        routes::security::get_security_guardrail_dashboard,
     ),
     components(schemas(
         HealthResponse,
@@ -64,6 +77,7 @@ mod state;
         routes::agent::AgentUpgradePolicy,
         routes::agent::AgentVerificationContract,
         routes::agent::AgentContextMeta,
+        routes::agent::AgentContextSystemContract,
         routes::agent::AgentContextResponse,
         routes::agent::AgentReadAfterWriteTarget,
         routes::agent::AgentWriteWithProofRequest,
@@ -129,6 +143,22 @@ mod state;
         routes::projection_rules::ProjectionRuleApplyResponse,
         routes::projection_rules::ProjectionRuleArchiveResponse,
         routes::system::SystemConfigResponse,
+        routes::security::KillSwitchStatusResponse,
+        routes::security::ActivateKillSwitchRequest,
+        routes::security::DeactivateKillSwitchRequest,
+        routes::security::KillSwitchAuditEvent,
+        routes::security::SecurityAbuseTelemetryEvent,
+        security_profile::SecurityProfile,
+        security_profile::SecurityProfileRolloutConfig,
+        routes::security::UpdateSecurityProfileRolloutRequest,
+        routes::security::SecurityProfileRolloutStatusResponse,
+        routes::security::UpsertSecurityProfileOverrideRequest,
+        routes::security::SecurityProfileOverrideResponse,
+        routes::security::DeleteSecurityProfileOverrideResponse,
+        routes::security::RecordRolloutDecisionRequest,
+        routes::security::RolloutDecisionRecord,
+        routes::security::SecurityGuardrailProfileMetrics,
+        routes::security::SecurityGuardrailDashboardResponse,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -197,7 +227,14 @@ async fn main() {
     let app = Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-doc/openapi.json", ApiDoc::openapi()))
         .merge(routes::health::router())
-        .merge(routes::agent::router().layer(middleware::rate_limit::projections_layer()))
+        .merge(
+            routes::agent::router()
+                .layer(middleware::rate_limit::projections_layer())
+                .layer(middleware::adaptive_abuse::agent_layer(
+                    app_state.db.clone(),
+                ))
+                .layer(middleware::kill_switch::agent_layer(app_state.db.clone())),
+        )
         .merge(routes::semantic::router().layer(middleware::rate_limit::projections_layer()))
         .merge(
             routes::events::write_router()
@@ -228,6 +265,7 @@ async fn main() {
         .merge(routes::auth::token_router().layer(middleware::rate_limit::token_layer()))
         .merge(routes::account::self_router())
         .merge(routes::account::admin_router())
+        .merge(routes::security::admin_router())
         .layer(middleware::access_log::AccessLogLayer::new(
             app_state.db.clone(),
         ))

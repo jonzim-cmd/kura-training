@@ -1,8 +1,11 @@
 use axum::http::Response;
+use axum::response::IntoResponse;
 use tower_governor::{
     GovernorError, GovernorLayer, governor::GovernorConfigBuilder,
     key_extractor::SmartIpKeyExtractor,
 };
+
+use crate::error::AppError;
 
 type RateLimitLayer =
     GovernorLayer<SmartIpKeyExtractor, governor::middleware::NoOpMiddleware, axum::body::Body>;
@@ -87,21 +90,31 @@ pub fn projections_layer() -> RateLimitLayer {
 
 /// Custom error handler that returns JSON in ApiError format with Retry-After header.
 fn json_error_handler(err: GovernorError) -> Response<axum::body::Body> {
-    let (status, retry_after, message) = match err {
+    let (status, retry_after, message, use_rate_limited_error) = match err {
         GovernorError::TooManyRequests { wait_time, .. } => (
             axum::http::StatusCode::TOO_MANY_REQUESTS,
             wait_time.to_string(),
             format!("Too many requests. Retry after {wait_time} seconds."),
+            true,
         ),
         GovernorError::UnableToExtractKey => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             String::new(),
             "Unable to determine client identity for rate limiting".to_string(),
+            false,
         ),
-        GovernorError::Other { code, msg, .. } => {
-            (code, String::new(), msg.unwrap_or_default().to_string())
-        }
+        GovernorError::Other { code, msg, .. } => (
+            code,
+            String::new(),
+            msg.unwrap_or_default().to_string(),
+            false,
+        ),
     };
+
+    if use_rate_limited_error {
+        let retry_after_secs = retry_after.parse::<u64>().unwrap_or(1);
+        return AppError::RateLimited { retry_after_secs }.into_response();
+    }
 
     let request_id = uuid::Uuid::now_v7().to_string();
     let body = serde_json::json!({

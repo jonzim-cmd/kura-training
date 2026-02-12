@@ -22,12 +22,87 @@ use crate::state::AppState;
 pub struct AuthenticatedUser {
     pub user_id: Uuid,
     pub auth_method: AuthMethod,
+    pub scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
 pub enum AuthMethod {
     ApiKey { key_id: Uuid },
     AccessToken { token_id: Uuid, client_id: String },
+}
+
+fn scope_matches(granted: &str, required: &str) -> bool {
+    let granted = granted.trim().to_lowercase();
+    let required = required.trim().to_lowercase();
+    if granted.is_empty() || required.is_empty() {
+        return false;
+    }
+    if granted == "*" || granted == required {
+        return true;
+    }
+    if let Some(prefix) = granted.strip_suffix(":*") {
+        return required == prefix || required.starts_with(&format!("{prefix}:"));
+    }
+    false
+}
+
+fn has_any_required_scope(granted_scopes: &[String], required_scopes: &[&str]) -> bool {
+    if required_scopes.is_empty() {
+        return true;
+    }
+    if granted_scopes.is_empty() {
+        return false;
+    }
+    required_scopes.iter().any(|required| {
+        granted_scopes
+            .iter()
+            .any(|granted| scope_matches(granted, required))
+    })
+}
+
+pub fn require_scopes(
+    auth: &AuthenticatedUser,
+    required_scopes: &[&str],
+    operation: &str,
+) -> Result<(), AppError> {
+    if has_any_required_scope(&auth.scopes, required_scopes) {
+        tracing::info!(
+            user_id = %auth.user_id,
+            operation = operation,
+            required_scopes = ?required_scopes,
+            granted_scopes = ?auth.scopes,
+            decision = "allow",
+            "scope authorization decision"
+        );
+        return Ok(());
+    }
+
+    let required: Vec<String> = required_scopes
+        .iter()
+        .map(|scope| scope.to_string())
+        .collect();
+    let granted = if auth.scopes.is_empty() {
+        "none".to_string()
+    } else {
+        auth.scopes.join(", ")
+    };
+    tracing::warn!(
+        user_id = %auth.user_id,
+        operation = operation,
+        required_scopes = ?required_scopes,
+        granted_scopes = ?auth.scopes,
+        decision = "deny",
+        "scope authorization decision"
+    );
+
+    Err(AppError::Forbidden {
+        message: format!("Insufficient scope for operation '{operation}'"),
+        docs_hint: Some(format!(
+            "Required one of: {}. Granted: {}. Issue a short-lived token/API key with matching scope claims.",
+            required.join(", "),
+            granted
+        )),
+    })
 }
 
 // --- Tower Layer/Service for auth injection ---
@@ -169,7 +244,7 @@ async fn authenticate_api_key(
     let token_hash = kura_core::auth::hash_token(token);
 
     let row = sqlx::query_as::<_, ApiKeyRow>(
-        "SELECT id, user_id, expires_at FROM api_keys \
+        "SELECT id, user_id, scopes, expires_at FROM api_keys \
          WHERE key_hash = $1 AND is_revoked = FALSE",
     )
     .bind(&token_hash)
@@ -203,6 +278,7 @@ async fn authenticate_api_key(
     Ok(AuthenticatedUser {
         user_id: row.user_id,
         auth_method: AuthMethod::ApiKey { key_id: row.id },
+        scopes: row.scopes,
     })
 }
 
@@ -213,7 +289,7 @@ async fn authenticate_access_token(
     let token_hash = kura_core::auth::hash_token(token);
 
     let row = sqlx::query_as::<_, AccessTokenRow>(
-        "SELECT id, user_id, client_id, expires_at FROM oauth_access_tokens \
+        "SELECT id, user_id, client_id, scopes, expires_at FROM oauth_access_tokens \
          WHERE token_hash = $1 AND is_revoked = FALSE",
     )
     .bind(&token_hash)
@@ -245,6 +321,7 @@ async fn authenticate_access_token(
             token_id: row.id,
             client_id: row.client_id,
         },
+        scopes: row.scopes,
     })
 }
 
@@ -252,6 +329,7 @@ async fn authenticate_access_token(
 struct ApiKeyRow {
     id: Uuid,
     user_id: Uuid,
+    scopes: Vec<String>,
     expires_at: Option<chrono::DateTime<Utc>>,
 }
 
@@ -260,5 +338,43 @@ struct AccessTokenRow {
     id: Uuid,
     user_id: Uuid,
     client_id: String,
+    scopes: Vec<String>,
     expires_at: chrono::DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AuthMethod, AuthenticatedUser, has_any_required_scope, require_scopes, scope_matches,
+    };
+    use uuid::Uuid;
+
+    #[test]
+    fn scope_matching_supports_exact_and_wildcards() {
+        assert!(scope_matches("agent:read", "agent:read"));
+        assert!(scope_matches("agent:*", "agent:write"));
+        assert!(scope_matches("*", "agent:write_with_proof"));
+        assert!(!scope_matches("agent:read", "agent:write"));
+        assert!(!scope_matches("", "agent:read"));
+    }
+
+    #[test]
+    fn has_any_required_scope_fails_closed_when_scopes_missing() {
+        let granted: Vec<String> = Vec::new();
+        assert!(!has_any_required_scope(&granted, &["agent:read"]));
+    }
+
+    #[test]
+    fn require_scopes_returns_forbidden_when_scope_missing() {
+        let auth = AuthenticatedUser {
+            user_id: Uuid::now_v7(),
+            auth_method: AuthMethod::ApiKey {
+                key_id: Uuid::now_v7(),
+            },
+            scopes: vec!["agent:read".to_string()],
+        };
+
+        let err = require_scopes(&auth, &["agent:write"], "POST /v1/agent/write-with-proof");
+        assert!(err.is_err());
+    }
 }

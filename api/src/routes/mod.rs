@@ -7,5 +7,6 @@ pub mod imports;
 pub mod projection_rules;
 pub mod projections;
 pub mod provider_connections;
+pub mod security;
 pub mod semantic;
 pub mod system;

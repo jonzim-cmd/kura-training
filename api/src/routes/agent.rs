@@ -17,7 +17,7 @@ use uuid::Uuid;
 use kura_core::error::ApiError;
 use kura_core::projections::{Projection, ProjectionFreshness, ProjectionMeta, ProjectionResponse};
 
-use crate::auth::AuthenticatedUser;
+use crate::auth::{AuthenticatedUser, require_scopes};
 use crate::error::AppError;
 use crate::routes::events::create_events_batch_internal;
 use crate::routes::system::SystemConfigResponse;
@@ -55,6 +55,14 @@ pub struct AgentContextParams {
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
+pub struct AgentContextSystemContract {
+    pub profile: String,
+    pub schema_version: String,
+    pub default_unknown_field_action: String,
+    pub redacted_field_classes: Vec<String>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct AgentContextMeta {
     pub generated_at: DateTime<Utc>,
     pub exercise_limit: i64,
@@ -63,6 +71,8 @@ pub struct AgentContextMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_intent: Option<String>,
     pub ranking_strategy: String,
+    pub context_contract_version: String,
+    pub system_contract: AgentContextSystemContract,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -788,6 +798,116 @@ fn build_agent_capabilities() -> AgentCapabilitiesResponse {
             upgrade_signal_header: "x-kura-upgrade-signal".to_string(),
             docs_hint: "Discover preferred contracts via /v1/agent/capabilities.".to_string(),
         },
+    }
+}
+
+const AGENT_CONTEXT_CONTRACT_VERSION: &str = "agent_context.v2.redacted";
+const AGENT_CONTEXT_SYSTEM_CONTRACT_VERSION: &str = "agent_context.system.v1";
+const AGENT_CONTEXT_SYSTEM_PROFILE: &str = "redacted_v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SystemConfigFieldClass {
+    PublicContract,
+    SensitiveGuidance,
+    InternalStrategy,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SystemConventionFieldClass {
+    PublicContract,
+    InternalOperations,
+    Unknown,
+}
+
+fn classify_system_config_field(key: &str) -> SystemConfigFieldClass {
+    match key {
+        "dimensions" | "event_conventions" | "projection_schemas" | "conventions" => {
+            SystemConfigFieldClass::PublicContract
+        }
+        "interview_guide" => SystemConfigFieldClass::SensitiveGuidance,
+        "agent_behavior" => SystemConfigFieldClass::InternalStrategy,
+        _ => SystemConfigFieldClass::Unknown,
+    }
+}
+
+fn classify_system_convention_field(key: &str) -> SystemConventionFieldClass {
+    match key {
+        "exercise_normalization"
+        | "training_core_fields_v1"
+        | "evidence_layer_v1"
+        | "open_observation_v1" => SystemConventionFieldClass::PublicContract,
+        "learning_clustering_v1"
+        | "extraction_calibration_v1"
+        | "learning_backlog_bridge_v1"
+        | "unknown_dimension_mining_v1"
+        | "shadow_evaluation_gate_v1" => SystemConventionFieldClass::InternalOperations,
+        _ => SystemConventionFieldClass::Unknown,
+    }
+}
+
+fn redact_system_conventions_for_agent(value: Value) -> Value {
+    let Value::Object(conventions) = value else {
+        return Value::Object(serde_json::Map::new());
+    };
+
+    let mut redacted = serde_json::Map::new();
+    for (key, value) in conventions {
+        if matches!(
+            classify_system_convention_field(&key),
+            SystemConventionFieldClass::PublicContract
+        ) {
+            redacted.insert(key, value);
+        }
+    }
+
+    Value::Object(redacted)
+}
+
+fn redact_system_config_data_for_agent(value: Value) -> Value {
+    let Value::Object(config) = value else {
+        return Value::Object(serde_json::Map::new());
+    };
+
+    let mut redacted = serde_json::Map::new();
+    for (key, value) in config {
+        match classify_system_config_field(&key) {
+            SystemConfigFieldClass::PublicContract => {
+                if key == "conventions" {
+                    redacted.insert(key, redact_system_conventions_for_agent(value));
+                } else {
+                    redacted.insert(key, value);
+                }
+            }
+            SystemConfigFieldClass::SensitiveGuidance
+            | SystemConfigFieldClass::InternalStrategy
+            | SystemConfigFieldClass::Unknown => {}
+        }
+    }
+
+    Value::Object(redacted)
+}
+
+fn redact_system_config_for_agent(system: SystemConfigResponse) -> SystemConfigResponse {
+    SystemConfigResponse {
+        data: redact_system_config_data_for_agent(system.data),
+        version: system.version,
+        updated_at: system.updated_at,
+    }
+}
+
+fn build_agent_context_system_contract() -> AgentContextSystemContract {
+    AgentContextSystemContract {
+        profile: AGENT_CONTEXT_SYSTEM_PROFILE.to_string(),
+        schema_version: AGENT_CONTEXT_SYSTEM_CONTRACT_VERSION.to_string(),
+        default_unknown_field_action: "deny".to_string(),
+        redacted_field_classes: vec![
+            "system.internal_strategy".to_string(),
+            "system.sensitive_guidance".to_string(),
+            "system.unknown".to_string(),
+            "system.conventions.internal_operations".to_string(),
+            "system.conventions.unknown".to_string(),
+        ],
     }
 }
 
@@ -4362,6 +4482,11 @@ pub async fn resolve_visualization(
     auth: AuthenticatedUser,
     Json(req): Json<AgentResolveVisualizationRequest>,
 ) -> Result<Json<AgentResolveVisualizationResponse>, AppError> {
+    require_scopes(
+        &auth,
+        &["agent:resolve"],
+        "POST /v1/agent/visualization/resolve",
+    )?;
     let user_id = auth.user_id;
     let task_intent = req.task_intent.trim();
     if task_intent.is_empty() {
@@ -4514,6 +4639,11 @@ pub async fn get_event_evidence_lineage(
     auth: AuthenticatedUser,
     Path(event_id): Path<Uuid>,
 ) -> Result<Json<AgentEventEvidenceResponse>, AppError> {
+    require_scopes(
+        &auth,
+        &["agent:read"],
+        "GET /v1/agent/evidence/event/{event_id}",
+    )?;
     let user_id = auth.user_id;
     let mut tx = state.db.begin().await?;
 
@@ -4601,6 +4731,7 @@ pub async fn write_with_proof(
     auth: AuthenticatedUser,
     Json(req): Json<AgentWriteWithProofRequest>,
 ) -> Result<impl axum::response::IntoResponse, AppError> {
+    require_scopes(&auth, &["agent:write"], "POST /v1/agent/write-with-proof")?;
     let user_id = auth.user_id;
     let requested_event_count = req.events.len();
     let verify_timeout_ms = clamp_verify_timeout_ms(req.verify_timeout_ms);
@@ -4826,8 +4957,9 @@ pub async fn write_with_proof(
     tag = "system"
 )]
 pub async fn get_agent_capabilities(
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
 ) -> Result<Json<AgentCapabilitiesResponse>, AppError> {
+    require_scopes(&auth, &["agent:read"], "GET /v1/agent/capabilities")?;
     Ok(Json(build_agent_capabilities()))
 }
 
@@ -4851,6 +4983,7 @@ pub async fn get_agent_context(
     auth: AuthenticatedUser,
     Query(params): Query<AgentContextParams>,
 ) -> Result<Json<AgentContextResponse>, AppError> {
+    require_scopes(&auth, &["agent:read"], "GET /v1/agent/context")?;
     let user_id = auth.user_id;
     let exercise_limit = clamp_limit(params.exercise_limit, 5, 100);
     let strength_limit = clamp_limit(params.strength_limit, 5, 100);
@@ -4876,10 +5009,12 @@ pub async fn get_agent_context(
     )
     .fetch_optional(&mut *tx)
     .await?
-    .map(|row| SystemConfigResponse {
-        data: row.data,
-        version: row.version,
-        updated_at: row.updated_at,
+    .map(|row| {
+        redact_system_config_for_agent(SystemConfigResponse {
+            data: row.data,
+            version: row.version,
+            updated_at: row.updated_at,
+        })
     });
 
     let user_profile = fetch_projection(&mut tx, user_id, "user_profile", "me")
@@ -4959,6 +5094,8 @@ pub async fn get_agent_context(
             task_intent: ranking_context.intent.clone(),
             ranking_strategy: "composite(recency,confidence,semantic_relevance,task_intent)"
                 .to_string(),
+            context_contract_version: AGENT_CONTEXT_CONTRACT_VERSION.to_string(),
+            system_contract: build_agent_context_system_contract(),
         },
     }))
 }
@@ -5109,6 +5246,11 @@ mod tests {
             auth_method: AuthMethod::ApiKey {
                 key_id: Uuid::now_v7(),
             },
+            scopes: vec![
+                "agent:read".to_string(),
+                "agent:write".to_string(),
+                "agent:resolve".to_string(),
+            ],
         };
         Some((AppState { db: pool }, auth, user_id))
     }
@@ -7188,6 +7330,76 @@ mod tests {
         assert_eq!(
             manifest.upgrade_policy.upgrade_signal_header,
             "x-kura-upgrade-signal"
+        );
+    }
+
+    #[test]
+    fn system_config_redaction_keeps_only_public_contract_fields() {
+        let redacted = super::redact_system_config_data_for_agent(json!({
+            "dimensions": {"training_timeline": {"description": "ok"}},
+            "event_conventions": [{"event_type": "set.logged"}],
+            "projection_schemas": {"user_profile": {"required_fields": ["user"]}},
+            "conventions": {
+                "exercise_normalization": {"rules": ["rule"]},
+                "training_core_fields_v1": {"rules": ["rule"]},
+                "evidence_layer_v1": {"event_type": "evidence.claim.logged"},
+                "open_observation_v1": {"event_type": "observation.logged"},
+                "learning_clustering_v1": {"rules": ["internal"]},
+                "shadow_evaluation_gate_v1": {"rules": ["internal"]},
+                "unexpected_convention": {"rules": ["unknown"]}
+            },
+            "interview_guide": {"philosophy": ["internal strategy"]},
+            "agent_behavior": {"operational": {"security_tiering": {}}},
+            "unexpected_root": {"anything": true}
+        }));
+
+        let root = redacted
+            .as_object()
+            .expect("redacted system config should be an object");
+        assert!(root.contains_key("dimensions"));
+        assert!(root.contains_key("event_conventions"));
+        assert!(root.contains_key("projection_schemas"));
+        assert!(root.contains_key("conventions"));
+        assert!(!root.contains_key("interview_guide"));
+        assert!(!root.contains_key("agent_behavior"));
+        assert!(!root.contains_key("unexpected_root"));
+
+        let conventions = root
+            .get("conventions")
+            .and_then(Value::as_object)
+            .expect("conventions should remain an object");
+        assert!(conventions.contains_key("exercise_normalization"));
+        assert!(conventions.contains_key("training_core_fields_v1"));
+        assert!(conventions.contains_key("evidence_layer_v1"));
+        assert!(conventions.contains_key("open_observation_v1"));
+        assert!(!conventions.contains_key("learning_clustering_v1"));
+        assert!(!conventions.contains_key("shadow_evaluation_gate_v1"));
+        assert!(!conventions.contains_key("unexpected_convention"));
+    }
+
+    #[test]
+    fn system_config_redaction_returns_empty_object_for_non_object_input() {
+        let redacted = super::redact_system_config_data_for_agent(json!(["not", "an", "object"]));
+        assert_eq!(redacted, json!({}));
+    }
+
+    #[test]
+    fn agent_context_system_contract_is_versioned_and_deny_by_default() {
+        let contract = super::build_agent_context_system_contract();
+        assert_eq!(contract.profile, "redacted_v1");
+        assert_eq!(contract.schema_version, "agent_context.system.v1");
+        assert_eq!(contract.default_unknown_field_action, "deny");
+        assert!(
+            contract
+                .redacted_field_classes
+                .iter()
+                .any(|class| class == "system.internal_strategy")
+        );
+        assert!(
+            contract
+                .redacted_field_classes
+                .iter()
+                .any(|class| class == "system.conventions.internal_operations")
         );
     }
 }

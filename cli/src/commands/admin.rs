@@ -131,18 +131,24 @@ async fn create_key(user_id_str: &str, label: &str, expires_in_days: Option<i64>
     let (full_key, key_hash) = kura_core::auth::generate_api_key();
     let prefix = kura_core::auth::key_prefix(&full_key);
     let key_id = uuid::Uuid::now_v7();
+    let scopes = vec![
+        "agent:read".to_string(),
+        "agent:write".to_string(),
+        "agent:resolve".to_string(),
+    ];
 
     let expires_at = expires_in_days.map(|d| chrono::Utc::now() + chrono::Duration::days(d));
 
     if let Err(e) = sqlx::query(
-        "INSERT INTO api_keys (id, user_id, key_hash, key_prefix, label, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO api_keys (id, user_id, key_hash, key_prefix, label, scopes, expires_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(key_id)
     .bind(user_id)
     .bind(&key_hash)
     .bind(&prefix)
     .bind(label)
+    .bind(scopes.clone())
     .bind(expires_at)
     .execute(&pool)
     .await
@@ -155,6 +161,7 @@ async fn create_key(user_id_str: &str, label: &str, expires_in_days: Option<i64>
         "api_key": full_key,
         "key_prefix": prefix,
         "label": label,
+        "scopes": scopes,
         "expires_at": expires_at,
         "warning": "Store this key securely. It will NOT be shown again."
     });
