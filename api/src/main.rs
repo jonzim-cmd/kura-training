@@ -33,6 +33,8 @@ mod state;
         routes::events::create_events_batch,
         routes::events::simulate_events,
         routes::events::list_events,
+        routes::imports::create_import_job,
+        routes::imports::get_import_job,
         routes::auth::register,
         routes::auth::authorize_form,
         routes::auth::authorize_submit,
@@ -90,6 +92,9 @@ mod state;
         kura_core::events::SimulateEventsResponse,
         kura_core::events::ProjectionImpact,
         kura_core::events::ProjectionImpactChange,
+        routes::imports::CreateImportJobRequest,
+        routes::imports::CreateImportJobResponse,
+        routes::imports::ImportJobStatusResponse,
         routes::auth::RegisterRequest,
         routes::auth::RegisterResponse,
         routes::auth::TokenRequest,
@@ -193,6 +198,7 @@ async fn main() {
                 .layer(middleware::rate_limit::events_read_layer())
                 .layer(middleware::upgrade_signal::legacy_contract_layer()),
         )
+        .merge(routes::imports::router().layer(middleware::rate_limit::events_write_layer()))
         .merge(
             routes::projections::router()
                 .layer(middleware::rate_limit::projections_layer())

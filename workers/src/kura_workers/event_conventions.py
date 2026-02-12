@@ -272,6 +272,42 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "remain supported; normalization maps them without data loss where feasible."
             ),
         },
+        "external.activity_imported": {
+            "description": (
+                "Canonical external activity import artifact produced by the "
+                "file/connector ingestion pipeline."
+            ),
+            "fields": {
+                "contract_version": "string (required, external_activity.v1)",
+                "source": {
+                    "provider": "string (required)",
+                    "provider_user_id": "string (required)",
+                    "external_activity_id": "string (required)",
+                    "external_event_version": "string (optional)",
+                    "ingestion_method": "string (required: file_import|connector_api|manual_backfill)",
+                },
+                "workout": "object (required, canonical workout slice)",
+                "session": "object (required, canonical session slice)",
+                "sets": "list[object] (optional, canonical set slice entries)",
+                "provenance": "object (required, mapping + field provenance)",
+            },
+            "example": {
+                "contract_version": "external_activity.v1",
+                "source": {
+                    "provider": "garmin",
+                    "provider_user_id": "athlete-123",
+                    "external_activity_id": "activity-98765",
+                    "external_event_version": "8",
+                    "ingestion_method": "file_import",
+                },
+                "workout": {"workout_type": "run", "duration_seconds": 1800, "distance_meters": 5000},
+                "session": {"started_at": "2026-02-12T06:30:00+00:00"},
+                "provenance": {
+                    "mapping_version": "garmin-v1",
+                    "mapped_at": "2026-02-12T09:15:00+00:00",
+                },
+            },
+        },
         # --- Body composition ---
         "bodyweight.logged": {
             "description": "Body weight measurement",
