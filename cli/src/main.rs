@@ -44,13 +44,26 @@ enum Commands {
         command: commands::projection::ProjectionCommands,
     },
 
+    /// Agent operations (context, write-with-proof, evidence)
+    Agent {
+        #[command(subcommand)]
+        command: commands::agent::AgentCommands,
+    },
+
+    /// Offline replay evaluation wrappers (worker-backed)
+    Eval {
+        #[command(subcommand)]
+        command: commands::eval::EvalCommands,
+    },
+
     /// Get all projections in one call (agent bootstrap snapshot)
     Snapshot,
 
     /// Get system configuration (dimensions, conventions, event types)
     Config,
 
-    /// Get agent context bundle (system + user profile + key dimensions)
+    /// Legacy alias for `kura agent context`
+    #[command(hide = true)]
     Context {
         /// Max exercise_progression projections to include (default: 5)
         #[arg(long)]
@@ -60,7 +73,8 @@ enum Commands {
         custom_limit: Option<u32>,
     },
 
-    /// Write events with receipts + read-after-write verification
+    /// Legacy alias for `kura agent write-with-proof`
+    #[command(hide = true)]
     WriteWithProof(commands::agent::WriteWithProofArgs),
 
     /// Diagnose setup: API, auth, worker, system config
@@ -117,6 +131,13 @@ async fn main() {
             commands::projection::run(&cli.api_url, token.as_deref(), command).await
         }
 
+        Commands::Agent { command } => {
+            let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
+            commands::agent::run(&cli.api_url, token.as_deref(), command).await
+        }
+
+        Commands::Eval { command } => commands::eval::run(command).await,
+
         Commands::Snapshot => {
             let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
             commands::system::snapshot(&cli.api_url, token.as_deref()).await
@@ -132,7 +153,7 @@ async fn main() {
             custom_limit,
         } => {
             let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
-            commands::system::context(&cli.api_url, token.as_deref(), exercise_limit, custom_limit)
+            commands::agent::context(&cli.api_url, token.as_deref(), exercise_limit, custom_limit)
                 .await
         }
 

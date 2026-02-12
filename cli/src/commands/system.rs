@@ -33,34 +33,6 @@ pub async fn config(api_url: &str, token: Option<&str>) -> i32 {
     .await
 }
 
-pub async fn context(
-    api_url: &str,
-    token: Option<&str>,
-    exercise_limit: Option<u32>,
-    custom_limit: Option<u32>,
-) -> i32 {
-    let mut query = Vec::new();
-    if let Some(v) = exercise_limit {
-        query.push(("exercise_limit".to_string(), v.to_string()));
-    }
-    if let Some(v) = custom_limit {
-        query.push(("custom_limit".to_string(), v.to_string()));
-    }
-
-    api_request(
-        api_url,
-        reqwest::Method::GET,
-        "/v1/agent/context",
-        token,
-        None,
-        &query,
-        &[],
-        false,
-        false,
-    )
-    .await
-}
-
 pub async fn snapshot(api_url: &str, token: Option<&str>) -> i32 {
     api_request(
         api_url,

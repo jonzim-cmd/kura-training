@@ -3,6 +3,7 @@ pub mod admin;
 pub mod agent;
 pub mod api;
 pub mod auth;
+pub mod eval;
 pub mod event;
 pub mod health;
 pub mod projection;
