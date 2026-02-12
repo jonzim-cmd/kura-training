@@ -25,6 +25,47 @@ scripts/bd-safe.sh close <id>         # Complete work
 scripts/bd-safe.sh sync               # Sync with git
 ```
 
+## Integration Tests
+
+Integration tests (`test_integration.py`) require a running PostgreSQL with applied migrations.
+
+**Environment variable:**
+```bash
+export DATABASE_URL="postgresql://kura:kura_dev_password@localhost:5432/kura"
+```
+
+**Sandbox setup** (Codex/CI environments without a running DB):
+```bash
+bash scripts/codex-setup.sh
+```
+This installs PostgreSQL, creates the database, runs `init.sql` + all migrations, and exports `DATABASE_URL`.
+
+**Running integration tests:**
+```bash
+DATABASE_URL="postgresql://kura:kura_dev_password@localhost:5432/kura" \
+  uv run --project workers python -m pytest workers/tests/test_integration.py -v
+```
+
+Without `DATABASE_URL`, integration tests are automatically skipped (not failed).
+
+## Quality Gates
+
+Before completing any task that changed code, run:
+```bash
+# Python lint
+ruff check workers/src/ workers/tests/
+
+# Python tests (unit — no DB needed)
+PYTHONPATH=workers/src uv run --project workers python -m pytest workers/tests/ -q --ignore=workers/tests/test_integration.py
+
+# Python tests (integration — needs DB)
+DATABASE_URL="postgresql://kura:kura_dev_password@localhost:5432/kura" \
+  uv run --project workers python -m pytest workers/tests/test_integration.py -q
+
+# Rust tests
+cargo test --workspace
+```
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
