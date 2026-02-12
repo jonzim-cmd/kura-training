@@ -25,46 +25,37 @@ scripts/bd-safe.sh close <id>         # Complete work
 scripts/bd-safe.sh sync               # Sync with git
 ```
 
-## Integration Tests
+## Environment Setup
 
-Integration tests (`test_integration.py`) require a running PostgreSQL with applied migrations.
-
-**Environment variable:**
+**MANDATORY**: Before running any commands, load the project environment:
 ```bash
-export DATABASE_URL="postgresql://kura:kura_dev_password@localhost:5432/kura"
+set -a && source .env && set +a
 ```
-
-**Sandbox setup** (Codex/CI environments without a running DB):
-```bash
-bash scripts/codex-setup.sh
-```
-This installs PostgreSQL, creates the database, runs `init.sql` + all migrations, and exports `DATABASE_URL`.
-
-**Running integration tests:**
-```bash
-DATABASE_URL="postgresql://kura:kura_dev_password@localhost:5432/kura" \
-  uv run --project workers python -m pytest workers/tests/test_integration.py -v
-```
-
-Without `DATABASE_URL`, integration tests are automatically skipped (not failed).
+This sets `DATABASE_URL` and other required variables from the project `.env` file.
 
 ## Quality Gates
 
-Before completing any task that changed code, run:
+Before completing any task that changed code, run ALL applicable gates:
 ```bash
+# Load environment first
+set -a && source .env && set +a
+
 # Python lint
 ruff check workers/src/ workers/tests/
 
-# Python tests (unit — no DB needed)
+# Python unit tests (no DB needed)
 PYTHONPATH=workers/src uv run --project workers python -m pytest workers/tests/ -q --ignore=workers/tests/test_integration.py
 
-# Python tests (integration — needs DB)
-DATABASE_URL="postgresql://kura:kura_dev_password@localhost:5432/kura" \
-  uv run --project workers python -m pytest workers/tests/test_integration.py -q
+# Python integration tests (needs DATABASE_URL + running PostgreSQL)
+PYTHONPATH=workers/src uv run --project workers python -m pytest workers/tests/test_integration.py -q
 
 # Rust tests
 cargo test --workspace
 ```
+
+If integration tests show "skipped", `DATABASE_URL` is not set. Re-run `set -a && source .env && set +a` and retry.
+
+**CI/sandbox environments** without a running PostgreSQL can use `bash scripts/codex-setup.sh` to install and configure one.
 
 ## Landing the Plane (Session Completion)
 
