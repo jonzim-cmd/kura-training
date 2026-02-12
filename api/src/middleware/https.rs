@@ -31,7 +31,10 @@ pub async fn require_https(req: Request, next: Next) -> Response {
         let https_uri = format!("https://{host}{path_and_query}");
 
         if let Ok(uri) = https_uri.parse::<Uri>() {
-            let mut response = (StatusCode::MOVED_PERMANENTLY, [("location", uri.to_string())])
+            let mut response = (
+                StatusCode::MOVED_PERMANENTLY,
+                [("location", uri.to_string())],
+            )
                 .into_response();
             add_hsts_header(&mut response);
             return response;

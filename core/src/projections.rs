@@ -114,7 +114,10 @@ mod tests {
 
         let freshness = ProjectionFreshness::from_computed_at(computed_at, now);
         assert_eq!(freshness.status, ProjectionFreshnessStatus::Stale);
-        assert_eq!(freshness.stale_after_seconds, PROJECTION_STALE_AFTER_SECONDS);
+        assert_eq!(
+            freshness.stale_after_seconds,
+            PROJECTION_STALE_AFTER_SECONDS
+        );
     }
 
     #[test]

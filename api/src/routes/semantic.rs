@@ -504,7 +504,9 @@ async fn fetch_user_embedding(
     .fetch_optional(&mut **tx)
     .await?;
 
-    Ok(row.map(|r| parse_embedding(&r.embedding)).filter(|v| !v.is_empty()))
+    Ok(row
+        .map(|r| parse_embedding(&r.embedding))
+        .filter(|v| !v.is_empty()))
 }
 
 async fn load_catalog_embeddings(
@@ -651,7 +653,8 @@ async fn resolve_query_candidates(
         {
             let cache_key = (query.domain, provider_info.model.clone());
             if !catalog_cache.contains_key(&cache_key) {
-                let loaded = load_catalog_embeddings(tx, query.domain, &provider_info.model).await?;
+                let loaded =
+                    load_catalog_embeddings(tx, query.domain, &provider_info.model).await?;
                 catalog_cache.insert(cache_key.clone(), loaded);
             }
 
@@ -851,7 +854,9 @@ mod tests {
                 matched_term: Some("kniebeuge".to_string()),
                 observed_count: None,
                 provider: Some("hashing".to_string()),
-                model: Some("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2".to_string()),
+                model: Some(
+                    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2".to_string(),
+                ),
             },
         );
 

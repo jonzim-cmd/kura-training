@@ -70,12 +70,11 @@ pub async fn admin_delete_user(
     }
 
     // Check target user exists
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
-            .bind(target_user_id)
-            .fetch_one(&state.db)
-            .await
-            .map_err(AppError::Database)?;
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
+        .bind(target_user_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(AppError::Database)?;
 
     if !exists {
         return Err(AppError::NotFound {
@@ -99,13 +98,12 @@ async fn execute_account_deletion(
     pool: &sqlx::PgPool,
     user_id: Uuid,
 ) -> Result<AccountDeletedResponse, AppError> {
-    let row: (i64, i64) = sqlx::query_as(
-        "SELECT events_deleted, projections_deleted FROM delete_user_account($1)",
-    )
-    .bind(user_id)
-    .fetch_one(pool)
-    .await
-    .map_err(AppError::Database)?;
+    let row: (i64, i64) =
+        sqlx::query_as("SELECT events_deleted, projections_deleted FROM delete_user_account($1)")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+            .map_err(AppError::Database)?;
 
     tracing::info!(
         user_id = %user_id,

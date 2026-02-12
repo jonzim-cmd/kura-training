@@ -79,8 +79,7 @@ pub async fn register(
         });
     }
 
-    let password_hash =
-        auth::hash_password(&req.password).map_err(|e| AppError::Internal(e))?;
+    let password_hash = auth::hash_password(&req.password).map_err(|e| AppError::Internal(e))?;
 
     let user_id = Uuid::now_v7();
 
@@ -304,7 +303,12 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
-fn render_login_form(client_id: &str, redirect_uri: &str, code_challenge: &str, state: &str) -> String {
+fn render_login_form(
+    client_id: &str,
+    redirect_uri: &str,
+    code_challenge: &str,
+    state: &str,
+) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -706,7 +710,7 @@ struct RefreshTokenRow {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_valid_loopback_redirect, validate_oauth_client, AppError};
+    use super::{AppError, is_valid_loopback_redirect, validate_oauth_client};
     use sqlx::postgres::PgPoolOptions;
     use uuid::Uuid;
 
@@ -715,9 +719,7 @@ mod tests {
         assert!(is_valid_loopback_redirect(
             "http://127.0.0.1:45219/callback"
         ));
-        assert!(is_valid_loopback_redirect(
-            "http://localhost:3000/callback"
-        ));
+        assert!(is_valid_loopback_redirect("http://localhost:3000/callback"));
     }
 
     #[test]
@@ -728,9 +730,7 @@ mod tests {
         assert!(!is_valid_loopback_redirect(
             "https://127.0.0.1:3000/callback"
         ));
-        assert!(!is_valid_loopback_redirect(
-            "http://127.0.0.1:3000/wrong"
-        ));
+        assert!(!is_valid_loopback_redirect("http://127.0.0.1:3000/wrong"));
     }
 
     async fn db_pool_if_available() -> Option<sqlx::PgPool> {
@@ -757,13 +757,9 @@ mod tests {
             .expect("migrations should run");
 
         let random_client = format!("missing-client-{}", Uuid::now_v7());
-        let err = validate_oauth_client(
-            &pool,
-            &random_client,
-            "http://127.0.0.1:31337/callback",
-        )
-        .await
-        .expect_err("unknown client must fail");
+        let err = validate_oauth_client(&pool, &random_client, "http://127.0.0.1:31337/callback")
+            .await
+            .expect_err("unknown client must fail");
 
         match err {
             AppError::Validation { field, .. } => {
@@ -796,13 +792,9 @@ mod tests {
         .await
         .expect("insert inactive oauth client");
 
-        let err = validate_oauth_client(
-            &pool,
-            &client_id,
-            "http://127.0.0.1:3000/callback",
-        )
-        .await
-        .expect_err("inactive client must fail");
+        let err = validate_oauth_client(&pool, &client_id, "http://127.0.0.1:3000/callback")
+            .await
+            .expect_err("inactive client must fail");
 
         match err {
             AppError::Unauthorized { .. } => {}

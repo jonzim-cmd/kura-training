@@ -117,9 +117,7 @@ fn validate_provider(provider: &str) -> Result<String, AppError> {
             message: "provider must be one of garmin, strava, trainingpeaks".to_string(),
             field: Some("provider".to_string()),
             received: Some(serde_json::Value::String(provider.to_string())),
-            docs_hint: Some(
-                "Use provider identifiers supported by mapping matrix v1.".to_string(),
-            ),
+            docs_hint: Some("Use provider identifiers supported by mapping matrix v1.".to_string()),
         }),
     }
 }
@@ -331,9 +329,7 @@ pub async fn get_import_job(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        validate_file_format, validate_ingestion_method, validate_provider, AppError,
-    };
+    use super::{AppError, validate_file_format, validate_ingestion_method, validate_provider};
 
     #[test]
     fn provider_validation_accepts_supported_values() {

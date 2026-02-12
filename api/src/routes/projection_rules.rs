@@ -18,10 +18,19 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/projection-rules", get(list_projection_rules))
-        .route("/v1/projection-rules/validate", post(validate_projection_rule))
-        .route("/v1/projection-rules/preview", post(preview_projection_rule))
+        .route(
+            "/v1/projection-rules/validate",
+            post(validate_projection_rule),
+        )
+        .route(
+            "/v1/projection-rules/preview",
+            post(preview_projection_rule),
+        )
         .route("/v1/projection-rules/apply", post(apply_projection_rule))
-        .route("/v1/projection-rules/{name}", delete(archive_projection_rule))
+        .route(
+            "/v1/projection-rules/{name}",
+            delete(archive_projection_rule),
+        )
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -622,7 +631,10 @@ pub async fn preview_projection_rule(
     set_user_context(&mut tx, user_id).await?;
 
     let active = load_active_rules(&mut tx, user_id).await?;
-    let retracted_ids: Vec<Uuid> = fetch_retracted_ids(&mut tx, user_id).await?.into_iter().collect();
+    let retracted_ids: Vec<Uuid> = fetch_retracted_ids(&mut tx, user_id)
+        .await?
+        .into_iter()
+        .collect();
 
     let matching_events: i64 = sqlx::query_scalar(
         r#"
@@ -734,10 +746,16 @@ pub async fn preview_projection_rule(
         );
     }
 
-    let matched_types: HashSet<&str> = by_event_type.iter().map(|r| r.event_type.as_str()).collect();
+    let matched_types: HashSet<&str> = by_event_type
+        .iter()
+        .map(|r| r.event_type.as_str())
+        .collect();
     for event_type in &rule.source_events {
         if !matched_types.contains(event_type.as_str()) {
-            warnings.push(format!("No events currently match source event '{}'.", event_type));
+            warnings.push(format!(
+                "No events currently match source event '{}'.",
+                event_type
+            ));
         }
     }
 

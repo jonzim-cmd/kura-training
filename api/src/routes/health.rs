@@ -1,10 +1,10 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::{Router, Json, routing::get};
+use axum::{Json, Router, routing::get};
 
-use crate::state::AppState;
 use crate::HealthResponse;
+use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/health", get(health_check))
@@ -27,10 +27,17 @@ pub async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
         .is_ok();
 
     let status = if db_ok { "ok" } else { "degraded" };
-    let http_status = if db_ok { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    let http_status = if db_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
 
-    (http_status, Json(HealthResponse {
-        status: status.to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-    }))
+    (
+        http_status,
+        Json(HealthResponse {
+            status: status.to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        }),
+    )
 }

@@ -18,10 +18,7 @@ pub fn router() -> Router<AppState> {
             "/v1/projections/{projection_type}/{key}",
             get(get_projection),
         )
-        .route(
-            "/v1/projections/{projection_type}",
-            get(list_projections),
-        )
+        .route("/v1/projections/{projection_type}", get(list_projections))
 }
 
 /// Internal row type for sqlx mapping
@@ -103,7 +100,8 @@ pub async fn snapshot(
     tx.commit().await?;
 
     let now = Utc::now();
-    let responses: Vec<ProjectionResponse> = rows.into_iter().map(|r| r.into_response(now)).collect();
+    let responses: Vec<ProjectionResponse> =
+        rows.into_iter().map(|r| r.into_response(now)).collect();
     Ok(Json(responses))
 }
 
@@ -245,6 +243,7 @@ pub async fn list_projections(
     tx.commit().await?;
 
     let now = Utc::now();
-    let responses: Vec<ProjectionResponse> = rows.into_iter().map(|r| r.into_response(now)).collect();
+    let responses: Vec<ProjectionResponse> =
+        rows.into_iter().map(|r| r.into_response(now)).collect();
     Ok(Json(responses))
 }

@@ -1,10 +1,11 @@
 use axum::http::Response;
 use tower_governor::{
-    governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorError,
-    GovernorLayer,
+    GovernorError, GovernorLayer, governor::GovernorConfigBuilder,
+    key_extractor::SmartIpKeyExtractor,
 };
 
-type RateLimitLayer = GovernorLayer<SmartIpKeyExtractor, governor::middleware::NoOpMiddleware, axum::body::Body>;
+type RateLimitLayer =
+    GovernorLayer<SmartIpKeyExtractor, governor::middleware::NoOpMiddleware, axum::body::Body>;
 
 /// Rate limit for POST /v1/auth/register: 5 requests per hour per IP.
 pub fn register_layer() -> RateLimitLayer {
@@ -97,11 +98,9 @@ fn json_error_handler(err: GovernorError) -> Response<axum::body::Body> {
             String::new(),
             "Unable to determine client identity for rate limiting".to_string(),
         ),
-        GovernorError::Other { code, msg, .. } => (
-            code,
-            String::new(),
-            msg.unwrap_or_default().to_string(),
-        ),
+        GovernorError::Other { code, msg, .. } => {
+            (code, String::new(), msg.unwrap_or_default().to_string())
+        }
     };
 
     let request_id = uuid::Uuid::now_v7().to_string();

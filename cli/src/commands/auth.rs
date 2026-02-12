@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use crate::util::{client, config_path, save_credentials, StoredCredentials, TokenResponse};
+use crate::util::{StoredCredentials, TokenResponse, client, config_path, save_credentials};
 
 pub async fn login(api_url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let code_verifier = kura_core::auth::generate_code_verifier();
@@ -57,9 +57,11 @@ pub async fn login(api_url: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     if !resp.status().is_success() {
         let body: serde_json::Value = resp.json().await?;
-        return Err(
-            format!("Token exchange failed: {}", serde_json::to_string_pretty(&body)?).into(),
-        );
+        return Err(format!(
+            "Token exchange failed: {}",
+            serde_json::to_string_pretty(&body)?
+        )
+        .into());
     }
 
     let token_resp: TokenResponse = resp.json().await?;

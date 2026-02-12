@@ -204,12 +204,7 @@ pub async fn api_request(
     let headers: serde_json::Map<String, serde_json::Value> = if include {
         resp.headers()
             .iter()
-            .map(|(k, v)| {
-                (
-                    k.to_string(),
-                    json!(v.to_str().unwrap_or("<binary>")),
-                )
-            })
+            .map(|(k, v)| (k.to_string(), json!(v.to_str().unwrap_or("<binary>"))))
             .collect()
     } else {
         serde_json::Map::new()
@@ -275,11 +270,7 @@ pub async fn raw_api_request(
 /// Returns (method_name, detail) or None.
 pub fn check_auth_configured() -> Option<(&'static str, String)> {
     if let Ok(key) = std::env::var("KURA_API_KEY") {
-        let prefix = if key.len() > 12 {
-            &key[..12]
-        } else {
-            &key
-        };
+        let prefix = if key.len() > 12 { &key[..12] } else { &key };
         return Some(("api_key (env)", format!("{prefix}...")));
     }
 

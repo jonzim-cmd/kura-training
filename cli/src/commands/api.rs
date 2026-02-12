@@ -144,7 +144,9 @@ mod tests {
 
     #[test]
     fn test_method_parsing() {
-        for m in &["get", "GET", "Get", "post", "POST", "delete", "DELETE", "put", "patch"] {
+        for m in &[
+            "get", "GET", "Get", "post", "POST", "delete", "DELETE", "put", "patch",
+        ] {
             let parsed = match m.to_uppercase().as_str() {
                 "GET" => Some(reqwest::Method::GET),
                 "POST" => Some(reqwest::Method::POST),

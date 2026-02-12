@@ -14,7 +14,10 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/providers/connections", get(list_provider_connections))
-        .route("/v1/providers/connections", post(upsert_provider_connection))
+        .route(
+            "/v1/providers/connections",
+            post(upsert_provider_connection),
+        )
         .route(
             "/v1/providers/connections/{connection_id}/revoke",
             post(revoke_provider_connection),
@@ -200,9 +203,7 @@ fn validate_auth_state_for_upsert(value: &str) -> Result<String, AppError> {
             message: "auth_state must be linked, refresh_required, or error".to_string(),
             field: Some("auth_state".to_string()),
             received: Some(serde_json::Value::String(value.to_string())),
-            docs_hint: Some(
-                "Use revoke endpoint for revoked state transitions.".to_string(),
-            ),
+            docs_hint: Some("Use revoke endpoint for revoked state transitions.".to_string()),
         }),
     }
 }
@@ -268,7 +269,11 @@ pub async fn list_provider_connections(
     .await?;
 
     tx.commit().await?;
-    Ok(Json(rows.into_iter().map(ProviderConnectionRow::into_response).collect()))
+    Ok(Json(
+        rows.into_iter()
+            .map(ProviderConnectionRow::into_response)
+            .collect(),
+    ))
 }
 
 /// Upsert provider connection metadata (post-launch connector domain model).
@@ -466,9 +471,7 @@ pub async fn revoke_provider_connection(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        normalize_scopes, validate_auth_state_for_upsert, validate_provider, AppError,
-    };
+    use super::{AppError, normalize_scopes, validate_auth_state_for_upsert, validate_provider};
 
     #[test]
     fn provider_validation_accepts_supported_values() {
@@ -504,6 +507,9 @@ mod tests {
             "profile:read".to_string(),
             "activity:read".to_string(),
         ]);
-        assert_eq!(result, vec!["activity:read".to_string(), "profile:read".to_string()]);
+        assert_eq!(
+            result,
+            vec!["activity:read".to_string(), "profile:read".to_string()]
+        );
     }
 }

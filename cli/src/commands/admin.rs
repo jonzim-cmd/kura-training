@@ -132,8 +132,7 @@ async fn create_key(user_id_str: &str, label: &str, expires_in_days: Option<i64>
     let prefix = kura_core::auth::key_prefix(&full_key);
     let key_id = uuid::Uuid::now_v7();
 
-    let expires_at =
-        expires_in_days.map(|d| chrono::Utc::now() + chrono::Duration::days(d));
+    let expires_at = expires_in_days.map(|d| chrono::Utc::now() + chrono::Duration::days(d));
 
     if let Err(e) = sqlx::query(
         "INSERT INTO api_keys (id, user_id, key_hash, key_prefix, label, expires_at) \

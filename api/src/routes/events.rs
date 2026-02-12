@@ -234,7 +234,10 @@ fn validate_projection_rule_created_invariants(data: &serde_json::Value) -> Resu
         )
     })?;
 
-    if !matches!(rule_type.as_str(), "field_tracking" | "categorized_tracking") {
+    if !matches!(
+        rule_type.as_str(),
+        "field_tracking" | "categorized_tracking"
+    ) {
         return Err(policy_violation(
             "inv_projection_rule_type_invalid",
             format!(
@@ -307,7 +310,10 @@ fn validate_projection_rule_created_invariants(data: &serde_json::Value) -> Resu
         if !fields.iter().any(|field| field == &group_by) {
             return Err(policy_violation(
                 "inv_projection_rule_group_by_not_in_fields",
-                format!("data.group_by '{}' must be included in data.fields", group_by),
+                format!(
+                    "data.group_by '{}' must be included in data.fields",
+                    group_by
+                ),
                 Some("data.group_by"),
                 Some(serde_json::Value::String(group_by)),
                 Some("Add group_by to data.fields or choose an existing field."),
@@ -2128,11 +2134,7 @@ mod tests {
             }),
         );
         let err = validate_event(&req).expect_err("expected policy violation");
-        assert_policy_violation(
-            err,
-            "inv_projection_rule_type_invalid",
-            "data.rule_type",
-        );
+        assert_policy_violation(err, "inv_projection_rule_type_invalid", "data.rule_type");
     }
 
     #[test]

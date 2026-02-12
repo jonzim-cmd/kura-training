@@ -178,9 +178,7 @@ async fn authenticate_api_key(
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::Unauthorized {
         message: "Invalid API key".to_string(),
-        docs_hint: Some(
-            "Check that the API key is correct and has not been revoked.".to_string(),
-        ),
+        docs_hint: Some("Check that the API key is correct and has not been revoked.".to_string()),
     })?;
 
     if let Some(expires_at) = row.expires_at {

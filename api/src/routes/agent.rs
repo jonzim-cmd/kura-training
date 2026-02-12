@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -2264,7 +2264,14 @@ const SESSION_NEGATIVE_HINTS: [&str; 10] = [
 ];
 const SESSION_EASY_HINTS: [&str; 5] = ["easy", "leicht", "locker", "chill", "smooth"];
 const SESSION_HARD_HINTS: [&str; 8] = [
-    "hard", "brutal", "tough", "exhausting", "all-out", "maxed", "heavy", "grindy",
+    "hard",
+    "brutal",
+    "tough",
+    "exhausting",
+    "all-out",
+    "maxed",
+    "heavy",
+    "grindy",
 ];
 
 static TEMPO_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -2299,8 +2306,7 @@ static REST_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("valid rest number regex")
 });
 static SET_TYPE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(warm[\s-]?up|back[\s-]?off|amrap|working)\b")
-        .expect("valid set type regex")
+    Regex::new(r"(?i)\b(warm[\s-]?up|back[\s-]?off|amrap|working)\b").expect("valid set type regex")
 });
 
 #[derive(Debug, Clone)]
@@ -2456,8 +2462,7 @@ fn parse_tempo_with_span(text: &str) -> Option<MentionValueWithSpan> {
 }
 
 fn parse_tempo_from_text(text: &str) -> Option<String> {
-    parse_tempo_with_span(text)
-        .and_then(|parsed| parsed.value.as_str().map(str::to_string))
+    parse_tempo_with_span(text).and_then(|parsed| parsed.value.as_str().map(str::to_string))
 }
 
 fn normalize_set_type(value: &str) -> Option<String> {
@@ -2745,7 +2750,8 @@ fn has_unsupported_inferred_value(event: &CreateEventRequest, field: &str) -> bo
     if !is_inferred {
         return false;
     }
-    event.data
+    event
+        .data
         .get(evidence_key.as_str())
         .and_then(Value::as_str)
         .map(str::trim)
@@ -2850,7 +2856,10 @@ fn collect_reliability_inferred_facts(
     let mut seen: HashSet<String> = HashSet::new();
 
     for event in evidence_events {
-        if !event.event_type.eq_ignore_ascii_case(EVIDENCE_CLAIM_EVENT_TYPE) {
+        if !event
+            .event_type
+            .eq_ignore_ascii_case(EVIDENCE_CLAIM_EVENT_TYPE)
+        {
             continue;
         }
         let field = event
@@ -2869,9 +2878,8 @@ fn collect_reliability_inferred_facts(
             .and_then(Value::as_f64)
             .unwrap_or(0.0)
             .clamp(0.0, 1.0);
-        let provenance = summarize_inferred_provenance(
-            event.data.get("provenance").unwrap_or(&Value::Null),
-        );
+        let provenance =
+            summarize_inferred_provenance(event.data.get("provenance").unwrap_or(&Value::Null));
         let dedup_key = format!("evidence|{field}|{provenance}");
         if seen.insert(dedup_key) {
             facts.push(AgentReliabilityInferredFact {
@@ -2906,7 +2914,13 @@ fn collect_reliability_inferred_facts(
             .get("reason")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .or_else(|| event.data.get("reason").and_then(Value::as_str).map(str::to_string))
+            .or_else(|| {
+                event
+                    .data
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .unwrap_or_else(|| "repair_provenance_not_available".to_string());
 
         if event.event_type.eq_ignore_ascii_case("set.corrected") {
@@ -2970,12 +2984,10 @@ fn build_reliability_ux(
     inferred_facts: Vec<AgentReliabilityInferredFact>,
 ) -> AgentReliabilityUx {
     if !claim_guard.allow_saved_claim || session_audit.status == "needs_clarification" {
-        let assistant_phrase = if let Some(question) = session_audit.clarification_question.as_deref()
+        let assistant_phrase = if let Some(question) =
+            session_audit.clarification_question.as_deref()
         {
-            format!(
-                "Unresolved: Es gibt einen Konflikt. {}",
-                question.trim()
-            )
+            format!("Unresolved: Es gibt einen Konflikt. {}", question.trim())
         } else if claim_guard.claim_status == "failed" {
             "Unresolved: Write-Proof ist unvollständig; bitte erneut mit denselben Idempotency-Keys versuchen.".to_string()
         } else {
@@ -3863,7 +3875,8 @@ fn build_session_audit_artifacts(
 
             for field in ["enjoyment", "perceived_quality"] {
                 if let Some(value) = extract_feedback_scale_value(event, field) {
-                    let contradicts = (value >= 4.0 && has_negative) || (value <= 2.5 && has_positive);
+                    let contradicts =
+                        (value >= 4.0 && has_negative) || (value <= 2.5 && has_positive);
                     if contradicts {
                         mismatch_detected += 1;
                         mismatch_unresolved += 1;
@@ -4953,34 +4966,35 @@ pub async fn get_agent_context(
 #[cfg(test)]
 mod tests {
     use super::{
-        bind_visualization_source, bootstrap_user_profile, build_agent_capabilities,
-        build_auto_onboarding_close_event, build_claim_guard, build_repair_feedback,
-        build_evidence_claim_events, build_reliability_ux,
-        build_save_handshake_learning_signal_events, build_session_audit_artifacts,
-        build_visualization_outputs, clamp_limit, clamp_verify_timeout_ms, default_autonomy_policy,
-        collect_reliability_inferred_facts,
-        extract_evidence_claim_drafts, extract_set_context_mentions_from_text,
-        missing_onboarding_close_requirements,
-        normalize_read_after_write_targets, normalize_set_type, normalize_visualization_spec,
-        parse_rest_seconds_from_text, parse_rest_with_span, parse_rir_from_text,
-        parse_rir_with_span, parse_set_type_with_span, parse_tempo_from_text,
-        parse_tempo_with_span,
-        rank_projection_list, ranking_candidate_limit, recover_receipts_for_idempotent_retry,
-        resolve_visualization, visualization_policy_decision, workflow_gate_from_request,
         AgentReadAfterWriteCheck, AgentReadAfterWriteTarget, AgentResolveVisualizationRequest,
         AgentVisualizationDataSource, AgentVisualizationResolvedSource, AgentVisualizationSpec,
         AgentVisualizationTimezoneContext, AgentWorkflowState, AgentWriteReceipt, IntentClass,
         ProjectionResponse, RankingContext, WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE,
-        WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE,
+        WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE, bind_visualization_source, bootstrap_user_profile,
+        build_agent_capabilities, build_auto_onboarding_close_event, build_claim_guard,
+        build_evidence_claim_events, build_reliability_ux, build_repair_feedback,
+        build_save_handshake_learning_signal_events, build_session_audit_artifacts,
+        build_visualization_outputs, clamp_limit, clamp_verify_timeout_ms,
+        collect_reliability_inferred_facts, default_autonomy_policy, extract_evidence_claim_drafts,
+        extract_set_context_mentions_from_text, missing_onboarding_close_requirements,
+        normalize_read_after_write_targets, normalize_set_type, normalize_visualization_spec,
+        parse_rest_seconds_from_text, parse_rest_with_span, parse_rir_from_text,
+        parse_rir_with_span, parse_set_type_with_span, parse_tempo_from_text,
+        parse_tempo_with_span, rank_projection_list, ranking_candidate_limit,
+        recover_receipts_for_idempotent_retry, resolve_visualization,
+        visualization_policy_decision, workflow_gate_from_request,
     };
     use crate::auth::{AuthMethod, AuthenticatedUser};
     use crate::error::AppError;
     use crate::state::AppState;
-    use axum::{extract::{Path, State}, Json};
+    use axum::{
+        Json,
+        extract::{Path, State},
+    };
     use chrono::{Duration, Utc};
     use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
     use kura_core::projections::{Projection, ProjectionFreshness, ProjectionMeta};
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use sqlx::postgres::PgPoolOptions;
     use uuid::Uuid;
 
@@ -5435,9 +5449,11 @@ mod tests {
             }),
         );
         let missing = missing_onboarding_close_requirements(Some(&profile));
-        assert!(missing
-            .iter()
-            .any(|item| item == "preference.timezone.missing"));
+        assert!(
+            missing
+                .iter()
+                .any(|item| item == "preference.timezone.missing")
+        );
     }
 
     #[test]
@@ -5457,10 +5473,11 @@ mod tests {
         assert_eq!(gate.status, "blocked");
         assert_eq!(gate.phase, "onboarding");
         assert_eq!(gate.transition, "none");
-        assert!(gate
-            .planning_event_types
-            .iter()
-            .any(|event_type| event_type == "training_plan.created"));
+        assert!(
+            gate.planning_event_types
+                .iter()
+                .any(|event_type| event_type == "training_plan.created")
+        );
     }
 
     #[test]
@@ -5535,9 +5552,10 @@ mod tests {
         assert_eq!(gate.transition, "onboarding_closed");
         assert_eq!(gate.phase, "planning");
         assert!(gate.onboarding_closed);
-        assert!(gate
-            .message
-            .contains("legacy compatibility; onboarding close marker will be auto-recorded"));
+        assert!(
+            gate.message
+                .contains("legacy compatibility; onboarding close marker will be auto-recorded")
+        );
     }
 
     #[test]
@@ -5636,9 +5654,11 @@ mod tests {
         assert_eq!(status, "fallback");
         assert_eq!(output.format, "ascii");
         assert!(fallback_output.is_none());
-        assert!(warnings
-            .iter()
-            .any(|warning| warning.contains("UTC fallback")));
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("UTC fallback"))
+        );
     }
 
     #[tokio::test]
@@ -5711,10 +5731,12 @@ mod tests {
         assert_eq!(response.resolved_sources[0].value, json!(1200.0));
         assert_eq!(response.resolved_sources[1].value, json!(1320.0));
         assert_eq!(response.output.format, "chart");
-        assert!(response
-            .fallback_output
-            .as_ref()
-            .is_some_and(|output| output.format == "ascii"));
+        assert!(
+            response
+                .fallback_output
+                .as_ref()
+                .is_some_and(|output| output.format == "ascii")
+        );
         assert_eq!(
             response
                 .timezone_context
@@ -5722,19 +5744,25 @@ mod tests {
                 .map(|context| context.source.as_str()),
             Some("user_profile.preference")
         );
-        assert!(response
-            .telemetry_signal_types
-            .iter()
-            .any(|signal| signal == "viz_source_bound"));
-        assert!(response
-            .telemetry_signal_types
-            .iter()
-            .any(|signal| signal == "viz_shown"));
+        assert!(
+            response
+                .telemetry_signal_types
+                .iter()
+                .any(|signal| signal == "viz_source_bound")
+        );
+        assert!(
+            response
+                .telemetry_signal_types
+                .iter()
+                .any(|signal| signal == "viz_shown")
+        );
 
         let signal_types = load_learning_signal_types(&state.db, user_id).await;
-        assert!(signal_types
-            .iter()
-            .any(|signal| signal == "viz_source_bound"));
+        assert!(
+            signal_types
+                .iter()
+                .any(|signal| signal == "viz_source_bound")
+        );
         assert!(signal_types.iter().any(|signal| signal == "viz_shown"));
     }
 
@@ -5793,8 +5821,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn visualization_resolve_e2e_allow_rich_false_returns_ascii_equivalent_and_fallback_signal(
-    ) {
+    async fn visualization_resolve_e2e_allow_rich_false_returns_ascii_equivalent_and_fallback_signal()
+     {
         let Some((state, auth, user_id)) = integration_state_if_available().await else {
             return;
         };
@@ -5879,15 +5907,19 @@ mod tests {
         assert_eq!(fallback_response.output.format, "ascii");
         assert!(fallback_response.fallback_output.is_none());
         assert_eq!(fallback_response.output.content, rich_ascii);
-        assert!(fallback_response
-            .telemetry_signal_types
-            .iter()
-            .any(|signal| signal == "viz_fallback_used"));
+        assert!(
+            fallback_response
+                .telemetry_signal_types
+                .iter()
+                .any(|signal| signal == "viz_fallback_used")
+        );
 
         let signal_types = load_learning_signal_types(&state.db, user_id).await;
-        assert!(signal_types
-            .iter()
-            .any(|signal| signal == "viz_fallback_used"));
+        assert!(
+            signal_types
+                .iter()
+                .any(|signal| signal == "viz_fallback_used")
+        );
     }
 
     #[tokio::test]
@@ -5915,10 +5947,12 @@ mod tests {
         assert_eq!(response.policy.status, "skipped");
         assert!(response.resolved_sources.is_empty());
         assert_eq!(response.output.format, "text");
-        assert!(response
-            .telemetry_signal_types
-            .iter()
-            .any(|signal| signal == "viz_skipped"));
+        assert!(
+            response
+                .telemetry_signal_types
+                .iter()
+                .any(|signal| signal == "viz_skipped")
+        );
 
         let signal_types = load_learning_signal_types(&state.db, user_id).await;
         assert!(signal_types.iter().any(|signal| signal == "viz_skipped"));
@@ -5971,14 +6005,10 @@ mod tests {
         )
         .await;
 
-        let response = super::get_event_evidence_lineage(
-            State(state),
-            auth,
-            Path(target_event_id),
-        )
-        .await
-        .expect("evidence endpoint should succeed")
-        .0;
+        let response = super::get_event_evidence_lineage(State(state), auth, Path(target_event_id))
+            .await
+            .expect("evidence endpoint should succeed")
+            .0;
 
         assert_eq!(response.event_id, target_event_id);
         assert_eq!(response.claims.len(), 1);
@@ -5988,7 +6018,10 @@ mod tests {
             response.claims[0].provenance["source_text_span"]["text"],
             json!("rest 90 sec")
         );
-        assert_eq!(response.claims[0].lineage["event_id"], json!(target_event_id));
+        assert_eq!(
+            response.claims[0].lineage["event_id"],
+            json!(target_event_id)
+        );
     }
 
     #[test]
@@ -6148,18 +6181,17 @@ mod tests {
         assert_eq!(artifacts.summary.mismatch_detected, 2);
         assert_eq!(artifacts.summary.mismatch_repaired, 2);
         assert_eq!(artifacts.summary.mismatch_unresolved, 0);
-        assert!(artifacts
-            .summary
-            .mismatch_classes
-            .iter()
-            .any(|c| c == "scale_normalized_to_five"));
+        assert!(
+            artifacts
+                .summary
+                .mismatch_classes
+                .iter()
+                .any(|c| c == "scale_normalized_to_five")
+        );
         assert_eq!(artifacts.repair_events.len(), 2);
         assert_eq!(artifacts.repair_events[0].event_type, "event.retracted");
         assert_eq!(artifacts.repair_events[1].event_type, "session.completed");
-        assert_eq!(
-            artifacts.repair_events[1].data["enjoyment"],
-            json!(4.0)
-        );
+        assert_eq!(artifacts.repair_events[1].data["enjoyment"], json!(4.0));
         assert_eq!(
             artifacts.repair_events[1].data["perceived_quality"],
             json!(4.5)
@@ -6191,11 +6223,13 @@ mod tests {
         assert_eq!(artifacts.summary.status, "needs_clarification");
         assert!(artifacts.summary.mismatch_detected >= 1);
         assert!(artifacts.summary.mismatch_unresolved >= 1);
-        assert!(artifacts
-            .summary
-            .mismatch_classes
-            .iter()
-            .any(|c| c == "narrative_structured_contradiction"));
+        assert!(
+            artifacts
+                .summary
+                .mismatch_classes
+                .iter()
+                .any(|c| c == "narrative_structured_contradiction")
+        );
         assert!(artifacts.summary.clarification_question.is_some());
         assert!(artifacts.repair_events.is_empty());
     }
@@ -6383,10 +6417,12 @@ mod tests {
             .expect("technical details expected for power-user view");
         assert!(!technical.repair_event_ids.is_empty());
         assert!(!technical.field_diffs.is_empty());
-        assert!(technical
-            .command_trace
-            .iter()
-            .any(|step| step == "session_audit.apply_set_corrected"));
+        assert!(
+            technical
+                .command_trace
+                .iter()
+                .any(|step| step == "session_audit.apply_set_corrected")
+        );
     }
 
     #[test]
@@ -6487,18 +6523,24 @@ mod tests {
         let guard = build_claim_guard(&receipts, 1, &checks, &warnings, default_autonomy_policy());
         assert!(!guard.allow_saved_claim);
         assert_eq!(guard.claim_status, "pending");
-        assert!(guard
-            .uncertainty_markers
-            .iter()
-            .any(|marker| marker == "read_after_write_unverified"));
-        assert!(guard
-            .deferred_markers
-            .iter()
-            .any(|marker| marker == "defer_saved_claim_until_projection_readback"));
-        assert!(guard
-            .uncertainty_markers
-            .iter()
-            .any(|marker| marker == "plausibility_warnings_present"));
+        assert!(
+            guard
+                .uncertainty_markers
+                .iter()
+                .any(|marker| marker == "read_after_write_unverified")
+        );
+        assert!(
+            guard
+                .deferred_markers
+                .iter()
+                .any(|marker| marker == "defer_saved_claim_until_projection_readback")
+        );
+        assert!(
+            guard
+                .uncertainty_markers
+                .iter()
+                .any(|marker| marker == "plausibility_warnings_present")
+        );
     }
 
     #[test]
@@ -6536,10 +6578,12 @@ mod tests {
                 .len()
                 > 10
         );
-        assert!(guard
-            .uncertainty_markers
-            .iter()
-            .any(|marker| marker == "autonomy_throttled_by_integrity_slo"));
+        assert!(
+            guard
+                .uncertainty_markers
+                .iter()
+                .any(|marker| marker == "autonomy_throttled_by_integrity_slo")
+        );
     }
 
     #[test]
@@ -6556,10 +6600,12 @@ mod tests {
         let guard = build_claim_guard(&[], 1, &checks, &[], default_autonomy_policy());
         assert!(!guard.allow_saved_claim);
         assert_eq!(guard.claim_status, "failed");
-        assert!(guard
-            .deferred_markers
-            .iter()
-            .any(|marker| marker == "defer_saved_claim_until_receipt_complete"));
+        assert!(
+            guard
+                .deferred_markers
+                .iter()
+                .any(|marker| marker == "defer_saved_claim_until_receipt_complete")
+        );
     }
 
     #[test]
@@ -6784,9 +6830,11 @@ mod tests {
             })
             .collect();
         assert!(signal_types.iter().any(|v| v == "save_handshake_pending"));
-        assert!(signal_types
-            .iter()
-            .any(|v| v == "save_claim_mismatch_attempt"));
+        assert!(
+            signal_types
+                .iter()
+                .any(|v| v == "save_claim_mismatch_attempt")
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -6993,22 +7041,19 @@ mod tests {
             event_timestamp: ts,
         };
 
-        let first = build_evidence_claim_events(
-            user_id,
-            &[build_event()],
-            std::slice::from_ref(&receipt),
-        );
-        let second = build_evidence_claim_events(
-            user_id,
-            &[build_event()],
-            std::slice::from_ref(&receipt),
-        );
+        let first =
+            build_evidence_claim_events(user_id, &[build_event()], std::slice::from_ref(&receipt));
+        let second =
+            build_evidence_claim_events(user_id, &[build_event()], std::slice::from_ref(&receipt));
 
         assert!(!first.is_empty());
         assert_eq!(first.len(), second.len());
         for (left, right) in first.iter().zip(second.iter()) {
             assert_eq!(left.event_type, "evidence.claim.logged");
-            assert_eq!(left.metadata.idempotency_key, right.metadata.idempotency_key);
+            assert_eq!(
+                left.metadata.idempotency_key,
+                right.metadata.idempotency_key
+            );
             assert_eq!(left.data, right.data);
         }
     }
@@ -7133,11 +7178,13 @@ mod tests {
             fallback.endpoint == "/v1/events"
                 && fallback.compatibility_status == "supported_with_upgrade_signal"
         }));
-        assert!(manifest
-            .upgrade_policy
-            .phases
-            .iter()
-            .any(|phase| phase.compatibility_status == "deprecated"));
+        assert!(
+            manifest
+                .upgrade_policy
+                .phases
+                .iter()
+                .any(|phase| phase.compatibility_status == "deprecated")
+        );
         assert_eq!(
             manifest.upgrade_policy.upgrade_signal_header,
             "x-kura-upgrade-signal"
