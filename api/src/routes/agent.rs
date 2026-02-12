@@ -413,6 +413,24 @@ pub struct AgentRepairFeedback {
     pub technical: Option<AgentRepairTechnicalDetails>,
 }
 
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentReliabilityInferredFact {
+    pub field: String,
+    pub confidence: f64,
+    pub provenance: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentReliabilityUx {
+    /// saved | inferred | unresolved
+    pub state: String,
+    pub assistant_phrase: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub inferred_facts: Vec<AgentReliabilityInferredFact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clarification_question: Option<String>,
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AgentWriteWithProofResponse {
     pub receipts: Vec<AgentWriteReceipt>,
@@ -420,6 +438,7 @@ pub struct AgentWriteWithProofResponse {
     pub warnings: Vec<BatchEventWarning>,
     pub verification: AgentWriteVerificationSummary,
     pub claim_guard: AgentWriteClaimGuard,
+    pub reliability_ux: AgentReliabilityUx,
     pub workflow_gate: AgentWorkflowGate,
     pub session_audit: AgentSessionAuditSummary,
     pub repair_feedback: AgentRepairFeedback,
@@ -2778,7 +2797,7 @@ fn build_clarification_question(unresolved: &[SessionAuditUnresolved]) -> Option
             .collect::<Vec<_>>()
             .join(" oder ");
         return Some(format!(
-            "Ich habe bei {} widersprüchliche Angaben für {} erkannt ({}). Welchen Wert soll ich speichern?",
+            "Konflikt bei {}: {} = {}. Welcher Wert stimmt?",
             first.exercise_label,
             audit_field_label(&first.field),
             values
@@ -2790,11 +2809,216 @@ fn build_clarification_question(unresolved: &[SessionAuditUnresolved]) -> Option
         .map(|v| format_value_for_question(v))
         .unwrap_or_else(|| "einen Wert".to_string());
     Some(format!(
-        "Ich habe bei {} {} als {} erkannt. Soll ich das speichern?",
-        first.exercise_label,
+        "Bitte bestätigen: {} bei {} = {}?",
         audit_field_label(&first.field),
+        first.exercise_label,
         value
     ))
+}
+
+fn summarize_inferred_provenance(provenance: &Value) -> String {
+    if let Some(text) = provenance
+        .get("source_text_span")
+        .and_then(Value::as_object)
+        .and_then(|span| span.get("text"))
+        .and_then(Value::as_str)
+    {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if let Some(text) = provenance.get("source_text").and_then(Value::as_str) {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    provenance
+        .get("source_type")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| "provenance_not_available".to_string())
+}
+
+fn collect_reliability_inferred_facts(
+    evidence_events: &[CreateEventRequest],
+    repair_events: &[CreateEventRequest],
+) -> Vec<AgentReliabilityInferredFact> {
+    let mut facts = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for event in evidence_events {
+        if !event.event_type.eq_ignore_ascii_case(EVIDENCE_CLAIM_EVENT_TYPE) {
+            continue;
+        }
+        let field = event
+            .data
+            .get("claim_type")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown_claim")
+            .trim()
+            .to_string();
+        if field.is_empty() {
+            continue;
+        }
+        let confidence = event
+            .data
+            .get("confidence")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0);
+        let provenance = summarize_inferred_provenance(
+            event.data.get("provenance").unwrap_or(&Value::Null),
+        );
+        let dedup_key = format!("evidence|{field}|{provenance}");
+        if seen.insert(dedup_key) {
+            facts.push(AgentReliabilityInferredFact {
+                field,
+                confidence,
+                provenance,
+            });
+        }
+    }
+
+    for event in repair_events {
+        if !event.event_type.eq_ignore_ascii_case("set.corrected")
+            && !event.event_type.eq_ignore_ascii_case("session.completed")
+        {
+            continue;
+        }
+
+        let repair_provenance = event.data.get("repair_provenance").unwrap_or(&Value::Null);
+        let source_type = repair_provenance
+            .get("source_type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if !source_type.eq_ignore_ascii_case("inferred") {
+            continue;
+        }
+        let confidence = repair_provenance
+            .get("confidence")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0);
+        let provenance = repair_provenance
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| event.data.get("reason").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_else(|| "repair_provenance_not_available".to_string());
+
+        if event.event_type.eq_ignore_ascii_case("set.corrected") {
+            let changed_fields = event
+                .data
+                .get("changed_fields")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            for field in changed_fields.keys() {
+                let dedup_key = format!("repair|set.corrected.{field}|{provenance}");
+                if seen.insert(dedup_key) {
+                    facts.push(AgentReliabilityInferredFact {
+                        field: format!("set.corrected.{field}"),
+                        confidence,
+                        provenance: provenance.clone(),
+                    });
+                }
+            }
+            continue;
+        }
+
+        let inferred_fields = event
+            .data
+            .as_object()
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(key, value)| {
+                        if !key.ends_with("_source")
+                            || !value
+                                .as_str()
+                                .map(|source| source.eq_ignore_ascii_case("inferred"))
+                                .unwrap_or(false)
+                        {
+                            return None;
+                        }
+                        Some(key.trim_end_matches("_source").to_string())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        for field in inferred_fields {
+            let dedup_key = format!("repair|session.completed.{field}|{provenance}");
+            if seen.insert(dedup_key) {
+                facts.push(AgentReliabilityInferredFact {
+                    field: format!("session.completed.{field}"),
+                    confidence,
+                    provenance: provenance.clone(),
+                });
+            }
+        }
+    }
+
+    facts
+}
+
+fn build_reliability_ux(
+    claim_guard: &AgentWriteClaimGuard,
+    session_audit: &AgentSessionAuditSummary,
+    inferred_facts: Vec<AgentReliabilityInferredFact>,
+) -> AgentReliabilityUx {
+    if !claim_guard.allow_saved_claim || session_audit.status == "needs_clarification" {
+        let assistant_phrase = if let Some(question) = session_audit.clarification_question.as_deref()
+        {
+            format!(
+                "Unresolved: Es gibt einen Konflikt. {}",
+                question.trim()
+            )
+        } else if claim_guard.claim_status == "failed" {
+            "Unresolved: Write-Proof ist unvollständig; bitte erneut mit denselben Idempotency-Keys versuchen.".to_string()
+        } else {
+            "Unresolved: Verifikation läuft noch; bitte noch keinen finalen 'saved'-Claim machen."
+                .to_string()
+        };
+        return AgentReliabilityUx {
+            state: "unresolved".to_string(),
+            assistant_phrase,
+            inferred_facts,
+            clarification_question: session_audit.clarification_question.clone(),
+        };
+    }
+
+    if !inferred_facts.is_empty() || session_audit.status == "repaired" {
+        let assistant_phrase = inferred_facts
+            .first()
+            .map(|item| {
+                format!(
+                    "Inferred: Speicherung ist verifiziert, aber mindestens ein Wert ist inferiert ({} @ {:.2}, Quelle: {}).",
+                    item.field,
+                    item.confidence,
+                    item.provenance
+                )
+            })
+            .unwrap_or_else(|| {
+                "Inferred: Speicherung ist verifiziert, enthält aber inferierte Audit-Reparaturen mit Provenance."
+                    .to_string()
+            });
+        return AgentReliabilityUx {
+            state: "inferred".to_string(),
+            assistant_phrase,
+            inferred_facts,
+            clarification_question: None,
+        };
+    }
+
+    AgentReliabilityUx {
+        state: "saved".to_string(),
+        assistant_phrase: "Saved: Speicherung ist verifiziert (Receipt + Read-after-Write)."
+            .to_string(),
+        inferred_facts,
+        clarification_question: None,
+    }
 }
 
 fn all_read_after_write_verified(checks: &[AgentReadAfterWriteCheck]) -> bool {
@@ -4540,6 +4764,8 @@ pub async fn write_with_proof(
     if !evidence_events.is_empty() {
         let _ = create_events_batch_internal(&state, user_id, &evidence_events).await;
     }
+    let inferred_facts = collect_reliability_inferred_facts(&evidence_events, &repair_events);
+    let reliability_ux = build_reliability_ux(&claim_guard, &session_audit_summary, inferred_facts);
     let repair_feedback = build_repair_feedback(
         req.include_repair_technical_details,
         &session_audit_summary,
@@ -4557,6 +4783,7 @@ pub async fn write_with_proof(
             warnings,
             verification,
             claim_guard,
+            reliability_ux,
             workflow_gate,
             session_audit: session_audit_summary,
             repair_feedback,
@@ -4718,9 +4945,10 @@ mod tests {
     use super::{
         bind_visualization_source, bootstrap_user_profile, build_agent_capabilities,
         build_auto_onboarding_close_event, build_claim_guard, build_repair_feedback,
-        build_evidence_claim_events,
+        build_evidence_claim_events, build_reliability_ux,
         build_save_handshake_learning_signal_events, build_session_audit_artifacts,
         build_visualization_outputs, clamp_limit, clamp_verify_timeout_ms, default_autonomy_policy,
+        collect_reliability_inferred_facts,
         extract_evidence_claim_drafts, extract_set_context_mentions_from_text,
         missing_onboarding_close_requirements,
         normalize_read_after_write_targets, normalize_set_type, normalize_visualization_spec,
@@ -6322,6 +6550,133 @@ mod tests {
             .deferred_markers
             .iter()
             .any(|marker| marker == "defer_saved_claim_until_receipt_complete"));
+    }
+
+    #[test]
+    fn reliability_ux_state_saved_for_verified_without_inference() {
+        let event_id = Uuid::now_v7();
+        let receipts = vec![AgentWriteReceipt {
+            event_id,
+            event_type: "set.logged".to_string(),
+            idempotency_key: "abc-123".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "user_profile".to_string(),
+            key: "me".to_string(),
+            status: "verified".to_string(),
+            observed_projection_version: Some(1),
+            observed_last_event_id: Some(event_id),
+            detail: "ok".to_string(),
+        }];
+        let guard = build_claim_guard(&receipts, 1, &checks, &[], default_autonomy_policy());
+        let summary = super::AgentSessionAuditSummary {
+            status: "clean".to_string(),
+            mismatch_detected: 0,
+            mismatch_repaired: 0,
+            mismatch_unresolved: 0,
+            mismatch_classes: vec![],
+            clarification_question: None,
+        };
+
+        let ux = build_reliability_ux(&guard, &summary, vec![]);
+        assert_eq!(ux.state, "saved");
+        assert!(ux.assistant_phrase.contains("Saved"));
+        assert!(ux.inferred_facts.is_empty());
+        assert!(ux.clarification_question.is_none());
+    }
+
+    #[test]
+    fn reliability_ux_state_inferred_when_evidence_has_confidence_and_provenance() {
+        let evidence_event = CreateEventRequest {
+            timestamp: Utc::now(),
+            event_type: "evidence.claim.logged".to_string(),
+            data: json!({
+                "claim_type": "set_context.rest_seconds",
+                "confidence": 0.95,
+                "provenance": {
+                    "source_text_span": {
+                        "text": "rest 90 sec"
+                    }
+                }
+            }),
+            metadata: EventMetadata {
+                source: Some("agent_write_with_proof".to_string()),
+                agent: Some("api".to_string()),
+                device: None,
+                session_id: Some("session-1".to_string()),
+                idempotency_key: "evidence-1".to_string(),
+            },
+        };
+        let inferred_facts = collect_reliability_inferred_facts(&[evidence_event], &[]);
+        assert_eq!(inferred_facts.len(), 1);
+        assert_eq!(inferred_facts[0].field, "set_context.rest_seconds");
+        assert!((inferred_facts[0].confidence - 0.95).abs() < f64::EPSILON);
+        assert_eq!(inferred_facts[0].provenance, "rest 90 sec");
+
+        let event_id = Uuid::now_v7();
+        let receipts = vec![AgentWriteReceipt {
+            event_id,
+            event_type: "set.logged".to_string(),
+            idempotency_key: "abc-123".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "user_profile".to_string(),
+            key: "me".to_string(),
+            status: "verified".to_string(),
+            observed_projection_version: Some(1),
+            observed_last_event_id: Some(event_id),
+            detail: "ok".to_string(),
+        }];
+        let guard = build_claim_guard(&receipts, 1, &checks, &[], default_autonomy_policy());
+        let summary = super::AgentSessionAuditSummary {
+            status: "clean".to_string(),
+            mismatch_detected: 0,
+            mismatch_repaired: 0,
+            mismatch_unresolved: 0,
+            mismatch_classes: vec![],
+            clarification_question: None,
+        };
+
+        let ux = build_reliability_ux(&guard, &summary, inferred_facts);
+        assert_eq!(ux.state, "inferred");
+        assert!(ux.assistant_phrase.contains("Inferred"));
+        assert_eq!(ux.inferred_facts.len(), 1);
+    }
+
+    #[test]
+    fn reliability_ux_state_unresolved_prefers_conflict_question() {
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "user_profile".to_string(),
+            key: "me".to_string(),
+            status: "pending".to_string(),
+            observed_projection_version: None,
+            observed_last_event_id: None,
+            detail: "pending".to_string(),
+        }];
+        let guard = build_claim_guard(&[], 1, &checks, &[], default_autonomy_policy());
+        let summary = super::AgentSessionAuditSummary {
+            status: "needs_clarification".to_string(),
+            mismatch_detected: 1,
+            mismatch_repaired: 0,
+            mismatch_unresolved: 1,
+            mismatch_classes: vec!["narrative_contradiction".to_string()],
+            clarification_question: Some(
+                "Konflikt bei Session-Feedback: Session-Anstrengung = 3 oder 8. Welcher Wert stimmt?"
+                    .to_string(),
+            ),
+        };
+
+        let ux = build_reliability_ux(&guard, &summary, vec![]);
+        assert_eq!(ux.state, "unresolved");
+        assert!(ux.assistant_phrase.contains("Unresolved"));
+        assert!(
+            ux.clarification_question
+                .as_deref()
+                .unwrap_or("")
+                .contains("Welcher Wert stimmt?")
+        );
     }
 
     #[test]

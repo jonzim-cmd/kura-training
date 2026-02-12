@@ -291,6 +291,66 @@ def _get_agent_behavior() -> dict[str, Any]:
                     ),
                 },
             },
+            "reliability_ux_protocol": {
+                "goal": (
+                    "Prevent certainty inflation by labeling every post-write response as "
+                    "saved, inferred, or unresolved."
+                ),
+                "state_contract": {
+                    "saved": {
+                        "when": "claim_guard.allow_saved_claim=true AND no unresolved conflicts",
+                        "required_message_shape": (
+                            "Confirm persistence with receipt/read-after-write basis."
+                        ),
+                        "must_include": ["state=saved", "assistant_phrase"],
+                    },
+                    "inferred": {
+                        "when": (
+                            "write proof verified AND at least one inferred fact or "
+                            "deterministic repair provenance exists"
+                        ),
+                        "required_message_shape": (
+                            "State persisted + explicitly mark inferred fields with confidence/provenance."
+                        ),
+                        "must_include": [
+                            "state=inferred",
+                            "assistant_phrase",
+                            "inferred_facts[]",
+                        ],
+                    },
+                    "unresolved": {
+                        "when": (
+                            "proof incomplete OR clarification-needed mismatch remains unresolved"
+                        ),
+                        "required_message_shape": (
+                            "Do not claim saved. Ask one conflict-focused clarification question."
+                        ),
+                        "must_include": [
+                            "state=unresolved",
+                            "assistant_phrase",
+                            "clarification_question",
+                        ],
+                    },
+                },
+                "anti_patterns": [
+                    "Never say 'saved/logged' when claim_guard.allow_saved_claim=false.",
+                    "Never hide inferred values behind certainty wording.",
+                    "Never ask broad multi-question prompts when one conflict question is enough.",
+                ],
+                "clarification_style": {
+                    "max_questions_per_turn": 1,
+                    "tone": "concise_conflict_focused",
+                    "template": "Konflikt bei <scope>: <field> = <option_a>|<option_b>. Welcher Wert stimmt?",
+                },
+                "compatibility": {
+                    "user_override_hooks_must_remain_supported": True,
+                    "hooks": [
+                        "workflow_gate.override",
+                        "autonomy_policy.max_scope_level",
+                        "confirmation_template_catalog",
+                    ],
+                },
+            },
             "uncertainty": {
                 "low_confidence_fact_policy": (
                     "Use explicit uncertainty markers and deferred labels when confidence or proof is incomplete."

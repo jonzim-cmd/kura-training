@@ -355,6 +355,28 @@ class TestAgentBehavior:
         assert "saved_claim_policy" in write_protocol
         assert len(write_protocol["required_steps"]) >= 3
 
+    def test_operational_has_reliability_ux_protocol_with_three_states(self):
+        result = _get_agent_behavior()
+        protocol = result["operational"]["reliability_ux_protocol"]
+        states = protocol["state_contract"]
+
+        assert set(states.keys()) == {"saved", "inferred", "unresolved"}
+        assert "must_include" in states["saved"]
+        assert "must_include" in states["inferred"]
+        assert "must_include" in states["unresolved"]
+        assert "inferred_facts[]" in states["inferred"]["must_include"]
+        assert "clarification_question" in states["unresolved"]["must_include"]
+
+    def test_reliability_ux_protocol_preserves_override_hooks(self):
+        result = _get_agent_behavior()
+        compatibility = result["operational"]["reliability_ux_protocol"]["compatibility"]
+        hooks = compatibility["hooks"]
+
+        assert compatibility["user_override_hooks_must_remain_supported"] is True
+        assert "workflow_gate.override" in hooks
+        assert "autonomy_policy.max_scope_level" in hooks
+        assert "confirmation_template_catalog" in hooks
+
     def test_operational_has_uncertainty_markers(self):
         result = _get_agent_behavior()
         uncertainty = result["operational"]["uncertainty"]
