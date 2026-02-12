@@ -355,3 +355,59 @@ class TestAgentBehavior:
         assert "monitor" in catalog
         assert "degraded" in catalog
         assert "non_trivial_action" in catalog["degraded"]
+
+    def test_operational_has_security_tiering_profiles(self):
+        result = _get_agent_behavior()
+        security_tiering = result["operational"]["security_tiering"]
+
+        assert security_tiering["default_profile"] == "default"
+        assert security_tiering["profile_progression"] == [
+            "default",
+            "adaptive",
+            "strict",
+        ]
+        assert set(security_tiering["profiles"]) == {"default", "adaptive", "strict"}
+
+    def test_security_tiering_profiles_reference_known_switches(self):
+        result = _get_agent_behavior()
+        security_tiering = result["operational"]["security_tiering"]
+        switch_catalog = set(security_tiering["switch_catalog"])
+
+        for profile in security_tiering["profiles"].values():
+            switches = profile["switches"]
+            assert set(switches).issubset(switch_catalog)
+            assert switches["prompt_hardening"]
+            assert switches["scope_enforcement"]
+
+    def test_security_tiering_switch_catalog_has_owner_metric_rollout(self):
+        result = _get_agent_behavior()
+        security_tiering = result["operational"]["security_tiering"]
+
+        for control in security_tiering["switch_catalog"].values():
+            assert control["owner"]
+            assert control["metric"]
+            assert control["rollout_plan"]
+
+    def test_security_tiering_threat_matrix_has_required_fields(self):
+        result = _get_agent_behavior()
+        security_tiering = result["operational"]["security_tiering"]
+        threat_matrix = security_tiering["threat_matrix"]
+
+        assert len(threat_matrix) >= 4
+        names = {entry["name"] for entry in threat_matrix}
+        assert "prompt_exfiltration" in names
+        assert "api_enumeration" in names
+        assert "context_scraping" in names
+        assert "scope_escalation" in names
+
+        for entry in threat_matrix:
+            assert entry["threat_id"].startswith("TM-")
+            assert entry["attacker_goal"]
+            assert entry["attack_path"]
+            assert entry["detection_signals"]
+            assert entry["controls"]["default"]
+            assert entry["controls"]["adaptive"]
+            assert entry["controls"]["strict"]
+            assert entry["owner"]
+            assert entry["metric"]
+            assert entry["rollout_plan"]

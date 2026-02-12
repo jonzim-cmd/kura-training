@@ -32,10 +32,10 @@ CREATE TABLE IF NOT EXISTS external_import_jobs (
     completed_at            TIMESTAMPTZ
 );
 
-CREATE INDEX idx_external_import_jobs_user_status
+CREATE INDEX IF NOT EXISTS idx_external_import_jobs_user_status
     ON external_import_jobs (user_id, status, created_at DESC);
 
-CREATE INDEX idx_external_import_jobs_source
+CREATE INDEX IF NOT EXISTS idx_external_import_jobs_source
     ON external_import_jobs (
         user_id,
         provider,
@@ -46,12 +46,36 @@ CREATE INDEX idx_external_import_jobs_source
 
 ALTER TABLE external_import_jobs ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY external_import_jobs_user_isolation ON external_import_jobs
-    USING (user_id = current_setting('kura.current_user_id', true)::UUID);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_policies
+        WHERE schemaname = 'public'
+          AND tablename = 'external_import_jobs'
+          AND policyname = 'external_import_jobs_user_isolation'
+    ) THEN
+        CREATE POLICY external_import_jobs_user_isolation ON external_import_jobs
+            USING (user_id = current_setting('kura.current_user_id', true)::UUID);
+    END IF;
+END
+$$;
 
-CREATE POLICY external_import_jobs_user_insert ON external_import_jobs
-    FOR INSERT
-    WITH CHECK (user_id = current_setting('kura.current_user_id', true)::UUID);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_policies
+        WHERE schemaname = 'public'
+          AND tablename = 'external_import_jobs'
+          AND policyname = 'external_import_jobs_user_insert'
+    ) THEN
+        CREATE POLICY external_import_jobs_user_insert ON external_import_jobs
+            FOR INSERT
+            WITH CHECK (user_id = current_setting('kura.current_user_id', true)::UUID);
+    END IF;
+END
+$$;
 
 GRANT SELECT ON external_import_jobs TO app_reader;
 GRANT SELECT, INSERT ON external_import_jobs TO app_writer;

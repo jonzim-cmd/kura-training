@@ -294,6 +294,159 @@ def _get_agent_behavior() -> dict[str, Any]:
                     },
                 },
             },
+            "security_tiering": {
+                "version": "ct3.1",
+                "goal": (
+                    "Protect agent access paths against prompt exfiltration, API enumeration, "
+                    "context scraping, and scope escalation."
+                ),
+                "default_profile": "default",
+                "profile_progression": ["default", "adaptive", "strict"],
+                "switch_catalog": {
+                    "prompt_hardening": {
+                        "owner": "platform_security",
+                        "metric": "security.prompt_exfiltration_blocks_rate",
+                        "rollout_plan": "baseline now -> adaptive anomaly trigger -> strict manual override",
+                    },
+                    "api_surface_guard": {
+                        "owner": "api_platform",
+                        "metric": "security.api_enumeration_blocked_requests",
+                        "rollout_plan": "baseline allowlist now -> tighten unknown endpoint budget in adaptive",
+                    },
+                    "context_minimization": {
+                        "owner": "agent_runtime",
+                        "metric": "security.context_overshare_incidents",
+                        "rollout_plan": "always-on redaction baseline, expand masking + canary in adaptive",
+                    },
+                    "scope_enforcement": {
+                        "owner": "policy_engine",
+                        "metric": "security.scope_escalation_prevented_total",
+                        "rollout_plan": "read checks now -> strict write scopes + fail-closed in strict",
+                    },
+                    "abuse_kill_switch": {
+                        "owner": "sre_oncall",
+                        "metric": "security.kill_switch_time_to_mitigate_seconds",
+                        "rollout_plan": "enabled in adaptive and strict only, exercised in game-days weekly",
+                    },
+                },
+                "profiles": {
+                    "default": {
+                        "intent": "Normal operation with bounded safeguards and observability.",
+                        "switches": {
+                            "prompt_hardening": "baseline",
+                            "api_surface_guard": "allowlist_with_rate_limits",
+                            "context_minimization": "redact_secrets_only",
+                            "scope_enforcement": "token_scope_match_required",
+                            "abuse_kill_switch": "manual_only",
+                        },
+                        "activation": "System default for healthy tenants.",
+                    },
+                    "adaptive": {
+                        "intent": "Escalate controls when telemetry signals active abuse patterns.",
+                        "switches": {
+                            "prompt_hardening": "strict_templates_plus_output_filters",
+                            "api_surface_guard": "allowlist_plus_anomaly_rate_shaping",
+                            "context_minimization": "sensitive_context_allowlist",
+                            "scope_enforcement": "per_action_scope_assertions",
+                            "abuse_kill_switch": "auto_on_multi_signal_trigger",
+                        },
+                        "activation": "Triggered when abuse score crosses monitor threshold for 15m.",
+                    },
+                    "strict": {
+                        "intent": "Incident mode with fail-closed behavior and minimal context surface.",
+                        "switches": {
+                            "prompt_hardening": "locked_system_prompt_and_no_tool_reflection",
+                            "api_surface_guard": "hard_allowlist_and_low_burst_limits",
+                            "context_minimization": "need_to_know_projection_subset",
+                            "scope_enforcement": "write_block_except_break_glass",
+                            "abuse_kill_switch": "always_armed_with_oncall_approval",
+                        },
+                        "activation": "Manual incident response or repeated adaptive breaches.",
+                    },
+                },
+                "threat_matrix": [
+                    {
+                        "threat_id": "TM-001",
+                        "name": "prompt_exfiltration",
+                        "attacker_goal": "Reveal hidden prompts, secrets, or policy internals.",
+                        "attack_path": (
+                            "Nested instruction payloads attempt jailbreak + reflection from user input."
+                        ),
+                        "detection_signals": [
+                            "Prompt leak regex hit",
+                            "Unexpected tool schema exposure",
+                            "High prompt_reflection_ratio",
+                        ],
+                        "controls": {
+                            "default": ["prompt_hardening"],
+                            "adaptive": ["prompt_hardening", "context_minimization"],
+                            "strict": ["prompt_hardening", "context_minimization", "abuse_kill_switch"],
+                        },
+                        "owner": "platform_security",
+                        "metric": "security.prompt_exfiltration_attempts_blocked",
+                        "rollout_plan": "start now in default, auto-escalate to adaptive, strict via incident cmd",
+                    },
+                    {
+                        "threat_id": "TM-002",
+                        "name": "api_enumeration",
+                        "attacker_goal": "Discover hidden endpoints and broaden attack surface.",
+                        "attack_path": "Iterate endpoint patterns, scopes, and malformed tool calls.",
+                        "detection_signals": [
+                            "404/403 sweep burst",
+                            "Unknown endpoint entropy spike",
+                            "Repeated scope denial from same principal",
+                        ],
+                        "controls": {
+                            "default": ["api_surface_guard"],
+                            "adaptive": ["api_surface_guard", "scope_enforcement"],
+                            "strict": ["api_surface_guard", "scope_enforcement", "abuse_kill_switch"],
+                        },
+                        "owner": "api_platform",
+                        "metric": "security.api_enumeration_attempt_rate",
+                        "rollout_plan": "baseline now, anomaly shaping in adaptive, strict hard caps in incidents",
+                    },
+                    {
+                        "threat_id": "TM-003",
+                        "name": "context_scraping",
+                        "attacker_goal": "Extract user context outside requested task scope.",
+                        "attack_path": "Prompt asks for broad summaries to elicit unrelated private context.",
+                        "detection_signals": [
+                            "Large context chunk retrieval",
+                            "Cross-dimension query fan-out",
+                            "Response includes unrequested sensitive keys",
+                        ],
+                        "controls": {
+                            "default": ["context_minimization"],
+                            "adaptive": ["context_minimization", "scope_enforcement"],
+                            "strict": ["context_minimization", "scope_enforcement", "abuse_kill_switch"],
+                        },
+                        "owner": "agent_runtime",
+                        "metric": "security.context_leak_prevented_total",
+                        "rollout_plan": "redaction baseline now, adaptive allowlists next, strict subset in incidents",
+                    },
+                    {
+                        "threat_id": "TM-004",
+                        "name": "scope_escalation",
+                        "attacker_goal": "Execute writes/actions beyond granted authority.",
+                        "attack_path": (
+                            "Forge or replay elevated scopes via tool invocations and policy bypass attempts."
+                        ),
+                        "detection_signals": [
+                            "Scope mismatch failures",
+                            "Idempotency replay with scope change",
+                            "Write attempt during throttle boundary",
+                        ],
+                        "controls": {
+                            "default": ["scope_enforcement"],
+                            "adaptive": ["scope_enforcement", "api_surface_guard"],
+                            "strict": ["scope_enforcement", "api_surface_guard", "abuse_kill_switch"],
+                        },
+                        "owner": "policy_engine",
+                        "metric": "security.scope_escalation_denied_total",
+                        "rollout_plan": "enforce read/write parity now, strict fail-closed writes by incident playbook",
+                    },
+                ],
+            },
         },
     }
 
