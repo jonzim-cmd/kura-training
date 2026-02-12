@@ -13,6 +13,14 @@ pub enum AppError {
         received: Option<serde_json::Value>,
         docs_hint: Option<String>,
     },
+    /// Domain policy/invariant violation (422) with machine-readable code
+    PolicyViolation {
+        code: String,
+        message: String,
+        field: Option<String>,
+        received: Option<serde_json::Value>,
+        docs_hint: Option<String>,
+    },
     /// Unauthorized (401) — missing or invalid credentials
     Unauthorized {
         message: String,
@@ -50,6 +58,23 @@ impl IntoResponse for AppError {
                 StatusCode::BAD_REQUEST,
                 ApiError {
                     error: error::codes::VALIDATION_FAILED.to_string(),
+                    message,
+                    field,
+                    received,
+                    request_id,
+                    docs_hint,
+                },
+            ),
+            AppError::PolicyViolation {
+                code,
+                message,
+                field,
+                received,
+                docs_hint,
+            } => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ApiError {
+                    error: code,
                     message,
                     field,
                     received,

@@ -58,6 +58,277 @@ fn validate_event(req: &CreateEventRequest) -> Result<(), AppError> {
         });
     }
 
+    validate_critical_invariants(req)?;
+
+    Ok(())
+}
+
+fn policy_violation(
+    code: &str,
+    message: impl Into<String>,
+    field: Option<&str>,
+    received: Option<serde_json::Value>,
+    docs_hint: Option<&str>,
+) -> AppError {
+    AppError::PolicyViolation {
+        code: code.to_string(),
+        message: message.into(),
+        field: field.map(str::to_string),
+        received,
+        docs_hint: docs_hint.map(str::to_string),
+    }
+}
+
+fn non_empty_string_field(data: &serde_json::Value, key: &str) -> Option<String> {
+    data.get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn non_empty_string_array(data: &serde_json::Value, key: &str) -> Option<Vec<String>> {
+    let raw = data.get(key)?.as_array()?;
+    let mut values = Vec::with_capacity(raw.len());
+    for item in raw {
+        let value = item.as_str()?.trim();
+        if value.is_empty() {
+            return None;
+        }
+        values.push(value.to_string());
+    }
+    if values.is_empty() {
+        return None;
+    }
+    Some(values)
+}
+
+fn validate_critical_invariants(req: &CreateEventRequest) -> Result<(), AppError> {
+    match req.event_type.as_str() {
+        "event.retracted" => validate_retraction_invariants(&req.data),
+        "set.corrected" => validate_set_correction_invariants(&req.data),
+        "projection_rule.created" => validate_projection_rule_created_invariants(&req.data),
+        "projection_rule.archived" => validate_projection_rule_archived_invariants(&req.data),
+        _ => Ok(()),
+    }
+}
+
+fn validate_retraction_invariants(data: &serde_json::Value) -> Result<(), AppError> {
+    let target_id = non_empty_string_field(data, "retracted_event_id").ok_or_else(|| {
+        policy_violation(
+            "inv_retraction_target_required",
+            "event.retracted requires data.retracted_event_id",
+            Some("data.retracted_event_id"),
+            data.get("retracted_event_id").cloned(),
+            Some("Provide the UUID of the event that should be retracted."),
+        )
+    })?;
+
+    if Uuid::parse_str(&target_id).is_err() {
+        return Err(policy_violation(
+            "inv_retraction_target_invalid_uuid",
+            "data.retracted_event_id must be a valid UUID",
+            Some("data.retracted_event_id"),
+            Some(serde_json::Value::String(target_id)),
+            Some("Use the exact event.id of the event to retract."),
+        ));
+    }
+
+    if data.get("retracted_event_type").is_some()
+        && non_empty_string_field(data, "retracted_event_type").is_none()
+    {
+        return Err(policy_violation(
+            "inv_retraction_type_invalid",
+            "data.retracted_event_type, when provided, must be a non-empty string",
+            Some("data.retracted_event_type"),
+            data.get("retracted_event_type").cloned(),
+            Some("Set retracted_event_type to the original event_type, for example 'set.logged'."),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_set_correction_invariants(data: &serde_json::Value) -> Result<(), AppError> {
+    let target_id = non_empty_string_field(data, "target_event_id").ok_or_else(|| {
+        policy_violation(
+            "inv_set_correction_target_required",
+            "set.corrected requires data.target_event_id",
+            Some("data.target_event_id"),
+            data.get("target_event_id").cloned(),
+            Some("Provide the UUID of the set.logged event that should be corrected."),
+        )
+    })?;
+
+    if Uuid::parse_str(&target_id).is_err() {
+        return Err(policy_violation(
+            "inv_set_correction_target_invalid_uuid",
+            "data.target_event_id must be a valid UUID",
+            Some("data.target_event_id"),
+            Some(serde_json::Value::String(target_id)),
+            Some("Use the exact event.id of the target set.logged event."),
+        ));
+    }
+
+    let changed_fields = data.get("changed_fields").ok_or_else(|| {
+        policy_violation(
+            "inv_set_correction_changed_fields_required",
+            "set.corrected requires data.changed_fields",
+            Some("data.changed_fields"),
+            None,
+            Some("Provide an object with at least one field patch."),
+        )
+    })?;
+
+    let changed_fields_obj = changed_fields.as_object().ok_or_else(|| {
+        policy_violation(
+            "inv_set_correction_changed_fields_invalid",
+            "data.changed_fields must be an object",
+            Some("data.changed_fields"),
+            Some(changed_fields.clone()),
+            Some("Use an object map, e.g. {'rest_seconds': 90}."),
+        )
+    })?;
+
+    if changed_fields_obj.is_empty() {
+        return Err(policy_violation(
+            "inv_set_correction_changed_fields_empty",
+            "data.changed_fields must not be empty",
+            Some("data.changed_fields"),
+            Some(changed_fields.clone()),
+            Some("Include at least one changed field in set.corrected."),
+        ));
+    }
+
+    if changed_fields_obj.keys().any(|k| k.trim().is_empty()) {
+        return Err(policy_violation(
+            "inv_set_correction_changed_fields_key_invalid",
+            "data.changed_fields contains an empty field name",
+            Some("data.changed_fields"),
+            Some(changed_fields.clone()),
+            Some("Each changed_fields key must be a non-empty field name."),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_projection_rule_created_invariants(data: &serde_json::Value) -> Result<(), AppError> {
+    let name = non_empty_string_field(data, "name").ok_or_else(|| {
+        policy_violation(
+            "inv_projection_rule_name_required",
+            "projection_rule.created requires data.name",
+            Some("data.name"),
+            data.get("name").cloned(),
+            Some("Provide a stable non-empty rule name."),
+        )
+    })?;
+
+    let rule_type = non_empty_string_field(data, "rule_type").ok_or_else(|| {
+        policy_violation(
+            "inv_projection_rule_type_required",
+            "projection_rule.created requires data.rule_type",
+            Some("data.rule_type"),
+            data.get("rule_type").cloned(),
+            Some("Use one of: field_tracking, categorized_tracking."),
+        )
+    })?;
+
+    if !matches!(rule_type.as_str(), "field_tracking" | "categorized_tracking") {
+        return Err(policy_violation(
+            "inv_projection_rule_type_invalid",
+            format!(
+                "projection_rule.created has unsupported rule_type '{}'",
+                rule_type
+            ),
+            Some("data.rule_type"),
+            Some(serde_json::Value::String(rule_type)),
+            Some("Allowed values: field_tracking, categorized_tracking."),
+        ));
+    }
+
+    let source_events = non_empty_string_array(data, "source_events").ok_or_else(|| {
+        policy_violation(
+            "inv_projection_rule_source_events_invalid",
+            format!(
+                "projection_rule.created '{}' requires non-empty data.source_events",
+                name
+            ),
+            Some("data.source_events"),
+            data.get("source_events").cloned(),
+            Some("Provide at least one non-empty source event type."),
+        )
+    })?;
+
+    let fields = non_empty_string_array(data, "fields").ok_or_else(|| {
+        policy_violation(
+            "inv_projection_rule_fields_invalid",
+            format!(
+                "projection_rule.created '{}' requires non-empty data.fields",
+                name
+            ),
+            Some("data.fields"),
+            data.get("fields").cloned(),
+            Some("Provide at least one non-empty field name."),
+        )
+    })?;
+
+    if source_events.len() > 32 {
+        return Err(policy_violation(
+            "inv_projection_rule_source_events_too_large",
+            "data.source_events exceeds maximum length of 32",
+            Some("data.source_events"),
+            Some(serde_json::json!(source_events.len())),
+            Some("Split very broad rules into smaller focused projection rules."),
+        ));
+    }
+
+    if fields.len() > 64 {
+        return Err(policy_violation(
+            "inv_projection_rule_fields_too_large",
+            "data.fields exceeds maximum length of 64",
+            Some("data.fields"),
+            Some(serde_json::json!(fields.len())),
+            Some("Reduce tracked fields per rule to keep processing bounded."),
+        ));
+    }
+
+    if rule_type == "categorized_tracking" {
+        let group_by = non_empty_string_field(data, "group_by").ok_or_else(|| {
+            policy_violation(
+                "inv_projection_rule_group_by_required",
+                "categorized_tracking requires data.group_by",
+                Some("data.group_by"),
+                data.get("group_by").cloned(),
+                Some("Set group_by to one of the declared fields."),
+            )
+        })?;
+
+        if !fields.iter().any(|field| field == &group_by) {
+            return Err(policy_violation(
+                "inv_projection_rule_group_by_not_in_fields",
+                format!("data.group_by '{}' must be included in data.fields", group_by),
+                Some("data.group_by"),
+                Some(serde_json::Value::String(group_by)),
+                Some("Add group_by to data.fields or choose an existing field."),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_projection_rule_archived_invariants(data: &serde_json::Value) -> Result<(), AppError> {
+    if non_empty_string_field(data, "name").is_none() {
+        return Err(policy_violation(
+            "inv_projection_rule_archive_name_required",
+            "projection_rule.archived requires data.name",
+            Some("data.name"),
+            data.get("name").cloned(),
+            Some("Provide the exact rule name to archive."),
+        ));
+    }
+
     Ok(())
 }
 
@@ -1072,6 +1343,19 @@ pub(crate) async fn create_events_batch_internal(
                 received,
                 docs_hint,
             },
+            AppError::PolicyViolation {
+                code,
+                message,
+                field,
+                received,
+                docs_hint,
+            } => AppError::PolicyViolation {
+                code,
+                message: format!("events[{}]: {}", i, message),
+                field: field.map(|f| format!("events[{}].{}", i, f)),
+                received,
+                docs_hint,
+            },
             other => other,
         })?;
 
@@ -1277,6 +1561,19 @@ pub async fn simulate_events(
                 received,
                 docs_hint,
             } => AppError::Validation {
+                message: format!("events[{}]: {}", i, message),
+                field: field.map(|f| format!("events[{}].{}", i, f)),
+                received,
+                docs_hint,
+            },
+            AppError::PolicyViolation {
+                code,
+                message,
+                field,
+                received,
+                docs_hint,
+            } => AppError::PolicyViolation {
+                code,
                 message: format!("events[{}]: {}", i, message),
                 field: field.map(|f| format!("events[{}].{}", i, f)),
                 received,
@@ -1711,6 +2008,143 @@ impl EventRow {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn make_request(event_type: &str, data: serde_json::Value) -> CreateEventRequest {
+        CreateEventRequest {
+            timestamp: Utc::now(),
+            event_type: event_type.to_string(),
+            data,
+            metadata: EventMetadata {
+                source: Some("test".to_string()),
+                agent: Some("tests".to_string()),
+                device: None,
+                session_id: None,
+                idempotency_key: "idem-test-1".to_string(),
+            },
+        }
+    }
+
+    fn assert_policy_violation(err: AppError, expected_code: &str, expected_field: &str) {
+        match err {
+            AppError::PolicyViolation {
+                code,
+                field,
+                docs_hint,
+                ..
+            } => {
+                assert_eq!(code, expected_code);
+                assert_eq!(field.as_deref(), Some(expected_field));
+                assert!(docs_hint.is_some());
+            }
+            other => panic!("Expected policy violation, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_retraction_requires_target_event_id() {
+        let req = make_request("event.retracted", json!({"reason": "oops"}));
+        let err = validate_event(&req).expect_err("expected policy violation");
+        assert_policy_violation(
+            err,
+            "inv_retraction_target_required",
+            "data.retracted_event_id",
+        );
+    }
+
+    #[test]
+    fn test_retraction_requires_uuid_target() {
+        let req = make_request(
+            "event.retracted",
+            json!({"retracted_event_id": "not-a-uuid", "retracted_event_type": "set.logged"}),
+        );
+        let err = validate_event(&req).expect_err("expected policy violation");
+        assert_policy_violation(
+            err,
+            "inv_retraction_target_invalid_uuid",
+            "data.retracted_event_id",
+        );
+    }
+
+    #[test]
+    fn test_set_corrected_requires_non_empty_changed_fields() {
+        let req = make_request(
+            "set.corrected",
+            json!({
+                "target_event_id": Uuid::now_v7().to_string(),
+                "changed_fields": {}
+            }),
+        );
+        let err = validate_event(&req).expect_err("expected policy violation");
+        assert_policy_violation(
+            err,
+            "inv_set_correction_changed_fields_empty",
+            "data.changed_fields",
+        );
+    }
+
+    #[test]
+    fn test_projection_rule_created_rejects_invalid_rule_type() {
+        let req = make_request(
+            "projection_rule.created",
+            json!({
+                "name": "my_rule",
+                "rule_type": "weird_rule",
+                "source_events": ["set.logged"],
+                "fields": ["weight_kg"],
+            }),
+        );
+        let err = validate_event(&req).expect_err("expected policy violation");
+        assert_policy_violation(
+            err,
+            "inv_projection_rule_type_invalid",
+            "data.rule_type",
+        );
+    }
+
+    #[test]
+    fn test_projection_rule_created_rejects_group_by_not_in_fields() {
+        let req = make_request(
+            "projection_rule.created",
+            json!({
+                "name": "readiness_by_modality",
+                "rule_type": "categorized_tracking",
+                "source_events": ["set.logged"],
+                "fields": ["load_volume"],
+                "group_by": "exercise_id",
+            }),
+        );
+        let err = validate_event(&req).expect_err("expected policy violation");
+        assert_policy_violation(
+            err,
+            "inv_projection_rule_group_by_not_in_fields",
+            "data.group_by",
+        );
+    }
+
+    #[test]
+    fn test_projection_rule_archived_requires_name() {
+        let req = make_request("projection_rule.archived", json!({"name": ""}));
+        let err = validate_event(&req).expect_err("expected policy violation");
+        assert_policy_violation(
+            err,
+            "inv_projection_rule_archive_name_required",
+            "data.name",
+        );
+    }
+
+    #[test]
+    fn test_projection_rule_created_valid_payload_passes() {
+        let req = make_request(
+            "projection_rule.created",
+            json!({
+                "name": "rest_tracking",
+                "rule_type": "field_tracking",
+                "source_events": ["set.logged", "set.corrected"],
+                "fields": ["rest_seconds", "rir"],
+            }),
+        );
+        assert!(validate_event(&req).is_ok());
+    }
 
     #[test]
     fn test_normal_set_no_warnings() {
