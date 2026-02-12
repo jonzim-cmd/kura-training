@@ -1,6 +1,7 @@
 """Training Timeline dimension handler.
 
-Reacts to set.logged, set.corrected, and exercise.alias_created events and computes temporal training patterns:
+Reacts to set.logged, set.corrected, exercise.alias_created, and
+external.activity_imported events and computes temporal training patterns:
 - Recent training days (last 30 with activity)
 - Weekly summaries (last 26 weeks)
 - Training frequency (rolling averages)
@@ -111,6 +112,10 @@ def _compute_recent_sessions(
         }
         if entry["session_id"] is not None:
             session_entry["session_id"] = entry["session_id"]
+        if entry.get("source_provider") is not None:
+            session_entry["source_provider"] = entry["source_provider"]
+        if entry.get("source_type") is not None:
+            session_entry["source_type"] = entry["source_type"]
         if entry.get("top_sets"):
             session_entry["top_sets"] = entry["top_sets"]
         result.append(session_entry)
@@ -220,7 +225,12 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     }
 
 
-@projection_handler("set.logged", "set.corrected", "exercise.alias_created", dimension_meta={
+@projection_handler(
+    "set.logged",
+    "set.corrected",
+    "exercise.alias_created",
+    "external.activity_imported",
+    dimension_meta={
     "name": "training_timeline",
     "description": "Training patterns: when, what, how much",
     "key_structure": "single overview per user",
@@ -256,6 +266,8 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "total_volume_kg": "number",
             "total_reps": "integer",
             "session_id": "string (optional)",
+            "source_provider": "string (optional, for externally imported sessions)",
+            "source_type": "string (optional: manual|external_import)",
             "top_sets": {"<exercise_id>": {"weight_kg": "number", "reps": "integer", "estimated_1rm": "number"}},
         }],
         "weekly_summary": [{
@@ -279,6 +291,17 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "observed_attributes": {"<event_type>": {"<field>": "integer — count"}},
             "corrected_set_rows": "integer — number of rows with set.corrected overlays",
             "temporal_conflicts": {"<conflict_type>": "integer — number of events with that conflict"},
+            "external_imported_sessions": "integer",
+            "external_source_providers": {"<provider>": "integer — imported sessions"},
+            "external_low_confidence_fields": "integer",
+            "external_unit_conversion_fields": "integer",
+            "external_unsupported_fields_total": "integer",
+            "external_dedup_actions": {
+                "duplicate_skipped": "integer",
+                "idempotent_replay": "integer",
+                "rejected": "integer",
+            },
+            "external_temporal_uncertainty_hints": "integer",
         },
     },
     "manifest_contribution": _manifest_contribution,
@@ -333,7 +356,34 @@ async def update_training_timeline(
     ]
     rows = apply_set_correction_chain(rows, correction_rows)
 
-    if not rows:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT id, timestamp, data, metadata
+            FROM events
+            WHERE user_id = %s
+              AND event_type = 'external.activity_imported'
+            ORDER BY timestamp ASC
+            """,
+            (user_id,),
+        )
+        external_rows = await cur.fetchall()
+    external_rows = [r for r in external_rows if str(r["id"]) not in retracted_ids]
+
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT status, error_code, receipt
+            FROM external_import_jobs
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT 512
+            """,
+            (user_id,),
+        )
+        import_job_rows = await cur.fetchall()
+
+    if not rows and not external_rows:
         # Clean up: delete any existing projection (all events retracted)
         async with conn.cursor() as cur:
             await cur.execute(
@@ -342,7 +392,9 @@ async def update_training_timeline(
             )
         return
 
-    last_event_id = rows[-1]["id"]
+    source_rows = rows + external_rows
+    source_rows.sort(key=lambda row: (row["timestamp"], str(row["id"])))
+    last_event_id = source_rows[-1]["id"]
 
     # Aggregate by day, week, and session
     day_data: dict[date, dict[str, Any]] = defaultdict(
@@ -353,14 +405,147 @@ async def update_training_timeline(
     )
     # Session grouping: key = session_id or date string (fallback)
     session_data: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"date": None, "session_id": None, "exercises": set(), "total_sets": 0, "total_volume_kg": 0.0, "total_reps": 0, "top_sets": {}}
+        lambda: {
+            "date": None,
+            "session_id": None,
+            "source_provider": None,
+            "source_type": None,
+            "exercises": set(),
+            "total_sets": 0,
+            "total_volume_kg": 0.0,
+            "total_reps": 0,
+            "top_sets": {},
+        }
     )
     observed_attr_counts: dict[str, dict[str, int]] = {}
     corrected_rows = 0
     temporal_conflicts: dict[str, int] = {}
+    external_imported_sessions = 0
+    external_source_providers: dict[str, int] = {}
+    external_low_confidence_fields = 0
+    external_unit_conversion_fields = 0
+    external_unsupported_fields_total = 0
+    external_temporal_uncertainty_hints = 0
+    external_dedup_actions = {
+        "duplicate_skipped": 0,
+        "idempotent_replay": 0,
+        "rejected": 0,
+    }
     fallback_session_state: SessionBoundaryState | None = None
 
-    for row in rows:
+    external_rows_for_aggregation: list[dict[str, Any]] = []
+    for external_row in external_rows:
+        data = external_row.get("data") or {}
+        source = data.get("source") or {}
+        provider = str(source.get("provider") or "unknown").strip().lower() or "unknown"
+        external_imported_sessions += 1
+        external_source_providers[provider] = (
+            external_source_providers.get(provider, 0) + 1
+        )
+
+        provenance = data.get("provenance") or {}
+        unsupported_fields = provenance.get("unsupported_fields") or []
+        if isinstance(unsupported_fields, list):
+            external_unsupported_fields_total += sum(
+                1 for entry in unsupported_fields if isinstance(entry, str) and entry.strip()
+            )
+
+        provenance_warnings = provenance.get("warnings") or []
+        if isinstance(provenance_warnings, list):
+            external_temporal_uncertainty_hints += sum(
+                1
+                for warning in provenance_warnings
+                if isinstance(warning, str)
+                and ("timezone" in warning.lower() or "drift" in warning.lower())
+            )
+
+        field_provenance = provenance.get("field_provenance") or {}
+        if isinstance(field_provenance, dict):
+            for entry in field_provenance.values():
+                if not isinstance(entry, dict):
+                    continue
+                confidence_raw = entry.get("confidence", 1.0)
+                try:
+                    confidence = float(confidence_raw)
+                except (TypeError, ValueError):
+                    confidence = 1.0
+                status = str(entry.get("status") or "mapped").strip().lower() or "mapped"
+                if status != "mapped" or confidence < 0.86:
+                    external_low_confidence_fields += 1
+                unit_original = entry.get("unit_original")
+                unit_normalized = entry.get("unit_normalized")
+                if (
+                    isinstance(unit_original, str)
+                    and isinstance(unit_normalized, str)
+                    and unit_original.strip()
+                    and unit_normalized.strip()
+                    and unit_original.strip() != unit_normalized.strip()
+                ):
+                    external_unit_conversion_fields += 1
+
+        session_payload = data.get("session") or {}
+        source_payload = data.get("source") or {}
+        workout_payload = data.get("workout") or {}
+        sets_payload = data.get("sets")
+        if not isinstance(sets_payload, list) or not sets_payload:
+            workout_type = (
+                str(workout_payload.get("workout_type") or "external_activity")
+                .strip()
+                .lower()
+                or "external_activity"
+            )
+            sets_payload = [{"exercise": workout_type, "exercise_id": workout_type}]
+
+        metadata = dict(external_row.get("metadata") or {})
+        synthetic_session_id = str(
+            session_payload.get("session_id")
+            or source_payload.get("external_activity_id")
+            or ""
+        ).strip()
+        if synthetic_session_id:
+            metadata["session_id"] = synthetic_session_id
+
+        for set_entry in sets_payload:
+            if not isinstance(set_entry, dict):
+                continue
+            synthetic_data = dict(set_entry)
+            if "exercise" not in synthetic_data and "exercise_id" not in synthetic_data:
+                workout_type = (
+                    str(workout_payload.get("workout_type") or "external_activity")
+                    .strip()
+                    .lower()
+                    or "external_activity"
+                )
+                synthetic_data["exercise"] = workout_type
+                synthetic_data["exercise_id"] = workout_type
+            external_rows_for_aggregation.append(
+                {
+                    "id": external_row["id"],
+                    "timestamp": external_row["timestamp"],
+                    "data": synthetic_data,
+                    "metadata": metadata,
+                    "_source_type": "external_import",
+                    "_source_provider": provider,
+                }
+            )
+
+    for import_row in import_job_rows:
+        receipt = import_row.get("receipt") or {}
+        if isinstance(receipt, dict):
+            write = receipt.get("write") or {}
+            if isinstance(write, dict):
+                result = str(write.get("result") or "").strip().lower()
+                if result in {"duplicate_skipped", "idempotent_replay"}:
+                    external_dedup_actions[result] += 1
+        if str(import_row.get("status") or "") == "failed":
+            error_code = str(import_row.get("error_code") or "").strip().lower()
+            if error_code in {"stale_version", "version_conflict", "partial_overlap"}:
+                external_dedup_actions["rejected"] += 1
+
+    rows_for_aggregation = rows + external_rows_for_aggregation
+    rows_for_aggregation.sort(key=lambda row: (row["timestamp"], str(row["id"])))
+
+    for row in rows_for_aggregation:
         data = row.get("effective_data") or row["data"]
         metadata = row.get("metadata") or {}
         if row.get("correction_history"):
@@ -432,6 +617,11 @@ async def update_training_timeline(
         if current_session_date is None or d.isoformat() < current_session_date:
             session_data[session_key]["date"] = d.isoformat()
         session_data[session_key]["session_id"] = session_id
+        session_data[session_key]["source_type"] = (
+            str(row.get("_source_type")) if row.get("_source_type") else "manual"
+        )
+        if row.get("_source_provider"):
+            session_data[session_key]["source_provider"] = str(row["_source_provider"])
         session_data[session_key]["exercises"].add(exercise_key)
         session_data[session_key]["total_sets"] += 1
         session_data[session_key]["total_volume_kg"] += volume
@@ -464,6 +654,13 @@ async def update_training_timeline(
             "observed_attributes": observed_attr_counts,
             "corrected_set_rows": corrected_rows,
             "temporal_conflicts": temporal_conflicts,
+            "external_imported_sessions": external_imported_sessions,
+            "external_source_providers": external_source_providers,
+            "external_low_confidence_fields": external_low_confidence_fields,
+            "external_unit_conversion_fields": external_unit_conversion_fields,
+            "external_unsupported_fields_total": external_unsupported_fields_total,
+            "external_temporal_uncertainty_hints": external_temporal_uncertainty_hints,
+            "external_dedup_actions": external_dedup_actions,
         },
     }
 
@@ -482,10 +679,11 @@ async def update_training_timeline(
         )
 
     logger.info(
-        "Updated training_timeline for user=%s (days=%d, weeks=%d, timezone=%s, assumed=%s, temporal_conflicts=%s)",
+        "Updated training_timeline for user=%s (days=%d, weeks=%d, external_sessions=%d, timezone=%s, assumed=%s, temporal_conflicts=%s)",
         user_id,
         len(training_dates),
         len(week_data),
+        external_imported_sessions,
         timezone_name,
         timezone_context["assumed"],
         temporal_conflicts,

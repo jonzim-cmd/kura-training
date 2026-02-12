@@ -9,13 +9,13 @@ Last updated: 2026-02-12
 - `kura-training-tm5.2`: completed
 - `kura-training-tm5.5`: completed
 - `kura-training-tm5.6`: completed
-- `kura-training-tm5.7`: pending
+- `kura-training-tm5.7`: completed
 - `kura-training-tm5.9`: pending
 - `kura-training-tm5.8`: pending (post-launch)
 
 ## Last Commit
 
-- `2763e13` (`feat(kura-training-tm5.5): add provider field mapping matrix v1`)
+- `cc66a76` (`feat(kura-training-tm5.6): add async FIT/TCX/GPX import pipeline`)
 
 ## Tested Commands
 
@@ -30,6 +30,8 @@ Last updated: 2026-02-12
 - `cd workers && uv run ruff check src/kura_workers/external_import_pipeline.py src/kura_workers/handlers/external_import.py src/kura_workers/event_conventions.py tests/test_external_import_pipeline.py` (green)
 - `cd workers && uv run pytest -q tests/test_external_import_pipeline.py tests/test_external_mapping_matrix.py tests/test_external_identity.py tests/test_external_adapter.py tests/test_external_activity_contract.py` (green)
 - `cargo test -p kura-api imports:: -- --nocapture` (green; 5 passed, existing dead-code warnings unchanged)
+- `cd workers && uv run ruff check src/kura_workers/handlers/training_timeline.py src/kura_workers/handlers/quality_health.py src/kura_workers/handlers/external_import.py tests/test_training_timeline.py tests/test_quality_health.py` (green)
+- `cd workers && uv run pytest -q tests/test_training_timeline.py tests/test_quality_health.py tests/test_external_import_pipeline.py` (green)
 
 ## Open Risks
 
@@ -38,4 +40,4 @@ Last updated: 2026-02-12
 
 ## Next Step
 
-- Start `kura-training-tm5.7` to integrate `external.activity_imported` into core projections + quality signals.
+- Start `kura-training-tm5.9` rollout plan (launch import -> connector post-launch stages, flags, KPIs, fallback).

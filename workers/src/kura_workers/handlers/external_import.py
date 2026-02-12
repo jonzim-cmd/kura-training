@@ -207,6 +207,31 @@ async def _insert_external_activity_event(
     return event_id
 
 
+async def _enqueue_import_quality_refresh(
+    conn: psycopg.AsyncConnection[Any],
+    *,
+    user_id: str,
+    import_job_id: str,
+) -> None:
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            INSERT INTO background_jobs (user_id, job_type, payload, max_retries)
+            VALUES (%s, 'projection.update', %s, 3)
+            """,
+            (
+                user_id,
+                Json(
+                    {
+                        "event_id": import_job_id,
+                        "event_type": "external.import.job",
+                        "user_id": user_id,
+                    }
+                ),
+            ),
+        )
+
+
 @register("external_import.process")
 async def handle_external_import_process(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
@@ -270,6 +295,11 @@ async def handle_external_import_process(
             error_code=exc.code,
             error_message=str(exc),
         )
+        await _enqueue_import_quality_refresh(
+            conn,
+            user_id=user_id,
+            import_job_id=import_job_id,
+        )
         return
 
     dedup = {
@@ -299,6 +329,11 @@ async def handle_external_import_process(
             payload_fingerprint=plan.payload_fingerprint,
             idempotency_key=plan.idempotency_key,
         )
+        await _enqueue_import_quality_refresh(
+            conn,
+            user_id=user_id,
+            import_job_id=import_job_id,
+        )
         return
 
     if not plan.should_write:
@@ -310,6 +345,11 @@ async def handle_external_import_process(
             source_identity_key=plan.source_identity_key,
             payload_fingerprint=plan.payload_fingerprint,
             idempotency_key=plan.idempotency_key,
+        )
+        await _enqueue_import_quality_refresh(
+            conn,
+            user_id=user_id,
+            import_job_id=import_job_id,
         )
         return
 
@@ -334,6 +374,11 @@ async def handle_external_import_process(
             source_identity_key=plan.source_identity_key,
             payload_fingerprint=plan.payload_fingerprint,
             idempotency_key=plan.idempotency_key,
+        )
+        await _enqueue_import_quality_refresh(
+            conn,
+            user_id=user_id,
+            import_job_id=import_job_id,
         )
         return
 

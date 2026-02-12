@@ -175,6 +175,55 @@ class TestEvaluateReadOnlyInvariants:
         issues, _ = _evaluate_read_only_invariants(rows, alias_map={})
         assert all(issue["type"] != "mention_field_missing" for issue in issues)
 
+    def test_external_import_quality_signals_include_uncertainty_and_unsupported(self):
+        rows = [
+            _row(
+                "external.activity_imported",
+                {
+                    "provenance": {
+                        "unsupported_fields": ["workout.normalizedPower"],
+                        "warnings": ["timezone inferred from UTC fallback"],
+                        "field_provenance": {
+                            "workout.calories_kcal": {
+                                "confidence": 0.71,
+                                "status": "estimated",
+                                "unit_original": "kJ",
+                                "unit_normalized": "kcal",
+                            }
+                        },
+                    }
+                },
+            ),
+            _row("preference.set", {"key": "timezone", "value": "Europe/Berlin"}),
+            _row("profile.updated", {"age_deferred": True, "bodyweight_deferred": True}),
+        ]
+        import_jobs = [
+            {
+                "status": "completed",
+                "error_code": None,
+                "receipt": {"write": {"result": "duplicate_skipped"}},
+            },
+            {
+                "status": "failed",
+                "error_code": "version_conflict",
+                "receipt": {},
+            },
+        ]
+        issues, metrics = _evaluate_read_only_invariants(
+            rows,
+            alias_map={},
+            import_job_rows=import_jobs,
+        )
+
+        issue_types = {issue["type"] for issue in issues}
+        assert "external_unsupported_fields" in issue_types
+        assert "external_low_confidence_fields" in issue_types
+        assert "external_temporal_uncertainty" in issue_types
+        assert "external_dedup_rejected" in issue_types
+        assert metrics["external_imported_total"] == 1
+        assert metrics["external_dedup_skipped_total"] == 1
+        assert metrics["external_dedup_rejected_total"] == 1
+
 
 class TestQualityProjectionData:
     def test_quality_score_penalizes_by_severity(self):

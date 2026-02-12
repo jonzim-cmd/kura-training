@@ -443,6 +443,24 @@ class TestComputeRecentSessions:
         result = _compute_recent_sessions(session_data)
         assert "top_sets" not in result[0]
 
+    def test_external_session_source_metadata_is_preserved(self):
+        session_data = {
+            "garmin-activity-1": {
+                "date": "2026-02-08",
+                "session_id": "garmin-activity-1",
+                "source_provider": "garmin",
+                "source_type": "external_import",
+                "exercises": {"run"},
+                "total_sets": 1,
+                "total_volume_kg": 0.0,
+                "total_reps": 0,
+            }
+        }
+
+        result = _compute_recent_sessions(session_data)
+        assert result[0]["source_provider"] == "garmin"
+        assert result[0]["source_type"] == "external_import"
+
 
 class TestManifestContribution:
     def test_extracts_summary(self):

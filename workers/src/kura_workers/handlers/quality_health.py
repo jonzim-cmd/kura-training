@@ -48,6 +48,7 @@ _INVARIANT_SOURCE_EVENT_TYPES = (
     "nutrition_target.set",
     "workflow.onboarding.closed",
     "workflow.onboarding.override_granted",
+    "external.activity_imported",
 )
 
 _QUALITY_SIGNAL_EVENT_TYPES = (
@@ -55,6 +56,7 @@ _QUALITY_SIGNAL_EVENT_TYPES = (
     "quality.fix.applied",
     "quality.fix.rejected",
     "quality.issue.closed",
+    "external.import.job",
 )
 
 _EVENT_TYPES = _INVARIANT_SOURCE_EVENT_TYPES + _QUALITY_SIGNAL_EVENT_TYPES
@@ -1195,6 +1197,23 @@ async def _load_quality_source_rows(
         return await cur.fetchall()
 
 
+async def _load_external_import_job_rows(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+) -> list[dict[str, Any]]:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT status, error_code, receipt, created_at
+            FROM external_import_jobs
+            WHERE user_id = %s
+            ORDER BY created_at ASC
+            """,
+            (user_id,),
+        )
+        return await cur.fetchall()
+
+
 def _metric_status(
     value: float,
     healthy_max: float,
@@ -1455,6 +1474,7 @@ def _autonomy_policy_from_slos(integrity_slos: dict[str, Any]) -> dict[str, Any]
 def _evaluate_read_only_invariants(
     event_rows: list[dict[str, Any]],
     alias_map: dict[str, str],
+    import_job_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Evaluate Phase-0 invariants from event data.
 
@@ -1463,6 +1483,7 @@ def _evaluate_read_only_invariants(
     - INV-003 (timezone explicitness)
     - INV-005 (goal trackability path)
     - INV-006 (baseline profile explicitness)
+    - INV-009 (external import quality + dedup integrity)
     """
     issues: list[dict[str, Any]] = []
     raw_set_rows = [r for r in event_rows if r["event_type"] == "set.logged"]
@@ -1662,6 +1683,143 @@ def _evaluate_read_only_invariants(
             )
         )
 
+    external_rows = [
+        row for row in event_rows if row.get("event_type") == "external.activity_imported"
+    ]
+    external_imported_total = len(external_rows)
+    external_low_confidence_fields = 0
+    external_unsupported_fields_total = 0
+    external_temporal_uncertainty_total = 0
+    external_unit_conversion_fields = 0
+    for row in external_rows:
+        data = row.get("data") or {}
+        provenance = data.get("provenance") or {}
+
+        unsupported = provenance.get("unsupported_fields") or []
+        if isinstance(unsupported, list):
+            external_unsupported_fields_total += sum(
+                1 for item in unsupported if isinstance(item, str) and item.strip()
+            )
+
+        warnings = provenance.get("warnings") or []
+        if isinstance(warnings, list):
+            external_temporal_uncertainty_total += sum(
+                1
+                for warning in warnings
+                if isinstance(warning, str)
+                and ("timezone" in warning.lower() or "drift" in warning.lower())
+            )
+
+        field_provenance = provenance.get("field_provenance") or {}
+        if isinstance(field_provenance, dict):
+            for entry in field_provenance.values():
+                if not isinstance(entry, dict):
+                    continue
+                confidence_raw = entry.get("confidence", 1.0)
+                try:
+                    confidence = float(confidence_raw)
+                except (TypeError, ValueError):
+                    confidence = 1.0
+                status = str(entry.get("status") or "mapped").strip().lower() or "mapped"
+                if status != "mapped" or confidence < 0.86:
+                    external_low_confidence_fields += 1
+                unit_original = entry.get("unit_original")
+                unit_normalized = entry.get("unit_normalized")
+                if (
+                    isinstance(unit_original, str)
+                    and isinstance(unit_normalized, str)
+                    and unit_original.strip()
+                    and unit_normalized.strip()
+                    and unit_original.strip() != unit_normalized.strip()
+                ):
+                    external_unit_conversion_fields += 1
+
+    import_rows = import_job_rows or []
+    external_import_failed_total = sum(
+        1 for row in import_rows if str(row.get("status") or "") == "failed"
+    )
+    external_dedup_skipped_total = 0
+    external_dedup_rejected_total = 0
+    for row in import_rows:
+        receipt = row.get("receipt") or {}
+        if isinstance(receipt, dict):
+            write = receipt.get("write") or {}
+            if isinstance(write, dict):
+                write_result = str(write.get("result") or "").strip().lower()
+                if write_result in {"duplicate_skipped", "idempotent_replay"}:
+                    external_dedup_skipped_total += 1
+        if str(row.get("status") or "") == "failed":
+            error_code = str(row.get("error_code") or "").strip().lower()
+            if error_code in {"stale_version", "version_conflict", "partial_overlap"}:
+                external_dedup_rejected_total += 1
+
+    if external_unsupported_fields_total > 0:
+        issues.append(
+            _issue(
+                "INV-009",
+                "external_unsupported_fields",
+                "medium",
+                (
+                    f"External imports contain {external_unsupported_fields_total} unsupported "
+                    "source fields that are excluded from canonical certainty."
+                ),
+                metrics={
+                    "external_imported_total": external_imported_total,
+                    "unsupported_fields_total": external_unsupported_fields_total,
+                },
+            )
+        )
+
+    if external_low_confidence_fields > 0:
+        issues.append(
+            _issue(
+                "INV-009",
+                "external_low_confidence_fields",
+                "medium",
+                (
+                    f"{external_low_confidence_fields} external mapped fields are low-confidence "
+                    "or explicitly non-mapped."
+                ),
+                metrics={
+                    "external_imported_total": external_imported_total,
+                    "external_low_confidence_fields": external_low_confidence_fields,
+                },
+            )
+        )
+
+    if external_temporal_uncertainty_total > 0:
+        issues.append(
+            _issue(
+                "INV-009",
+                "external_temporal_uncertainty",
+                "low",
+                (
+                    f"External imports reported {external_temporal_uncertainty_total} temporal "
+                    "uncertainty hints (timezone/drift)."
+                ),
+                metrics={
+                    "external_temporal_uncertainty_total": external_temporal_uncertainty_total,
+                },
+            )
+        )
+
+    if external_dedup_rejected_total > 0:
+        issues.append(
+            _issue(
+                "INV-009",
+                "external_dedup_rejected",
+                "medium",
+                (
+                    f"{external_dedup_rejected_total} import jobs were rejected by dedup policy "
+                    "(stale/conflict/partial overlap)."
+                ),
+                metrics={
+                    "external_dedup_rejected_total": external_dedup_rejected_total,
+                    "external_import_failed_total": external_import_failed_total,
+                },
+            )
+        )
+
     metrics = {
         "total_events": len(event_rows),
         "set_logged_total": total_set_logged,
@@ -1674,6 +1832,14 @@ def _evaluate_read_only_invariants(
         "onboarding_override_present": onboarding_override,
         "planning_event_total": len(planning_rows),
         "mention_field_missing_total": len(mention_missing_rows),
+        "external_imported_total": external_imported_total,
+        "external_import_failed_total": external_import_failed_total,
+        "external_dedup_skipped_total": external_dedup_skipped_total,
+        "external_dedup_rejected_total": external_dedup_rejected_total,
+        "external_low_confidence_fields": external_low_confidence_fields,
+        "external_unsupported_fields_total": external_unsupported_fields_total,
+        "external_temporal_uncertainty_total": external_temporal_uncertainty_total,
+        "external_unit_conversion_fields": external_unit_conversion_fields,
     }
     return issues, metrics
 
@@ -2028,6 +2194,7 @@ async def update_quality_health(
     retracted_ids = await get_retracted_event_ids(conn, user_id)
     rows = await _load_quality_source_rows(conn, user_id)
     rows = [r for r in rows if str(r["id"]) not in retracted_ids]
+    import_job_rows = await _load_external_import_job_rows(conn, user_id)
 
     if not rows:
         async with conn.cursor() as cur:
@@ -2038,7 +2205,11 @@ async def update_quality_health(
         return
 
     alias_map = await get_alias_map(conn, user_id, retracted_ids=retracted_ids)
-    issues, metrics = _evaluate_read_only_invariants(rows, alias_map)
+    issues, metrics = _evaluate_read_only_invariants(
+        rows,
+        alias_map,
+        import_job_rows=import_job_rows,
+    )
     now_iso = datetime.now(timezone.utc).isoformat()
     simulated_proposals = _build_simulated_repair_proposals(issues, now_iso)
     detection_telemetry_events = _build_detection_learning_signal_events(
