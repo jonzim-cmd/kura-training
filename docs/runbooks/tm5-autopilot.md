@@ -11,11 +11,11 @@ Last updated: 2026-02-12
 - `kura-training-tm5.6`: completed
 - `kura-training-tm5.7`: completed
 - `kura-training-tm5.9`: pending
-- `kura-training-tm5.8`: pending (post-launch)
+- `kura-training-tm5.8`: completed (post-launch)
 
 ## Last Commit
 
-- `cc66a76` (`feat(kura-training-tm5.6): add async FIT/TCX/GPX import pipeline`)
+- `acb6a95` (`feat(kura-training-tm5.7): integrate external projections and quality signals`)
 
 ## Tested Commands
 
@@ -32,6 +32,7 @@ Last updated: 2026-02-12
 - `cargo test -p kura-api imports:: -- --nocapture` (green; 5 passed, existing dead-code warnings unchanged)
 - `cd workers && uv run ruff check src/kura_workers/handlers/training_timeline.py src/kura_workers/handlers/quality_health.py src/kura_workers/handlers/external_import.py tests/test_training_timeline.py tests/test_quality_health.py` (green)
 - `cd workers && uv run pytest -q tests/test_training_timeline.py tests/test_quality_health.py tests/test_external_import_pipeline.py` (green)
+- `cargo test -p kura-api provider_connections:: -- --nocapture` (green; 4 passed, existing dead-code warnings unchanged)
 
 ## Open Risks
 
@@ -40,4 +41,4 @@ Last updated: 2026-02-12
 
 ## Next Step
 
-- Start `kura-training-tm5.9` rollout plan (launch import -> connector post-launch stages, flags, KPIs, fallback).
+- Close and checkpoint `kura-training-tm5.9` rollout plan docs.

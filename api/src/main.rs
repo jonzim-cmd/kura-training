@@ -35,6 +35,9 @@ mod state;
         routes::events::list_events,
         routes::imports::create_import_job,
         routes::imports::get_import_job,
+        routes::provider_connections::list_provider_connections,
+        routes::provider_connections::upsert_provider_connection,
+        routes::provider_connections::revoke_provider_connection,
         routes::auth::register,
         routes::auth::authorize_form,
         routes::auth::authorize_submit,
@@ -95,6 +98,11 @@ mod state;
         routes::imports::CreateImportJobRequest,
         routes::imports::CreateImportJobResponse,
         routes::imports::ImportJobStatusResponse,
+        routes::provider_connections::UpsertProviderConnectionRequest,
+        routes::provider_connections::RevokeProviderConnectionRequest,
+        routes::provider_connections::ProviderConnectionAdapterContext,
+        routes::provider_connections::ProviderConnectionAuditMeta,
+        routes::provider_connections::ProviderConnectionResponse,
         routes::auth::RegisterRequest,
         routes::auth::RegisterResponse,
         routes::auth::TokenRequest,
@@ -199,6 +207,10 @@ async fn main() {
                 .layer(middleware::upgrade_signal::legacy_contract_layer()),
         )
         .merge(routes::imports::router().layer(middleware::rate_limit::events_write_layer()))
+        .merge(
+            routes::provider_connections::router()
+                .layer(middleware::rate_limit::projections_layer()),
+        )
         .merge(
             routes::projections::router()
                 .layer(middleware::rate_limit::projections_layer())
