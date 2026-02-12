@@ -179,6 +179,7 @@ def _get_conventions() -> dict[str, Any]:
         "learning_backlog_bridge_v1": {
             "rules": [
                 "Generate machine-readable issue candidates from weekly learning_issue_clusters and extraction underperformance reports.",
+                "When unknown_dimension proposals are accepted, route them into backlog candidates with source_type=unknown_dimension.",
                 "Keep candidate creation approval-gated for humans in V1; do not auto-create tracker issues.",
                 "Attach root-cause hypothesis, impacted metrics, and suggested invariant/policy/test updates for each candidate.",
                 "Apply duplicate/noise controls before persistence (score/support/sample thresholds + candidate_key dedupe).",
@@ -188,6 +189,7 @@ def _get_conventions() -> dict[str, Any]:
             "source_tables": [
                 "learning_issue_clusters",
                 "extraction_underperforming_classes",
+                "unknown_dimension_proposals (status=accepted)",
             ],
             "output_table": "learning_backlog_candidates",
             "run_table": "learning_backlog_bridge_runs",
@@ -208,12 +210,18 @@ def _get_conventions() -> dict[str, Any]:
                     "dismissed",
                     "promoted",
                 ],
+                "source_type_values": [
+                    "issue_cluster",
+                    "extraction_calibration",
+                    "unknown_dimension",
+                ],
             },
             "guardrails": {
                 "cluster_min_score_default": 0.18,
                 "cluster_min_events_default": 3,
                 "cluster_min_unique_users_default": 2,
                 "calibration_min_samples_default": 3,
+                "unknown_dimension_min_score_default": 0.18,
                 "max_candidates_per_source_default": 6,
                 "max_candidates_per_run_default": 12,
                 "dedupe_key": "candidate_key (stable hash over source_ref)",
@@ -224,6 +232,50 @@ def _get_conventions() -> dict[str, Any]:
                 "invariant_or_policy_update",
                 "regression_test_added",
                 "shadow_re_evaluation",
+            ],
+        },
+        "unknown_dimension_mining_v1": {
+            "rules": [
+                "Mine recurring unknown/provisional observation.logged patterns across users.",
+                "Cluster by semantic fingerprint + scope context to keep proposals deterministic and auditable.",
+                "Emit schema suggestions with value_type/unit/scale hypothesis plus confidence and evidence bundle.",
+                "Require explicit human acceptance before routing proposals into backlog bridge.",
+                "Retain duplicate/noise controls with support and unique-user thresholds.",
+            ],
+            "source_event_type": "observation.logged",
+            "refresh_job": "inference.nightly_refit",
+            "output_table": "unknown_dimension_proposals",
+            "run_table": "unknown_dimension_mining_runs",
+            "status_values": [
+                "candidate",
+                "accepted",
+                "dismissed",
+                "promoted",
+            ],
+            "schema_suggestion_fields": [
+                "name",
+                "value_type",
+                "expected_unit",
+                "expected_scale",
+                "description",
+            ],
+            "defaults": {
+                "window_days": 30,
+                "min_support": 3,
+                "min_unique_users": 2,
+                "max_proposals_per_run": 12,
+            },
+            "backlog_bridge_integration": {
+                "route_condition": "status=accepted",
+                "target_table": "learning_backlog_candidates",
+                "target_source_type": "unknown_dimension",
+                "dedupe_key": "proposal_key",
+            },
+            "approval_workflow": [
+                "candidate_review",
+                "human_acceptance",
+                "contract_draft_validation",
+                "backlog_bridge_promotion",
             ],
         },
         "visualization_policy": {

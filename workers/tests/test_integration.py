@@ -1476,6 +1476,118 @@ class TestInferenceNightlyRefitIntegration:
             row = await cur.fetchone()
         assert int(row["count"]) >= 1
 
+    async def test_unknown_dimension_cluster_routes_accepted_proposal_to_backlog_bridge(self, db, test_user_id):
+        other_user_id = str(uuid.uuid4())
+        await create_test_user(db, test_user_id)
+        await create_test_user(db, other_user_id)
+
+        def _observation_payload(context: str, value: float) -> dict:
+            return {
+                "dimension": "coach.note.experimental",
+                "value": value,
+                "unit": "score",
+                "context_text": context,
+                "confidence": 0.82,
+                "tags": ["coach", "warmup"],
+                "scope": {"level": "session", "session_id": "sess-unknown-1"},
+                "provenance": {"source_type": "inferred"},
+            }
+
+        await insert_event(
+            db,
+            test_user_id,
+            "observation.logged",
+            _observation_payload("ankle stiffness in warmup around 3/10", 3.0),
+            "TIMESTAMP '2026-02-13 07:00:00+01'",
+        )
+        await insert_event(
+            db,
+            other_user_id,
+            "observation.logged",
+            _observation_payload("ankle stiffness in warmup around 4/10", 4.0),
+            "TIMESTAMP '2026-02-13 07:05:00+01'",
+        )
+        await insert_event(
+            db,
+            test_user_id,
+            "observation.logged",
+            _observation_payload("ankle stiffness warmup still 3/10", 3.0),
+            "TIMESTAMP '2026-02-13 07:10:00+01'",
+        )
+        await insert_event(
+            db,
+            other_user_id,
+            "observation.logged",
+            _observation_payload("warmup ankle stiffness about 5/10", 5.0),
+            "TIMESTAMP '2026-02-13 07:15:00+01'",
+        )
+
+        await db.execute("SET ROLE app_worker")
+        await handle_inference_nightly_refit(db, {"interval_hours": 24})
+        await db.execute("RESET ROLE")
+
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT proposal_key,
+                       status,
+                       proposal_score,
+                       confidence,
+                       suggested_dimension,
+                       evidence_bundle,
+                       proposal_payload
+                FROM unknown_dimension_proposals
+                ORDER BY proposal_score DESC, proposal_key ASC
+                LIMIT 1
+                """
+            )
+            proposal_row = await cur.fetchone()
+
+        assert proposal_row is not None
+        assert proposal_row["status"] == "candidate"
+        assert float(proposal_row["proposal_score"]) > 0.0
+        assert float(proposal_row["confidence"]) > 0.0
+        assert proposal_row["suggested_dimension"]["name"]
+        assert proposal_row["suggested_dimension"]["value_type"] in {"number", "mixed"}
+        assert proposal_row["evidence_bundle"]["event_count"] == 4
+        assert proposal_row["proposal_payload"]["approval_required"] is True
+
+        proposal_key = str(proposal_row["proposal_key"])
+        async with db.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE unknown_dimension_proposals
+                SET status = 'accepted', updated_at = NOW()
+                WHERE proposal_key = %s
+                """,
+                (proposal_key,),
+            )
+
+        await db.execute("SET ROLE app_worker")
+        await handle_inference_nightly_refit(db, {"interval_hours": 24})
+        await db.execute("RESET ROLE")
+
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT source_type, source_ref, status, priority_score, issue_payload
+                FROM learning_backlog_candidates
+                WHERE source_type = 'unknown_dimension'
+                  AND source_ref = %s
+                LIMIT 1
+                """,
+                (proposal_key,),
+            )
+            backlog_row = await cur.fetchone()
+
+        assert backlog_row is not None
+        assert backlog_row["status"] == "candidate"
+        assert float(backlog_row["priority_score"]) > 0.0
+        payload = backlog_row["issue_payload"]
+        assert payload["source"]["source_type"] == "unknown_dimension"
+        assert payload["source"]["source_ref"] == proposal_key
+        assert payload["suggested_updates"]["policy_updates"]
+
     async def test_durable_scheduler_recovers_after_failed_in_flight_job(self, db, test_user_id):
         await create_test_user(db, test_user_id)
         await insert_event(db, test_user_id, "set.logged", {

@@ -22,6 +22,7 @@ class LearningBacklogBridgeSettings:
     cluster_min_events: int
     cluster_min_unique_users: int
     calibration_min_sample_count: int
+    unknown_dimension_min_score: float
     max_candidates_per_source: int
     max_candidates_per_run: int
 
@@ -54,6 +55,9 @@ def learning_backlog_bridge_settings() -> LearningBacklogBridgeSettings:
         ),
         calibration_min_sample_count=_int_env(
             "KURA_LEARNING_BACKLOG_CALIBRATION_MIN_SAMPLES", 3, 1
+        ),
+        unknown_dimension_min_score=_float_env(
+            "KURA_LEARNING_BACKLOG_UNKNOWN_DIMENSION_MIN_SCORE", 0.18, 0.0, 1.0
         ),
         max_candidates_per_source=_int_env(
             "KURA_LEARNING_BACKLOG_MAX_CANDIDATES_PER_SOURCE", 6, 1
@@ -439,16 +443,145 @@ def _calibration_candidate(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _unknown_dimension_candidate(row: dict[str, Any]) -> dict[str, Any]:
+    period_key = _normalize_text(row.get("period_key"), "unknown")
+    proposal_key = _normalize_text(row.get("proposal_key"), "unknown_proposal")
+    proposal_score = _clamp01(_safe_float(row.get("proposal_score"), 0.0))
+    confidence = _clamp01(_safe_float(row.get("confidence"), 0.0))
+    event_count = max(0, _safe_int(row.get("event_count"), 0))
+    unique_users = max(0, _safe_int(row.get("unique_users"), 0))
+    suggested_dimension = row.get("suggested_dimension")
+    if not isinstance(suggested_dimension, dict):
+        suggested_dimension = {}
+    evidence_bundle = row.get("evidence_bundle")
+    if not isinstance(evidence_bundle, dict):
+        evidence_bundle = {}
+    risk_notes = row.get("risk_notes")
+    if not isinstance(risk_notes, list):
+        risk_notes = []
+
+    name = _normalize_text(suggested_dimension.get("name"), "unknown_dimension")
+    value_type = _normalize_text(suggested_dimension.get("value_type"), "unknown")
+    priority_score = round(
+        _clamp01(
+            max(
+                proposal_score,
+                (0.65 * proposal_score) + (0.35 * confidence),
+            )
+        ),
+        6,
+    )
+    root_cause_hypothesis = (
+        f"Unknown observation cluster '{proposal_key}' recurs across users and suggests "
+        f"a missing dimension contract for '{name}'."
+    )
+    suggested_updates = {
+        "invariant_updates": [
+            {
+                "invariant_id": "INV-008",
+                "action": (
+                    f"extend mention-bound extraction coverage for new dimension '{name}' "
+                    f"({value_type})"
+                ),
+            }
+        ],
+        "policy_updates": [
+            {
+                "policy_area": "open_observation.contract_registry",
+                "action": "add accepted unknown-dimension proposal to known/provisional registry",
+            }
+        ],
+        "regression_tests": [
+            {
+                "suite": "workers/tests/test_integration.py",
+                "scenario": f"unknown_dimension_bridge_{name}",
+                "expected": "accepted proposal routes to backlog candidate with dedupe",
+            }
+        ],
+    }
+    impacted_metrics = {
+        "proposal_score": proposal_score,
+        "confidence": confidence,
+        "event_count": event_count,
+        "unique_users": unique_users,
+        "suggested_dimension": suggested_dimension,
+        "evidence_bundle": evidence_bundle,
+        "risk_notes": risk_notes,
+    }
+    promotion_checklist = _build_promotion_checklist(
+        root_cause_hypothesis=root_cause_hypothesis,
+        suggested_updates=suggested_updates,
+    )
+    title = (
+        f"[learning] promote unknown dimension proposal "
+        f"({name}, confidence={confidence:.2f})"
+    )
+    issue_payload = {
+        "schema_version": 1,
+        "approval_required": True,
+        "type": "feature",
+        "priority": _priority_label(priority_score),
+        "labels": [
+            "learning-loop",
+            "backlog-bridge",
+            "unknown-dimension",
+            "regression-promotion",
+        ],
+        "title": title,
+        "description": (
+            f"Auto-suggested from accepted unknown-dimension proposal '{proposal_key}' "
+            f"(week={period_key})."
+        ),
+        "design": (
+            "Convert accepted unknown-dimension proposal into explicit event/schema "
+            "contract updates and enforce with regression + shadow evaluation."
+        ),
+        "acceptance_criteria": [
+            "New dimension contract is defined with type/unit/scale semantics.",
+            "Relevant parsing/projection path persists the dimension deterministically.",
+            "Regression tests validate no fallback to unknown tier for this pattern.",
+            "Shadow evaluation confirms no noisy duplicate candidate emissions.",
+        ],
+        "source": {
+            "source_type": "unknown_dimension",
+            "source_period_key": period_key,
+            "source_ref": proposal_key,
+        },
+        "root_cause_hypothesis": root_cause_hypothesis,
+        "impacted_metrics": impacted_metrics,
+        "suggested_updates": suggested_updates,
+        "promotion_checklist": promotion_checklist,
+    }
+    return {
+        "candidate_key": _stable_candidate_key("unknown_dimension", proposal_key),
+        "source_type": "unknown_dimension",
+        "source_period_key": period_key,
+        "source_ref": proposal_key,
+        "priority_score": priority_score,
+        "title": title,
+        "root_cause_hypothesis": root_cause_hypothesis,
+        "impacted_metrics": impacted_metrics,
+        "suggested_updates": suggested_updates,
+        "promotion_checklist": promotion_checklist,
+        "issue_payload": issue_payload,
+        "guardrails": {},
+        "approval_required": True,
+    }
+
+
 def build_backlog_candidates(
     *,
     cluster_rows: list[dict[str, Any]],
     underperforming_rows: list[dict[str, Any]],
+    unknown_dimension_rows: list[dict[str, Any]] | None = None,
     settings: LearningBacklogBridgeSettings,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    unknown_dimension_rows = unknown_dimension_rows or []
     candidates: list[dict[str, Any]] = []
     filtered_noise = 0
     cluster_candidates = 0
     calibration_candidates = 0
+    unknown_candidates = 0
 
     for row in cluster_rows:
         event_count = max(0, _safe_int(row.get("event_count"), 0))
@@ -472,6 +605,14 @@ def build_backlog_candidates(
         candidates.append(_calibration_candidate(row))
         calibration_candidates += 1
 
+    for row in unknown_dimension_rows:
+        proposal_score = _clamp01(_safe_float(row.get("proposal_score"), 0.0))
+        if proposal_score < settings.unknown_dimension_min_score:
+            filtered_noise += 1
+            continue
+        candidates.append(_unknown_dimension_candidate(row))
+        unknown_candidates += 1
+
     best_by_key: dict[str, dict[str, Any]] = {}
     duplicates_in_run = 0
     for candidate in candidates:
@@ -493,7 +634,7 @@ def build_backlog_candidates(
         ),
     )
 
-    by_source_kept: dict[str, int] = {"issue_cluster": 0, "extraction_calibration": 0}
+    by_source_kept: dict[str, int] = {}
     limited_by_source = 0
     limited_by_run_cap = 0
     limited: list[dict[str, Any]] = []
@@ -511,6 +652,7 @@ def build_backlog_candidates(
     stats = {
         "cluster_candidates": cluster_candidates,
         "calibration_candidates": calibration_candidates,
+        "unknown_candidates": unknown_candidates,
         "filtered_noise": filtered_noise,
         "duplicates_in_run": duplicates_in_run,
         "limited_by_source": limited_by_source,
@@ -589,6 +731,33 @@ async def _load_latest_underperforming(
             (period_key,),
         )
         return period_key, await cur.fetchall()
+
+
+async def _load_accepted_unknown_dimension_proposals(
+    conn: psycopg.AsyncConnection[Any],
+) -> tuple[str | None, list[dict[str, Any]]]:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT period_key,
+                   proposal_key,
+                   proposal_score,
+                   confidence,
+                   event_count,
+                   unique_users,
+                   suggested_dimension,
+                   evidence_bundle,
+                   risk_notes
+            FROM unknown_dimension_proposals
+            WHERE status = 'accepted'
+            ORDER BY proposal_score DESC, proposal_key ASC
+            """
+        )
+        rows = await cur.fetchall()
+    if not rows:
+        return None, []
+    latest_period = max(str(row["period_key"]) for row in rows if row.get("period_key"))
+    return latest_period, rows
 
 
 async def _load_existing_status_by_key(
@@ -698,9 +867,17 @@ async def refresh_learning_backlog_candidates(
             conn
         )
 
+    unknown_dimension_rows: list[dict[str, Any]] = []
+    unknown_period: str | None = None
+    if await _table_exists(conn, "unknown_dimension_proposals"):
+        unknown_period, unknown_dimension_rows = (
+            await _load_accepted_unknown_dimension_proposals(conn)
+        )
+
     candidates, stats = build_backlog_candidates(
         cluster_rows=cluster_rows,
         underperforming_rows=underperforming_rows,
+        unknown_dimension_rows=unknown_dimension_rows,
         settings=settings,
     )
 
@@ -721,6 +898,7 @@ async def refresh_learning_backlog_candidates(
                     "cluster_min_events": settings.cluster_min_events,
                     "cluster_min_unique_users": settings.cluster_min_unique_users,
                     "calibration_min_sample_count": settings.calibration_min_sample_count,
+                    "unknown_dimension_min_score": settings.unknown_dimension_min_score,
                 },
                 "dedupe": {
                     "candidate_key": candidate_key,
@@ -793,7 +971,7 @@ async def refresh_learning_backlog_candidates(
             written += 1
 
     source_period_key = max(
-        [key for key in [cluster_period, underperforming_period] if key],
+        [key for key in [cluster_period, underperforming_period, unknown_period] if key],
         default=None,
     )
     details = {
@@ -802,6 +980,7 @@ async def refresh_learning_backlog_candidates(
             "cluster_min_events": settings.cluster_min_events,
             "cluster_min_unique_users": settings.cluster_min_unique_users,
             "calibration_min_sample_count": settings.calibration_min_sample_count,
+            "unknown_dimension_min_score": settings.unknown_dimension_min_score,
             "max_candidates_per_source": settings.max_candidates_per_source,
             "max_candidates_per_run": settings.max_candidates_per_run,
         },
@@ -822,6 +1001,7 @@ async def refresh_learning_backlog_candidates(
         "source_period_key": source_period_key,
         "total_cluster_rows": len(cluster_rows),
         "total_underperforming_rows": len(underperforming_rows),
+        "total_unknown_dimension_rows": len(unknown_dimension_rows),
         "candidates_considered": len(candidates),
         "candidates_written": written,
         "filtered_noise": (
@@ -846,9 +1026,10 @@ async def refresh_learning_backlog_candidates(
     )
 
     logger.info(
-        "Refreshed learning backlog bridge: clusters=%d underperforming=%d candidates=%d written=%d duplicates=%d",
+        "Refreshed learning backlog bridge: clusters=%d underperforming=%d unknown=%d candidates=%d written=%d duplicates=%d",
         summary["total_cluster_rows"],
         summary["total_underperforming_rows"],
+        summary["total_unknown_dimension_rows"],
         summary["candidates_considered"],
         summary["candidates_written"],
         summary["duplicates_skipped"],

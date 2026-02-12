@@ -12,6 +12,7 @@ def _settings() -> LearningBacklogBridgeSettings:
         cluster_min_events=3,
         cluster_min_unique_users=2,
         calibration_min_sample_count=3,
+        unknown_dimension_min_score=0.30,
         max_candidates_per_source=3,
         max_candidates_per_run=6,
     )
@@ -68,16 +69,44 @@ def _underperforming_row(
     }
 
 
+def _unknown_dimension_row(
+    *,
+    proposal_key: str = "unknown:session|ankle-stiffness",
+    proposal_score: float = 0.42,
+    confidence: float = 0.74,
+) -> dict:
+    return {
+        "period_key": "2026-W07",
+        "proposal_key": proposal_key,
+        "proposal_score": proposal_score,
+        "confidence": confidence,
+        "event_count": 6,
+        "unique_users": 3,
+        "suggested_dimension": {
+            "name": "ankle_stiffness_signal",
+            "value_type": "number",
+            "expected_unit": "score",
+            "expected_scale": {"min": 0.0, "max": 10.0},
+        },
+        "evidence_bundle": {
+            "sample_utterances": ["ankle stiffness 3/10 in warmup"],
+        },
+        "risk_notes": ["provisional_prefix_inputs_present"],
+    }
+
+
 def test_build_backlog_candidates_generates_machine_readable_payloads():
     candidates, stats = build_backlog_candidates(
         cluster_rows=[_cluster_row()],
         underperforming_rows=[_underperforming_row()],
+        unknown_dimension_rows=[_unknown_dimension_row()],
         settings=_settings(),
     )
 
-    assert len(candidates) == 2
+    assert len(candidates) == 3
     assert stats["cluster_candidates"] == 1
     assert stats["calibration_candidates"] == 1
+    assert stats["unknown_candidates"] == 1
     for candidate in candidates:
         assert candidate["approval_required"] is True
         payload = candidate["issue_payload"]
@@ -110,6 +139,7 @@ def test_build_backlog_candidates_applies_noise_filters_and_caps():
         cluster_min_events=3,
         cluster_min_unique_users=2,
         calibration_min_sample_count=3,
+        unknown_dimension_min_score=0.30,
         max_candidates_per_source=3,
         max_candidates_per_run=4,
     )
@@ -135,16 +165,22 @@ def test_build_backlog_candidates_is_deterministic_for_input_order():
         _underperforming_row(claim_class="set_context.rest_seconds"),
         _underperforming_row(claim_class="set_context.tempo"),
     ]
+    unknown_rows = [
+        _unknown_dimension_row(proposal_key="p1", proposal_score=0.45),
+        _unknown_dimension_row(proposal_key="p2", proposal_score=0.40),
+    ]
     settings = _settings()
 
     candidates_a, stats_a = build_backlog_candidates(
         cluster_rows=cluster_rows,
         underperforming_rows=underperforming_rows,
+        unknown_dimension_rows=unknown_rows,
         settings=settings,
     )
     candidates_b, stats_b = build_backlog_candidates(
         cluster_rows=list(reversed(cluster_rows)),
         underperforming_rows=list(reversed(underperforming_rows)),
+        unknown_dimension_rows=list(reversed(unknown_rows)),
         settings=settings,
     )
 

@@ -15,6 +15,7 @@ from ..learning_backlog_bridge import refresh_learning_backlog_candidates
 from ..population_priors import refresh_population_prior_profiles
 from ..registry import register
 from ..scheduler import nightly_interval_hours
+from ..unknown_dimension_mining import refresh_unknown_dimension_proposals
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,12 @@ async def handle_inference_nightly_refit(
     except Exception as exc:
         logger.warning("Extraction calibration refresh skipped due to error: %s", exc)
 
+    unknown_dimension_summary: dict[str, Any] | None = None
+    try:
+        unknown_dimension_summary = await refresh_unknown_dimension_proposals(conn)
+    except Exception as exc:
+        logger.warning("Unknown-dimension mining refresh skipped due to error: %s", exc)
+
     learning_backlog_summary: dict[str, Any] | None = None
     try:
         learning_backlog_summary = await refresh_learning_backlog_candidates(conn)
@@ -163,7 +170,7 @@ async def handle_inference_nightly_refit(
             )
 
     logger.info(
-        "Nightly refit enqueued %d projection.update jobs across %d users (interval_h=%d, missed_runs=%d, population_priors=%s, issue_clusters=%s, extraction_calibration=%s, learning_backlog=%s)",
+        "Nightly refit enqueued %d projection.update jobs across %d users (interval_h=%d, missed_runs=%d, population_priors=%s, issue_clusters=%s, extraction_calibration=%s, unknown_dimensions=%s, learning_backlog=%s)",
         enqueued,
         len(user_ids),
         interval_h,
@@ -171,5 +178,6 @@ async def handle_inference_nightly_refit(
         population_prior_summary or {"status": "failed"},
         issue_cluster_summary or {"status": "failed"},
         extraction_calibration_summary or {"status": "failed"},
+        unknown_dimension_summary or {"status": "failed"},
         learning_backlog_summary or {"status": "failed"},
     )

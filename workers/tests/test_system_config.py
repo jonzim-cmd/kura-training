@@ -304,6 +304,7 @@ class TestConventions:
         assert bridge["run_table"] == "learning_backlog_bridge_runs"
         assert "learning_issue_clusters" in bridge["source_tables"]
         assert "extraction_underperforming_classes" in bridge["source_tables"]
+        assert "unknown_dimension" in bridge["candidate_payload_contract"]["source_type_values"]
 
     def test_learning_backlog_bridge_v1_declares_promotion_workflow_and_guardrails(self):
         result = _get_conventions()
@@ -313,6 +314,17 @@ class TestConventions:
         assert bridge["candidate_payload_contract"]["approval_required_default"] is True
         assert bridge["guardrails"]["cluster_min_score_default"] > 0.0
         assert bridge["guardrails"]["max_candidates_per_run_default"] >= 1
+
+    def test_has_unknown_dimension_mining_v1_conventions(self):
+        result = _get_conventions()
+        assert "unknown_dimension_mining_v1" in result
+        mining = result["unknown_dimension_mining_v1"]
+        assert mining["source_event_type"] == "observation.logged"
+        assert mining["output_table"] == "unknown_dimension_proposals"
+        assert mining["run_table"] == "unknown_dimension_mining_runs"
+        assert "name" in mining["schema_suggestion_fields"]
+        assert mining["backlog_bridge_integration"]["target_source_type"] == "unknown_dimension"
+        assert "human_acceptance" in mining["approval_workflow"]
 
     def test_has_visualization_policy_conventions(self):
         result = _get_conventions()
