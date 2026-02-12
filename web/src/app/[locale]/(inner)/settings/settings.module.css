@@ -1,0 +1,149 @@
+.settingsPage {
+  padding: 3rem 0;
+}
+
+.container {
+  max-width: var(--content-width);
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.header {
+  margin-bottom: 1rem;
+}
+
+.title {
+  font-family: var(--font-display);
+  font-size: 1.75rem;
+  font-weight: 700;
+  margin-bottom: 0.375rem;
+}
+
+.subtitle {
+  color: var(--ink-faint);
+}
+
+.sectionTitle {
+  font-family: var(--font-display);
+  font-size: 1.125rem;
+  font-weight: 700;
+  margin-bottom: 1rem;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.sectionHeader .sectionTitle {
+  margin-bottom: 0.25rem;
+}
+
+.sectionDescription {
+  font-size: 0.875rem;
+  color: var(--ink-faint);
+}
+
+/* Info Grid */
+.infoGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.infoRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--thread);
+}
+
+.infoRow:last-child {
+  border-bottom: none;
+}
+
+.infoLabel {
+  font-size: 0.875rem;
+  color: var(--ink-faint);
+}
+
+.infoValue {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+/* API Key Table */
+.keyTable {
+  font-size: 0.875rem;
+}
+
+.keyHeader {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr auto;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  border-bottom: 2px solid var(--thread);
+  color: var(--ink-faint);
+  font-weight: 500;
+}
+
+.keyRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr auto;
+  gap: 0.75rem;
+  padding: 0.75rem 0;
+  align-items: center;
+  border-bottom: 1px solid var(--thread);
+}
+
+.keyName {
+  font-weight: 500;
+}
+
+.keyValue {
+  font-size: 0.75rem;
+}
+
+.keyDate {
+  color: var(--ink-faint);
+}
+
+/* Danger */
+.dangerDescription {
+  color: var(--ink-faint);
+  font-size: 0.875rem;
+  margin-bottom: 1rem;
+}
+
+.dangerAction {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 24rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Mobile */
+@media (max-width: 768px) {
+  .sectionHeader {
+    flex-direction: column;
+  }
+
+  .keyHeader {
+    display: none;
+  }
+
+  .keyRow {
+    grid-template-columns: 1fr;
+    gap: 0.25rem;
+  }
+}

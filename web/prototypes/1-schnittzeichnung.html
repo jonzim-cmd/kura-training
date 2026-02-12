@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kura — Schnittzeichnung</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --paper: #F7F3EC;
+    --ink: #1A1612;
+    --ink-light: #8A8079;
+    --ink-faint: #C8C0B5;
+    --line: #2C2419;
+    --accent: #6B5D4F;
+  }
+
+  html { font-size: 16px; }
+
+  body {
+    font-family: 'Libre Baskerville', Georgia, serif;
+    background: var(--paper);
+    color: var(--ink);
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  /* === Opening spread — like opening the book === */
+  .opening {
+    min-height: 100vh;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr;
+    position: relative;
+  }
+
+  .opening-left {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding: 4rem 3rem 4rem 6rem;
+  }
+
+  .title {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(6rem, 14vw, 12rem);
+    line-height: 0.85;
+    letter-spacing: 0.04em;
+    color: var(--ink);
+  }
+
+  .subtitle {
+    font-size: 0.875rem;
+    color: var(--ink-light);
+    margin-top: 2rem;
+    max-width: 24ch;
+    font-style: italic;
+    letter-spacing: 0.02em;
+  }
+
+  .opening-right {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+
+  .opening-right svg {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    inset: 0;
+  }
+
+  /* === Beam divider === */
+  .beam {
+    width: 100%;
+    border: none;
+    border-top: 1px solid var(--ink-faint);
+    margin: 0;
+  }
+
+  /* === Text section — book-like === */
+  .text-section {
+    max-width: 38rem;
+    margin: 0 auto;
+    padding: 6rem 2rem;
+  }
+
+  .text-section p {
+    font-size: 0.9375rem;
+    color: var(--accent);
+    margin-bottom: 1.5rem;
+    text-indent: 2em;
+  }
+
+  .text-section p:first-child {
+    text-indent: 0;
+  }
+
+  .text-section p:first-child::first-letter {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 3.5rem;
+    float: left;
+    line-height: 0.8;
+    padding-right: 0.5rem;
+    padding-top: 0.25rem;
+    color: var(--ink);
+  }
+
+  .section-number {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 0.75rem;
+    letter-spacing: 0.2em;
+    color: var(--ink-faint);
+    margin-bottom: 2rem;
+    display: block;
+  }
+
+  /* === Drawing section === */
+  .drawing-section {
+    padding: 4rem 2rem;
+    display: flex;
+    justify-content: center;
+  }
+
+  .drawing-section svg {
+    max-width: 56rem;
+    width: 100%;
+    height: auto;
+  }
+
+  /* === Caption === */
+  .caption {
+    font-size: 0.75rem;
+    color: var(--ink-light);
+    text-align: right;
+    padding: 1rem 6rem 1rem 2rem;
+    font-style: italic;
+  }
+
+  /* === Colophon === */
+  .colophon {
+    padding: 4rem 6rem;
+    font-size: 0.75rem;
+    color: var(--ink-faint);
+    border-top: 1px solid var(--ink-faint);
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* === Responsive === */
+  @media (max-width: 768px) {
+    .opening {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr 1fr;
+    }
+    .opening-left {
+      padding: 3rem 2rem;
+      order: 1;
+    }
+    .opening-right {
+      order: 0;
+      min-height: 50vh;
+    }
+    .colophon {
+      padding: 2rem;
+      flex-direction: column;
+      gap: 1rem;
+    }
+  }
+</style>
+</head>
+<body>
+
+<!-- Opening spread -->
+<section class="opening">
+  <div class="opening-left">
+    <h1 class="title">KURA</h1>
+    <p class="subtitle">Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p>
+  </div>
+  <div class="opening-right">
+    <!-- Architectural cross-section drawing of a kura -->
+    <svg viewBox="0 0 600 800" fill="none" stroke="#2C2419" stroke-width="0.8" preserveAspectRatio="xMidYMid meet">
+      <!-- Roof -->
+      <path d="M100,220 L300,80 L500,220" />
+      <path d="M80,230 L300,70 L520,230" />
+      <!-- Ridge beam -->
+      <line x1="300" y1="70" x2="300" y2="80" />
+      <!-- Roof tiles suggestion -->
+      <path d="M130,210 L300,90 L470,210" stroke-dasharray="2,6" opacity="0.3" />
+      <path d="M160,200 L300,100 L440,200" stroke-dasharray="2,6" opacity="0.3" />
+
+      <!-- Eaves -->
+      <path d="M70,235 L80,230 L520,230 L530,235" />
+
+      <!-- Timber frame -->
+      <!-- Left column -->
+      <rect x="140" y="235" width="12" height="280" fill="none" />
+      <!-- Right column -->
+      <rect x="448" y="235" width="12" height="280" fill="none" />
+      <!-- Center column -->
+      <rect x="294" y="235" width="12" height="280" fill="none" />
+
+      <!-- Horizontal beams -->
+      <rect x="135" y="310" width="335" height="6" fill="none" />
+      <rect x="135" y="430" width="335" height="6" fill="none" />
+
+      <!-- Door frame -->
+      <rect x="200" y="436" width="80" height="80" fill="none" />
+      <line x1="240" y1="436" x2="240" y2="516" />
+
+      <!-- Window -->
+      <rect x="350" y="320" width="60" height="45" fill="none" />
+      <line x1="380" y1="320" x2="380" y2="365" />
+      <line x1="350" y1="342" x2="410" y2="342" />
+
+      <!-- Foundation line -->
+      <line x1="100" y1="520" x2="500" y2="520" stroke-width="1" />
+
+      <!-- Stone foundation — organic shapes -->
+      <path d="M100,520 C105,530 115,545 130,548 C148,552 155,535 170,530 C178,527 182,520 182,520" />
+      <path d="M182,520 C185,528 195,540 215,542 C230,543 238,530 245,525 C250,522 255,520 255,520" />
+      <path d="M255,520 C258,530 270,550 290,552 C305,553 315,540 325,530 C332,524 340,520 340,520" />
+      <path d="M340,520 C342,528 355,545 375,548 C390,550 398,535 410,528 C418,524 425,520 425,520" />
+      <path d="M425,520 C428,530 440,548 458,550 C472,551 482,535 492,528 C498,524 500,520 500,520" />
+
+      <!-- Second row of stones -->
+      <path d="M105,548 C110,558 120,575 140,578 C158,580 168,565 178,558 C185,553 190,548 190,548" />
+      <path d="M190,548 C195,560 208,580 228,582 C245,583 252,568 262,558 C268,553 272,548 272,548" />
+      <path d="M272,548 C275,558 288,578 308,580 C325,581 335,565 348,555 C355,550 360,545 360,545" />
+      <path d="M360,545 C363,558 375,575 395,578 C410,580 420,565 432,555 C440,550 445,545 445,545" />
+      <path d="M445,545 C448,555 458,572 472,575 C485,577 495,565 500,558" />
+
+      <!-- Third row — larger, rougher stones -->
+      <path d="M100,578 C108,590 125,610 150,612 C175,614 185,598 200,588 C210,582 220,578 220,578" />
+      <path d="M220,578 C225,592 242,615 268,618 C290,620 305,600 318,590 C328,584 335,578 335,578" />
+      <path d="M335,578 C340,595 358,618 385,620 C408,621 420,600 438,590 C450,584 460,578 460,578" />
+      <path d="M460,578 C465,590 475,608 490,612 C498,614 502,605 505,598" />
+
+      <!-- Ground line -->
+      <path d="M80,625 L520,625" stroke-width="0.5" opacity="0.4" />
+      <path d="M85,630 Q150,628 200,632 Q280,636 350,630 Q420,626 500,632 L515,630" stroke-width="0.4" opacity="0.3" />
+
+      <!-- Small stones filling gaps -->
+      <ellipse cx="165" cy="540" rx="8" ry="5" />
+      <ellipse cx="310" cy="545" rx="6" ry="4" />
+      <ellipse cx="450" cy="540" rx="7" ry="5" />
+      <ellipse cx="240" cy="570" rx="5" ry="3" />
+      <ellipse cx="400" cy="565" rx="6" ry="4" />
+
+      <!-- Dimension lines (architectural drawing convention) -->
+      <line x1="130" y1="650" x2="470" y2="650" stroke-width="0.4" opacity="0.3" />
+      <line x1="130" y1="645" x2="130" y2="655" stroke-width="0.4" opacity="0.3" />
+      <line x1="470" y1="645" x2="470" y2="655" stroke-width="0.4" opacity="0.3" />
+      <text x="300" y="665" text-anchor="middle" font-size="8" font-family="'Libre Baskerville', serif" fill="#8A8079" stroke="none" opacity="0.5">11.4 m</text>
+    </svg>
+  </div>
+</section>
+
+<hr class="beam">
+
+<!-- Text section — editorial, like a book chapter -->
+<section class="text-section">
+  <span class="section-number">01</span>
+  <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.</p>
+  <p>Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.</p>
+  <p>Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo.</p>
+</section>
+
+<hr class="beam">
+
+<!-- Second drawing — detail view -->
+<section class="drawing-section">
+  <svg viewBox="0 0 800 300" fill="none" stroke="#2C2419" stroke-width="0.7">
+    <!-- A horizontal band of stone wall pattern — like a detail section -->
+    <path d="M0,50 C15,42 35,38 55,40 C80,42 95,55 120,58 C140,60 155,48 175,45 C200,42 220,52 245,55 C265,57 280,45 305,42 C325,40 345,50 370,55 C390,58 410,48 430,44 C455,40 475,52 500,56 C520,58 540,46 560,42 C580,39 600,48 625,52 C648,55 665,45 688,42 C710,40 730,50 755,54 C775,56 790,50 800,48" />
+
+    <path d="M0,58 C20,68 45,82 70,85 C100,88 120,72 145,68 C165,65 185,75 210,80 C235,84 255,72 280,68 C300,65 322,78 348,82 C372,85 392,70 418,66 C440,63 460,76 485,80 C508,83 528,70 552,66 C575,63 598,78 622,82 C645,85 665,72 688,68 C712,65 735,76 758,80 C778,83 792,75 800,72" />
+
+    <path d="M0,90 C25,100 50,118 80,120 C112,122 135,105 160,100 C180,97 205,108 232,115 C258,120 278,108 305,102 C328,98 352,112 378,118 C402,122 425,108 450,102 C475,98 500,112 525,118 C548,122 572,106 598,100 C622,96 648,110 672,116 C695,120 718,108 742,102 C765,98 785,108 800,112" />
+
+    <!-- Fill stones between lines -->
+    <ellipse cx="50" cy="72" rx="18" ry="10" />
+    <ellipse cx="130" cy="68" rx="15" ry="8" />
+    <ellipse cx="230" cy="75" rx="20" ry="9" />
+    <ellipse cx="340" cy="70" rx="16" ry="8" />
+    <ellipse cx="460" cy="72" rx="18" ry="10" />
+    <ellipse cx="570" cy="68" rx="14" ry="7" />
+    <ellipse cx="680" cy="74" rx="17" ry="9" />
+
+    <path d="M0,125 C30,132 65,148 100,150 C138,152 165,135 200,128 C225,124 255,138 285,145 C318,150 345,138 378,130 C405,125 435,140 465,146 C498,150 528,136 558,128 C588,124 618,140 648,146 C678,150 705,138 735,130 C762,125 788,135 800,140" />
+
+    <!-- Small gap stones -->
+    <ellipse cx="160" cy="108" rx="10" ry="6" />
+    <ellipse cx="380" cy="112" rx="12" ry="7" />
+    <ellipse cx="600" cy="108" rx="11" ry="6" />
+
+    <path d="M0,155 C35,165 75,185 115,188 C155,190 185,172 225,165 C258,160 292,175 328,182 C362,188 395,172 430,165 C465,160 498,178 532,185 C565,190 598,175 632,168 C665,162 698,178 732,184 C762,188 790,178 800,174" />
+  </svg>
+</section>
+
+<p class="caption">Lorem ipsum — detail, stone bearing wall section</p>
+
+<hr class="beam">
+
+<!-- Another text section -->
+<section class="text-section">
+  <span class="section-number">02</span>
+  <p>Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit, sed quia consequuntur magni dolores eos qui ratione voluptatem sequi nesciunt.</p>
+  <p>Neque porro quisquam est, qui dolorem ipsum quia dolor sit amet, consectetur, adipisci velit, sed quia non numquam eius modi tempora incidunt ut labore et dolore magnam aliquam quaerat voluptatem.</p>
+</section>
+
+<!-- Colophon -->
+<footer class="colophon">
+  <span>蔵 KURA</span>
+  <span>Lorem ipsum dolor sit amet</span>
+</footer>
+
+</body>
+</html>

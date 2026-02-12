@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kura — Strata</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;800;900&family=Crimson+Pro:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --paper: #FAF8F4;
+    --ink: #1C1917;
+    --ink-mid: #57534E;
+    --ink-faint: #A8A29E;
+    --thread: #D6D3D1;
+    /* Strata colors — warm earth tones with slight variation */
+    --strata-0: #FAF8F4;
+    --strata-1: #F5F0E8;
+    --strata-2: #EDE5D8;
+    --strata-3: #E2D8C8;
+    --strata-4: #D4C8B5;
+    --strata-5: #C8BAA3;
+    --strata-6: #B8A88E;
+  }
+
+  html { font-size: 16px; }
+
+  body {
+    font-family: 'Crimson Pro', Georgia, serif;
+    background: var(--paper);
+    color: var(--ink);
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  /* === Hero — KURA across strata === */
+  .hero {
+    position: relative;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Strata layers */
+  .stratum {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    transition: background-color 0.5s ease;
+  }
+
+  .stratum:nth-child(1) { background: var(--strata-0); }
+  .stratum:nth-child(2) { background: var(--strata-1); }
+  .stratum:nth-child(3) { background: var(--strata-2); }
+  .stratum:nth-child(4) { background: var(--strata-3); }
+  .stratum:nth-child(5) { background: var(--strata-4); }
+  .stratum:nth-child(6) { background: var(--strata-5); }
+
+  .stratum-content {
+    width: 100%;
+    padding: 0 6rem;
+    position: relative;
+    z-index: 2;
+  }
+
+  /* Stratum dividing lines */
+  .stratum::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: var(--ink);
+    opacity: 0.06;
+  }
+
+  /* Title spanning the viewport */
+  .title-layer {
+    position: absolute;
+    top: 50%;
+    left: 6rem;
+    transform: translateY(-50%);
+    z-index: 10;
+    pointer-events: none;
+  }
+
+  .title {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 900;
+    font-size: clamp(8rem, 20vw, 16rem);
+    line-height: 0.85;
+    letter-spacing: 0.02em;
+    color: var(--ink);
+    mix-blend-mode: multiply;
+    opacity: 0.9;
+  }
+
+  /* Connecting threads between strata */
+  .threads {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1;
+    overflow: hidden;
+  }
+
+  .threads svg {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+  }
+
+  /* === Content sections === */
+  .section {
+    position: relative;
+    padding: 5rem 6rem;
+  }
+
+  .section--light {
+    background: var(--strata-1);
+  }
+
+  .section--mid {
+    background: var(--strata-2);
+  }
+
+  .section-label {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 300;
+    font-size: 0.6875rem;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-bottom: 2rem;
+  }
+
+  .section h2 {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 800;
+    font-size: clamp(2rem, 4vw, 3.5rem);
+    line-height: 1.1;
+    margin-bottom: 1.5rem;
+    color: var(--ink);
+  }
+
+  .section p {
+    font-size: 1.0625rem;
+    color: var(--ink-mid);
+    max-width: 36rem;
+    margin-bottom: 1.25rem;
+  }
+
+  /* === Strata band — decorative === */
+  .strata-band {
+    display: flex;
+    flex-direction: column;
+    height: 12rem;
+    position: relative;
+  }
+
+  .strata-band .band {
+    flex: 1;
+    position: relative;
+  }
+
+  .strata-band .band:nth-child(1) { background: var(--strata-2); }
+  .strata-band .band:nth-child(2) { background: var(--strata-3); }
+  .strata-band .band:nth-child(3) { background: var(--strata-4); }
+  .strata-band .band:nth-child(4) { background: var(--strata-5); }
+  .strata-band .band:nth-child(5) { background: var(--strata-6); }
+
+  .strata-band .band::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: var(--ink);
+    opacity: 0.04;
+  }
+
+  /* Vertical threads through the band */
+  .strata-band .thread {
+    position: absolute;
+    width: 1px;
+    top: 0;
+    bottom: 0;
+    background: var(--ink);
+    opacity: 0.06;
+  }
+
+  /* === Grid section — three columns === */
+  .grid-section {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0;
+  }
+
+  .grid-cell {
+    padding: 3rem;
+    border-right: 1px solid var(--thread);
+    position: relative;
+  }
+
+  .grid-cell:last-child {
+    border-right: none;
+  }
+
+  .grid-cell::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 1px;
+    height: 1.5rem;
+    background: var(--ink);
+    opacity: 0.1;
+    transform: translateX(-50%);
+  }
+
+  .grid-label {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 300;
+    font-size: 0.625rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-bottom: 1rem;
+  }
+
+  .grid-cell h3 {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 800;
+    font-size: 1.25rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .grid-cell p {
+    font-size: 0.875rem;
+    color: var(--ink-mid);
+    line-height: 1.7;
+  }
+
+  /* === Footer === */
+  .footer {
+    padding: 3rem 6rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-top: 1px solid var(--thread);
+    font-size: 0.75rem;
+    color: var(--ink-faint);
+  }
+
+  .footer-brand {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 900;
+    font-size: 0.875rem;
+    letter-spacing: 0.08em;
+    color: var(--ink);
+  }
+
+  /* === Responsive === */
+  @media (max-width: 768px) {
+    .stratum-content { padding: 0 2rem; }
+    .title-layer { left: 2rem; }
+    .section { padding: 3rem 2rem; }
+    .grid-section {
+      grid-template-columns: 1fr;
+    }
+    .grid-cell {
+      border-right: none;
+      border-bottom: 1px solid var(--thread);
+    }
+    .footer { padding: 2rem; flex-direction: column; gap: 1rem; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Hero with strata -->
+<section class="hero">
+  <!-- Vertical connecting threads -->
+  <div class="threads">
+    <svg viewBox="0 0 1440 900" preserveAspectRatio="none">
+      <!-- Vertical threads — like event-to-projection connections -->
+      <line x1="200" y1="0" x2="200" y2="900" stroke="#1C1917" stroke-width="0.5" opacity="0.04" />
+      <line x1="380" y1="0" x2="380" y2="900" stroke="#1C1917" stroke-width="0.5" opacity="0.06" />
+      <line x1="620" y1="0" x2="620" y2="900" stroke="#1C1917" stroke-width="0.5" opacity="0.03" />
+      <line x1="780" y1="0" x2="780" y2="900" stroke="#1C1917" stroke-width="0.5" opacity="0.05" />
+      <line x1="1050" y1="0" x2="1050" y2="900" stroke="#1C1917" stroke-width="0.5" opacity="0.04" />
+      <line x1="1280" y1="0" x2="1280" y2="900" stroke="#1C1917" stroke-width="0.5" opacity="0.03" />
+      <!-- Diagonal threads — data flowing between layers -->
+      <line x1="200" y1="150" x2="380" y2="300" stroke="#1C1917" stroke-width="0.5" opacity="0.03" />
+      <line x1="780" y1="300" x2="620" y2="600" stroke="#1C1917" stroke-width="0.5" opacity="0.04" />
+      <line x1="1050" y1="450" x2="1280" y2="750" stroke="#1C1917" stroke-width="0.5" opacity="0.03" />
+    </svg>
+  </div>
+
+  <!-- Title floating across strata -->
+  <div class="title-layer">
+    <h1 class="title">KURA</h1>
+  </div>
+
+  <!-- 6 strata layers -->
+  <div class="stratum">
+    <div class="stratum-content"></div>
+  </div>
+  <div class="stratum">
+    <div class="stratum-content"></div>
+  </div>
+  <div class="stratum">
+    <div class="stratum-content">
+      <p style="font-size: 0.75rem; color: var(--ink-faint); font-family: 'Outfit', sans-serif; font-weight: 300; letter-spacing: 0.15em; margin-left: 45%;">EVENTS</p>
+    </div>
+  </div>
+  <div class="stratum">
+    <div class="stratum-content">
+      <p style="font-size: 0.75rem; color: var(--ink-faint); font-family: 'Outfit', sans-serif; font-weight: 300; letter-spacing: 0.15em; margin-left: 45%;">PROJECTIONS</p>
+    </div>
+  </div>
+  <div class="stratum">
+    <div class="stratum-content">
+      <p style="font-size: 0.75rem; color: var(--ink-faint); font-family: 'Outfit', sans-serif; font-weight: 300; letter-spacing: 0.15em; margin-left: 45%;">INFERENCE</p>
+    </div>
+  </div>
+  <div class="stratum">
+    <div class="stratum-content">
+      <p style="font-size: 1rem; color: var(--ink-mid); font-style: italic; margin-left: 45%; max-width: 24rem;">Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Strata band — decorative divider -->
+<div class="strata-band">
+  <div class="band"></div>
+  <div class="band"></div>
+  <div class="band"></div>
+  <div class="band"></div>
+  <div class="band"></div>
+  <div class="thread" style="left: 15%;"></div>
+  <div class="thread" style="left: 38%;"></div>
+  <div class="thread" style="left: 62%;"></div>
+  <div class="thread" style="left: 85%;"></div>
+</div>
+
+<!-- Text section -->
+<section class="section">
+  <span class="section-label">Lorem Ipsum</span>
+  <h2>Sed ut perspiciatis</h2>
+  <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.</p>
+  <p>Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.</p>
+</section>
+
+<!-- Grid — three projection-like columns -->
+<section class="section section--light">
+  <span class="section-label">Lorem · Ipsum · Dolor</span>
+  <div class="grid-section">
+    <div class="grid-cell">
+      <span class="grid-label">I</span>
+      <h3>Lorem ipsum</h3>
+      <p>Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium.</p>
+    </div>
+    <div class="grid-cell">
+      <span class="grid-label">II</span>
+      <h3>Dolor sit amet</h3>
+      <p>Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit consequuntur.</p>
+    </div>
+    <div class="grid-cell">
+      <span class="grid-label">III</span>
+      <h3>Consectetur</h3>
+      <p>Neque porro quisquam est qui dolorem ipsum quia dolor sit amet consectetur adipisci velit.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Another strata band -->
+<div class="strata-band" style="height: 6rem;">
+  <div class="band"></div>
+  <div class="band"></div>
+  <div class="band"></div>
+  <div class="thread" style="left: 25%;"></div>
+  <div class="thread" style="left: 50%;"></div>
+  <div class="thread" style="left: 75%;"></div>
+</div>
+
+<!-- Text section -->
+<section class="section">
+  <span class="section-label">Adipiscing</span>
+  <p style="font-size: 1.5rem; font-family: 'Outfit', sans-serif; font-weight: 300; line-height: 1.5; max-width: 32rem; color: var(--ink-mid);">
+    &ldquo;Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor.&rdquo;
+  </p>
+</section>
+
+<!-- Footer -->
+<footer class="footer">
+  <span class="footer-brand">KURA</span>
+  <span>Lorem ipsum dolor sit amet</span>
+</footer>
+
+</body>
+</html>

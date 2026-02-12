@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kura — Abstieg</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;700;900&family=Crimson+Pro:ital,wght@0,400;1,400&family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html {
+    font-size: 16px;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+    /* The entire page is a gradient descent from light to dark */
+    background: linear-gradient(
+      to bottom,
+      #FAF8F4 0%,           /* Surface — daylight, human world */
+      #FAF8F4 8%,
+      #F0EBE2 18%,          /* Threshold begins */
+      #E2D8C8 30%,          /* Warm, like entering the building */
+      #C8BAA3 42%,          /* Going deeper */
+      #8B7355 55%,          /* Inside — warm timber */
+      #4A3D2E 68%,          /* Deep — dark wood */
+      #2C2419 78%,          /* Agent territory */
+      #1A1612 88%,          /* System depth */
+      #110E0B 100%          /* The core */
+    );
+    color: #1A1612;
+  }
+
+  /* === Phase 1: Surface — Human World === */
+  .surface {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+
+  .surface-title {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 900;
+    font-size: clamp(8rem, 22vw, 18rem);
+    line-height: 0.85;
+    letter-spacing: 0.02em;
+    color: #1A1612;
+    text-align: center;
+    animation: surfaceIn 1.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  @keyframes surfaceIn {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Subtle single line — the first stratum */
+  .surface::after {
+    content: '';
+    position: absolute;
+    bottom: 15%;
+    left: 10%;
+    right: 10%;
+    height: 1px;
+    background: #1A1612;
+    opacity: 0.06;
+  }
+
+  /* === Phase 2: Threshold — Where Human Meets Agent === */
+  .threshold {
+    min-height: 120vh;
+    position: relative;
+    padding: 0 8%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  /* Strata lines emerging */
+  .strata-lines {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  .strata-line {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: #1A1612;
+  }
+
+  .threshold .strata-line:nth-child(1) { top: 8%; opacity: 0.04; }
+  .threshold .strata-line:nth-child(2) { top: 22%; opacity: 0.06; }
+  .threshold .strata-line:nth-child(3) { top: 38%; opacity: 0.08; }
+  .threshold .strata-line:nth-child(4) { top: 55%; opacity: 0.1; }
+  .threshold .strata-line:nth-child(5) { top: 70%; opacity: 0.12; }
+  .threshold .strata-line:nth-child(6) { top: 85%; opacity: 0.14; }
+  .threshold .strata-line:nth-child(7) { top: 95%; opacity: 0.16; }
+
+  .threshold-text {
+    font-family: 'Crimson Pro', serif;
+    font-size: clamp(1rem, 1.8vw, 1.25rem);
+    color: #5C5549;
+    max-width: 32rem;
+    line-height: 1.8;
+    position: relative;
+    z-index: 1;
+  }
+
+  .threshold-label {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 300;
+    font-size: 0.625rem;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    color: #A39B90;
+    margin-bottom: 1.5rem;
+    display: block;
+  }
+
+  /* === Phase 3: Inside — Agent Perspective === */
+  .inside {
+    min-height: 150vh;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Event timeline — vertical lines emerging */
+  .event-lines {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  .event-line {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+  }
+
+  .event-line::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      to bottom,
+      transparent 0%,
+      rgba(232, 224, 212, 0.15) 20%,
+      rgba(232, 224, 212, 0.25) 50%,
+      rgba(232, 224, 212, 0.15) 80%,
+      transparent 100%
+    );
+  }
+
+  .event-line:nth-child(1) { left: 12%; }
+  .event-line:nth-child(2) { left: 28%; }
+  .event-line:nth-child(3) { left: 45%; }
+  .event-line:nth-child(4) { left: 62%; }
+  .event-line:nth-child(5) { left: 78%; }
+  .event-line:nth-child(6) { left: 91%; }
+
+  /* Event dots along the lines */
+  .event-dot {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: rgba(196, 147, 90, 0.6);
+  }
+
+  /* Horizontal projection bands crossing the event lines */
+  .projection-band {
+    position: absolute;
+    left: 0;
+    right: 0;
+    background: rgba(232, 224, 212, 0.04);
+    border-top: 1px solid rgba(232, 224, 212, 0.08);
+    border-bottom: 1px solid rgba(232, 224, 212, 0.04);
+  }
+
+  .inside-text {
+    position: relative;
+    z-index: 2;
+    padding: 15vh 8%;
+  }
+
+  .inside-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 300;
+    font-size: 0.6875rem;
+    letter-spacing: 0.08em;
+    color: rgba(232, 224, 212, 0.5);
+    margin-bottom: 1rem;
+    display: block;
+  }
+
+  .inside-heading {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 700;
+    font-size: clamp(1.5rem, 3.5vw, 2.5rem);
+    color: #E8E0D4;
+    line-height: 1.2;
+    max-width: 20ch;
+    margin-bottom: 1.5rem;
+  }
+
+  .inside-body {
+    font-family: 'Crimson Pro', serif;
+    font-size: 1rem;
+    color: rgba(232, 224, 212, 0.6);
+    max-width: 32rem;
+    line-height: 1.8;
+  }
+
+  /* Connection threads — diagonal lines from events to projections */
+  .thread {
+    position: absolute;
+    background: none;
+    pointer-events: none;
+  }
+
+  .thread svg {
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+
+  /* === Phase 4: Deep — System Core === */
+  .deep {
+    min-height: 120vh;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Dense network — abstract ishigaki meets data mesh */
+  .mesh {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  .mesh svg {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+  }
+
+  .deep-content {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 8%;
+    text-align: center;
+  }
+
+  .deep-title {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 900;
+    font-size: clamp(3rem, 8vw, 7rem);
+    color: rgba(232, 224, 212, 0.9);
+    line-height: 0.9;
+    letter-spacing: 0.02em;
+    margin-bottom: 2rem;
+  }
+
+  .deep-mono {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 300;
+    font-size: 0.75rem;
+    color: rgba(196, 147, 90, 0.5);
+    letter-spacing: 0.05em;
+    line-height: 2;
+    max-width: 40rem;
+  }
+
+  /* Pulsing inference clouds */
+  .inference-cloud {
+    position: absolute;
+    border-radius: 50%;
+    background: radial-gradient(
+      ellipse at center,
+      rgba(196, 147, 90, 0.08) 0%,
+      rgba(196, 147, 90, 0.03) 40%,
+      transparent 70%
+    );
+    pointer-events: none;
+    animation: pulse 6s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); opacity: 0.6; }
+    50% { transform: scale(1.15); opacity: 1; }
+  }
+
+  .inference-cloud:nth-child(2) { animation-delay: -2s; }
+  .inference-cloud:nth-child(3) { animation-delay: -4s; }
+
+  /* === Phase 5: Core — The Bottom === */
+  .core {
+    min-height: 40vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+
+  .core-mark {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 200;
+    font-size: 0.75rem;
+    letter-spacing: 0.3em;
+    color: rgba(232, 224, 212, 0.2);
+    text-transform: uppercase;
+  }
+
+  /* Small upward arrow — back to surface */
+  .core-mark::before {
+    content: '↑';
+    display: block;
+    text-align: center;
+    margin-bottom: 1rem;
+    font-size: 1rem;
+    opacity: 0.5;
+  }
+
+  /* === Responsive === */
+  @media (max-width: 768px) {
+    .threshold { padding: 0 6%; }
+    .inside-text { padding: 12vh 6%; }
+    .deep-content { padding: 6%; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============================================
+     PHASE 1: SURFACE — Human World
+     Clean. Minimal. Just the name.
+     ============================================ -->
+<section class="surface">
+  <h1 class="surface-title">KURA</h1>
+</section>
+
+
+<!-- ============================================
+     PHASE 2: THRESHOLD — Where Human Meets Agent
+     Strata lines begin to appear. The entry point.
+     ============================================ -->
+<section class="threshold">
+  <div class="strata-lines">
+    <div class="strata-line"></div>
+    <div class="strata-line"></div>
+    <div class="strata-line"></div>
+    <div class="strata-line"></div>
+    <div class="strata-line"></div>
+    <div class="strata-line"></div>
+    <div class="strata-line"></div>
+  </div>
+
+  <div class="threshold-text">
+    <span class="threshold-label">Lorem ipsum</span>
+    <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.</p>
+  </div>
+</section>
+
+
+<!-- ============================================
+     PHASE 3: INSIDE — Agent Perspective
+     Event timelines. Projection bands.
+     You're now seeing from the agent's view.
+     ============================================ -->
+<section class="inside">
+  <!-- Vertical event timeline lines -->
+  <div class="event-lines">
+    <div class="event-line">
+      <span class="event-dot" style="top: 12%; left: -1px;"></span>
+      <span class="event-dot" style="top: 28%; left: -1px;"></span>
+      <span class="event-dot" style="top: 45%; left: -1px;"></span>
+      <span class="event-dot" style="top: 63%; left: -1px;"></span>
+      <span class="event-dot" style="top: 78%; left: -1px;"></span>
+    </div>
+    <div class="event-line">
+      <span class="event-dot" style="top: 8%; left: -1px;"></span>
+      <span class="event-dot" style="top: 22%; left: -1px;"></span>
+      <span class="event-dot" style="top: 38%; left: -1px;"></span>
+      <span class="event-dot" style="top: 55%; left: -1px;"></span>
+      <span class="event-dot" style="top: 72%; left: -1px;"></span>
+      <span class="event-dot" style="top: 88%; left: -1px;"></span>
+    </div>
+    <div class="event-line">
+      <span class="event-dot" style="top: 15%; left: -1px;"></span>
+      <span class="event-dot" style="top: 35%; left: -1px;"></span>
+      <span class="event-dot" style="top: 52%; left: -1px;"></span>
+      <span class="event-dot" style="top: 70%; left: -1px;"></span>
+      <span class="event-dot" style="top: 90%; left: -1px;"></span>
+    </div>
+    <div class="event-line">
+      <span class="event-dot" style="top: 10%; left: -1px;"></span>
+      <span class="event-dot" style="top: 30%; left: -1px;"></span>
+      <span class="event-dot" style="top: 48%; left: -1px;"></span>
+      <span class="event-dot" style="top: 65%; left: -1px;"></span>
+      <span class="event-dot" style="top: 82%; left: -1px;"></span>
+    </div>
+    <div class="event-line">
+      <span class="event-dot" style="top: 18%; left: -1px;"></span>
+      <span class="event-dot" style="top: 40%; left: -1px;"></span>
+      <span class="event-dot" style="top: 58%; left: -1px;"></span>
+      <span class="event-dot" style="top: 75%; left: -1px;"></span>
+    </div>
+    <div class="event-line">
+      <span class="event-dot" style="top: 25%; left: -1px;"></span>
+      <span class="event-dot" style="top: 50%; left: -1px;"></span>
+      <span class="event-dot" style="top: 80%; left: -1px;"></span>
+    </div>
+  </div>
+
+  <!-- Horizontal projection bands -->
+  <div class="projection-band" style="top: 15%; height: 8%;"></div>
+  <div class="projection-band" style="top: 35%; height: 12%;"></div>
+  <div class="projection-band" style="top: 58%; height: 6%;"></div>
+  <div class="projection-band" style="top: 75%; height: 10%;"></div>
+
+  <!-- Text — now in agent territory -->
+  <div class="inside-text">
+    <span class="inside-label">// lorem.ipsum.events</span>
+    <h2 class="inside-heading">Lorem ipsum dolor sit amet consectetur</h2>
+    <p class="inside-body">Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident.</p>
+  </div>
+
+  <!-- Connection threads SVG -->
+  <svg style="position: absolute; inset: 0; pointer-events: none;" viewBox="0 0 1440 1200" preserveAspectRatio="none">
+    <!-- Diagonal threads connecting events to projection bands -->
+    <line x1="173" y1="180" x2="403" y2="420" stroke="rgba(196,147,90,0.12)" stroke-width="0.5" />
+    <line x1="403" y1="264" x2="648" y2="480" stroke="rgba(196,147,90,0.08)" stroke-width="0.5" />
+    <line x1="648" y1="420" x2="893" y2="696" stroke="rgba(196,147,90,0.1)" stroke-width="0.5" />
+    <line x1="893" y1="360" x2="1123" y2="540" stroke="rgba(196,147,90,0.06)" stroke-width="0.5" />
+    <line x1="173" y1="540" x2="648" y2="780" stroke="rgba(196,147,90,0.08)" stroke-width="0.5" />
+    <line x1="1123" y1="600" x2="893" y2="900" stroke="rgba(196,147,90,0.1)" stroke-width="0.5" />
+    <line x1="403" y1="660" x2="173" y2="936" stroke="rgba(196,147,90,0.07)" stroke-width="0.5" />
+  </svg>
+</section>
+
+
+<!-- ============================================
+     PHASE 4: DEEP — System Core
+     Dense mesh. Inference clouds.
+     The architecture revealed.
+     ============================================ -->
+<section class="deep">
+  <!-- Abstract mesh — organic lines like ishigaki but data-like -->
+  <div class="mesh">
+    <svg viewBox="0 0 1440 1000" fill="none" preserveAspectRatio="xMidYMid slice">
+      <!-- Horizontal organic lines — like geological strata compressed -->
+      <path d="M-20,80 C80,65 180,50 300,55 C420,60 500,85 620,90 C740,95 840,70 960,62 C1080,55 1180,75 1300,82 C1380,87 1440,78 1460,75" stroke="rgba(232,224,212,0.06)" stroke-width="0.8" />
+      <path d="M-20,150 C100,135 200,118 320,122 C440,126 520,148 640,155 C760,162 860,140 980,130 C1100,122 1200,142 1320,150 C1400,155 1460,148 1460,145" stroke="rgba(232,224,212,0.08)" stroke-width="0.8" />
+      <path d="M-20,230 C90,215 190,195 310,200 C430,205 510,228 630,235 C750,242 850,218 970,208 C1090,200 1190,222 1310,230 C1400,235 1460,225 1460,222" stroke="rgba(232,224,212,0.07)" stroke-width="0.8" />
+      <path d="M-20,310 C85,295 190,278 310,282 C430,286 515,308 635,318 C755,326 855,300 975,290 C1095,282 1195,302 1315,312 C1400,318 1460,308 1460,305" stroke="rgba(232,224,212,0.09)" stroke-width="0.8" />
+      <path d="M-20,400 C95,382 200,365 325,370 C450,375 530,398 650,408 C770,418 870,392 990,380 C1110,370 1210,392 1330,402 C1410,408 1460,398 1460,395" stroke="rgba(232,224,212,0.06)" stroke-width="0.8" />
+      <path d="M-20,480 C85,462 195,445 320,450 C440,455 525,478 645,488 C765,498 865,472 985,460 C1105,450 1205,472 1325,482 C1405,488 1460,478 1460,475" stroke="rgba(232,224,212,0.08)" stroke-width="0.8" />
+      <path d="M-20,560 C90,542 200,525 325,530 C445,535 530,558 650,568 C770,578 870,552 990,540 C1110,530 1210,552 1330,562 C1410,568 1460,558 1460,555" stroke="rgba(232,224,212,0.05)" stroke-width="0.8" />
+      <path d="M-20,640 C95,622 205,605 330,610 C450,615 535,638 655,648 C775,658 875,632 995,620 C1115,610 1215,632 1335,642 C1415,648 1460,638 1460,635" stroke="rgba(232,224,212,0.07)" stroke-width="0.8" />
+      <path d="M-20,720 C85,702 195,685 320,690 C440,695 525,718 645,728 C765,738 865,712 985,700 C1105,690 1205,712 1325,722 C1405,728 1460,718 1460,715" stroke="rgba(232,224,212,0.06)" stroke-width="0.8" />
+      <path d="M-20,800 C90,782 200,765 325,770 C445,775 530,798 650,808 C770,818 870,792 990,780 C1110,770 1210,792 1330,802 C1410,808 1460,798 1460,795" stroke="rgba(232,224,212,0.08)" stroke-width="0.8" />
+      <path d="M-20,880 C85,862 195,845 320,850 C440,855 525,878 645,888 C765,898 865,872 985,860 C1105,850 1205,872 1325,882 C1405,888 1460,878 1460,875" stroke="rgba(232,224,212,0.05)" stroke-width="0.8" />
+      <path d="M-20,950 C90,932 200,918 325,922 C445,926 530,948 650,958 C770,965 870,942 990,932 C1110,924 1210,945 1330,955 C1410,960 1460,950 1460,948" stroke="rgba(232,224,212,0.07)" stroke-width="0.8" />
+
+      <!-- Vertical event lines continuing through -->
+      <line x1="173" y1="0" x2="173" y2="1000" stroke="rgba(232,224,212,0.05)" stroke-width="0.5" />
+      <line x1="403" y1="0" x2="403" y2="1000" stroke="rgba(232,224,212,0.07)" stroke-width="0.5" />
+      <line x1="648" y1="0" x2="648" y2="1000" stroke="rgba(232,224,212,0.04)" stroke-width="0.5" />
+      <line x1="893" y1="0" x2="893" y2="1000" stroke="rgba(232,224,212,0.06)" stroke-width="0.5" />
+      <line x1="1123" y1="0" x2="1123" y2="1000" stroke="rgba(232,224,212,0.05)" stroke-width="0.5" />
+      <line x1="1310" y1="0" x2="1310" y2="1000" stroke="rgba(232,224,212,0.04)" stroke-width="0.5" />
+
+      <!-- Cross-connections — forming a mesh -->
+      <line x1="173" y1="150" x2="403" y2="230" stroke="rgba(196,147,90,0.06)" stroke-width="0.4" />
+      <line x1="403" y1="310" x2="648" y2="400" stroke="rgba(196,147,90,0.05)" stroke-width="0.4" />
+      <line x1="648" y1="230" x2="893" y2="310" stroke="rgba(196,147,90,0.07)" stroke-width="0.4" />
+      <line x1="893" y1="480" x2="1123" y2="560" stroke="rgba(196,147,90,0.05)" stroke-width="0.4" />
+      <line x1="173" y1="480" x2="403" y2="560" stroke="rgba(196,147,90,0.06)" stroke-width="0.4" />
+      <line x1="648" y1="560" x2="893" y2="640" stroke="rgba(196,147,90,0.04)" stroke-width="0.4" />
+      <line x1="1123" y1="310" x2="1310" y2="400" stroke="rgba(196,147,90,0.05)" stroke-width="0.4" />
+      <line x1="403" y1="720" x2="648" y2="800" stroke="rgba(196,147,90,0.06)" stroke-width="0.4" />
+      <line x1="893" y1="720" x2="1123" y2="800" stroke="rgba(196,147,90,0.05)" stroke-width="0.4" />
+
+      <!-- Brighter event dots at intersections -->
+      <circle cx="173" cy="150" r="2" fill="rgba(196,147,90,0.3)" />
+      <circle cx="403" cy="310" r="2.5" fill="rgba(196,147,90,0.35)" />
+      <circle cx="648" cy="230" r="2" fill="rgba(196,147,90,0.25)" />
+      <circle cx="893" cy="480" r="3" fill="rgba(196,147,90,0.4)" />
+      <circle cx="1123" cy="310" r="2" fill="rgba(196,147,90,0.3)" />
+      <circle cx="403" cy="560" r="2.5" fill="rgba(196,147,90,0.3)" />
+      <circle cx="648" cy="560" r="2" fill="rgba(196,147,90,0.25)" />
+      <circle cx="173" cy="720" r="2.5" fill="rgba(196,147,90,0.35)" />
+      <circle cx="893" cy="720" r="2" fill="rgba(196,147,90,0.3)" />
+      <circle cx="1310" cy="640" r="2.5" fill="rgba(196,147,90,0.3)" />
+    </svg>
+  </div>
+
+  <!-- Inference clouds — probabilistic, fuzzy -->
+  <div class="inference-cloud" style="width: 400px; height: 400px; top: 10%; left: 5%;"></div>
+  <div class="inference-cloud" style="width: 300px; height: 300px; top: 40%; right: 10%;"></div>
+  <div class="inference-cloud" style="width: 350px; height: 350px; bottom: 15%; left: 30%;"></div>
+
+  <!-- Content at the deep level -->
+  <div class="deep-content">
+    <h2 class="deep-title">KURA</h2>
+    <div class="deep-mono">
+      event_stream → projection_layer → inference_engine<br>
+      append_only · immutable · transparent<br>
+      lorem.ipsum.dolor.sit.amet
+    </div>
+  </div>
+</section>
+
+
+<!-- ============================================
+     PHASE 5: CORE — The very bottom
+     ============================================ -->
+<section class="core">
+  <div class="core-mark">
+    surface
+  </div>
+</section>
+
+</body>
+</html>

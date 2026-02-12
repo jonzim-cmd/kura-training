@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kura — Ishigaki</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700;900&family=Crimson+Pro:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --warm-white: #F8F5EF;
+    --ink: #1A1612;
+    --ink-mid: #5C5549;
+    --ink-faint: #A39B90;
+    --line: #1A1612;
+    --line-opacity: 0.12;
+  }
+
+  html { font-size: 16px; }
+
+  body {
+    font-family: 'Crimson Pro', Georgia, serif;
+    background: var(--warm-white);
+    color: var(--ink);
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  /* === Full-viewport ishigaki wall === */
+  .wall {
+    position: relative;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .wall-pattern {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+  }
+
+  .wall-pattern svg {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+
+  .wall-content {
+    position: relative;
+    z-index: 2;
+    text-align: center;
+    padding: 2rem;
+  }
+
+  .wall-title {
+    font-family: 'DM Sans', sans-serif;
+    font-weight: 900;
+    font-size: clamp(6rem, 16vw, 14rem);
+    line-height: 0.85;
+    letter-spacing: 0.03em;
+    color: var(--ink);
+  }
+
+  .wall-sub {
+    font-size: 1rem;
+    color: var(--ink-faint);
+    margin-top: 2rem;
+    font-style: italic;
+    letter-spacing: 0.02em;
+  }
+
+  /* === Content — clearings in the wall === */
+  .clearing {
+    position: relative;
+    padding: 5rem 0;
+  }
+
+  .clearing-inner {
+    max-width: 40rem;
+    margin: 0 auto;
+    padding: 4rem;
+    background: var(--warm-white);
+    position: relative;
+  }
+
+  /* Stone border around content — like a window in the wall */
+  .clearing-inner::before {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border: 1px solid var(--ink);
+    opacity: 0.08;
+    pointer-events: none;
+  }
+
+  .clearing p {
+    font-size: 1rem;
+    color: var(--ink-mid);
+    margin-bottom: 1.25rem;
+  }
+
+  .clearing p:last-child {
+    margin-bottom: 0;
+  }
+
+  .clearing-label {
+    font-family: 'DM Sans', sans-serif;
+    font-weight: 700;
+    font-size: 0.625rem;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-bottom: 2rem;
+    display: block;
+  }
+
+  /* === Horizontal stone band === */
+  .stone-band {
+    position: relative;
+    height: 8rem;
+    overflow: hidden;
+  }
+
+  .stone-band svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  /* === Split section === */
+  .split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    min-height: 60vh;
+    position: relative;
+  }
+
+  .split-left {
+    padding: 5rem 4rem 5rem 6rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .split-right {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .split-right svg {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    inset: 0;
+  }
+
+  .split h2 {
+    font-family: 'DM Sans', sans-serif;
+    font-weight: 900;
+    font-size: clamp(2rem, 4vw, 3rem);
+    line-height: 1.1;
+    margin-bottom: 1.5rem;
+  }
+
+  .split p {
+    font-size: 1rem;
+    color: var(--ink-mid);
+    max-width: 28rem;
+  }
+
+  /* === Quote === */
+  .quote-section {
+    padding: 6rem 2rem;
+    text-align: center;
+  }
+
+  .quote-section blockquote {
+    font-family: 'DM Sans', sans-serif;
+    font-weight: 400;
+    font-size: clamp(1.25rem, 2.5vw, 1.75rem);
+    line-height: 1.6;
+    color: var(--ink-mid);
+    max-width: 36rem;
+    margin: 0 auto;
+  }
+
+  /* === Footer === */
+  .footer {
+    padding: 3rem 6rem;
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: var(--ink-faint);
+    border-top: 1px solid rgba(26, 22, 18, 0.06);
+  }
+
+  .footer-brand {
+    font-family: 'DM Sans', sans-serif;
+    font-weight: 900;
+    font-size: 0.875rem;
+    letter-spacing: 0.05em;
+    color: var(--ink);
+  }
+
+  /* === Responsive === */
+  @media (max-width: 768px) {
+    .split {
+      grid-template-columns: 1fr;
+    }
+    .split-left { padding: 3rem 2rem; }
+    .split-right { min-height: 40vh; }
+    .clearing-inner { padding: 2rem; margin: 0 1rem; }
+    .footer { padding: 2rem; flex-direction: column; gap: 1rem; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Full-viewport stone wall with KURA -->
+<section class="wall">
+  <div class="wall-pattern">
+    <svg viewBox="0 0 1200 800" fill="none" stroke="var(--line)" stroke-width="0.8" preserveAspectRatio="xMidYMid slice" opacity="var(--line-opacity)">
+      <!-- Row 1 — large foundation stones -->
+      <path d="M-10,720 C20,710 60,695 110,692 C170,688 210,705 270,710 C310,713 340,700 380,695 C430,690 470,708 530,712 C570,715 610,698 660,693 C720,688 760,706 820,712 C860,715 900,700 950,694 C1000,689 1040,708 1100,714 C1140,716 1180,706 1210,700" />
+      <path d="M-10,680 C30,668 80,650 140,648 C200,646 250,665 310,670 C370,674 410,658 470,650 C530,643 580,662 640,668 C700,673 740,656 800,648 C860,642 910,660 970,668 C1030,674 1070,658 1130,650 C1170,645 1200,655 1210,658" />
+      <path d="M-10,640 C40,625 100,608 160,605 C230,602 280,622 340,628 C400,633 450,615 510,608 C580,600 630,620 700,626 C760,630 810,612 870,605 C940,598 990,618 1060,626 C1110,630 1160,618 1210,612" />
+
+      <!-- Row 2 — medium stones -->
+      <path d="M-10,590 C30,578 80,562 140,558 C195,555 235,572 290,578 C340,583 380,568 430,560 C485,553 530,570 590,578 C640,583 685,566 740,558 C800,550 845,570 900,578 C950,583 1000,568 1050,558 C1100,550 1150,568 1210,576" />
+      <path d="M-10,545 C45,530 95,515 160,512 C220,509 270,528 330,535 C385,540 430,522 490,515 C550,508 600,525 660,532 C720,538 770,520 830,512 C890,505 940,524 1000,532 C1060,538 1110,522 1170,515 L1210,513" />
+      <path d="M-10,498 C35,485 90,470 155,466 C215,463 260,480 320,488 C375,494 425,478 485,468 C545,460 595,478 655,486 C715,492 765,476 825,466 C885,458 935,478 995,486 C1050,492 1100,476 1160,468 L1210,465" />
+
+      <!-- Row 3 — smaller, tighter stones -->
+      <path d="M-10,448 C30,436 75,422 130,418 C185,415 225,432 280,438 C330,443 375,428 425,420 C480,413 525,430 580,438 C630,443 680,426 730,418 C785,412 830,430 885,438 C935,443 980,428 1035,418 C1090,412 1130,428 1210,438" />
+      <path d="M-10,400 C40,388 90,372 150,368 C210,365 255,382 315,390 C370,396 420,378 480,368 C540,360 590,378 650,388 C710,395 760,378 820,368 C880,360 930,380 990,388 C1045,394 1095,378 1150,370 L1210,368" />
+      <path d="M-10,355 C45,340 100,325 165,322 C225,320 270,338 330,345 C385,350 435,334 495,325 C555,318 605,335 665,344 C725,350 775,332 835,324 C895,318 945,336 1005,344 C1060,350 1115,335 1170,326 L1210,323" />
+
+      <!-- Row 4 — upper wall -->
+      <path d="M-10,302 C35,288 85,275 145,270 C205,266 255,282 315,290 C370,296 420,278 480,270 C540,264 590,280 650,288 C710,294 765,278 825,270 C885,264 935,282 1000,290 C1055,295 1110,280 1170,272 L1210,270" />
+      <path d="M-10,255 C40,242 95,228 158,224 C218,221 265,238 325,246 C380,252 432,235 492,226 C552,220 600,236 660,245 C720,252 770,234 832,226 C892,220 940,236 1002,245 C1060,252 1112,236 1172,228 L1210,226" />
+      <path d="M-10,210 C38,196 92,182 155,178 C218,175 262,192 325,200 C382,206 432,190 495,182 C555,176 602,192 665,200 C725,206 775,190 838,182 C898,176 942,192 1005,200 C1062,206 1115,190 1175,184 L1210,182" />
+      <path d="M-10,168 C42,154 96,140 160,136 C222,133 268,150 330,158 C388,164 438,148 500,140 C560,134 608,150 668,158 C728,164 778,148 840,140 C900,134 948,150 1010,158 C1068,164 1120,148 1180,142 L1210,140" />
+      <path d="M-10,125 C45,112 100,98 165,94 C228,91 275,108 338,115 C395,120 445,105 508,98 C568,92 615,108 678,115 C735,120 785,105 848,98 C908,92 955,108 1018,115 C1075,120 1128,106 1188,100 L1210,98" />
+      <path d="M-10,85 C40,72 95,58 158,54 C222,51 268,68 332,76 C390,82 440,66 502,58 C562,52 610,68 672,76 C730,82 780,66 842,58 C902,52 950,68 1012,76 C1068,82 1122,66 1182,60 L1210,58" />
+
+      <!-- Scattered gap stones -->
+      <ellipse cx="180" cy="580" rx="18" ry="11" />
+      <ellipse cx="450" cy="540" rx="14" ry="9" />
+      <ellipse cx="720" cy="570" rx="16" ry="10" />
+      <ellipse cx="990" cy="545" rx="13" ry="8" />
+      <ellipse cx="310" cy="490" rx="15" ry="9" />
+      <ellipse cx="580" cy="480" rx="12" ry="7" />
+      <ellipse cx="850" cy="495" rx="14" ry="8" />
+      <ellipse cx="1100" cy="485" rx="11" ry="7" />
+      <ellipse cx="220" cy="430" rx="13" ry="8" />
+      <ellipse cx="510" cy="425" rx="11" ry="7" />
+      <ellipse cx="760" cy="435" rx="14" ry="8" />
+      <ellipse cx="1030" cy="428" rx="12" ry="7" />
+      <ellipse cx="130" cy="380" rx="10" ry="6" />
+      <ellipse cx="400" cy="375" rx="12" ry="7" />
+      <ellipse cx="670" cy="382" rx="11" ry="6" />
+      <ellipse cx="940" cy="378" rx="10" ry="6" />
+      <ellipse cx="260" cy="335" rx="10" ry="6" />
+      <ellipse cx="530" cy="330" rx="9" ry="5" />
+      <ellipse cx="800" cy="338" rx="11" ry="6" />
+      <ellipse cx="1070" cy="332" rx="10" ry="6" />
+    </svg>
+  </div>
+
+  <div class="wall-content">
+    <h1 class="wall-title">KURA</h1>
+    <p class="wall-sub">Lorem ipsum dolor sit amet</p>
+  </div>
+</section>
+
+<!-- Clearing — content emerges from the wall -->
+<section class="clearing">
+  <div class="clearing-inner">
+    <span class="clearing-label">Lorem Ipsum</span>
+    <p>Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo.</p>
+    <p>Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit, sed quia consequuntur magni dolores eos qui ratione voluptatem sequi nesciunt.</p>
+  </div>
+</section>
+
+<!-- Stone band divider -->
+<div class="stone-band">
+  <svg viewBox="0 0 1200 120" fill="none" stroke="var(--line)" stroke-width="0.7" preserveAspectRatio="none" opacity="0.1">
+    <path d="M-10,15 C40,8 100,2 165,5 C230,8 280,22 345,28 C408,33 455,18 520,12 C585,6 632,22 698,28 C762,33 810,18 875,12 C938,6 985,22 1050,28 C1112,33 1160,20 1210,15" />
+    <path d="M-10,50 C45,40 105,30 170,32 C235,34 282,48 348,54 C412,58 460,42 525,36 C590,30 638,46 702,52 C768,58 815,42 880,35 C945,28 992,44 1058,52 C1118,58 1165,44 1210,40" />
+    <path d="M-10,85 C42,75 102,62 168,60 C232,58 278,72 345,80 C408,86 458,70 522,62 C588,55 635,72 700,80 C765,86 812,70 878,62 C942,55 990,72 1055,80 C1118,86 1165,74 1210,70" />
+    <path d="M-10,110 C38,102 95,90 162,88 C228,86 275,100 342,108 C405,114 455,98 520,90 C585,83 632,100 698,108 C762,114 810,98 875,90 C940,83 988,100 1052,108 C1115,114 1162,102 1210,98" />
+  </svg>
+</div>
+
+<!-- Split section — wall on one side, text on other -->
+<section class="split">
+  <div class="split-left">
+    <h2>Lorem ipsum dolor sit amet</h2>
+    <p>Ut enim ad minima veniam, quis nostrum exercitationem ullam corporis suscipit laboriosam, nisi ut aliquid ex ea commodi consequatur.</p>
+  </div>
+  <div class="split-right">
+    <svg viewBox="0 0 600 500" fill="none" stroke="var(--line)" stroke-width="0.8" preserveAspectRatio="xMidYMid slice" opacity="0.09">
+      <!-- Dense stone pattern -->
+      <path d="M-5,30 C20,18 55,8 95,10 C140,12 170,30 215,38 C255,44 290,28 335,20 C380,12 415,30 460,38 C500,44 540,30 580,22 L610,18" />
+      <path d="M-5,70 C25,58 60,45 105,42 C150,40 185,58 230,65 C275,70 310,55 355,48 C400,42 440,58 485,66 C530,72 570,56 610,50" />
+      <path d="M-5,110 C22,98 62,85 108,82 C155,80 192,96 238,104 C282,110 320,94 365,86 C412,80 450,96 495,104 C540,110 578,96 610,90" />
+      <path d="M-5,150 C28,138 68,125 115,122 C162,120 198,136 245,144 C290,150 328,134 375,126 C420,120 458,136 505,144 C548,150 585,136 610,130" />
+      <path d="M-5,190 C25,178 65,165 112,162 C158,160 195,176 242,184 C288,190 325,174 372,166 C418,160 455,176 502,184 C545,190 582,176 610,170" />
+      <path d="M-5,230 C28,218 68,205 115,202 C162,200 198,216 245,224 C290,230 328,214 375,206 C420,200 458,216 505,224 C548,230 585,216 610,210" />
+      <path d="M-5,270 C22,258 62,245 108,242 C155,240 192,256 238,264 C282,270 320,254 365,246 C412,240 450,256 495,264 C540,270 578,256 610,250" />
+      <path d="M-5,310 C28,298 68,285 115,282 C162,280 198,296 245,304 C290,310 328,294 375,286 C420,280 458,296 505,304 C548,310 585,296 610,290" />
+      <path d="M-5,350 C25,338 65,325 112,322 C158,320 195,336 242,344 C288,350 325,334 372,326 C418,320 455,336 502,344 C545,350 582,336 610,330" />
+      <path d="M-5,390 C28,378 68,365 115,362 C162,360 198,376 245,384 C290,390 328,374 375,366 C420,360 458,376 505,384 C548,390 585,376 610,370" />
+      <path d="M-5,430 C22,418 62,405 108,402 C155,400 192,416 238,424 C282,430 320,414 365,406 C412,400 450,416 495,424 C540,430 578,416 610,410" />
+      <path d="M-5,470 C28,458 68,445 115,442 C162,440 198,456 245,464 C290,470 328,454 375,446 C420,440 458,456 505,464 C548,470 585,456 610,450" />
+      <path d="M-5,510 C25,498 65,485 112,482 C158,480 195,496 242,504" />
+      <!-- Gap stones -->
+      <ellipse cx="70" cy="52" rx="15" ry="9" />
+      <ellipse cx="250" cy="88" rx="12" ry="7" />
+      <ellipse cx="420" cy="55" rx="13" ry="8" />
+      <ellipse cx="150" cy="130" rx="11" ry="7" />
+      <ellipse cx="340" cy="168" rx="12" ry="7" />
+      <ellipse cx="530" cy="135" rx="10" ry="6" />
+      <ellipse cx="90" cy="210" rx="12" ry="7" />
+      <ellipse cx="280" cy="248" rx="11" ry="6" />
+      <ellipse cx="470" cy="215" rx="13" ry="7" />
+      <ellipse cx="180" cy="290" rx="10" ry="6" />
+      <ellipse cx="370" cy="328" rx="11" ry="6" />
+      <ellipse cx="560" cy="295" rx="10" ry="6" />
+    </svg>
+  </div>
+</section>
+
+<!-- Quote -->
+<section class="quote-section">
+  <blockquote>
+    &ldquo;Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt.&rdquo;
+  </blockquote>
+</section>
+
+<!-- Footer -->
+<footer class="footer">
+  <span class="footer-brand">KURA</span>
+  <span>Lorem ipsum dolor sit amet</span>
+</footer>
+
+</body>
+</html>

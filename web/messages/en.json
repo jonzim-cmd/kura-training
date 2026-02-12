@@ -1,0 +1,141 @@
+{
+  "meta": {
+    "title": "Kura — Your body, understood",
+    "description": "An AI that grows with you — learning your training, nutrition, and recovery to make better decisions together."
+  },
+  "nav": {
+    "home": "Home",
+    "setup": "Setup",
+    "login": "Log in",
+    "signup": "Create account",
+    "settings": "Settings",
+    "logout": "Log out"
+  },
+  "landing": {
+    "userMessage": "Did squats today, 5×5 at 100kg. Felt heavy, had to grind the last two reps. Also some light stretching after.",
+    "userMessageShort": "Did squats today, 5×5 at 100kg. Felt heavy…",
+    "bridgeLabel": "what happens inside those three dots",
+    "receiving": "receiving",
+    "field": {
+      "exercise_id": "exercise_id",
+      "sets_reps": "sets × reps",
+      "weight_kg": "weight_kg",
+      "rpe": "rpe",
+      "notes": "notes",
+      "also": "also"
+    },
+    "decompNotes": "last two reps ground out",
+    "decompAlso": "stretching · logged separately",
+    "persistingEvent": "persisting event",
+    "belowTarget": "below target 7.5h",
+    "inference": {
+      "signalDynamics": "signal dynamics",
+      "crossDimension": "cross-dimension",
+      "recommendation": "recommendation engine"
+    },
+    "agentResponse": "Logged. Your squat has been at 116\u2009kg estimated max for three weeks now — volume is there, but the weight isn't moving. You've also been sleeping about an hour less than usual. That's probably not a coincidence.",
+    "agentQuestion": "Want me to program a deload week?"
+  },
+  "auth": {
+    "loginTitle": "Welcome back",
+    "loginSubtitle": "Log in to access your Kura vault.",
+    "signupTitle": "Create your vault",
+    "signupSubtitle": "Free. No credit card required.",
+    "email": "Email",
+    "password": "Password",
+    "confirmPassword": "Confirm password",
+    "loginButton": "Log in",
+    "signupButton": "Create account",
+    "noAccount": "No account yet?",
+    "hasAccount": "Already have an account?",
+    "forgotPassword": "Forgot password?",
+    "orContinueWith": "Or continue with"
+  },
+  "settings": {
+    "title": "Settings",
+    "subtitle": "Manage your Kura account and API access.",
+    "account": {
+      "title": "Account",
+      "email": "Email",
+      "memberSince": "Member since",
+      "plan": "Plan",
+      "free": "Free"
+    },
+    "apiKeys": {
+      "title": "API Keys",
+      "description": "API keys allow your AI to access your Kura vault. Keep them secret.",
+      "create": "Create new key",
+      "name": "Name",
+      "key": "Key",
+      "created": "Created",
+      "lastUsed": "Last used",
+      "never": "Never",
+      "revoke": "Revoke",
+      "copied": "Copied to clipboard",
+      "copyWarning": "This key will only be shown once. Copy it now."
+    },
+    "danger": {
+      "title": "Danger zone",
+      "deleteAccount": "Delete account",
+      "deleteDescription": "Permanently delete your account and all associated data. This action cannot be undone.",
+      "deleteConfirm": "Type your email to confirm deletion",
+      "deleteButton": "Delete my account permanently"
+    }
+  },
+  "setup": {
+    "title": "Connect your AI",
+    "subtitle": "Choose your AI assistant and follow the setup guide.",
+    "cliTab": "CLI",
+    "mcpTab": "MCP",
+    "step": "Step {number}",
+    "claude": {
+      "title": "Claude",
+      "cliSteps": {
+        "install": { "title": "Install Kura CLI", "description": "Download and install the Kura command-line tool." },
+        "login": { "title": "Authenticate", "description": "Log in with your Kura account." },
+        "apiKey": { "title": "Create an API key", "description": "Generate a key for Claude to use." },
+        "configure": { "title": "Add to Claude", "description": "Add Kura as a tool in your Claude project." }
+      }
+    },
+    "chatgpt": {
+      "title": "ChatGPT",
+      "cliSteps": {
+        "install": { "title": "Install Kura CLI", "description": "Download and install the Kura command-line tool." },
+        "login": { "title": "Authenticate", "description": "Log in with your Kura account." },
+        "apiKey": { "title": "Create an API key", "description": "Generate a key for ChatGPT to use." },
+        "configure": { "title": "Add to ChatGPT", "description": "Configure Kura as a custom tool in your ChatGPT settings." }
+      }
+    },
+    "gemini": {
+      "title": "Gemini",
+      "cliSteps": {
+        "install": { "title": "Install Kura CLI", "description": "Download and install the Kura command-line tool." },
+        "login": { "title": "Authenticate", "description": "Log in with your Kura account." },
+        "apiKey": { "title": "Create an API key", "description": "Generate a key for Gemini to use." },
+        "configure": { "title": "Add to Gemini", "description": "Configure Kura as a tool in your Gemini workspace." }
+      }
+    },
+    "ready": "Ready",
+    "comingSoon": "Coming soon",
+    "mcpComingSoon": {
+      "title": "MCP Integration",
+      "description": "MCP enables direct integration without the CLI. Your AI connects to Kura natively.",
+      "status": "In development. CLI is the recommended path today."
+    }
+  },
+  "footer": {
+    "privacy": "Privacy",
+    "terms": "Terms",
+    "github": "GitHub",
+    "tagline": "Built to remember what matters."
+  },
+  "common": {
+    "back": "Back",
+    "cancel": "Cancel",
+    "save": "Save",
+    "close": "Close",
+    "loading": "Loading...",
+    "error": "Something went wrong",
+    "copied": "Copied"
+  }
+}

@@ -1,0 +1,87 @@
+/* Shared styles for login + signup */
+
+.authPage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - var(--header-height));
+  padding: 4rem 1.5rem;
+}
+
+.authContainer {
+  width: 100%;
+  max-width: var(--narrow-width);
+  animation: authIn 0.4s var(--ease-out) both;
+}
+
+@keyframes authIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.authHeader {
+  text-align: center;
+  margin-bottom: 2.5rem;
+}
+
+.authKanji {
+  font-size: 3rem;
+  color: var(--ink-ghost);
+  opacity: 0.3;
+  margin-bottom: 1rem;
+  user-select: none;
+}
+
+.authTitle {
+  font-family: var(--font-display);
+  font-size: 1.75rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+}
+
+.authSubtitle {
+  color: var(--ink-faint);
+  font-size: 1rem;
+}
+
+.authForm {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 2rem;
+  background-color: var(--paper);
+  border: 1px solid var(--thread);
+  border-radius: 6px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+}
+
+.formFooter {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -0.25rem;
+}
+
+.forgotLink {
+  font-size: 0.875rem;
+  color: var(--ink-faint);
+}
+
+.forgotLink:hover {
+  color: var(--amber);
+}
+
+.authSwitch {
+  text-align: center;
+  margin-top: 1.5rem;
+  font-size: 0.875rem;
+  color: var(--ink-faint);
+}
+
+.authSwitch a {
+  color: var(--amber);
+  font-weight: 500;
+}

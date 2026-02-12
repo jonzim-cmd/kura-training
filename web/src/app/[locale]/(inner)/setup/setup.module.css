@@ -1,0 +1,189 @@
+.setupPage {
+  padding: 3rem 0;
+}
+
+.container {
+  max-width: var(--content-width);
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  margin-bottom: 2rem;
+}
+
+.title {
+  font-family: var(--font-display);
+  font-size: 1.75rem;
+  font-weight: 700;
+  margin-bottom: 0.375rem;
+}
+
+.subtitle {
+  color: var(--ink-faint);
+}
+
+/* AI Selector */
+.aiSelector {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.aiTab {
+  font-family: var(--font-display);
+  font-size: 1.125rem;
+  font-weight: 400;
+  padding: 0.5rem 1rem;
+  background: none;
+  border: 1px solid var(--thread);
+  border-radius: 4px;
+  color: var(--ink-faint);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.aiTab:hover {
+  border-color: var(--ink-ghost);
+  color: var(--ink);
+}
+
+.aiTabActive {
+  border-color: var(--amber);
+  color: var(--amber);
+  background-color: rgba(196, 147, 90, 0.04);
+}
+
+/* Protocol Tabs */
+.protocolTabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 2px solid var(--thread);
+  margin-bottom: 2rem;
+}
+
+.protocolTab {
+  display: flex;
+  align-items: center;
+  font-family: var(--font-body);
+  font-size: 0.875rem;
+  font-weight: 500;
+  padding: 0.5rem 1rem;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  color: var(--ink-faint);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.protocolTab:hover {
+  color: var(--ink);
+}
+
+.protocolTabActive {
+  color: var(--ink);
+  border-bottom-color: var(--amber);
+}
+
+/* Steps */
+.steps {
+  display: flex;
+  flex-direction: column;
+}
+
+.step {
+  display: flex;
+  gap: 1.5rem;
+}
+
+.stepIndicator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.stepDot {
+  width: 2rem;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--amber);
+  border: 2px solid var(--thread);
+  border-radius: 50%;
+  background-color: var(--paper);
+  flex-shrink: 0;
+}
+
+.stepLine {
+  width: 1px;
+  flex: 1;
+  background-color: var(--thread);
+  min-height: 1rem;
+}
+
+.stepContent {
+  padding-bottom: 2rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.stepTitle {
+  font-family: var(--font-display);
+  font-size: 1.125rem;
+  font-weight: 700;
+  margin-bottom: 0.375rem;
+}
+
+.stepDescription {
+  font-size: 0.875rem;
+  color: var(--ink-faint);
+  margin-bottom: 0.75rem;
+}
+
+/* MCP Coming Soon */
+.mcpCard {
+  text-align: center;
+  padding: 4rem 1.5rem;
+}
+
+.mcpIcon {
+  color: var(--ink-faint);
+  margin-bottom: 1rem;
+}
+
+.mcpTitle {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin-bottom: 0.75rem;
+}
+
+.mcpDescription {
+  color: var(--ink-faint);
+  max-width: 32em;
+  margin: 0 auto 1rem;
+}
+
+.mcpStatus {
+  font-size: 0.875rem;
+  color: var(--ink-ghost);
+  font-style: italic;
+}
+
+/* Mobile */
+@media (max-width: 640px) {
+  .aiSelector {
+    flex-direction: column;
+  }
+
+  .step {
+    gap: 0.75rem;
+  }
+}

@@ -1,0 +1,1101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kura — Abstieg / Animated</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;700;900&family=Crimson+Pro:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { font-size: 16px; }
+
+  body {
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+    background: linear-gradient(
+      to bottom,
+      #FAF8F4 0%,
+      #FAF8F4 4%,
+      #F0EBE2 10%,
+      #E8E0D4 16%,
+      #D8CCBB 22%,
+      #C8BAA3 30%,
+      #A8956E 40%,
+      #8B7355 50%,
+      #6B5A3E 58%,
+      #4A3D2E 68%,
+      #2C2419 78%,
+      #1A1612 88%,
+      #110E0B 100%
+    );
+    color: #1A1612;
+  }
+
+  /* === Reveal system === */
+  .reveal {
+    opacity: 0;
+    transform: translateY(12px);
+    transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1),
+                transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .reveal.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* Staggered children */
+  .stagger > .reveal:nth-child(1) { transition-delay: 0s; }
+  .stagger > .reveal:nth-child(2) { transition-delay: 0.1s; }
+  .stagger > .reveal:nth-child(3) { transition-delay: 0.2s; }
+  .stagger > .reveal:nth-child(4) { transition-delay: 0.3s; }
+  .stagger > .reveal:nth-child(5) { transition-delay: 0.4s; }
+  .stagger > .reveal:nth-child(6) { transition-delay: 0.5s; }
+  .stagger > .reveal:nth-child(7) { transition-delay: 0.6s; }
+  .stagger > .reveal:nth-child(8) { transition-delay: 0.7s; }
+
+  /* === SURFACE === */
+  .surface {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+
+  .surface-title {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 900;
+    font-size: clamp(8rem, 22vw, 18rem);
+    line-height: 0.85;
+    letter-spacing: 0.02em;
+    color: #1A1612;
+    text-align: center;
+    animation: surfaceIn 1.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  @keyframes surfaceIn {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .surface::after {
+    content: '';
+    position: absolute;
+    bottom: 12%;
+    left: 8%;
+    right: 8%;
+    height: 1px;
+    background: #1A1612;
+    opacity: 0.06;
+  }
+
+  /* === USER MESSAGE — Typewriter === */
+  .user-message {
+    min-height: 70vh;
+    padding: 0 8%;
+    display: flex;
+    align-items: center;
+    position: relative;
+  }
+
+  .typewriter-container {
+    max-width: 40rem;
+    position: relative;
+  }
+
+  .typewriter-text {
+    font-family: 'Crimson Pro', serif;
+    font-size: clamp(1.25rem, 2.5vw, 1.75rem);
+    color: #3D352A;
+    line-height: 1.7;
+    font-style: italic;
+  }
+
+  /* Each character wrapper */
+  .typewriter-text .char {
+    opacity: 0;
+    transition: opacity 0.04s ease;
+  }
+
+  .typewriter-text .char.typed {
+    opacity: 1;
+  }
+
+  /* Blinking cursor */
+  .cursor {
+    display: inline-block;
+    width: 2px;
+    height: 1.2em;
+    background: #3D352A;
+    vertical-align: text-bottom;
+    margin-left: 1px;
+    animation: blink 0.8s step-end infinite;
+  }
+
+  .cursor.done {
+    animation: blink 0.8s step-end 3;
+    animation-fill-mode: forwards;
+    opacity: 0;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  /* Send indicator */
+  .send-indicator {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 300;
+    font-size: 0.625rem;
+    letter-spacing: 0.15em;
+    color: #A39B90;
+    margin-top: 1.5rem;
+    opacity: 0;
+    transform: translateY(4px);
+    transition: all 0.5s ease 0.3s;
+  }
+
+  .send-indicator.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* === THRESHOLD — Decomposition === */
+  .threshold {
+    min-height: 100vh;
+    position: relative;
+    padding: 0 8%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .strata-lines {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  .strata-line {
+    position: absolute;
+    left: 0;
+    width: 0;
+    height: 1px;
+    background: #1A1612;
+    transition: width 1.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .strata-line.visible {
+    width: 100%;
+  }
+
+  .threshold .strata-line:nth-child(1) { top: 5%; opacity: 0.03; transition-delay: 0s; }
+  .threshold .strata-line:nth-child(2) { top: 18%; opacity: 0.05; transition-delay: 0.1s; }
+  .threshold .strata-line:nth-child(3) { top: 32%; opacity: 0.07; transition-delay: 0.2s; }
+  .threshold .strata-line:nth-child(4) { top: 48%; opacity: 0.09; transition-delay: 0.3s; }
+  .threshold .strata-line:nth-child(5) { top: 62%; opacity: 0.11; transition-delay: 0.4s; }
+  .threshold .strata-line:nth-child(6) { top: 78%; opacity: 0.13; transition-delay: 0.5s; }
+  .threshold .strata-line:nth-child(7) { top: 92%; opacity: 0.15; transition-delay: 0.6s; }
+
+  .receiving {
+    position: relative;
+    z-index: 1;
+  }
+
+  .receiving-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 300;
+    font-size: 0.6875rem;
+    letter-spacing: 0.12em;
+    color: #8B7E6E;
+    margin-bottom: 2rem;
+    display: block;
+  }
+
+  .decomposition {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .decomposition-row {
+    display: flex;
+    align-items: baseline;
+    gap: 1.5rem;
+  }
+
+  .field-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 400;
+    font-size: 0.75rem;
+    color: #9E9282;
+    min-width: 10rem;
+    text-align: right;
+    letter-spacing: 0.02em;
+  }
+
+  .field-value {
+    font-family: 'Crimson Pro', serif;
+    font-size: 1.0625rem;
+    color: #5C5549;
+  }
+
+  .field-value--mono {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8125rem;
+    color: #6B5F50;
+  }
+
+  /* Arrow from user text to structured data */
+  .flow-arrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 300;
+    font-size: 0.75rem;
+    color: #A39B90;
+    padding: 3rem 8%;
+    opacity: 0;
+    transition: opacity 0.6s ease;
+  }
+
+  .flow-arrow.visible {
+    opacity: 1;
+  }
+
+  /* === INSIDE — Event + Projections === */
+  .inside {
+    min-height: 200vh;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .event-lines {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  .event-line {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    opacity: 0;
+    transition: opacity 1.5s ease;
+  }
+
+  .event-line.visible { opacity: 1; }
+
+  .event-line::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      to bottom,
+      transparent 0%,
+      rgba(232, 224, 212, 0.15) 20%,
+      rgba(232, 224, 212, 0.25) 50%,
+      rgba(232, 224, 212, 0.15) 80%,
+      transparent 100%
+    );
+  }
+
+  .event-line:nth-child(1) { left: 12%; transition-delay: 0s; }
+  .event-line:nth-child(2) { left: 28%; transition-delay: 0.15s; }
+  .event-line:nth-child(3) { left: 45%; transition-delay: 0.3s; }
+  .event-line:nth-child(4) { left: 62%; transition-delay: 0.45s; }
+  .event-line:nth-child(5) { left: 78%; transition-delay: 0.6s; }
+  .event-line:nth-child(6) { left: 91%; transition-delay: 0.75s; }
+
+  .event-dot {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: rgba(196, 147, 90, 0.6);
+  }
+
+  .projection-band {
+    position: absolute;
+    left: 0;
+    right: 0;
+    background: rgba(232, 224, 212, 0.04);
+    border-top: 1px solid rgba(232, 224, 212, 0.08);
+    border-bottom: 1px solid rgba(232, 224, 212, 0.04);
+  }
+
+  /* Event JSON — typewriter style */
+  .event-write {
+    position: relative;
+    z-index: 2;
+    padding: 14vh 8%;
+  }
+
+  .event-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 300;
+    font-size: 0.5625rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: rgba(196, 147, 90, 0.4);
+    margin-bottom: 1rem;
+  }
+
+  .event-json {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 300;
+    font-size: clamp(0.6875rem, 1.2vw, 0.8125rem);
+    line-height: 2;
+    color: rgba(232, 224, 212, 0.45);
+    max-width: 36rem;
+  }
+
+  .event-json .hl { color: rgba(196, 147, 90, 0.7); }
+  .event-json .val { color: rgba(232, 224, 212, 0.7); }
+
+  .event-json .line {
+    opacity: 0;
+    transform: translateX(-6px);
+    transition: opacity 0.4s ease, transform 0.4s ease;
+  }
+
+  .event-json .line.typed {
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  .json-cursor {
+    display: inline-block;
+    width: 6px;
+    height: 1em;
+    background: rgba(196, 147, 90, 0.5);
+    vertical-align: text-bottom;
+    animation: blink 0.6s step-end infinite;
+  }
+
+  /* Projection blocks */
+  .projection-compute {
+    position: relative;
+    z-index: 2;
+    padding: 6vh 8%;
+    margin-top: 4vh;
+    display: flex;
+    flex-direction: column;
+    gap: 3rem;
+  }
+
+  .projection-block {
+    max-width: 42rem;
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+  }
+
+  .projection-block.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .projection-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 300;
+    font-size: 0.625rem;
+    letter-spacing: 0.15em;
+    color: rgba(196, 147, 90, 0.5);
+    margin-bottom: 0.75rem;
+    display: block;
+  }
+
+  .projection-data {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 300;
+    font-size: clamp(0.625rem, 1.1vw, 0.75rem);
+    line-height: 1.9;
+    color: rgba(232, 224, 212, 0.35);
+  }
+
+  .projection-data .hl { color: rgba(196, 147, 90, 0.6); }
+  .projection-data .val { color: rgba(232, 224, 212, 0.6); }
+  .projection-data .alert { color: rgba(220, 140, 80, 0.8); }
+
+  /* Connection threads */
+  .inside > svg {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 1.5s ease 0.5s;
+  }
+
+  .inside > svg.visible { opacity: 1; }
+
+  /* === DEEP — Inference === */
+  .deep {
+    min-height: 100vh;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .mesh {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 2s ease;
+  }
+
+  .mesh.visible { opacity: 1; }
+
+  .mesh svg {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+  }
+
+  .inference-cloud {
+    position: absolute;
+    border-radius: 50%;
+    background: radial-gradient(
+      ellipse at center,
+      rgba(196, 147, 90, 0.08) 0%,
+      rgba(196, 147, 90, 0.03) 40%,
+      transparent 70%
+    );
+    pointer-events: none;
+    animation: pulse 6s ease-in-out infinite;
+    opacity: 0;
+    transition: opacity 2s ease 0.5s;
+  }
+
+  .inference-cloud.visible { opacity: 1; }
+
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.15); }
+  }
+
+  .inference-cloud:nth-child(2) { animation-delay: -2s; }
+  .inference-cloud:nth-child(3) { animation-delay: -4s; }
+
+  .inference-text {
+    position: relative;
+    z-index: 2;
+    padding: 18vh 8%;
+    display: flex;
+    flex-direction: column;
+    gap: 4rem;
+  }
+
+  .inference-step {
+    max-width: 36rem;
+  }
+
+  .inference-step-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 300;
+    font-size: 0.5625rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: rgba(196, 147, 90, 0.35);
+    margin-bottom: 0.75rem;
+  }
+
+  .inference-step-content {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 300;
+    font-size: 0.75rem;
+    line-height: 2;
+    color: rgba(232, 224, 212, 0.3);
+  }
+
+  .inference-step-content .hl { color: rgba(196, 147, 90, 0.6); }
+  .inference-step-content .val { color: rgba(232, 224, 212, 0.55); }
+  .inference-step-content .alert { color: rgba(220, 140, 80, 0.7); }
+
+  /* === CORE — Agent Response === */
+  .core {
+    min-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    padding: 8%;
+  }
+
+  .agent-response {
+    max-width: 36rem;
+    text-align: center;
+  }
+
+  .agent-response-text {
+    font-family: 'Crimson Pro', serif;
+    font-size: clamp(1.125rem, 2vw, 1.5rem);
+    color: rgba(232, 224, 212, 0.85);
+    line-height: 1.8;
+    font-style: italic;
+  }
+
+  /* Agent typewriter — characters */
+  .agent-response-text .char {
+    opacity: 0;
+    transition: opacity 0.03s ease;
+  }
+
+  .agent-response-text .char.typed {
+    opacity: 1;
+  }
+
+  .agent-cursor {
+    display: inline-block;
+    width: 2px;
+    height: 1.1em;
+    background: rgba(232, 224, 212, 0.6);
+    vertical-align: text-bottom;
+    margin-left: 1px;
+    animation: blink 0.6s step-end infinite;
+  }
+
+  .agent-cursor.done {
+    animation: none;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+  }
+
+  .agent-tag {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 300;
+    font-size: 0.625rem;
+    letter-spacing: 0.15em;
+    color: rgba(196, 147, 90, 0.4);
+    margin-top: 2rem;
+    display: block;
+    opacity: 0;
+    transition: opacity 0.8s ease;
+  }
+
+  .agent-tag.visible { opacity: 1; }
+
+  /* === BOTTOM === */
+  .bottom {
+    min-height: 25vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .bottom-mark {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 900;
+    font-size: clamp(2rem, 5vw, 4rem);
+    color: rgba(232, 224, 212, 0.06);
+    letter-spacing: 0.04em;
+  }
+
+  /* === Responsive === */
+  @media (max-width: 768px) {
+    .user-message { padding: 0 6%; }
+    .threshold { padding: 0 6%; }
+    .flow-arrow { padding: 2rem 6%; }
+    .event-write { padding: 10vh 6%; }
+    .projection-compute { padding: 4vh 6%; }
+    .inference-text { padding: 12vh 6%; }
+    .core { padding: 6%; }
+
+    .decomposition-row {
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .field-name {
+      text-align: left;
+      min-width: 0;
+    }
+  }
+</style>
+</head>
+<body>
+
+<!-- SURFACE -->
+<section class="surface">
+  <h1 class="surface-title">KURA</h1>
+</section>
+
+
+<!-- USER MESSAGE — Typewriter -->
+<section class="user-message" id="user-msg">
+  <div class="typewriter-container">
+    <p class="typewriter-text" id="user-typewriter"></p>
+    <div class="send-indicator" id="send-indicator">sent</div>
+  </div>
+</section>
+
+<!-- Flow -->
+<div class="flow-arrow" id="flow-arrow">↓</div>
+
+<!-- THRESHOLD — Decomposition -->
+<section class="threshold" id="threshold">
+  <div class="strata-lines" id="strata-lines">
+    <div class="strata-line"></div>
+    <div class="strata-line"></div>
+    <div class="strata-line"></div>
+    <div class="strata-line"></div>
+    <div class="strata-line"></div>
+    <div class="strata-line"></div>
+    <div class="strata-line"></div>
+  </div>
+
+  <div class="receiving stagger" id="decomposition">
+    <span class="receiving-label reveal">receiving</span>
+    <div class="decomposition">
+      <div class="decomposition-row reveal">
+        <span class="field-name">exercise_id</span>
+        <span class="field-value field-value--mono">barbell_back_squat</span>
+      </div>
+      <div class="decomposition-row reveal">
+        <span class="field-name">sets × reps</span>
+        <span class="field-value">5 × 5</span>
+      </div>
+      <div class="decomposition-row reveal">
+        <span class="field-name">weight_kg</span>
+        <span class="field-value">100</span>
+      </div>
+      <div class="decomposition-row reveal">
+        <span class="field-name">rpe</span>
+        <span class="field-value">9 — 9.5</span>
+      </div>
+      <div class="decomposition-row reveal">
+        <span class="field-name">notes</span>
+        <span class="field-value field-value--mono">last two reps ground out</span>
+      </div>
+      <div class="decomposition-row reveal">
+        <span class="field-name">also</span>
+        <span class="field-value field-value--mono">stretching · logged separately</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- INSIDE — Event + Projections -->
+<section class="inside" id="inside">
+  <div class="event-lines" id="event-lines">
+    <div class="event-line">
+      <span class="event-dot" style="top: 12%; left: -1px;"></span>
+      <span class="event-dot" style="top: 28%; left: -1px;"></span>
+      <span class="event-dot" style="top: 45%; left: -1px;"></span>
+      <span class="event-dot" style="top: 63%; left: -1px;"></span>
+      <span class="event-dot" style="top: 78%; left: -1px;"></span>
+    </div>
+    <div class="event-line">
+      <span class="event-dot" style="top: 8%; left: -1px;"></span>
+      <span class="event-dot" style="top: 22%; left: -1px;"></span>
+      <span class="event-dot" style="top: 38%; left: -1px;"></span>
+      <span class="event-dot" style="top: 55%; left: -1px;"></span>
+      <span class="event-dot" style="top: 72%; left: -1px;"></span>
+      <span class="event-dot" style="top: 88%; left: -1px;"></span>
+    </div>
+    <div class="event-line">
+      <span class="event-dot" style="top: 15%; left: -1px;"></span>
+      <span class="event-dot" style="top: 35%; left: -1px;"></span>
+      <span class="event-dot" style="top: 52%; left: -1px;"></span>
+      <span class="event-dot" style="top: 70%; left: -1px;"></span>
+      <span class="event-dot" style="top: 90%; left: -1px;"></span>
+    </div>
+    <div class="event-line">
+      <span class="event-dot" style="top: 10%; left: -1px;"></span>
+      <span class="event-dot" style="top: 30%; left: -1px;"></span>
+      <span class="event-dot" style="top: 48%; left: -1px;"></span>
+      <span class="event-dot" style="top: 65%; left: -1px;"></span>
+      <span class="event-dot" style="top: 82%; left: -1px;"></span>
+    </div>
+    <div class="event-line">
+      <span class="event-dot" style="top: 18%; left: -1px;"></span>
+      <span class="event-dot" style="top: 40%; left: -1px;"></span>
+      <span class="event-dot" style="top: 58%; left: -1px;"></span>
+      <span class="event-dot" style="top: 75%; left: -1px;"></span>
+    </div>
+    <div class="event-line">
+      <span class="event-dot" style="top: 25%; left: -1px;"></span>
+      <span class="event-dot" style="top: 50%; left: -1px;"></span>
+      <span class="event-dot" style="top: 80%; left: -1px;"></span>
+    </div>
+  </div>
+
+  <div class="projection-band" style="top: 18%; height: 6%;"></div>
+  <div class="projection-band" style="top: 38%; height: 8%;"></div>
+  <div class="projection-band" style="top: 60%; height: 5%;"></div>
+  <div class="projection-band" style="top: 78%; height: 7%;"></div>
+
+  <svg id="threads-svg" viewBox="0 0 1440 2400" preserveAspectRatio="none">
+    <line x1="173" y1="288" x2="403" y2="672" stroke="rgba(196,147,90,0.12)" stroke-width="0.5" />
+    <line x1="403" y1="528" x2="648" y2="912" stroke="rgba(196,147,90,0.08)" stroke-width="0.5" />
+    <line x1="648" y1="840" x2="893" y2="1248" stroke="rgba(196,147,90,0.1)" stroke-width="0.5" />
+    <line x1="893" y1="720" x2="1123" y2="1080" stroke="rgba(196,147,90,0.06)" stroke-width="0.5" />
+    <line x1="173" y1="1080" x2="648" y2="1560" stroke="rgba(196,147,90,0.08)" stroke-width="0.5" />
+    <line x1="1123" y1="1200" x2="893" y2="1800" stroke="rgba(196,147,90,0.1)" stroke-width="0.5" />
+  </svg>
+
+  <!-- Event persisted -->
+  <div class="event-write" id="event-write">
+    <div class="event-label reveal">persisting event</div>
+    <div class="event-json" id="event-json">
+      <div class="line">{</div>
+      <div class="line">&nbsp;&nbsp;<span class="hl">event_type</span>: <span class="val">"set.logged"</span>,</div>
+      <div class="line">&nbsp;&nbsp;<span class="hl">data</span>: {</div>
+      <div class="line">&nbsp;&nbsp;&nbsp;&nbsp;exercise_id: <span class="val">"barbell_back_squat"</span>,</div>
+      <div class="line">&nbsp;&nbsp;&nbsp;&nbsp;sets: <span class="val">5</span>,</div>
+      <div class="line">&nbsp;&nbsp;&nbsp;&nbsp;reps: <span class="val">5</span>,</div>
+      <div class="line">&nbsp;&nbsp;&nbsp;&nbsp;weight_kg: <span class="val">100</span>,</div>
+      <div class="line">&nbsp;&nbsp;&nbsp;&nbsp;rpe: <span class="val">9.5</span></div>
+      <div class="line">&nbsp;&nbsp;},</div>
+      <div class="line">&nbsp;&nbsp;<span class="hl">metadata</span>: {</div>
+      <div class="line">&nbsp;&nbsp;&nbsp;&nbsp;session_id: <span class="val">"019503a1-..."</span>,</div>
+      <div class="line">&nbsp;&nbsp;&nbsp;&nbsp;source: <span class="val">"agent"</span></div>
+      <div class="line">&nbsp;&nbsp;}</div>
+      <div class="line">}<span class="json-cursor" id="json-cursor"></span></div>
+    </div>
+  </div>
+
+  <!-- Projections -->
+  <div class="projection-compute" id="projections">
+    <div class="projection-block" id="proj-1">
+      <span class="projection-label">exercise_progression / barbell_back_squat</span>
+      <div class="projection-data">
+        estimated_1rm: <span class="val">116.7 kg</span> &nbsp;← <span class="hl">Epley</span><br>
+        previous_1rm: <span class="val">116.7 kg</span><br>
+        pr: <span class="val">false</span><br>
+        trend: <span class="alert">plateau · 3 weeks</span><br>
+        total_volume: <span class="val">2500 kg</span><br>
+        session_count: <span class="val">14</span>
+      </div>
+    </div>
+
+    <div class="projection-block" id="proj-2">
+      <span class="projection-label">training_timeline / overview</span>
+      <div class="projection-data">
+        week: <span class="val">2026-W07</span><br>
+        sessions_this_week: <span class="val">3</span><br>
+        frequency: <span class="val">3.2 /wk</span> (26w avg)<br>
+        streak: <span class="val">12 days</span><br>
+        top_set: <span class="val">barbell_back_squat 100kg × 5 → 116.7 e1rm</span>
+      </div>
+    </div>
+
+    <div class="projection-block" id="proj-3">
+      <span class="projection-label">recovery / overview</span>
+      <div class="projection-data">
+        last_sleep: <span class="val">6.5h</span> &nbsp;(<span class="alert">below target 7.5h</span>)<br>
+        soreness: <span class="val">lower_back · 3/10</span><br>
+        energy_trend: <span class="alert">declining · 5d</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- DEEP — Inference -->
+<section class="deep" id="deep">
+  <div class="mesh" id="mesh">
+    <svg viewBox="0 0 1440 1000" fill="none" preserveAspectRatio="xMidYMid slice">
+      <path d="M-20,80 C80,65 180,50 300,55 C420,60 500,85 620,90 C740,95 840,70 960,62 C1080,55 1180,75 1300,82 C1380,87 1460,78 1460,75" stroke="rgba(232,224,212,0.06)" stroke-width="0.8" />
+      <path d="M-20,150 C100,135 200,118 320,122 C440,126 520,148 640,155 C760,162 860,140 980,130 C1100,122 1200,142 1320,150 C1400,155 1460,148 1460,145" stroke="rgba(232,224,212,0.08)" stroke-width="0.8" />
+      <path d="M-20,230 C90,215 190,195 310,200 C430,205 510,228 630,235 C750,242 850,218 970,208 C1090,200 1190,222 1310,230 C1400,235 1460,225 1460,222" stroke="rgba(232,224,212,0.07)" stroke-width="0.8" />
+      <path d="M-20,310 C85,295 190,278 310,282 C430,286 515,308 635,318 C755,326 855,300 975,290 C1095,282 1195,302 1315,312 C1400,318 1460,308 1460,305" stroke="rgba(232,224,212,0.09)" stroke-width="0.8" />
+      <path d="M-20,400 C95,382 200,365 325,370 C450,375 530,398 650,408 C770,418 870,392 990,380 C1110,370 1210,392 1330,402 C1410,408 1460,398 1460,395" stroke="rgba(232,224,212,0.06)" stroke-width="0.8" />
+      <path d="M-20,480 C85,462 195,445 320,450 C440,455 525,478 645,488 C765,498 865,472 985,460 C1105,450 1205,472 1325,482 C1405,488 1460,478 1460,475" stroke="rgba(232,224,212,0.08)" stroke-width="0.8" />
+      <path d="M-20,640 C95,622 205,605 330,610 C450,615 535,638 655,648 C775,658 875,632 995,620 C1115,610 1215,632 1335,642 C1415,648 1460,638 1460,635" stroke="rgba(232,224,212,0.07)" stroke-width="0.8" />
+      <path d="M-20,800 C90,782 200,765 325,770 C445,775 530,798 650,808 C770,818 870,792 990,780 C1110,770 1210,792 1330,802 C1410,808 1460,798 1460,795" stroke="rgba(232,224,212,0.08)" stroke-width="0.8" />
+
+      <line x1="173" y1="0" x2="173" y2="1000" stroke="rgba(232,224,212,0.05)" stroke-width="0.5" />
+      <line x1="403" y1="0" x2="403" y2="1000" stroke="rgba(232,224,212,0.07)" stroke-width="0.5" />
+      <line x1="648" y1="0" x2="648" y2="1000" stroke="rgba(232,224,212,0.04)" stroke-width="0.5" />
+      <line x1="893" y1="0" x2="893" y2="1000" stroke="rgba(232,224,212,0.06)" stroke-width="0.5" />
+      <line x1="1123" y1="0" x2="1123" y2="1000" stroke="rgba(232,224,212,0.05)" stroke-width="0.5" />
+
+      <line x1="173" y1="150" x2="403" y2="230" stroke="rgba(196,147,90,0.06)" stroke-width="0.4" />
+      <line x1="403" y1="310" x2="648" y2="400" stroke="rgba(196,147,90,0.05)" stroke-width="0.4" />
+      <line x1="648" y1="230" x2="893" y2="310" stroke="rgba(196,147,90,0.07)" stroke-width="0.4" />
+      <line x1="893" y1="480" x2="1123" y2="640" stroke="rgba(196,147,90,0.05)" stroke-width="0.4" />
+      <line x1="173" y1="480" x2="403" y2="640" stroke="rgba(196,147,90,0.06)" stroke-width="0.4" />
+
+      <circle cx="173" cy="150" r="2" fill="rgba(196,147,90,0.3)" />
+      <circle cx="403" cy="310" r="2.5" fill="rgba(196,147,90,0.35)" />
+      <circle cx="648" cy="230" r="2" fill="rgba(196,147,90,0.25)" />
+      <circle cx="893" cy="480" r="3" fill="rgba(196,147,90,0.4)" />
+      <circle cx="1123" cy="310" r="2" fill="rgba(196,147,90,0.3)" />
+    </svg>
+  </div>
+
+  <div class="inference-cloud" id="cloud-1" style="width: 400px; height: 400px; top: 10%; left: 5%;"></div>
+  <div class="inference-cloud" id="cloud-2" style="width: 300px; height: 300px; top: 40%; right: 10%;"></div>
+  <div class="inference-cloud" id="cloud-3" style="width: 350px; height: 350px; bottom: 15%; left: 30%;"></div>
+
+  <div class="inference-text stagger" id="inference">
+    <div class="inference-step reveal">
+      <div class="inference-step-label">signal dynamics</div>
+      <div class="inference-step-content">
+        squat_1rm.<span class="hl">velocity</span> = <span class="val">+0.0 kg/week</span><br>
+        squat_1rm.<span class="hl">acceleration</span> = <span class="val">−2.1 kg/week²</span><br>
+        squat_1rm.<span class="hl">trajectory</span> = <span class="alert">stagnating</span>
+      </div>
+    </div>
+
+    <div class="inference-step reveal" style="margin-left: 15%;">
+      <div class="inference-step-label">cross-dimension</div>
+      <div class="inference-step-content">
+        sleep.<span class="hl">deficit</span> = <span class="alert">−1h avg over 5d</span><br>
+        energy.<span class="hl">trend</span> = <span class="alert">declining</span><br>
+        volume.<span class="hl">load</span> = <span class="val">stable</span><br>
+        <span class="hl">correlation</span>: recovery ↔ stagnation = <span class="val">0.72</span>
+      </div>
+    </div>
+
+    <div class="inference-step reveal" style="margin-left: 8%;">
+      <div class="inference-step-label">recommendation engine</div>
+      <div class="inference-step-content">
+        <span class="hl">hypothesis</span>: accumulated fatigue → performance ceiling<br>
+        <span class="hl">confidence</span>: <span class="val">0.78</span><br>
+        <span class="hl">suggested</span>: deload_week | sleep_priority | volume_reduction
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- CORE — Agent responds -->
+<section class="core" id="core">
+  <div class="agent-response">
+    <p class="agent-response-text" id="agent-typewriter"></p>
+    <span class="agent-tag" id="agent-tag">kura · agent response</span>
+  </div>
+</section>
+
+<!-- BOTTOM -->
+<section class="bottom">
+  <div class="bottom-mark">KURA</div>
+</section>
+
+
+<script>
+// === Intersection Observer for scroll-triggered animations ===
+const observerOptions = { threshold: 0.15, rootMargin: '0px 0px -50px 0px' };
+
+function onIntersect(entries, observer) {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.classList.add('visible');
+      // For stagger containers, reveal all children
+      if (entry.target.classList.contains('stagger')) {
+        entry.target.querySelectorAll('.reveal').forEach(el => el.classList.add('visible'));
+      }
+      observer.unobserve(entry.target);
+    }
+  });
+}
+
+const observer = new IntersectionObserver(onIntersect, observerOptions);
+
+// Observe reveal elements (not inside stagger — those are triggered by parent)
+document.querySelectorAll('.reveal:not(.stagger .reveal)').forEach(el => observer.observe(el));
+// Observe stagger containers
+document.querySelectorAll('.stagger').forEach(el => observer.observe(el));
+
+// === Typewriter effect for user message ===
+const userText = "Did squats today, 5×5 at 100kg. Felt heavy, had to grind the last two reps. Also some light stretching after.";
+const userTypewriter = document.getElementById('user-typewriter');
+let userTyped = false;
+
+function typeText(container, text, speed, onDone) {
+  // Build character spans
+  const cursor = document.createElement('span');
+  cursor.className = 'cursor';
+
+  const chars = [];
+  for (let i = 0; i < text.length; i++) {
+    const span = document.createElement('span');
+    span.className = 'char';
+    span.textContent = text[i];
+    container.appendChild(span);
+    chars.push(span);
+  }
+  container.appendChild(cursor);
+
+  let idx = 0;
+  function type() {
+    if (idx < chars.length) {
+      chars[idx].classList.add('typed');
+      idx++;
+      // Variable speed — faster for spaces, slight pause for punctuation
+      let delay = speed;
+      const ch = text[idx - 1];
+      if (ch === ' ') delay = speed * 0.4;
+      else if (ch === '.' || ch === ',') delay = speed * 3;
+      setTimeout(type, delay);
+    } else {
+      cursor.classList.add('done');
+      if (onDone) setTimeout(onDone, 600);
+    }
+  }
+  type();
+}
+
+const userMsgObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting && !userTyped) {
+      userTyped = true;
+      typeText(userTypewriter, userText, 35, () => {
+        document.getElementById('send-indicator').classList.add('visible');
+        document.getElementById('flow-arrow').classList.add('visible');
+      });
+      userMsgObserver.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.4 });
+
+userMsgObserver.observe(document.getElementById('user-msg'));
+
+// === Strata lines ===
+const strataObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.querySelectorAll('.strata-line').forEach(l => l.classList.add('visible'));
+      strataObserver.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.2 });
+
+strataObserver.observe(document.getElementById('strata-lines'));
+
+// === Event lines fade in ===
+const eventLinesObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.querySelectorAll('.event-line').forEach(l => l.classList.add('visible'));
+      document.getElementById('threads-svg').classList.add('visible');
+      eventLinesObserver.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.1 });
+
+eventLinesObserver.observe(document.getElementById('event-lines'));
+
+// === Event JSON typewriter ===
+let jsonTyped = false;
+const jsonObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting && !jsonTyped) {
+      jsonTyped = true;
+      const lines = document.querySelectorAll('#event-json .line');
+      const cursor = document.getElementById('json-cursor');
+      let i = 0;
+      function typeLine() {
+        if (i < lines.length) {
+          lines[i].classList.add('typed');
+          i++;
+          setTimeout(typeLine, 120);
+        } else {
+          cursor.style.animation = 'blink 0.6s step-end 3';
+          setTimeout(() => { cursor.style.opacity = '0'; }, 2000);
+        }
+      }
+      // Reveal the label first
+      const label = document.querySelector('#event-write .reveal');
+      if (label) label.classList.add('visible');
+      setTimeout(typeLine, 400);
+      jsonObserver.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.3 });
+
+jsonObserver.observe(document.getElementById('event-write'));
+
+// === Projection blocks cascade ===
+['proj-1', 'proj-2', 'proj-3'].forEach((id, i) => {
+  const el = document.getElementById(id);
+  const obs = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        setTimeout(() => entry.target.classList.add('visible'), i * 300);
+        obs.unobserve(entry.target);
+      }
+    });
+  }, { threshold: 0.2 });
+  obs.observe(el);
+});
+
+// === Deep section — mesh + clouds ===
+const deepObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      document.getElementById('mesh').classList.add('visible');
+      document.getElementById('cloud-1').classList.add('visible');
+      document.getElementById('cloud-2').classList.add('visible');
+      document.getElementById('cloud-3').classList.add('visible');
+      deepObserver.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.1 });
+
+deepObserver.observe(document.getElementById('deep'));
+
+// === Agent response typewriter ===
+const agentText = "Logged. Your squat has been at 116\u2009kg estimated max for three weeks now\u2009—\u2009volume is there, but the weight isn't moving. You've also been sleeping about an hour less than usual. That's probably not a coincidence.\n\nWant me to program a deload week?";
+const agentTypewriter = document.getElementById('agent-typewriter');
+let agentTyped = false;
+
+const agentObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting && !agentTyped) {
+      agentTyped = true;
+      // Use similar typewriter but with agent cursor style
+      const cursor = document.createElement('span');
+      cursor.className = 'agent-cursor';
+
+      const chars = [];
+      for (let i = 0; i < agentText.length; i++) {
+        if (agentText[i] === '\n') {
+          agentTypewriter.appendChild(document.createElement('br'));
+          continue;
+        }
+        const span = document.createElement('span');
+        span.className = 'char';
+        span.textContent = agentText[i];
+        agentTypewriter.appendChild(span);
+        chars.push(span);
+      }
+      agentTypewriter.appendChild(cursor);
+
+      let idx = 0;
+      function type() {
+        if (idx < chars.length) {
+          chars[idx].classList.add('typed');
+          idx++;
+          let delay = 25;
+          const ch = chars[idx - 1]?.textContent;
+          if (ch === ' ') delay = 12;
+          else if (ch === '.' || ch === ',') delay = 80;
+          else if (ch === '—') delay = 100;
+          setTimeout(type, delay);
+        } else {
+          cursor.classList.add('done');
+          setTimeout(() => {
+            document.getElementById('agent-tag').classList.add('visible');
+          }, 500);
+        }
+      }
+      setTimeout(type, 300);
+      agentObserver.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.3 });
+
+agentObserver.observe(document.getElementById('core'));
+</script>
+
+</body>
+</html>

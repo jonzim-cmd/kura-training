@@ -1,0 +1,141 @@
+{
+  "meta": {
+    "title": "Kura — Dein Körper, verstanden",
+    "description": "Eine KI, die mit dir wächst — lernt dein Training, deine Ernährung und deine Erholung, um gemeinsam bessere Entscheidungen zu treffen."
+  },
+  "nav": {
+    "home": "Start",
+    "setup": "Einrichtung",
+    "login": "Anmelden",
+    "signup": "Konto erstellen",
+    "settings": "Einstellungen",
+    "logout": "Abmelden"
+  },
+  "landing": {
+    "userMessage": "Heute Kniebeugen gemacht, 5×5 mit 100kg. War schwer, die letzten beiden Wiederholungen musste ich rauswürgen. Danach noch leichtes Dehnen.",
+    "userMessageShort": "Heute Kniebeugen gemacht, 5×5 mit 100kg. War schwer…",
+    "bridgeLabel": "was in diesen drei Punkten passiert",
+    "receiving": "empfange",
+    "field": {
+      "exercise_id": "exercise_id",
+      "sets_reps": "Sätze × Wdh",
+      "weight_kg": "weight_kg",
+      "rpe": "rpe",
+      "notes": "Notizen",
+      "also": "außerdem"
+    },
+    "decompNotes": "letzte zwei Wiederholungen rausgekämpft",
+    "decompAlso": "Dehnen · separat geloggt",
+    "persistingEvent": "Event persistieren",
+    "belowTarget": "unter Ziel 7,5h",
+    "inference": {
+      "signalDynamics": "Signaldynamik",
+      "crossDimension": "dimensionsübergreifend",
+      "recommendation": "Empfehlungsmaschine"
+    },
+    "agentResponse": "Geloggt. Dein Kniebeuge-Maximum steht seit drei Wochen bei 116\u2009kg — das Volumen stimmt, aber das Gewicht bewegt sich nicht. Außerdem schläfst du etwa eine Stunde weniger als gewöhnlich. Das ist wahrscheinlich kein Zufall.",
+    "agentQuestion": "Soll ich eine Deload-Woche planen?"
+  },
+  "auth": {
+    "loginTitle": "Willkommen zurück",
+    "loginSubtitle": "Melde dich an, um auf deinen Kura-Tresor zuzugreifen.",
+    "signupTitle": "Erstelle deinen Tresor",
+    "signupSubtitle": "Kostenlos. Keine Kreditkarte nötig.",
+    "email": "E-Mail",
+    "password": "Passwort",
+    "confirmPassword": "Passwort bestätigen",
+    "loginButton": "Anmelden",
+    "signupButton": "Konto erstellen",
+    "noAccount": "Noch kein Konto?",
+    "hasAccount": "Bereits ein Konto?",
+    "forgotPassword": "Passwort vergessen?",
+    "orContinueWith": "Oder weiter mit"
+  },
+  "settings": {
+    "title": "Einstellungen",
+    "subtitle": "Verwalte dein Kura-Konto und den API-Zugang.",
+    "account": {
+      "title": "Konto",
+      "email": "E-Mail",
+      "memberSince": "Mitglied seit",
+      "plan": "Tarif",
+      "free": "Kostenlos"
+    },
+    "apiKeys": {
+      "title": "API-Schlüssel",
+      "description": "API-Schlüssel ermöglichen deiner KI den Zugang zu deinem Kura-Tresor. Halte sie geheim.",
+      "create": "Neuen Schlüssel erstellen",
+      "name": "Name",
+      "key": "Schlüssel",
+      "created": "Erstellt",
+      "lastUsed": "Zuletzt verwendet",
+      "never": "Nie",
+      "revoke": "Widerrufen",
+      "copied": "In Zwischenablage kopiert",
+      "copyWarning": "Dieser Schlüssel wird nur einmal angezeigt. Kopiere ihn jetzt."
+    },
+    "danger": {
+      "title": "Gefahrenzone",
+      "deleteAccount": "Konto löschen",
+      "deleteDescription": "Lösche dein Konto und alle zugehörigen Daten permanent. Diese Aktion kann nicht rückgängig gemacht werden.",
+      "deleteConfirm": "Gib deine E-Mail ein, um die Löschung zu bestätigen",
+      "deleteButton": "Mein Konto endgültig löschen"
+    }
+  },
+  "setup": {
+    "title": "Verbinde deine KI",
+    "subtitle": "Wähle deinen KI-Assistenten und folge der Einrichtungsanleitung.",
+    "cliTab": "CLI",
+    "mcpTab": "MCP",
+    "step": "Schritt {number}",
+    "ready": "Bereit",
+    "comingSoon": "Bald verfügbar",
+    "claude": {
+      "title": "Claude",
+      "cliSteps": {
+        "install": { "title": "Kura CLI installieren", "description": "Lade das Kura-Kommandozeilentool herunter und installiere es." },
+        "login": { "title": "Authentifizieren", "description": "Melde dich mit deinem Kura-Konto an." },
+        "apiKey": { "title": "API-Schlüssel erstellen", "description": "Erstelle einen Schlüssel für Claude." },
+        "configure": { "title": "Zu Claude hinzufügen", "description": "Füge Kura als Tool in deinem Claude-Projekt hinzu." }
+      }
+    },
+    "chatgpt": {
+      "title": "ChatGPT",
+      "cliSteps": {
+        "install": { "title": "Kura CLI installieren", "description": "Lade das Kura-Kommandozeilentool herunter und installiere es." },
+        "login": { "title": "Authentifizieren", "description": "Melde dich mit deinem Kura-Konto an." },
+        "apiKey": { "title": "API-Schlüssel erstellen", "description": "Erstelle einen Schlüssel für ChatGPT." },
+        "configure": { "title": "Zu ChatGPT hinzufügen", "description": "Konfiguriere Kura als benutzerdefiniertes Tool in deinen ChatGPT-Einstellungen." }
+      }
+    },
+    "gemini": {
+      "title": "Gemini",
+      "cliSteps": {
+        "install": { "title": "Kura CLI installieren", "description": "Lade das Kura-Kommandozeilentool herunter und installiere es." },
+        "login": { "title": "Authentifizieren", "description": "Melde dich mit deinem Kura-Konto an." },
+        "apiKey": { "title": "API-Schlüssel erstellen", "description": "Erstelle einen Schlüssel für Gemini." },
+        "configure": { "title": "Zu Gemini hinzufügen", "description": "Konfiguriere Kura als Tool in deinem Gemini-Workspace." }
+      }
+    },
+    "mcpComingSoon": {
+      "title": "MCP-Integration",
+      "description": "MCP ermöglicht direkte Integration ohne CLI. Deine KI verbindet sich nativ mit Kura.",
+      "status": "In Entwicklung. CLI ist aktuell der empfohlene Weg."
+    }
+  },
+  "footer": {
+    "privacy": "Datenschutz",
+    "terms": "AGB",
+    "github": "GitHub",
+    "tagline": "Gebaut, um zu bewahren, was zählt."
+  },
+  "common": {
+    "back": "Zurück",
+    "cancel": "Abbrechen",
+    "save": "Speichern",
+    "close": "Schließen",
+    "loading": "Laden...",
+    "error": "Etwas ist schiefgegangen",
+    "copied": "Kopiert"
+  }
+}

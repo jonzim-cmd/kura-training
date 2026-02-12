@@ -1,0 +1,141 @@
+{
+  "meta": {
+    "title": "蔵（Kura）— あなたの身体を、理解する",
+    "description": "あなたと共に成長するAI。トレーニング、栄養、回復を学び、共により良い判断を下します。"
+  },
+  "nav": {
+    "home": "ホーム",
+    "setup": "設定ガイド",
+    "login": "ログイン",
+    "signup": "アカウント作成",
+    "settings": "設定",
+    "logout": "ログアウト"
+  },
+  "landing": {
+    "userMessage": "今日スクワットをやった。5×5で100kg。重かった、最後の2レップはギリギリ。その後軽くストレッチ。",
+    "userMessageShort": "今日スクワットをやった。5×5で100kg。重かった…",
+    "bridgeLabel": "この三つの点の中で何が起きているか",
+    "receiving": "受信中",
+    "field": {
+      "exercise_id": "exercise_id",
+      "sets_reps": "セット × レップ",
+      "weight_kg": "weight_kg",
+      "rpe": "rpe",
+      "notes": "メモ",
+      "also": "その他"
+    },
+    "decompNotes": "最後の2レップは踏ん張った",
+    "decompAlso": "ストレッチ · 別途記録",
+    "persistingEvent": "イベントを永続化",
+    "belowTarget": "目標7.5時間未満",
+    "inference": {
+      "signalDynamics": "シグナルダイナミクス",
+      "crossDimension": "クロスディメンション",
+      "recommendation": "推奨エンジン"
+    },
+    "agentResponse": "記録しました。スクワットの推定最大重量は3週間116\u2009kgのまま — ボリュームは十分ですが、重量が伸びていません。また、最近の睡眠時間がいつもより約1時間短くなっています。おそらく偶然ではありません。",
+    "agentQuestion": "ディロード週を計画しましょうか？"
+  },
+  "auth": {
+    "loginTitle": "おかえりなさい",
+    "loginSubtitle": "蔵にアクセスするためにログインしてください。",
+    "signupTitle": "あなたの蔵を作る",
+    "signupSubtitle": "無料。クレジットカード不要。",
+    "email": "メールアドレス",
+    "password": "パスワード",
+    "confirmPassword": "パスワード確認",
+    "loginButton": "ログイン",
+    "signupButton": "アカウント作成",
+    "noAccount": "アカウントをお持ちでないですか？",
+    "hasAccount": "既にアカウントをお持ちですか？",
+    "forgotPassword": "パスワードをお忘れですか？",
+    "orContinueWith": "または次で続行"
+  },
+  "settings": {
+    "title": "設定",
+    "subtitle": "蔵アカウントとAPIアクセスを管理します。",
+    "account": {
+      "title": "アカウント",
+      "email": "メールアドレス",
+      "memberSince": "登録日",
+      "plan": "プラン",
+      "free": "無料"
+    },
+    "apiKeys": {
+      "title": "APIキー",
+      "description": "APIキーを使って、AIが蔵にアクセスできます。秘密にしてください。",
+      "create": "新しいキーを作成",
+      "name": "名前",
+      "key": "キー",
+      "created": "作成日",
+      "lastUsed": "最終使用",
+      "never": "未使用",
+      "revoke": "無効化",
+      "copied": "クリップボードにコピーしました",
+      "copyWarning": "このキーは一度だけ表示されます。今すぐコピーしてください。"
+    },
+    "danger": {
+      "title": "危険ゾーン",
+      "deleteAccount": "アカウント削除",
+      "deleteDescription": "アカウントとすべての関連データを完全に削除します。この操作は取り消せません。",
+      "deleteConfirm": "削除を確認するためにメールアドレスを入力してください",
+      "deleteButton": "アカウントを完全に削除"
+    }
+  },
+  "setup": {
+    "title": "AIを接続",
+    "subtitle": "AIアシスタントを選んで、設定ガイドに従ってください。",
+    "cliTab": "CLI",
+    "mcpTab": "MCP",
+    "step": "ステップ{number}",
+    "ready": "対応済み",
+    "comingSoon": "近日公開",
+    "claude": {
+      "title": "Claude",
+      "cliSteps": {
+        "install": { "title": "Kura CLIをインストール", "description": "Kuraコマンドラインツールをダウンロードしてインストールします。" },
+        "login": { "title": "認証", "description": "Kuraアカウントでログインします。" },
+        "apiKey": { "title": "APIキーを作成", "description": "Claude用のキーを生成します。" },
+        "configure": { "title": "Claudeに追加", "description": "ClaudeプロジェクトにKuraをツールとして追加します。" }
+      }
+    },
+    "chatgpt": {
+      "title": "ChatGPT",
+      "cliSteps": {
+        "install": { "title": "Kura CLIをインストール", "description": "Kuraコマンドラインツールをダウンロードしてインストールします。" },
+        "login": { "title": "認証", "description": "Kuraアカウントでログインします。" },
+        "apiKey": { "title": "APIキーを作成", "description": "ChatGPT用のキーを生成します。" },
+        "configure": { "title": "ChatGPTに追加", "description": "ChatGPTの設定でKuraをカスタムツールとして設定します。" }
+      }
+    },
+    "gemini": {
+      "title": "Gemini",
+      "cliSteps": {
+        "install": { "title": "Kura CLIをインストール", "description": "Kuraコマンドラインツールをダウンロードしてインストールします。" },
+        "login": { "title": "認証", "description": "Kuraアカウントでログインします。" },
+        "apiKey": { "title": "APIキーを作成", "description": "Gemini用のキーを生成します。" },
+        "configure": { "title": "Geminiに追加", "description": "GeminiワークスペースでKuraをツールとして設定します。" }
+      }
+    },
+    "mcpComingSoon": {
+      "title": "MCP統合",
+      "description": "MCPにより、CLIなしで直接統合できます。AIがKuraにネイティブに接続します。",
+      "status": "開発中。現在はCLIが推奨です。"
+    }
+  },
+  "footer": {
+    "privacy": "プライバシー",
+    "terms": "利用規約",
+    "github": "GitHub",
+    "tagline": "大切なものを、記憶するために。"
+  },
+  "common": {
+    "back": "戻る",
+    "cancel": "キャンセル",
+    "save": "保存",
+    "close": "閉じる",
+    "loading": "読み込み中...",
+    "error": "エラーが発生しました",
+    "copied": "コピーしました"
+  }
+}
