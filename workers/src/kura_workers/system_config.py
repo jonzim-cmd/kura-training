@@ -113,6 +113,35 @@ def _get_conventions() -> dict[str, Any]:
                 "provenance",
             ],
         },
+        "learning_clustering_v1": {
+            "rules": [
+                "Cluster learning.signal.logged by stable cluster_signature only (deterministic, no hidden ML merge).",
+                "Score clusters with explainable factors: frequency * severity * impact * reproducibility.",
+                "Persist representative examples and workflow phases for auditability.",
+                "Apply false-positive controls before persistence (minimum support + cross-user recurrence).",
+            ],
+            "source_event_type": "learning.signal.logged",
+            "refresh_job": "inference.nightly_refit",
+            "output_table": "learning_issue_clusters",
+            "run_table": "learning_issue_cluster_runs",
+            "period_granularities": ["day", "week"],
+            "score_formula": "priority = frequency * severity * impact * reproducibility",
+            "false_positive_controls": {
+                "min_support_default": 3,
+                "min_unique_users_default": 2,
+                "include_low_confidence_default": False,
+                "confidence_band_policy": "exclude low confidence by default",
+            },
+            "score_factors": {
+                "frequency": "min(1.0, event_count / frequency_reference_count)",
+                "severity": "average per-signal severity weight (confidence-adjusted)",
+                "impact": "average per-signal outcome-impact weight",
+                "reproducibility": (
+                    "mean(user_coverage, repeatability) with user_coverage="
+                    "min(1.0, unique_users / reproducibility_reference_users)"
+                ),
+            },
+        },
         "visualization_policy": {
             "rules": [
                 "Only visualize when policy triggers are present or the user explicitly asks.",

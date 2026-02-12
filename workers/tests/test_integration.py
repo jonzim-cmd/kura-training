@@ -1171,6 +1171,99 @@ class TestInferenceNightlyRefitIntegration:
         event_types = {row["event_type"] for row in rows}
         assert event_types == {"set.logged", "sleep.logged"}
 
+    async def test_nightly_refit_refreshes_learning_issue_clusters(self, db, test_user_id):
+        other_user_id = str(uuid.uuid4())
+        await create_test_user(db, test_user_id)
+        await create_test_user(db, other_user_id)
+        cluster_signature = "ls_shared_test_signature"
+
+        def _signal_payload(
+            *,
+            signal_type: str,
+            workflow_phase: str,
+            confidence_band: str,
+            pseudo_user: str,
+        ) -> dict:
+            return {
+                "schema_version": 1,
+                "signal_type": signal_type,
+                "category": "friction_signal",
+                "captured_at": "2026-02-12T09:00:00+00:00",
+                "user_ref": {"pseudonymized_user_id": pseudo_user},
+                "signature": {
+                    "issue_type": signal_type,
+                    "invariant_id": "INV-002",
+                    "agent_version": "api_agent_v1",
+                    "workflow_phase": workflow_phase,
+                    "modality": "chat",
+                    "confidence_band": confidence_band,
+                },
+                "cluster_signature": cluster_signature,
+                "attributes": {"source": "integration_test"},
+            }
+
+        await insert_event(
+            db,
+            test_user_id,
+            "learning.signal.logged",
+            _signal_payload(
+                signal_type="save_claim_mismatch_attempt",
+                workflow_phase="agent_write_with_proof",
+                confidence_band="high",
+                pseudo_user="u_alpha",
+            ),
+            "TIMESTAMP '2026-02-12 10:00:00+01'",
+        )
+        await insert_event(
+            db,
+            test_user_id,
+            "learning.signal.logged",
+            _signal_payload(
+                signal_type="workflow_violation",
+                workflow_phase="quality_health_evaluation",
+                confidence_band="high",
+                pseudo_user="u_alpha",
+            ),
+            "TIMESTAMP '2026-02-12 10:05:00+01'",
+        )
+        await insert_event(
+            db,
+            other_user_id,
+            "learning.signal.logged",
+            _signal_payload(
+                signal_type="save_claim_mismatch_attempt",
+                workflow_phase="agent_write_with_proof",
+                confidence_band="medium",
+                pseudo_user="u_beta",
+            ),
+            "TIMESTAMP '2026-02-12 10:10:00+01'",
+        )
+
+        await db.execute("SET ROLE app_worker")
+        await handle_inference_nightly_refit(db, {"interval_hours": 24})
+        await db.execute("RESET ROLE")
+
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT period_granularity, event_count, unique_users, score, cluster_data
+                FROM learning_issue_clusters
+                WHERE cluster_signature = %s
+                ORDER BY period_granularity
+                """,
+                (cluster_signature,),
+            )
+            rows = await cur.fetchall()
+
+        assert len(rows) == 2
+        assert {row["period_granularity"] for row in rows} == {"day", "week"}
+        for row in rows:
+            assert int(row["event_count"]) == 3
+            assert int(row["unique_users"]) == 2
+            assert float(row["score"]) > 0.0
+            assert "summary" in row["cluster_data"]
+            assert "affected_workflow_phases" in row["cluster_data"]
+
     async def test_durable_scheduler_recovers_after_failed_in_flight_job(self, db, test_user_id):
         await create_test_user(db, test_user_id)
         await insert_event(db, test_user_id, "set.logged", {

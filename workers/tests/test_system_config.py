@@ -266,6 +266,21 @@ class TestConventions:
         assert observation["projection_type"] == "open_observations"
         assert "motivation_pre" in observation["validation_tiers"]["known"]
 
+    def test_has_learning_clustering_v1_conventions(self):
+        result = _get_conventions()
+        assert "learning_clustering_v1" in result
+        clustering = result["learning_clustering_v1"]
+        assert clustering["source_event_type"] == "learning.signal.logged"
+        assert clustering["output_table"] == "learning_issue_clusters"
+        assert set(clustering["period_granularities"]) == {"day", "week"}
+
+    def test_learning_clustering_v1_false_positive_controls_are_declared(self):
+        result = _get_conventions()
+        controls = result["learning_clustering_v1"]["false_positive_controls"]
+        assert controls["min_support_default"] >= 1
+        assert controls["min_unique_users_default"] >= 1
+        assert "confidence_band_policy" in controls
+
     def test_has_visualization_policy_conventions(self):
         result = _get_conventions()
         assert "visualization_policy" in result
