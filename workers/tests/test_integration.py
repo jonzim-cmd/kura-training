@@ -38,7 +38,7 @@ from kura_workers.extraction_calibration import (
     refresh_extraction_calibration,
     resolve_extraction_calibration_status,
 )
-from kura_workers.eval_harness import run_eval_harness
+from kura_workers.eval_harness import run_eval_harness, run_shadow_evaluation
 from kura_workers.scheduler import ensure_nightly_inference_scheduler
 from kura_workers.handlers.inference_nightly import handle_inference_nightly_refit
 from kura_workers.semantic_bootstrap import ensure_semantic_catalog
@@ -987,6 +987,72 @@ class TestInferenceIntegration:
         assert "projection_history" in result["summary_by_source"]
         assert "event_store" in result["summary_by_source"]
 
+    async def test_shadow_evaluation_reports_baseline_candidate_deltas(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+
+        for day in range(1, 9):
+            await insert_event(
+                db,
+                test_user_id,
+                "set.logged",
+                {
+                    "exercise_id": "bench_press",
+                    "exercise": "Bench Press",
+                    "weight_kg": 90 + day,
+                    "reps": 5,
+                },
+                f"TIMESTAMP '2026-01-{day:02d} 10:00:00+01'",
+            )
+            await insert_event(
+                db,
+                test_user_id,
+                "sleep.logged",
+                {"duration_hours": 7.0 + (day * 0.05)},
+                f"TIMESTAMP '2026-02-{day:02d} 07:00:00+01'",
+            )
+            await insert_event(
+                db,
+                test_user_id,
+                "energy.logged",
+                {"level": 6 + (day % 3)},
+                f"TIMESTAMP '2026-02-{day:02d} 08:00:00+01'",
+            )
+            await insert_event(
+                db,
+                test_user_id,
+                "soreness.logged",
+                {"severity": 2 + (day % 2)},
+                f"TIMESTAMP '2026-02-{day:02d} 09:00:00+01'",
+            )
+
+        await db.execute("SET ROLE app_worker")
+        report = await run_shadow_evaluation(
+            db,
+            user_ids=[test_user_id],
+            baseline_config={
+                "source": "event_store",
+                "projection_types": ["strength_inference", "readiness_inference"],
+                "strength_engine": "closed_form",
+                "persist": False,
+            },
+            candidate_config={
+                "source": "event_store",
+                "projection_types": ["strength_inference", "readiness_inference"],
+                "strength_engine": "closed_form",
+                "persist": False,
+            },
+            change_context={"change_id": "shadow-eval-integration-demo"},
+        )
+        await db.execute("RESET ROLE")
+
+        assert report["release_gate"]["status"] in {"pass", "fail", "insufficient_data"}
+        assert "metric_deltas" in report
+        assert len(report["metric_deltas"]) >= 2
+        assert report["corpus"]["user_count"] == 1
+        assert report["change_context"]["change_id"] == "shadow-eval-integration-demo"
+        assert report["baseline"]["projection_rows"] >= 1
+        assert report["candidate"]["projection_rows"] >= 1
+
     async def test_strength_projection_deleted_when_all_sets_retracted(self, db, test_user_id):
         await create_test_user(db, test_user_id)
         event_ids = []
@@ -1402,6 +1468,8 @@ class TestInferenceNightlyRefitIntegration:
 
     async def test_extraction_calibration_refresh_reports_underperforming_class(self, db, test_user_id):
         await create_test_user(db, test_user_id)
+        claim_class = "integration_test.rest_seconds"
+        parser_version = "mention_parser.integration_test"
 
         for minute in (0, 5, 10):
             target_event_id = await insert_event(
@@ -1421,7 +1489,7 @@ class TestInferenceNightlyRefitIntegration:
                 "evidence.claim.logged",
                 {
                     "claim_id": f"claim-{minute}",
-                    "claim_type": "set_context.rest_seconds",
+                    "claim_type": claim_class,
                     "value": 90,
                     "scope": {"level": "set", "event_type": "set.logged"},
                     "confidence": 0.95,
@@ -1429,7 +1497,7 @@ class TestInferenceNightlyRefitIntegration:
                         "source_field": "utterance",
                         "source_text": "rest 90 sec",
                         "source_text_span": {"start": 0, "end": 11, "text": "rest 90 sec"},
-                        "parser_version": "mention_parser.v1",
+                        "parser_version": parser_version,
                     },
                     "lineage": {
                         "event_id": target_event_id,
@@ -1461,7 +1529,7 @@ class TestInferenceNightlyRefitIntegration:
         assert summary["underperforming_written"] >= 1
         assert calibration_status["status"] in {"degraded", "monitor"}
         assert any(
-            item["claim_class"] == "set_context.rest_seconds"
+            item["claim_class"] == claim_class
             for item in calibration_status["underperforming_classes"]
         )
 
@@ -1470,8 +1538,9 @@ class TestInferenceNightlyRefitIntegration:
                 """
                 SELECT COUNT(*) AS count
                 FROM extraction_underperforming_classes
-                WHERE claim_class = 'set_context.rest_seconds'
-                """
+                WHERE claim_class = %s
+                """,
+                (claim_class,),
             )
             row = await cur.fetchone()
         assert int(row["count"]) >= 1

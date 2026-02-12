@@ -326,6 +326,16 @@ class TestConventions:
         assert mining["backlog_bridge_integration"]["target_source_type"] == "unknown_dimension"
         assert "human_acceptance" in mining["approval_workflow"]
 
+    def test_has_shadow_evaluation_gate_v1_conventions(self):
+        result = _get_conventions()
+        assert "shadow_evaluation_gate_v1" in result
+        gate = result["shadow_evaluation_gate_v1"]
+        assert gate["entrypoint"] == "eval_harness.run_shadow_evaluation"
+        assert gate["release_gate_policy_version"] == "shadow_eval_gate_v1"
+        assert "metric_deltas" in gate["report_sections"]
+        assert "release_gate" in gate["report_sections"]
+        assert len(gate["delta_rules"]) >= 2
+
     def test_has_visualization_policy_conventions(self):
         result = _get_conventions()
         assert "visualization_policy" in result

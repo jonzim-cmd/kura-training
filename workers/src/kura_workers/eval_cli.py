@@ -10,7 +10,7 @@ from typing import Sequence
 
 import psycopg
 
-from .eval_harness import run_eval_harness
+from .eval_harness import run_eval_harness, run_shadow_evaluation
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -53,6 +53,30 @@ def _build_parser() -> argparse.ArgumentParser:
         default=True,
         help="Persist run + artifacts in inference_eval_runs / inference_eval_artifacts.",
     )
+    parser.add_argument(
+        "--shadow",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Run baseline vs candidate shadow evaluation instead of single eval run.",
+    )
+    parser.add_argument(
+        "--candidate-strength-engine",
+        default=None,
+        choices=("closed_form", "pymc"),
+        help="Candidate strength engine for --shadow mode (defaults to --strength-engine).",
+    )
+    parser.add_argument(
+        "--candidate-source",
+        default=None,
+        choices=("projection_history", "event_store", "both"),
+        help="Candidate replay source for --shadow mode (defaults to --source).",
+    )
+    parser.add_argument(
+        "--candidate-semantic-top-k",
+        default=None,
+        type=int,
+        help="Candidate semantic top-k for --shadow mode (defaults to --semantic-top-k).",
+    )
     return parser
 
 
@@ -63,15 +87,43 @@ async def _run(args: argparse.Namespace) -> int:
 
     async with await psycopg.AsyncConnection.connect(database_url) as conn:
         await conn.execute("SET ROLE app_worker")
-        result = await run_eval_harness(
-            conn,
-            user_id=args.user_id,
-            projection_types=args.projection_type,
-            strength_engine=args.strength_engine,
-            semantic_top_k=int(args.semantic_top_k),
-            source=args.source,
-            persist=bool(args.persist),
-        )
+        if bool(args.shadow):
+            result = await run_shadow_evaluation(
+                conn,
+                user_ids=[args.user_id],
+                baseline_config={
+                    "projection_types": args.projection_type,
+                    "strength_engine": args.strength_engine,
+                    "semantic_top_k": int(args.semantic_top_k),
+                    "source": args.source,
+                    "persist": bool(args.persist),
+                },
+                candidate_config={
+                    "projection_types": args.projection_type,
+                    "strength_engine": args.candidate_strength_engine or args.strength_engine,
+                    "semantic_top_k": (
+                        int(args.candidate_semantic_top_k)
+                        if args.candidate_semantic_top_k is not None
+                        else int(args.semantic_top_k)
+                    ),
+                    "source": args.candidate_source or args.source,
+                    "persist": bool(args.persist),
+                },
+                change_context={
+                    "invoked_from": "eval_cli",
+                    "shadow": True,
+                },
+            )
+        else:
+            result = await run_eval_harness(
+                conn,
+                user_id=args.user_id,
+                projection_types=args.projection_type,
+                strength_engine=args.strength_engine,
+                semantic_top_k=int(args.semantic_top_k),
+                source=args.source,
+                persist=bool(args.persist),
+            )
         if args.persist:
             await conn.commit()
         else:

@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from kura_workers.eval_harness import (
     build_semantic_labels_from_event_rows,
+    build_shadow_evaluation_report,
     build_shadow_mode_rollout_checks,
     evaluate_causal_projection,
     evaluate_semantic_event_store_labels,
@@ -549,3 +550,101 @@ def test_shadow_mode_rollout_checks():
     shadow = build_shadow_mode_rollout_checks(results, source_mode="event_store")
     assert shadow["status"] == "pass"
     assert shadow["allow_autonomous_behavior_changes"] is True
+
+
+def test_build_shadow_evaluation_report_passes_when_candidate_within_tolerance():
+    baseline_eval = {
+        "projection_types": ["strength_inference", "readiness_inference"],
+        "source": "event_store",
+        "strength_engine": "closed_form",
+        "eval_status": "ok",
+        "summary": {},
+        "summary_by_source": {},
+        "shadow_mode": {"status": "pass", "checks": []},
+        "results": [
+            {
+                "projection_type": "strength_inference",
+                "status": "ok",
+                "metrics": {"coverage_ci95": 0.82, "mae": 8.0},
+            },
+            {
+                "projection_type": "readiness_inference",
+                "status": "ok",
+                "metrics": {"coverage_ci95_nowcast": 0.88, "mae_nowcast": 0.11},
+            },
+        ],
+    }
+    candidate_eval = {
+        "projection_types": ["strength_inference", "readiness_inference"],
+        "source": "event_store",
+        "strength_engine": "pymc",
+        "eval_status": "ok",
+        "summary": {},
+        "summary_by_source": {},
+        "shadow_mode": {"status": "pass", "checks": []},
+        "results": [
+            {
+                "projection_type": "strength_inference",
+                "status": "ok",
+                "metrics": {"coverage_ci95": 0.80, "mae": 8.7},
+            },
+            {
+                "projection_type": "readiness_inference",
+                "status": "ok",
+                "metrics": {"coverage_ci95_nowcast": 0.86, "mae_nowcast": 0.12},
+            },
+        ],
+    }
+
+    report = build_shadow_evaluation_report(
+        baseline_eval=baseline_eval,
+        candidate_eval=candidate_eval,
+        change_context={"change_id": "policy-123"},
+    )
+    assert report["release_gate"]["status"] == "pass"
+    assert report["release_gate"]["allow_rollout"] is True
+    assert report["change_context"]["change_id"] == "policy-123"
+    assert any(item["metric"] == "mae" for item in report["metric_deltas"])
+
+
+def test_build_shadow_evaluation_report_fails_on_large_regression():
+    baseline_eval = {
+        "projection_types": ["strength_inference"],
+        "source": "event_store",
+        "strength_engine": "closed_form",
+        "eval_status": "ok",
+        "summary": {},
+        "summary_by_source": {},
+        "shadow_mode": {"status": "pass", "checks": []},
+        "results": [
+            {
+                "projection_type": "strength_inference",
+                "status": "ok",
+                "metrics": {"coverage_ci95": 0.90, "mae": 6.0},
+            }
+        ],
+    }
+    candidate_eval = {
+        "projection_types": ["strength_inference"],
+        "source": "event_store",
+        "strength_engine": "closed_form",
+        "eval_status": "ok",
+        "summary": {},
+        "summary_by_source": {},
+        "shadow_mode": {"status": "fail", "checks": []},
+        "results": [
+            {
+                "projection_type": "strength_inference",
+                "status": "ok",
+                "metrics": {"coverage_ci95": 0.70, "mae": 10.0},
+            }
+        ],
+    }
+
+    report = build_shadow_evaluation_report(
+        baseline_eval=baseline_eval,
+        candidate_eval=candidate_eval,
+    )
+    assert report["release_gate"]["status"] == "fail"
+    assert report["release_gate"]["allow_rollout"] is False
+    assert report["release_gate"]["failed_metrics"]

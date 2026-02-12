@@ -278,6 +278,64 @@ def _get_conventions() -> dict[str, Any]:
                 "backlog_bridge_promotion",
             ],
         },
+        "shadow_evaluation_gate_v1": {
+            "rules": [
+                "Run baseline and candidate replay side-by-side on representative corpus users before rollout.",
+                "Compute metric deltas per projection and classify failure classes for both variants.",
+                "Enforce release gate policy on selected metrics with explicit tolerance thresholds.",
+                "Do not allow rollout when gate status is fail or insufficient_data.",
+            ],
+            "entrypoint": "eval_harness.run_shadow_evaluation",
+            "inputs": {
+                "baseline_config": [
+                    "source",
+                    "projection_types",
+                    "strength_engine",
+                    "semantic_top_k",
+                ],
+                "candidate_config": [
+                    "source",
+                    "projection_types",
+                    "strength_engine",
+                    "semantic_top_k",
+                ],
+                "user_ids": "list of corpus users (pseudonymized in report)",
+            },
+            "release_gate_policy_version": "shadow_eval_gate_v1",
+            "delta_rules": [
+                {
+                    "projection_type": "strength_inference",
+                    "metric": "coverage_ci95",
+                    "direction": "higher_is_better",
+                    "max_delta": -0.03,
+                },
+                {
+                    "projection_type": "strength_inference",
+                    "metric": "mae",
+                    "direction": "lower_is_better",
+                    "max_delta": 1.0,
+                },
+                {
+                    "projection_type": "readiness_inference",
+                    "metric": "coverage_ci95_nowcast",
+                    "direction": "higher_is_better",
+                    "max_delta": -0.03,
+                },
+                {
+                    "projection_type": "readiness_inference",
+                    "metric": "mae_nowcast",
+                    "direction": "lower_is_better",
+                    "max_delta": 0.03,
+                },
+            ],
+            "report_sections": [
+                "baseline.summary",
+                "candidate.summary",
+                "metric_deltas",
+                "failure_classes",
+                "release_gate",
+            ],
+        },
         "visualization_policy": {
             "rules": [
                 "Only visualize when policy triggers are present or the user explicitly asks.",

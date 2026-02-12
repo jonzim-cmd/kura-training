@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import hashlib
 from collections import Counter
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -1928,6 +1929,379 @@ def build_shadow_mode_rollout_checks(
         "allow_autonomous_behavior_changes": status == "pass",
         "checks": checks,
     }
+
+
+_SHADOW_DELTA_RULES = [
+    {
+        "projection_type": "strength_inference",
+        "metric": "coverage_ci95",
+        "direction": "higher_is_better",
+        "max_delta": -0.03,
+    },
+    {
+        "projection_type": "strength_inference",
+        "metric": "mae",
+        "direction": "lower_is_better",
+        "max_delta": 1.0,
+    },
+    {
+        "projection_type": "readiness_inference",
+        "metric": "coverage_ci95_nowcast",
+        "direction": "higher_is_better",
+        "max_delta": -0.03,
+    },
+    {
+        "projection_type": "readiness_inference",
+        "metric": "mae_nowcast",
+        "direction": "lower_is_better",
+        "max_delta": 0.03,
+    },
+    {
+        "projection_type": "semantic_memory",
+        "metric": "top1_accuracy",
+        "direction": "higher_is_better",
+        "max_delta": -0.05,
+    },
+    {
+        "projection_type": "semantic_memory",
+        "metric": "topk_recall",
+        "direction": "higher_is_better",
+        "max_delta": -0.03,
+    },
+    {
+        "projection_type": "causal_inference",
+        "metric": "ok_outcome_rate",
+        "direction": "higher_is_better",
+        "max_delta": -0.05,
+    },
+    {
+        "projection_type": "causal_inference",
+        "metric": "high_severity_caveat_rate",
+        "direction": "lower_is_better",
+        "max_delta": 0.10,
+    },
+]
+_SHADOW_RELEASE_POLICY_VERSION = "shadow_eval_gate_v1"
+
+
+def _aggregate_metric_mean(
+    results: list[dict[str, Any]],
+    *,
+    projection_type: str,
+    metric_name: str,
+) -> tuple[float | None, int]:
+    values: list[float] = []
+    for row in results:
+        if row.get("projection_type") != projection_type:
+            continue
+        if row.get("status") != "ok":
+            continue
+        metrics = row.get("metrics")
+        if not isinstance(metrics, dict):
+            continue
+        value = _as_float(metrics.get(metric_name))
+        if value is None:
+            continue
+        values.append(value)
+    return _safe_mean(values), len(values)
+
+
+def _delta_passes(direction: str, delta_abs: float, max_delta: float) -> bool:
+    if direction == "higher_is_better":
+        return delta_abs >= max_delta
+    if direction == "lower_is_better":
+        return delta_abs <= max_delta
+    raise ValueError(f"Unsupported shadow delta direction: {direction!r}")
+
+
+def _failure_class_summary(eval_output: dict[str, Any]) -> dict[str, Any]:
+    projection_failures: dict[str, dict[str, int]] = {}
+    for row in eval_output.get("results", []):
+        projection_type = str(row.get("projection_type") or "unknown")
+        status = str(row.get("status") or "unknown")
+        if status == "ok":
+            continue
+        bucket = projection_failures.setdefault(projection_type, {})
+        bucket[status] = bucket.get(status, 0) + 1
+
+    shadow_checks = (eval_output.get("shadow_mode") or {}).get("checks") or []
+    gate_failures = [
+        {
+            "projection_type": str(check.get("projection_type") or "unknown"),
+            "metric": str(check.get("metric") or "unknown"),
+            "value": check.get("value"),
+            "threshold": check.get("threshold"),
+            "comparator": check.get("comparator"),
+            "samples": int(check.get("samples") or 0),
+        }
+        for check in shadow_checks
+        if isinstance(check, dict) and not bool(check.get("passed"))
+    ]
+    return {
+        "projection_status_failures": projection_failures,
+        "shadow_gate_failures": gate_failures,
+    }
+
+
+def build_shadow_evaluation_report(
+    *,
+    baseline_eval: dict[str, Any],
+    candidate_eval: dict[str, Any],
+    change_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    baseline_results = list(baseline_eval.get("results") or [])
+    candidate_results = list(candidate_eval.get("results") or [])
+
+    selected_projection_types = sorted(
+        set(baseline_eval.get("projection_types") or [])
+        | set(candidate_eval.get("projection_types") or [])
+    )
+    applicable_rules = [
+        rule for rule in _SHADOW_DELTA_RULES if rule["projection_type"] in selected_projection_types
+    ]
+
+    metric_deltas: list[dict[str, Any]] = []
+    missing_metrics: list[str] = []
+    failed_metrics: list[str] = []
+    for rule in applicable_rules:
+        projection_type = str(rule["projection_type"])
+        metric_name = str(rule["metric"])
+        direction = str(rule["direction"])
+        max_delta = float(rule["max_delta"])
+
+        baseline_mean, baseline_samples = _aggregate_metric_mean(
+            baseline_results,
+            projection_type=projection_type,
+            metric_name=metric_name,
+        )
+        candidate_mean, candidate_samples = _aggregate_metric_mean(
+            candidate_results,
+            projection_type=projection_type,
+            metric_name=metric_name,
+        )
+        available = baseline_mean is not None and candidate_mean is not None
+        delta_abs = (
+            (float(candidate_mean) - float(baseline_mean))
+            if available
+            else None
+        )
+        delta_pct = None
+        if available and baseline_mean and baseline_mean != 0.0:
+            delta_pct = (float(candidate_mean) / float(baseline_mean)) - 1.0
+        passed = (
+            _delta_passes(direction, float(delta_abs), max_delta)
+            if available and delta_abs is not None
+            else False
+        )
+        metric_key = f"{projection_type}:{metric_name}"
+        if not available:
+            missing_metrics.append(metric_key)
+        elif not passed:
+            failed_metrics.append(metric_key)
+        metric_deltas.append(
+            {
+                "projection_type": projection_type,
+                "metric": metric_name,
+                "direction": direction,
+                "max_delta": max_delta,
+                "baseline_mean": _round_or_none(baseline_mean, 6),
+                "candidate_mean": _round_or_none(candidate_mean, 6),
+                "delta_abs": _round_or_none(delta_abs, 6),
+                "delta_pct": _round_or_none(delta_pct, 6),
+                "baseline_samples": baseline_samples,
+                "candidate_samples": candidate_samples,
+                "value_available": available,
+                "passed": passed,
+            }
+        )
+
+    baseline_shadow_status = str((baseline_eval.get("shadow_mode") or {}).get("status") or "unknown")
+    candidate_shadow_status = str((candidate_eval.get("shadow_mode") or {}).get("status") or "unknown")
+
+    reasons: list[str] = []
+    if missing_metrics:
+        reasons.append(
+            "insufficient_metric_coverage: " + ", ".join(sorted(missing_metrics))
+        )
+    if failed_metrics:
+        reasons.append(
+            "metric_delta_failures: " + ", ".join(sorted(failed_metrics))
+        )
+    if candidate_shadow_status != "pass":
+        reasons.append(f"candidate_shadow_mode_status={candidate_shadow_status}")
+
+    if missing_metrics:
+        gate_status = "insufficient_data"
+    elif failed_metrics or candidate_shadow_status != "pass":
+        gate_status = "fail"
+    else:
+        gate_status = "pass"
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "change_context": change_context or {},
+        "baseline": {
+            "source": baseline_eval.get("source"),
+            "strength_engine": baseline_eval.get("strength_engine"),
+            "eval_status": baseline_eval.get("eval_status"),
+            "shadow_mode_status": baseline_shadow_status,
+            "summary": baseline_eval.get("summary") or {},
+            "summary_by_source": baseline_eval.get("summary_by_source") or {},
+        },
+        "candidate": {
+            "source": candidate_eval.get("source"),
+            "strength_engine": candidate_eval.get("strength_engine"),
+            "eval_status": candidate_eval.get("eval_status"),
+            "shadow_mode_status": candidate_shadow_status,
+            "summary": candidate_eval.get("summary") or {},
+            "summary_by_source": candidate_eval.get("summary_by_source") or {},
+        },
+        "metric_deltas": metric_deltas,
+        "failure_classes": {
+            "baseline": _failure_class_summary(baseline_eval),
+            "candidate": _failure_class_summary(candidate_eval),
+        },
+        "release_gate": {
+            "policy_version": _SHADOW_RELEASE_POLICY_VERSION,
+            "status": gate_status,
+            "allow_rollout": gate_status == "pass",
+            "failed_metrics": sorted(failed_metrics),
+            "missing_metrics": sorted(missing_metrics),
+            "reasons": reasons,
+        },
+    }
+
+
+def _shadow_config(
+    config: dict[str, Any] | None,
+    *,
+    default_projection_types: list[str] | None = None,
+) -> dict[str, Any]:
+    raw = config or {}
+    projection_types = raw.get("projection_types")
+    if not isinstance(projection_types, list):
+        projection_types = default_projection_types
+    return {
+        "projection_types": _normalize_projection_types(projection_types),
+        "strength_engine": str(raw.get("strength_engine") or "closed_form"),
+        "semantic_top_k": max(1, int(raw.get("semantic_top_k") or SEMANTIC_DEFAULT_TOP_K)),
+        "source": _normalize_source(str(raw.get("source") or EVAL_SOURCE_BOTH)),
+        "persist": bool(raw.get("persist", False)),
+    }
+
+
+def _pseudonymize_shadow_user(user_id: str) -> str:
+    digest = hashlib.sha1(str(user_id).encode("utf-8")).hexdigest()[:12]
+    return f"shadow_u_{digest}"
+
+
+def _merge_shadow_eval_outputs(outputs: list[dict[str, Any]]) -> dict[str, Any]:
+    all_results: list[dict[str, Any]] = []
+    projection_types: set[str] = set()
+    user_refs: list[str] = []
+    source_mode = EVAL_SOURCE_BOTH
+    strength_engine = "closed_form"
+    for output in outputs:
+        user_id = str(output.get("user_id") or "")
+        if user_id:
+            user_refs.append(_pseudonymize_shadow_user(user_id))
+        projection_types.update(output.get("projection_types") or [])
+        source_mode = str(output.get("source") or source_mode)
+        strength_engine = str(output.get("strength_engine") or strength_engine)
+        for row in output.get("results") or []:
+            enriched = dict(row)
+            if user_id:
+                enriched["user_ref"] = _pseudonymize_shadow_user(user_id)
+            all_results.append(enriched)
+
+    summary = summarize_projection_results(all_results)
+    summary_by_source = summarize_projection_results_by_source(all_results)
+    shadow_mode = build_shadow_mode_rollout_checks(all_results, source_mode=source_mode)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "projection_types": sorted(projection_types),
+        "source": source_mode,
+        "strength_engine": strength_engine,
+        "user_refs": sorted(set(user_refs)),
+        "projection_rows": len(all_results),
+        "summary": summary,
+        "summary_by_source": summary_by_source,
+        "eval_status": _eval_run_status(all_results),
+        "shadow_mode": shadow_mode,
+        "results": all_results,
+    }
+
+
+async def run_shadow_evaluation(
+    conn: psycopg.AsyncConnection[Any],
+    *,
+    user_ids: list[str],
+    baseline_config: dict[str, Any] | None = None,
+    candidate_config: dict[str, Any] | None = None,
+    change_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not user_ids:
+        raise ValueError("run_shadow_evaluation requires at least one user_id")
+
+    normalized_user_ids = sorted({str(user_id) for user_id in user_ids if str(user_id).strip()})
+    if not normalized_user_ids:
+        raise ValueError("run_shadow_evaluation received only empty user IDs")
+
+    baseline_cfg = _shadow_config(baseline_config)
+    candidate_cfg = _shadow_config(
+        candidate_config,
+        default_projection_types=baseline_cfg["projection_types"],
+    )
+
+    baseline_outputs: list[dict[str, Any]] = []
+    candidate_outputs: list[dict[str, Any]] = []
+    for user_id in normalized_user_ids:
+        baseline_outputs.append(
+            await run_eval_harness(
+                conn,
+                user_id=user_id,
+                projection_types=baseline_cfg["projection_types"],
+                strength_engine=baseline_cfg["strength_engine"],
+                semantic_top_k=int(baseline_cfg["semantic_top_k"]),
+                source=str(baseline_cfg["source"]),
+                persist=bool(baseline_cfg["persist"]),
+            )
+        )
+        candidate_outputs.append(
+            await run_eval_harness(
+                conn,
+                user_id=user_id,
+                projection_types=candidate_cfg["projection_types"],
+                strength_engine=candidate_cfg["strength_engine"],
+                semantic_top_k=int(candidate_cfg["semantic_top_k"]),
+                source=str(candidate_cfg["source"]),
+                persist=bool(candidate_cfg["persist"]),
+            )
+        )
+
+    baseline_aggregate = _merge_shadow_eval_outputs(baseline_outputs)
+    candidate_aggregate = _merge_shadow_eval_outputs(candidate_outputs)
+    report = build_shadow_evaluation_report(
+        baseline_eval=baseline_aggregate,
+        candidate_eval=candidate_aggregate,
+        change_context=change_context
+        or {
+            "user_count": len(normalized_user_ids),
+            "comparison": {
+                "baseline_strength_engine": baseline_cfg["strength_engine"],
+                "candidate_strength_engine": candidate_cfg["strength_engine"],
+                "baseline_source": baseline_cfg["source"],
+                "candidate_source": candidate_cfg["source"],
+            },
+        },
+    )
+    report["corpus"] = {
+        "user_count": len(normalized_user_ids),
+        "user_refs": baseline_aggregate["user_refs"],
+    }
+    report["baseline"]["projection_rows"] = baseline_aggregate["projection_rows"]
+    report["candidate"]["projection_rows"] = candidate_aggregate["projection_rows"]
+    return report
 
 
 def _eval_run_status(results: list[dict[str, Any]]) -> str:
