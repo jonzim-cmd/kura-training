@@ -34,7 +34,50 @@
       "recommendation": "recommendation engine"
     },
     "agentResponse": "Logged. Your squat has been at 116\u2009kg estimated max for three weeks now — volume is there, but the weight isn't moving. You've also been sleeping about an hour less than usual. That's probably not a coincidence.",
-    "agentQuestion": "Want me to program a deload week?"
+    "agentQuestion": "Want me to program a deload week?",
+    "getStarted": "Get started"
+  },
+  "start": {
+    "story": {
+      "p1": "I trained Olympic athletes. The most annoying part was almost always the same: logging the training \u2014 specifically in a way that actually lets you analyze the data after the season. In practice, it never really worked.",
+      "p2": "It was no different with my own training. I tried pretty much every app out there: too clunky, too rigid, too annoying. None lasted long. What I actually wanted was something simple: record my training the way I'd text a friend. A sentence about what I did \u2014 and someone (or something) takes care of the rest.",
+      "p3": "That's exactly where Kura came from. I built a backend where the AI agent is the primary user, not the human. Everything is designed so the agent reliably understands training entries, asks when something is missing, and stores them as clean data."
+    },
+    "apps": {
+      "title": "Apps solve the wrong problem",
+      "text": "There are hundreds of training apps. They're good at storing things. But the actual problem is the logging \u2014 and that's work. Filling out forms, dropdowns, scrolling through exercise lists. Try logging eccentric tempo squats cleanly, or an exercise that isn't in the database, or a session that deviated from the plan and was improvised along the way.",
+      "bridge1": "An agent doesn't care about any of that. You write: \"tempo squats today, 4 seconds down, pause at the bottom, 80kg, felt brutal\" \u2014 and it understands what you mean. If something's missing, it asks.",
+      "bridge2": "The real question is: where do these entries go so they remain useful long-term?"
+    },
+    "chat": {
+      "title": "Chat windows aren't built for this",
+      "forgets": "Chats forget.",
+      "forgetsDesc": "Context windows are limited, and after a few months the oldest messages simply drop off the end \u2014 without warning.",
+      "zero": "Memory helps to a point.",
+      "zeroDesc": "The AI remembers patterns (\"legs on Tuesdays\", \"knee acts up sometimes\"), but that doesn't replace real training data. No progression curve, no volume trend, no clear view of when the plateau started \u2014 maybe right when sleep fell apart.",
+      "locked": "You can't get the data out.",
+      "lockedDesc": "Switch from ChatGPT to Claude, to a different model or a new platform, and your entire training history is stuck in chat logs you can't meaningfully take with you.",
+      "text": "Everything stays text.",
+      "textDesc": "Even if you export: three months of training data spread across messages. The agent has to piece together a structure from scratch every time. Analyses get slow, fragile, and unreliable."
+    },
+    "solution": {
+      "title": "What Kura does",
+      "p1": "With Kura, the input doesn't matter: chat, voice, quick notes \u2014 you phrase things however feels natural. The agent takes care of the rest and stores everything not as chat history but as structured training data: typed, timestamped, connected.",
+      "p2": "One API call is enough to give the agent the full picture: every session, every PR, every trend over time \u2014 regardless of which AI is being used.",
+      "p3": "And because the data is structured, Kura can handle the math that simply doesn't work reliably in a chat window: Bayesian methods that catch plateaus early, connections between sleep and performance made visible, comparisons that contextualize your numbers instead of just commenting on them.",
+      "p4": "The agent reads the finished analysis and gives advice based on your actual data \u2014 not generic fitness knowledge."
+    },
+    "how": {
+      "title": "Setup",
+      "step1Title": "Create an account",
+      "step1Desc": "Free, no credit card, takes 30 seconds.",
+      "step2Title": "Connect an AI",
+      "step2Desc": "Pick your agent and follow the setup guide.",
+      "step2SetupLink": "Setup guide \u2192",
+      "step3Title": "Start talking",
+      "step3Desc": "Open your AI's chat \u2014 Claude, ChatGPT, whatever \u2014 and talk about your training. The agent does the rest."
+    },
+    "tagline": ""
   },
   "auth": {
     "loginTitle": "Welcome back",

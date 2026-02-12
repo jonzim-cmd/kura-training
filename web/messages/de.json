@@ -34,7 +34,50 @@
       "recommendation": "Empfehlungsmaschine"
     },
     "agentResponse": "Geloggt. Dein Kniebeuge-Maximum steht seit drei Wochen bei 116\u2009kg — das Volumen stimmt, aber das Gewicht bewegt sich nicht. Außerdem schläfst du etwa eine Stunde weniger als gewöhnlich. Das ist wahrscheinlich kein Zufall.",
-    "agentQuestion": "Soll ich eine Deload-Woche planen?"
+    "agentQuestion": "Soll ich eine Deload-Woche planen?",
+    "getStarted": "Loslegen"
+  },
+  "start": {
+    "story": {
+      "p1": "Ich habe Olympia-Athleten trainiert. Der nervigste Teil war dabei fast immer dasselbe: Training zu loggen \u2013 und zwar so, dass man die Daten nach der Saison auch wirklich auswerten kann. In der Praxis hat das nie richtig funktioniert.",
+      "p2": "Bei meinem eigenen Training war es nicht anders. Ich habe so ziemlich jede App ausprobiert, die es gibt: zu umst\u00e4ndlich, zu starr, zu nervig. Keine hat lange \u00fcberlebt. Was ich eigentlich wollte, war etwas Simples: Training festhalten, so wie ich einem Freund schreiben w\u00fcrde. Ein Satz dar\u00fcber, was ich gemacht habe \u2013 und jemand (oder etwas) k\u00fcmmert sich um den Rest.",
+      "p3": "Genau daraus ist Kura entstanden. Ich habe ein Backend gebaut, in dem nicht der Mensch der \u201Eprim\u00e4re Nutzer\u201C ist, sondern der KI-Agent. Alles ist darauf ausgelegt, dass der Agent Trainingseintr\u00e4ge zuverl\u00e4ssig versteht, nachfragt, wenn etwas fehlt, und sie als saubere Daten ablegt."
+    },
+    "apps": {
+      "title": "Apps l\u00f6sen das falsche Problem",
+      "text": "Es gibt hunderte Training-Apps. Die sind gut darin, Dinge zu speichern. Das eigentliche Problem ist aber das Loggen \u2013 und das ist Arbeit. Formulare ausf\u00fcllen, Dropdowns, durch \u00dcbungslisten scrollen. Versuch mal, exzentrische Tempo-Squats sauber einzutragen. Oder eine \u00dcbung, die nicht in der Datenbank ist. Oder ein Training, das vom Plan abweicht und unterwegs improvisiert wurde.",
+      "bridge1": "Einem Agenten ist das egal. Du schreibst: \u201ETempo-Squats heute, 4 Sekunden runter, Pause unten, 80\u202fkg, war brutal\u201C \u2013 und er versteht, was gemeint ist. Und wenn etwas fehlt, fragt er nach.",
+      "bridge2": "Der Knackpunkt ist nur: Wohin mit diesen Informationen, damit sie langfristig nutzbar bleiben?"
+    },
+    "chat": {
+      "title": "Chatfenster sind daf\u00fcr nicht gebaut",
+      "forgets": "Chats vergessen.",
+      "forgetsDesc": "Kontextfenster sind begrenzt, und nach ein paar Monaten fallen die \u00e4ltesten Nachrichten einfach hinten raus \u2013 ohne Warnung.",
+      "zero": "Memory hilft ein St\u00fcck weit.",
+      "zeroDesc": "Die KI erinnert sich an Muster (\u201EDienstags Beine\u201C, \u201EKnie manchmal empfindlich\u201C), aber es ersetzt keine echten Trainingsdaten. Keine Progressionskurve, keinen Volumentrend, keinen sauberen Blick darauf, ab wann das Plateau begonnen hat \u2013 vielleicht genau dann, als der Schlaf eingebrochen ist.",
+      "locked": "Du bekommst die Daten nicht raus.",
+      "lockedDesc": "Wechselst du von ChatGPT zu Claude, auf ein anderes Modell oder eine neue Plattform, steckt die gesamte Trainingshistorie in Chatprotokollen, die du nicht sinnvoll mitnehmen kannst.",
+      "text": "Alles bleibt Text.",
+      "textDesc": "Selbst wenn du exportierst: drei Monate Trainingsdaten, verteilt \u00fcber Nachrichten. Der Agent muss sich jedes Mal aufs Neue eine Struktur daraus zusammenbauen. Analysen werden langsam, fragil und unzuverl\u00e4ssig."
+    },
+    "solution": {
+      "title": "Was Kura macht",
+      "p1": "Mit Kura ist der Input egal: Chat, Sprache, kurze Notizen \u2013 du formulierst so, wie es f\u00fcr dich nat\u00fcrlich ist. Der Agent \u00fcbernimmt den Rest und speichert alles nicht als Chatverlauf, sondern als strukturierte Trainingsdaten: typisiert, mit Zeitstempel, verkn\u00fcpft.",
+      "p2": "Ein API-Call reicht, um dem Agenten den kompletten Kontext zu geben: jedes Training, jede Bestleistung, jede Entwicklung \u00fcber Zeit \u2013 unabh\u00e4ngig davon, welche KI gerade genutzt wird.",
+      "p3": "Und weil die Daten strukturiert sind, kann Kura die Mathematik \u00fcbernehmen, die im Chatfenster schlicht nicht zuverl\u00e4ssig funktioniert: bayessche Verfahren, die Plateaus fr\u00fch erkennen, Zusammenh\u00e4nge zwischen Schlaf und Leistung sichtbar machen, Vergleiche, die deine Werte einordnen statt nur zu kommentieren.",
+      "p4": "Der Agent liest am Ende die fertige Analyse und gibt Ratschl\u00e4ge, die auf deinen Daten basieren \u2013 nicht auf generischem Fitnesswissen."
+    },
+    "how": {
+      "title": "Einrichtung",
+      "step1Title": "Konto erstellen",
+      "step1Desc": "Kostenlos, keine Kreditkarte n\u00f6tig, dauert 30 Sekunden.",
+      "step2Title": "KI verbinden",
+      "step2Desc": "Agent ausw\u00e4hlen und der Einrichtung folgen.",
+      "step2SetupLink": "Zur Einrichtung \u2192",
+      "step3Title": "Losreden",
+      "step3Desc": "\u00d6ffne den Chat deiner KI \u2013 Claude, ChatGPT, egal welche \u2013 und rede \u00fcber dein Training. Der Agent macht den Rest."
+    },
+    "tagline": ""
   },
   "auth": {
     "loginTitle": "Willkommen zurück",
