@@ -1268,6 +1268,138 @@ class TestInferenceNightlyRefitIntegration:
             assert "summary" in row["cluster_data"]
             assert "affected_workflow_phases" in row["cluster_data"]
 
+    async def test_nightly_refit_generates_learning_backlog_candidate_payload(self, db, test_user_id):
+        other_user_id = str(uuid.uuid4())
+        await create_test_user(db, test_user_id)
+        await create_test_user(db, other_user_id)
+        cluster_signature = "ls_backlog_bridge_signature"
+
+        def _signal_payload(*, pseudo_user: str, signal_type: str, ts_iso: str) -> dict:
+            return {
+                "schema_version": 1,
+                "signal_type": signal_type,
+                "category": "friction_signal",
+                "captured_at": ts_iso,
+                "user_ref": {"pseudonymized_user_id": pseudo_user},
+                "signature": {
+                    "issue_type": signal_type,
+                    "invariant_id": "INV-002",
+                    "agent_version": "api_agent_v1",
+                    "workflow_phase": "agent_write_with_proof",
+                    "modality": "chat",
+                    "confidence_band": "high",
+                },
+                "cluster_signature": cluster_signature,
+                "attributes": {"source": "integration_test_backlog_bridge"},
+            }
+
+        await insert_event(
+            db,
+            test_user_id,
+            "learning.signal.logged",
+            _signal_payload(
+                pseudo_user="u_alpha",
+                signal_type="save_claim_mismatch_attempt",
+                ts_iso="2026-02-13T09:00:00+00:00",
+            ),
+            "TIMESTAMP '2026-02-13 10:00:00+01'",
+        )
+        await insert_event(
+            db,
+            test_user_id,
+            "learning.signal.logged",
+            _signal_payload(
+                pseudo_user="u_alpha",
+                signal_type="workflow_violation",
+                ts_iso="2026-02-13T09:10:00+00:00",
+            ),
+            "TIMESTAMP '2026-02-13 10:10:00+01'",
+        )
+        await insert_event(
+            db,
+            other_user_id,
+            "learning.signal.logged",
+            _signal_payload(
+                pseudo_user="u_beta",
+                signal_type="save_claim_mismatch_attempt",
+                ts_iso="2026-02-13T09:20:00+00:00",
+            ),
+            "TIMESTAMP '2026-02-13 10:20:00+01'",
+        )
+        await insert_event(
+            db,
+            other_user_id,
+            "learning.signal.logged",
+            _signal_payload(
+                pseudo_user="u_beta",
+                signal_type="workflow_violation",
+                ts_iso="2026-02-13T09:25:00+00:00",
+            ),
+            "TIMESTAMP '2026-02-13 10:25:00+01'",
+        )
+        await insert_event(
+            db,
+            test_user_id,
+            "learning.signal.logged",
+            _signal_payload(
+                pseudo_user="u_alpha",
+                signal_type="save_claim_mismatch_attempt",
+                ts_iso="2026-02-13T09:30:00+00:00",
+            ),
+            "TIMESTAMP '2026-02-13 10:30:00+01'",
+        )
+        await insert_event(
+            db,
+            other_user_id,
+            "learning.signal.logged",
+            _signal_payload(
+                pseudo_user="u_beta",
+                signal_type="save_claim_mismatch_attempt",
+                ts_iso="2026-02-13T09:35:00+00:00",
+            ),
+            "TIMESTAMP '2026-02-13 10:35:00+01'",
+        )
+
+        await db.execute("SET ROLE app_worker")
+        await handle_inference_nightly_refit(db, {"interval_hours": 24})
+        await db.execute("RESET ROLE")
+
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT source_type,
+                       source_ref,
+                       status,
+                       priority_score,
+                       issue_payload,
+                       promotion_checklist
+                FROM learning_backlog_candidates
+                WHERE source_type = 'issue_cluster'
+                  AND source_ref = %s
+                ORDER BY priority_score DESC
+                LIMIT 1
+                """,
+                (cluster_signature,),
+            )
+            row = await cur.fetchone()
+
+        assert row is not None
+        assert row["source_type"] == "issue_cluster"
+        assert row["status"] == "candidate"
+        assert float(row["priority_score"]) > 0.0
+        payload = row["issue_payload"]
+        assert payload["approval_required"] is True
+        assert payload["source"]["source_ref"] == cluster_signature
+        assert payload["root_cause_hypothesis"]
+        assert payload["impacted_metrics"]["event_count"] == 6
+        assert payload["suggested_updates"]["regression_tests"]
+        checklist = row["promotion_checklist"]
+        assert checklist["workflow"] == "cluster_to_issue_to_regression_v1"
+        assert any(
+            step["id"] == "shadow_re_evaluation" and step["status"] == "pending"
+            for step in checklist["steps"]
+        )
+
     async def test_extraction_calibration_refresh_reports_underperforming_class(self, db, test_user_id):
         await create_test_user(db, test_user_id)
 

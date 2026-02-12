@@ -176,6 +176,56 @@ def _get_conventions() -> dict[str, Any]:
                 "monitor_effect": "throttle_auto_repair",
             },
         },
+        "learning_backlog_bridge_v1": {
+            "rules": [
+                "Generate machine-readable issue candidates from weekly learning_issue_clusters and extraction underperformance reports.",
+                "Keep candidate creation approval-gated for humans in V1; do not auto-create tracker issues.",
+                "Attach root-cause hypothesis, impacted metrics, and suggested invariant/policy/test updates for each candidate.",
+                "Apply duplicate/noise controls before persistence (score/support/sample thresholds + candidate_key dedupe).",
+                "Promotion checklist must include invariant/policy mapping, regression test path, and shadow re-evaluation step.",
+            ],
+            "refresh_job": "inference.nightly_refit",
+            "source_tables": [
+                "learning_issue_clusters",
+                "extraction_underperforming_classes",
+            ],
+            "output_table": "learning_backlog_candidates",
+            "run_table": "learning_backlog_bridge_runs",
+            "candidate_payload_contract": {
+                "required_fields": [
+                    "title",
+                    "description",
+                    "acceptance_criteria[]",
+                    "root_cause_hypothesis",
+                    "impacted_metrics",
+                    "suggested_updates",
+                    "promotion_checklist",
+                ],
+                "approval_required_default": True,
+                "status_values": [
+                    "candidate",
+                    "approved",
+                    "dismissed",
+                    "promoted",
+                ],
+            },
+            "guardrails": {
+                "cluster_min_score_default": 0.18,
+                "cluster_min_events_default": 3,
+                "cluster_min_unique_users_default": 2,
+                "calibration_min_samples_default": 3,
+                "max_candidates_per_source_default": 6,
+                "max_candidates_per_run_default": 12,
+                "dedupe_key": "candidate_key (stable hash over source_ref)",
+            },
+            "promotion_workflow": [
+                "candidate_generated",
+                "human_approval",
+                "invariant_or_policy_update",
+                "regression_test_added",
+                "shadow_re_evaluation",
+            ],
+        },
         "visualization_policy": {
             "rules": [
                 "Only visualize when policy triggers are present or the user explicitly asks.",

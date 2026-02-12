@@ -296,6 +296,24 @@ class TestConventions:
         assert integration["degraded_effect"] == "disable_auto_repair"
         assert integration["monitor_effect"] == "throttle_auto_repair"
 
+    def test_has_learning_backlog_bridge_v1_conventions(self):
+        result = _get_conventions()
+        assert "learning_backlog_bridge_v1" in result
+        bridge = result["learning_backlog_bridge_v1"]
+        assert bridge["output_table"] == "learning_backlog_candidates"
+        assert bridge["run_table"] == "learning_backlog_bridge_runs"
+        assert "learning_issue_clusters" in bridge["source_tables"]
+        assert "extraction_underperforming_classes" in bridge["source_tables"]
+
+    def test_learning_backlog_bridge_v1_declares_promotion_workflow_and_guardrails(self):
+        result = _get_conventions()
+        bridge = result["learning_backlog_bridge_v1"]
+        assert "promotion_workflow" in bridge
+        assert "shadow_re_evaluation" in bridge["promotion_workflow"]
+        assert bridge["candidate_payload_contract"]["approval_required_default"] is True
+        assert bridge["guardrails"]["cluster_min_score_default"] > 0.0
+        assert bridge["guardrails"]["max_candidates_per_run_default"] >= 1
+
     def test_has_visualization_policy_conventions(self):
         result = _get_conventions()
         assert "visualization_policy" in result
