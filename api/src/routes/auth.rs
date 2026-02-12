@@ -1,9 +1,11 @@
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
 use chrono::{Duration, Utc};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -27,7 +29,23 @@ pub fn token_router() -> Router<AppState> {
     Router::new().route("/v1/auth/token", post(token))
 }
 
+pub fn device_router() -> Router<AppState> {
+    Router::new()
+        .route("/v1/auth/device/authorize", post(device_authorize))
+        .route("/v1/auth/device/token", post(device_token))
+        .route(
+            "/v1/auth/device/verify",
+            get(device_verify_form).post(device_verify_submit),
+        )
+}
+
+pub fn oidc_router() -> Router<AppState> {
+    Router::new().route("/v1/auth/oidc/{provider}/login", post(oidc_login))
+}
+
 const AGENT_ACCESS_TOKEN_TTL_MINUTES: i64 = 30;
+const DEVICE_CODE_TTL_MINUTES: i64 = 10;
+const DEVICE_CODE_POLL_INTERVAL_SECONDS: i32 = 5;
 
 fn default_agent_token_scopes() -> Vec<String> {
     vec![
@@ -46,6 +64,79 @@ fn normalize_scopes(scopes: Vec<String>) -> Vec<String> {
     normalized.sort();
     normalized.dedup();
     normalized
+}
+
+fn normalize_email(email: &str) -> String {
+    email.trim().to_lowercase()
+}
+
+fn normalize_user_code(user_code: &str) -> String {
+    user_code
+        .trim()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+fn generate_user_code() -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let mut rng = rand::thread_rng();
+
+    let mut chunk = String::with_capacity(4);
+    for _ in 0..4 {
+        let idx = rng.gen_range(0..ALPHABET.len());
+        chunk.push(ALPHABET[idx] as char);
+    }
+
+    let mut second = String::with_capacity(4);
+    for _ in 0..4 {
+        let idx = rng.gen_range(0..ALPHABET.len());
+        second.push(ALPHABET[idx] as char);
+    }
+
+    format!("{chunk}-{second}")
+}
+
+fn generate_device_code() -> String {
+    format!(
+        "kura_dc_{}{}",
+        Uuid::now_v7().simple(),
+        Uuid::now_v7().simple()
+    )
+}
+
+async fn authenticate_email_password_user_id(
+    pool: &sqlx::PgPool,
+    email_norm: &str,
+    password: &str,
+) -> Result<Uuid, AppError> {
+    let user = sqlx::query_as::<_, EmailIdentityAuthRow>(
+        "SELECT u.id, u.password_hash \
+         FROM user_identities ui \
+         JOIN users u ON u.id = ui.user_id \
+         WHERE ui.provider = 'email_password' \
+           AND ui.email_norm = $1 \
+           AND u.is_active = TRUE",
+    )
+    .bind(email_norm)
+    .fetch_optional(pool)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::Unauthorized {
+        message: "Invalid email or password".to_string(),
+        docs_hint: None,
+    })?;
+
+    let valid = auth::verify_password(password, &user.password_hash).map_err(AppError::Internal)?;
+    if !valid {
+        return Err(AppError::Unauthorized {
+            message: "Invalid email or password".to_string(),
+            docs_hint: None,
+        });
+    }
+
+    Ok(user.id)
 }
 
 // ──────────────────────────────────────────────
@@ -83,7 +174,8 @@ pub async fn register(
     State(state): State<AppState>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    if req.email.is_empty() {
+    let email_norm = normalize_email(&req.email);
+    if email_norm.is_empty() {
         return Err(AppError::Validation {
             message: "email must not be empty".to_string(),
             field: Some("email".to_string()),
@@ -103,15 +195,16 @@ pub async fn register(
     let password_hash = auth::hash_password(&req.password).map_err(|e| AppError::Internal(e))?;
 
     let user_id = Uuid::now_v7();
+    let mut tx = state.db.begin().await?;
 
     sqlx::query(
         "INSERT INTO users (id, email, password_hash, display_name) VALUES ($1, $2, $3, $4)",
     )
     .bind(user_id)
-    .bind(&req.email)
+    .bind(&email_norm)
     .bind(&password_hash)
     .bind(&req.display_name)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await
     .map_err(|e| {
         if let sqlx::Error::Database(ref db_err) = e {
@@ -127,11 +220,46 @@ pub async fn register(
         AppError::Database(e)
     })?;
 
+    sqlx::query(
+        "INSERT INTO user_identities \
+         (user_id, provider, provider_subject, email_norm, email_verified_at) \
+         VALUES ($1, 'email_password', $2, $2, NOW())",
+    )
+    .bind(user_id)
+    .bind(&email_norm)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::Database(ref db_err) = e {
+            if db_err.code().as_deref() == Some("23505") {
+                return AppError::Validation {
+                    message: format!("Email '{}' is already registered", req.email),
+                    field: Some("email".to_string()),
+                    received: Some(serde_json::Value::String(req.email.clone())),
+                    docs_hint: Some("Use a different email address.".to_string()),
+                };
+            }
+        }
+        AppError::Database(e)
+    })?;
+
+    sqlx::query(
+        "INSERT INTO analysis_subjects (user_id, analysis_subject_id) \
+         VALUES ($1, 'asub_' || replace(gen_random_uuid()::text, '-', '')) \
+         ON CONFLICT (user_id) DO NOTHING",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+
+    tx.commit().await.map_err(AppError::Database)?;
+
     Ok((
         StatusCode::CREATED,
         Json(RegisterResponse {
             user_id,
-            email: req.email,
+            email: email_norm,
             display_name: req.display_name,
         }),
     ))
@@ -395,6 +523,15 @@ pub async fn authorize_submit(
     State(state): State<AppState>,
     Form(form): Form<AuthorizeSubmit>,
 ) -> Result<impl IntoResponse, AppError> {
+    let email_norm = normalize_email(&form.email);
+    if email_norm.is_empty() {
+        return Err(AppError::Validation {
+            message: "email must not be empty".to_string(),
+            field: Some("email".to_string()),
+            received: None,
+            docs_hint: None,
+        });
+    }
     if form.code_challenge.is_empty() {
         return Err(AppError::Validation {
             message: "code_challenge is required".to_string(),
@@ -405,28 +542,8 @@ pub async fn authorize_submit(
     }
     validate_oauth_client(&state.db, &form.client_id, &form.redirect_uri).await?;
 
-    // Verify credentials
-    let user = sqlx::query_as::<_, UserRow>(
-        "SELECT id, password_hash FROM users WHERE email = $1 AND is_active = TRUE",
-    )
-    .bind(&form.email)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::Unauthorized {
-        message: "Invalid email or password".to_string(),
-        docs_hint: None,
-    })?;
-
-    let valid = auth::verify_password(&form.password, &user.password_hash)
-        .map_err(|e| AppError::Internal(e))?;
-
-    if !valid {
-        return Err(AppError::Unauthorized {
-            message: "Invalid email or password".to_string(),
-            docs_hint: None,
-        });
-    }
+    let user_id =
+        authenticate_email_password_user_id(&state.db, &email_norm, &form.password).await?;
 
     // Generate auth code (10 min expiry)
     let (code, code_hash) = auth::generate_auth_code();
@@ -439,7 +556,7 @@ pub async fn authorize_submit(
          VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(code_id)
-    .bind(user.id)
+    .bind(user_id)
     .bind(&code_hash)
     .bind(&form.client_id)
     .bind(&form.redirect_uri)
@@ -464,6 +581,873 @@ pub async fn authorize_submit(
     }
 
     Ok(Redirect::to(redirect_url.as_str()))
+}
+
+// ──────────────────────────────────────────────
+// Device Authorization Flow
+// ──────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct DeviceAuthorizeRequest {
+    pub client_id: String,
+    #[serde(default)]
+    pub scope: Vec<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct DeviceAuthorizeResponse {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub verification_uri_complete: String,
+    pub expires_in: i64,
+    pub interval: i32,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct DeviceTokenRequest {
+    pub device_code: String,
+    pub client_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeviceVerifyQuery {
+    #[serde(default)]
+    pub user_code: Option<String>,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct DeviceVerifySubmit {
+    pub user_code: String,
+    pub email: String,
+    pub password: String,
+    #[serde(default)]
+    pub decision: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct DeviceTokenRow {
+    id: Uuid,
+    client_id: String,
+    scopes: Vec<String>,
+    status: String,
+    approved_user_id: Option<Uuid>,
+    interval_seconds: i32,
+    poll_count: i32,
+    last_polled_at: Option<chrono::DateTime<Utc>>,
+    expires_at: chrono::DateTime<Utc>,
+}
+
+#[derive(sqlx::FromRow)]
+struct DeviceVerifyRow {
+    id: Uuid,
+    status: String,
+    expires_at: chrono::DateTime<Utc>,
+}
+
+async fn validate_oauth_client_for_device(
+    pool: &sqlx::PgPool,
+    client_id: &str,
+) -> Result<(), AppError> {
+    if client_id.trim().is_empty() {
+        return Err(AppError::Validation {
+            message: "client_id is required".to_string(),
+            field: Some("client_id".to_string()),
+            received: None,
+            docs_hint: Some("Use a registered OAuth client_id.".to_string()),
+        });
+    }
+
+    let is_active =
+        sqlx::query_scalar::<_, bool>("SELECT is_active FROM oauth_clients WHERE client_id = $1")
+            .bind(client_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or_else(|| AppError::Validation {
+                message: format!("Unknown OAuth client_id '{}'", client_id),
+                field: Some("client_id".to_string()),
+                received: Some(serde_json::Value::String(client_id.to_string())),
+                docs_hint: Some("Use a registered OAuth client_id.".to_string()),
+            })?;
+
+    if !is_active {
+        return Err(AppError::Unauthorized {
+            message: format!("OAuth client '{}' is inactive", client_id),
+            docs_hint: Some("Use an active OAuth client.".to_string()),
+        });
+    }
+
+    Ok(())
+}
+
+fn device_verification_uri() -> String {
+    let base = std::env::var("KURA_PUBLIC_BASE_URL")
+        .unwrap_or_else(|_| "http://localhost:3000".to_string());
+    format!("{}/v1/auth/device/verify", base.trim_end_matches('/'))
+}
+
+fn render_device_verify_form(prefilled_user_code: &str, error_message: Option<&str>) -> String {
+    let error_html = error_message
+        .map(|msg| format!(r#"<p style="color:#b00020;">{}</p>"#, html_escape(msg)))
+        .unwrap_or_default();
+
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kura — Device verification</title>
+<style>
+body {{ font-family: system-ui, sans-serif; max-width: 420px; margin: 60px auto; padding: 0 20px; }}
+h1 {{ font-size: 1.4em; }}
+label {{ display: block; margin-top: 12px; font-weight: 500; }}
+input[type="text"], input[type="email"], input[type="password"] {{ width: 100%; padding: 8px; margin-top: 4px; box-sizing: border-box; }}
+button {{ margin-top: 20px; padding: 10px 24px; background: #111; color: #fff; border: none; cursor: pointer; font-size: 1em; }}
+.actions {{ display: flex; gap: 8px; }}
+.button-secondary {{ background: #fff; color: #111; border: 1px solid #111; }}
+.info {{ color: #666; font-size: 0.9em; margin-top: 8px; }}
+</style>
+</head>
+<body>
+<h1>Authorize device</h1>
+<p class="info">Enter the code shown in your CLI/MCP client and sign in.</p>
+{error_html}
+<form method="POST" action="/v1/auth/device/verify">
+<label>User code<input type="text" name="user_code" value="{user_code}" required autofocus></label>
+<label>Email<input type="email" name="email" required></label>
+<label>Password<input type="password" name="password" required></label>
+<div class="actions">
+<button type="submit" name="decision" value="approve">Authorize device</button>
+<button type="submit" name="decision" value="deny" class="button-secondary">Deny</button>
+</div>
+</form>
+</body>
+</html>"#,
+        error_html = error_html,
+        user_code = html_escape(prefilled_user_code),
+    )
+}
+
+fn render_device_verify_success() -> String {
+    r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kura — Device authorized</title>
+</head>
+<body style="font-family: system-ui, sans-serif; max-width: 420px; margin: 60px auto; padding: 0 20px;">
+<h1>Device authorized</h1>
+<p>You can return to your CLI or MCP client. This tab can be closed.</p>
+</body>
+</html>"#
+        .to_string()
+}
+
+fn render_device_verify_denied() -> String {
+    r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kura — Device denied</title>
+</head>
+<body style="font-family: system-ui, sans-serif; max-width: 420px; margin: 60px auto; padding: 0 20px;">
+<h1>Device denied</h1>
+<p>The login request was denied. You can close this tab.</p>
+</body>
+</html>"#
+        .to_string()
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/auth/device/authorize",
+    request_body = DeviceAuthorizeRequest,
+    responses(
+        (status = 200, description = "Device authorization initiated", body = DeviceAuthorizeResponse),
+        (status = 400, description = "Invalid request", body = kura_core::error::ApiError)
+    ),
+    tag = "auth"
+)]
+pub async fn device_authorize(
+    State(state): State<AppState>,
+    Json(req): Json<DeviceAuthorizeRequest>,
+) -> Result<Json<DeviceAuthorizeResponse>, AppError> {
+    validate_oauth_client_for_device(&state.db, &req.client_id).await?;
+
+    let requested_scopes = normalize_scopes(req.scope);
+    let scopes = if requested_scopes.is_empty() {
+        default_agent_token_scopes()
+    } else {
+        requested_scopes
+    };
+
+    let device_code = generate_device_code();
+    let device_code_hash = auth::hash_token(&device_code);
+    let user_code = generate_user_code();
+    let user_code_hash = auth::hash_token(&normalize_user_code(&user_code));
+    let expires_at = Utc::now() + Duration::minutes(DEVICE_CODE_TTL_MINUTES);
+
+    sqlx::query(
+        "INSERT INTO oauth_device_codes \
+         (device_code_hash, user_code_hash, client_id, scopes, status, interval_seconds, expires_at) \
+         VALUES ($1, $2, $3, $4, 'pending', $5, $6)",
+    )
+    .bind(&device_code_hash)
+    .bind(&user_code_hash)
+    .bind(&req.client_id)
+    .bind(scopes)
+    .bind(DEVICE_CODE_POLL_INTERVAL_SECONDS)
+    .bind(expires_at)
+    .execute(&state.db)
+    .await
+    .map_err(AppError::Database)?;
+
+    let verification_uri = device_verification_uri();
+    let verification_uri_complete = format!("{}?user_code={}", verification_uri, user_code);
+
+    Ok(Json(DeviceAuthorizeResponse {
+        device_code,
+        user_code,
+        verification_uri,
+        verification_uri_complete,
+        expires_in: DEVICE_CODE_TTL_MINUTES * 60,
+        interval: DEVICE_CODE_POLL_INTERVAL_SECONDS,
+    }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/auth/device/verify",
+    params(("user_code" = Option<String>, Query, description = "Optional prefilled user code")),
+    responses((status = 200, description = "Verification form HTML")),
+    tag = "auth"
+)]
+pub async fn device_verify_form(
+    Query(query): Query<DeviceVerifyQuery>,
+) -> Result<Html<String>, AppError> {
+    Ok(Html(render_device_verify_form(
+        query.user_code.as_deref().unwrap_or(""),
+        None,
+    )))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/auth/device/verify",
+    responses(
+        (status = 200, description = "Device approved"),
+        (status = 401, description = "Invalid credentials")
+    ),
+    tag = "auth"
+)]
+pub async fn device_verify_submit(
+    State(state): State<AppState>,
+    Form(form): Form<DeviceVerifySubmit>,
+) -> Result<Html<String>, AppError> {
+    let decision = form
+        .decision
+        .as_deref()
+        .unwrap_or("approve")
+        .trim()
+        .to_lowercase();
+    if decision != "approve" && decision != "deny" {
+        return Ok(Html(render_device_verify_form(
+            &form.user_code,
+            Some("Invalid decision. Use approve or deny."),
+        )));
+    }
+    let target_status = if decision == "deny" {
+        "denied"
+    } else {
+        "approved"
+    };
+
+    let user_code_norm = normalize_user_code(&form.user_code);
+    if user_code_norm.is_empty() {
+        return Ok(Html(render_device_verify_form(
+            "",
+            Some("User code is required."),
+        )));
+    }
+
+    let user_code_hash = auth::hash_token(&user_code_norm);
+    let row = sqlx::query_as::<_, DeviceVerifyRow>(
+        "SELECT id, status, expires_at FROM oauth_device_codes WHERE user_code_hash = $1",
+    )
+    .bind(&user_code_hash)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?;
+
+    let Some(row) = row else {
+        return Ok(Html(render_device_verify_form(
+            &form.user_code,
+            Some("Unknown or invalid user code."),
+        )));
+    };
+
+    if Utc::now() > row.expires_at {
+        let _ = sqlx::query(
+            "UPDATE oauth_device_codes SET status = 'expired', updated_at = NOW() \
+             WHERE id = $1 AND status = 'pending'",
+        )
+        .bind(row.id)
+        .execute(&state.db)
+        .await;
+
+        return Ok(Html(render_device_verify_form(
+            &form.user_code,
+            Some("This device code has expired. Start login again."),
+        )));
+    }
+
+    if row.status != "pending" {
+        return Ok(Html(render_device_verify_form(
+            &form.user_code,
+            Some("This device code is no longer pending."),
+        )));
+    }
+
+    let email_norm = normalize_email(&form.email);
+    let user_id =
+        match authenticate_email_password_user_id(&state.db, &email_norm, &form.password).await {
+            Ok(user_id) => user_id,
+            Err(AppError::Unauthorized { .. }) => {
+                return Ok(Html(render_device_verify_form(
+                    &form.user_code,
+                    Some("Invalid email or password."),
+                )));
+            }
+            Err(other) => return Err(other),
+        };
+
+    let updated = sqlx::query(
+        "UPDATE oauth_device_codes \
+         SET status = $2, approved_user_id = $3, approved_at = NOW(), updated_at = NOW() \
+         WHERE id = $1 AND status = 'pending'",
+    )
+    .bind(row.id)
+    .bind(target_status)
+    .bind(user_id)
+    .execute(&state.db)
+    .await
+    .map_err(AppError::Database)?;
+
+    if updated.rows_affected() == 0 {
+        return Ok(Html(render_device_verify_form(
+            &form.user_code,
+            Some("This device code was already processed."),
+        )));
+    }
+
+    if decision == "deny" {
+        return Ok(Html(render_device_verify_denied()));
+    }
+    Ok(Html(render_device_verify_success()))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/auth/device/token",
+    request_body = DeviceTokenRequest,
+    responses(
+        (status = 200, description = "Tokens issued", body = TokenResponse),
+        (status = 400, description = "Pending/invalid request", body = kura_core::error::ApiError),
+        (status = 401, description = "Invalid/expired grant", body = kura_core::error::ApiError)
+    ),
+    tag = "auth"
+)]
+pub async fn device_token(
+    State(state): State<AppState>,
+    Json(req): Json<DeviceTokenRequest>,
+) -> Result<Json<TokenResponse>, AppError> {
+    if req.device_code.trim().is_empty() {
+        return Err(AppError::Validation {
+            message: "device_code is required".to_string(),
+            field: Some("device_code".to_string()),
+            received: None,
+            docs_hint: None,
+        });
+    }
+
+    validate_oauth_client_for_device(&state.db, &req.client_id).await?;
+
+    let device_code_hash = auth::hash_token(req.device_code.trim());
+    let row = sqlx::query_as::<_, DeviceTokenRow>(
+        "SELECT id, client_id, scopes, status, approved_user_id, interval_seconds, poll_count, \
+                last_polled_at, expires_at \
+         FROM oauth_device_codes \
+         WHERE device_code_hash = $1 AND client_id = $2",
+    )
+    .bind(&device_code_hash)
+    .bind(&req.client_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::Unauthorized {
+        message: "invalid_device_code".to_string(),
+        docs_hint: Some("Restart device authorization flow.".to_string()),
+    })?;
+
+    if Utc::now() > row.expires_at {
+        let _ = sqlx::query(
+            "UPDATE oauth_device_codes SET status = 'expired', updated_at = NOW() \
+             WHERE id = $1 AND status IN ('pending', 'approved')",
+        )
+        .bind(row.id)
+        .execute(&state.db)
+        .await;
+
+        return Err(AppError::Validation {
+            message: "expired_token".to_string(),
+            field: None,
+            received: None,
+            docs_hint: Some("Restart device authorization flow.".to_string()),
+        });
+    }
+
+    if row.status == "pending" {
+        if let Some(last_polled_at) = row.last_polled_at {
+            let min_next = last_polled_at + Duration::seconds(row.interval_seconds as i64);
+            if Utc::now() < min_next {
+                return Err(AppError::Validation {
+                    message: "slow_down".to_string(),
+                    field: Some("interval".to_string()),
+                    received: Some(serde_json::Value::Number(serde_json::Number::from(
+                        row.interval_seconds,
+                    ))),
+                    docs_hint: Some(
+                        "Increase polling interval for device token requests.".to_string(),
+                    ),
+                });
+            }
+        }
+
+        let _ = sqlx::query(
+            "UPDATE oauth_device_codes \
+             SET poll_count = $2, last_polled_at = NOW(), updated_at = NOW() \
+             WHERE id = $1",
+        )
+        .bind(row.id)
+        .bind(row.poll_count + 1)
+        .execute(&state.db)
+        .await;
+
+        return Err(AppError::Validation {
+            message: "authorization_pending".to_string(),
+            field: None,
+            received: None,
+            docs_hint: Some("User must complete code verification in browser.".to_string()),
+        });
+    }
+
+    if row.status == "denied" {
+        return Err(AppError::Unauthorized {
+            message: "access_denied".to_string(),
+            docs_hint: Some("Device authorization was denied by the user.".to_string()),
+        });
+    }
+
+    if row.status == "consumed" {
+        return Err(AppError::Unauthorized {
+            message: "invalid_grant".to_string(),
+            docs_hint: Some("Device code has already been consumed.".to_string()),
+        });
+    }
+
+    if row.status != "approved" {
+        return Err(AppError::Unauthorized {
+            message: "invalid_grant".to_string(),
+            docs_hint: Some("Device code is not in an approvable state.".to_string()),
+        });
+    }
+
+    let user_id = row.approved_user_id.ok_or_else(|| AppError::Unauthorized {
+        message: "invalid_grant".to_string(),
+        docs_hint: Some("Missing approved user for device grant.".to_string()),
+    })?;
+
+    let consumed = sqlx::query(
+        "UPDATE oauth_device_codes \
+         SET status = 'consumed', updated_at = NOW() \
+         WHERE id = $1 AND status = 'approved'",
+    )
+    .bind(row.id)
+    .execute(&state.db)
+    .await
+    .map_err(AppError::Database)?;
+
+    if consumed.rows_affected() == 0 {
+        return Err(AppError::Unauthorized {
+            message: "invalid_grant".to_string(),
+            docs_hint: Some("Device code already consumed.".to_string()),
+        });
+    }
+
+    let scopes = normalize_scopes(row.scopes);
+    let effective_scopes = if scopes.is_empty() {
+        default_agent_token_scopes()
+    } else {
+        scopes
+    };
+
+    issue_tokens(&state.db, user_id, &row.client_id, effective_scopes).await
+}
+
+// ──────────────────────────────────────────────
+// OIDC login/linking (Google + Apple)
+// ──────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct OidcLoginRequest {
+    pub id_token: String,
+    #[serde(default)]
+    pub client_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OidcJwks {
+    keys: Vec<OidcJwk>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OidcJwk {
+    kid: Option<String>,
+    n: String,
+    e: String,
+    alg: Option<String>,
+    kty: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OidcClaims {
+    sub: String,
+    email: Option<String>,
+    #[serde(default)]
+    email_verified: Option<serde_json::Value>,
+}
+
+struct OidcProviderConfig {
+    provider: &'static str,
+    issuers: &'static [&'static str],
+    jwks_uri: &'static str,
+    client_id_env: &'static str,
+}
+
+fn oidc_provider_config(provider: &str) -> Result<OidcProviderConfig, AppError> {
+    match provider {
+        "google" => Ok(OidcProviderConfig {
+            provider: "google",
+            issuers: &["https://accounts.google.com", "accounts.google.com"],
+            jwks_uri: "https://www.googleapis.com/oauth2/v3/certs",
+            client_id_env: "KURA_OIDC_GOOGLE_CLIENT_ID",
+        }),
+        "apple" => Ok(OidcProviderConfig {
+            provider: "apple",
+            issuers: &["https://appleid.apple.com"],
+            jwks_uri: "https://appleid.apple.com/auth/keys",
+            client_id_env: "KURA_OIDC_APPLE_CLIENT_ID",
+        }),
+        _ => Err(AppError::Validation {
+            message: "provider must be 'google' or 'apple'".to_string(),
+            field: Some("provider".to_string()),
+            received: Some(serde_json::Value::String(provider.to_string())),
+            docs_hint: Some(
+                "Use /v1/auth/oidc/google/login or /v1/auth/oidc/apple/login.".to_string(),
+            ),
+        }),
+    }
+}
+
+fn oidc_email_verified(value: &Option<serde_json::Value>) -> bool {
+    match value {
+        Some(serde_json::Value::Bool(v)) => *v,
+        Some(serde_json::Value::String(v)) => v.eq_ignore_ascii_case("true"),
+        _ => false,
+    }
+}
+
+async fn verify_oidc_id_token(
+    id_token: &str,
+    provider: &OidcProviderConfig,
+) -> Result<OidcClaims, AppError> {
+    let expected_client_id = std::env::var(provider.client_id_env).map_err(|_| {
+        AppError::Internal(format!(
+            "{} must be set for OIDC login",
+            provider.client_id_env
+        ))
+    })?;
+
+    let header = decode_header(id_token).map_err(|_| AppError::Unauthorized {
+        message: "invalid_oidc_id_token".to_string(),
+        docs_hint: Some("ID token header could not be parsed.".to_string()),
+    })?;
+    let kid = header.kid.ok_or_else(|| AppError::Unauthorized {
+        message: "invalid_oidc_id_token".to_string(),
+        docs_hint: Some("ID token is missing key id (kid).".to_string()),
+    })?;
+
+    let jwks: OidcJwks = reqwest::Client::new()
+        .get(provider.jwks_uri)
+        .send()
+        .await
+        .map_err(|_| AppError::Unauthorized {
+            message: "oidc_jwks_unavailable".to_string(),
+            docs_hint: Some("OIDC provider JWKS endpoint unavailable.".to_string()),
+        })?
+        .error_for_status()
+        .map_err(|_| AppError::Unauthorized {
+            message: "oidc_jwks_unavailable".to_string(),
+            docs_hint: Some("OIDC provider JWKS returned non-success status.".to_string()),
+        })?
+        .json()
+        .await
+        .map_err(|_| AppError::Unauthorized {
+            message: "oidc_jwks_invalid".to_string(),
+            docs_hint: Some("OIDC provider JWKS response was invalid.".to_string()),
+        })?;
+
+    let jwk = jwks
+        .keys
+        .into_iter()
+        .find(|k| {
+            k.kid.as_deref() == Some(kid.as_str())
+                && k.kty.eq_ignore_ascii_case("rsa")
+                && k.alg
+                    .as_deref()
+                    .map(|a| a.eq_ignore_ascii_case("RS256"))
+                    .unwrap_or(true)
+        })
+        .ok_or_else(|| AppError::Unauthorized {
+            message: "oidc_signing_key_not_found".to_string(),
+            docs_hint: Some("No matching OIDC signing key for token header kid.".to_string()),
+        })?;
+
+    let decoding_key =
+        DecodingKey::from_rsa_components(&jwk.n, &jwk.e).map_err(|_| AppError::Unauthorized {
+            message: "oidc_signing_key_invalid".to_string(),
+            docs_hint: Some("OIDC signing key could not be used for verification.".to_string()),
+        })?;
+
+    let mut validation = Validation::new(Algorithm::RS256);
+    validation.set_audience(&[expected_client_id]);
+    validation.set_issuer(provider.issuers);
+    validation.validate_exp = true;
+
+    let token_data = decode::<OidcClaims>(id_token, &decoding_key, &validation).map_err(|_| {
+        AppError::Unauthorized {
+            message: "invalid_oidc_id_token".to_string(),
+            docs_hint: Some("OIDC ID token failed signature or claim validation.".to_string()),
+        }
+    })?;
+
+    if token_data.claims.sub.trim().is_empty() {
+        return Err(AppError::Unauthorized {
+            message: "invalid_oidc_subject".to_string(),
+            docs_hint: Some("OIDC token did not contain a valid subject claim.".to_string()),
+        });
+    }
+
+    Ok(token_data.claims)
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/auth/oidc/{provider}/login",
+    params(("provider" = String, Path, description = "OIDC provider: google|apple")),
+    request_body = OidcLoginRequest,
+    responses(
+        (status = 200, description = "OIDC login successful, tokens issued", body = TokenResponse),
+        (status = 400, description = "Validation error", body = kura_core::error::ApiError),
+        (status = 401, description = "Invalid OIDC token", body = kura_core::error::ApiError)
+    ),
+    tag = "auth"
+)]
+pub async fn oidc_login(
+    Path(provider): Path<String>,
+    State(state): State<AppState>,
+    Json(req): Json<OidcLoginRequest>,
+) -> Result<Json<TokenResponse>, AppError> {
+    if req.id_token.trim().is_empty() {
+        return Err(AppError::Validation {
+            message: "id_token is required".to_string(),
+            field: Some("id_token".to_string()),
+            received: None,
+            docs_hint: Some("Pass a provider-issued OIDC id_token.".to_string()),
+        });
+    }
+
+    let provider = provider.trim().to_lowercase();
+    let provider_cfg = oidc_provider_config(&provider)?;
+    let claims = verify_oidc_id_token(req.id_token.trim(), &provider_cfg).await?;
+    let provider_subject = claims.sub.trim().to_string();
+    let verified_email_norm = claims
+        .email
+        .as_deref()
+        .map(normalize_email)
+        .filter(|email| !email.is_empty())
+        .filter(|_| oidc_email_verified(&claims.email_verified));
+    let mut tx = state.db.begin().await?;
+
+    let existing_provider_user = sqlx::query_scalar::<_, Uuid>(
+        "SELECT user_id FROM user_identities WHERE provider = $1 AND provider_subject = $2",
+    )
+    .bind(provider_cfg.provider)
+    .bind(&provider_subject)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+
+    let user_id = if let Some(user_id) = existing_provider_user {
+        if let Some(email_norm) = verified_email_norm.as_deref() {
+            let _ = sqlx::query(
+                "UPDATE user_identities \
+                 SET email_norm = $3, email_verified_at = NOW(), updated_at = NOW() \
+                 WHERE provider = $1 AND provider_subject = $2",
+            )
+            .bind(provider_cfg.provider)
+            .bind(&provider_subject)
+            .bind(email_norm)
+            .execute(&mut *tx)
+            .await;
+        }
+        user_id
+    } else {
+        let email_norm = if let Some(email_norm) = verified_email_norm.as_deref() {
+            email_norm.to_string()
+        } else {
+            return Err(AppError::Unauthorized {
+                message: "oidc_verified_email_required_for_first_link".to_string(),
+                docs_hint: Some(
+                    "First-time provider linking requires a verified email claim from the identity provider."
+                        .to_string(),
+                ),
+            });
+        };
+
+        let by_identity_email = sqlx::query_scalar::<_, Uuid>(
+            "SELECT DISTINCT user_id \
+             FROM user_identities \
+             WHERE email_norm = $1 AND email_verified_at IS NOT NULL \
+             LIMIT 2",
+        )
+        .bind(&email_norm)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+        if by_identity_email.len() > 1 {
+            return Err(AppError::Validation {
+                message: "ambiguous_email_identity".to_string(),
+                field: Some("email".to_string()),
+                received: Some(serde_json::Value::String(email_norm)),
+                docs_hint: Some(
+                    "Multiple accounts map to this email. Manual account linking required."
+                        .to_string(),
+                ),
+            });
+        }
+
+        if let Some(existing_user_id) = by_identity_email.first().copied() {
+            existing_user_id
+        } else if let Some(existing_user_id) =
+            sqlx::query_scalar::<_, Uuid>("SELECT id FROM users WHERE email = $1")
+                .bind(&email_norm)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(AppError::Database)?
+        {
+            existing_user_id
+        } else {
+            let new_user_id = Uuid::now_v7();
+            let bootstrap_secret = format!("oidc-disabled-password-{}", Uuid::now_v7());
+            let password_hash =
+                auth::hash_password(&bootstrap_secret).map_err(AppError::Internal)?;
+
+            sqlx::query(
+                "INSERT INTO users (id, email, password_hash, display_name) VALUES ($1, $2, $3, NULL)",
+            )
+            .bind(new_user_id)
+            .bind(&email_norm)
+            .bind(&password_hash)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+
+            new_user_id
+        }
+    };
+
+    let is_active = sqlx::query_scalar::<_, bool>("SELECT is_active FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(AppError::Database)?
+        .ok_or_else(|| AppError::Unauthorized {
+            message: "invalid_grant".to_string(),
+            docs_hint: Some("OIDC identity mapped to a missing account.".to_string()),
+        })?;
+    if !is_active {
+        return Err(AppError::Unauthorized {
+            message: "account_inactive".to_string(),
+            docs_hint: Some("This account is inactive.".to_string()),
+        });
+    }
+
+    let identity_email = verified_email_norm.as_deref();
+    let inserted = sqlx::query(
+        "INSERT INTO user_identities \
+         (user_id, provider, provider_subject, email_norm, email_verified_at) \
+         VALUES ($1, $2, $3, $4, CASE WHEN $4 IS NULL THEN NULL ELSE NOW() END) \
+         ON CONFLICT (provider, provider_subject) DO NOTHING",
+    )
+    .bind(user_id)
+    .bind(provider_cfg.provider)
+    .bind(&provider_subject)
+    .bind(identity_email)
+    .execute(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+
+    if inserted.rows_affected() == 0 {
+        let existing_user_id = sqlx::query_scalar::<_, Uuid>(
+            "SELECT user_id FROM user_identities WHERE provider = $1 AND provider_subject = $2",
+        )
+        .bind(provider_cfg.provider)
+        .bind(&provider_subject)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+        if existing_user_id != user_id {
+            return Err(AppError::Forbidden {
+                message: "identity_already_linked".to_string(),
+                docs_hint: Some(
+                    "This provider identity is already linked to a different account.".to_string(),
+                ),
+            });
+        }
+    }
+
+    sqlx::query(
+        "INSERT INTO analysis_subjects (user_id, analysis_subject_id) \
+         VALUES ($1, 'asub_' || replace(gen_random_uuid()::text, '-', '')) \
+         ON CONFLICT (user_id) DO NOTHING",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+
+    tx.commit().await.map_err(AppError::Database)?;
+
+    let client_id = req.client_id.unwrap_or_else(|| "kura-web".to_string());
+    validate_oauth_client_for_device(&state.db, &client_id).await?;
+    issue_tokens(&state.db, user_id, &client_id, default_agent_token_scopes()).await
 }
 
 // ──────────────────────────────────────────────
@@ -719,7 +1703,7 @@ async fn issue_tokens(
 }
 
 #[derive(sqlx::FromRow)]
-struct UserRow {
+struct EmailIdentityAuthRow {
     id: Uuid,
     password_hash: String,
 }
@@ -747,7 +1731,11 @@ struct RefreshTokenRow {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppError, is_valid_loopback_redirect, validate_oauth_client};
+    use super::{
+        AppError, generate_user_code, is_valid_loopback_redirect, normalize_email,
+        normalize_user_code, oidc_email_verified, validate_oauth_client,
+    };
+    use serde_json::json;
     use sqlx::postgres::PgPoolOptions;
     use uuid::Uuid;
 
@@ -768,6 +1756,35 @@ mod tests {
             "https://127.0.0.1:3000/callback"
         ));
         assert!(!is_valid_loopback_redirect("http://127.0.0.1:3000/wrong"));
+    }
+
+    #[test]
+    fn normalize_email_trims_and_lowercases() {
+        assert_eq!(
+            normalize_email("  Alice.Example@Mail.TLD  "),
+            "alice.example@mail.tld"
+        );
+    }
+
+    #[test]
+    fn normalize_user_code_removes_separators_and_uppercases() {
+        assert_eq!(normalize_user_code("ab12-cd34"), "AB12CD34");
+        assert_eq!(normalize_user_code(" ab12 cd34 "), "AB12CD34");
+    }
+
+    #[test]
+    fn generate_user_code_uses_expected_shape() {
+        let code = generate_user_code();
+        assert_eq!(code.len(), 9);
+        assert_eq!(code.chars().nth(4), Some('-'));
+    }
+
+    #[test]
+    fn oidc_email_verified_supports_bool_and_string() {
+        assert!(oidc_email_verified(&Some(json!(true))));
+        assert!(oidc_email_verified(&Some(json!("true"))));
+        assert!(!oidc_email_verified(&Some(json!("false"))));
+        assert!(!oidc_email_verified(&None));
     }
 
     async fn db_pool_if_available() -> Option<sqlx::PgPool> {

@@ -12,6 +12,7 @@ use utoipa_swagger_ui::SwaggerUi;
 mod auth;
 mod error;
 mod middleware;
+mod privacy;
 mod routes;
 mod security_profile;
 mod state;
@@ -44,6 +45,11 @@ mod state;
         routes::auth::authorize_form,
         routes::auth::authorize_submit,
         routes::auth::token,
+        routes::auth::device_authorize,
+        routes::auth::device_verify_form,
+        routes::auth::device_verify_submit,
+        routes::auth::device_token,
+        routes::auth::oidc_login,
         routes::projections::snapshot,
         routes::projections::get_projection,
         routes::projections::list_projections,
@@ -54,7 +60,9 @@ mod state;
         routes::projection_rules::archive_projection_rule,
         routes::system::get_system_config,
         routes::account::delete_own_account,
+        routes::account::get_analysis_subject,
         routes::account::admin_delete_user,
+        routes::account::admin_support_reidentify,
         routes::security::get_kill_switch_status,
         routes::security::activate_kill_switch,
         routes::security::deactivate_kill_switch,
@@ -71,6 +79,9 @@ mod state;
     components(schemas(
         HealthResponse,
         routes::account::AccountDeletedResponse,
+        routes::account::AnalysisSubjectResponse,
+        routes::account::SupportReidentifyRequest,
+        routes::account::SupportReidentifyResponse,
         routes::agent::AgentCapabilitiesResponse,
         routes::agent::AgentFallbackContract,
         routes::agent::AgentUpgradePhase,
@@ -124,6 +135,11 @@ mod state;
         routes::auth::RegisterResponse,
         routes::auth::TokenRequest,
         routes::auth::TokenResponse,
+        routes::auth::DeviceAuthorizeRequest,
+        routes::auth::DeviceAuthorizeResponse,
+        routes::auth::DeviceTokenRequest,
+        routes::auth::DeviceVerifySubmit,
+        routes::auth::OidcLoginRequest,
         kura_core::projections::Projection,
         kura_core::projections::ProjectionResponse,
         kura_core::projections::ProjectionMeta,
@@ -263,6 +279,8 @@ async fn main() {
         .merge(routes::auth::register_router().layer(middleware::rate_limit::register_layer()))
         .merge(routes::auth::authorize_router().layer(middleware::rate_limit::authorize_layer()))
         .merge(routes::auth::token_router().layer(middleware::rate_limit::token_layer()))
+        .merge(routes::auth::device_router().layer(middleware::rate_limit::token_layer()))
+        .merge(routes::auth::oidc_router().layer(middleware::rate_limit::authorize_layer()))
         .merge(routes::account::self_router())
         .merge(routes::account::admin_router())
         .merge(routes::security::admin_router())

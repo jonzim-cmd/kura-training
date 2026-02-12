@@ -103,8 +103,12 @@ enum Commands {
         command: commands::admin::AdminCommands,
     },
 
-    /// Authenticate with the Kura API via OAuth (opens browser)
-    Login,
+    /// Authenticate with the Kura API via OAuth
+    Login {
+        /// Use OAuth Device Authorization flow (code entry in browser UI)
+        #[arg(long)]
+        device: bool,
+    },
 
     /// Remove stored credentials
     Logout,
@@ -181,8 +185,8 @@ async fn main() {
 
         Commands::Admin { command } => commands::admin::run(&cli.api_url, command).await,
 
-        Commands::Login => {
-            if let Err(e) = commands::auth::login(&cli.api_url).await {
+        Commands::Login { device } => {
+            if let Err(e) = commands::auth::login(&cli.api_url, device).await {
                 exit_error(&e.to_string(), None);
             }
             0

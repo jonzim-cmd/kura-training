@@ -1,4 +1,6 @@
 use axum::extract::{Path, State};
+use axum::http::{HeaderMap, HeaderValue, header::HeaderName};
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
@@ -9,6 +11,7 @@ use kura_core::projections::{Projection, ProjectionFreshness, ProjectionMeta, Pr
 
 use crate::auth::AuthenticatedUser;
 use crate::error::AppError;
+use crate::privacy::get_or_create_analysis_subject_id;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -75,7 +78,7 @@ impl ProjectionRow {
 pub async fn snapshot(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
-) -> Result<Json<Vec<ProjectionResponse>>, AppError> {
+) -> Result<impl IntoResponse, AppError> {
     let user_id = auth.user_id;
 
     let mut tx = state.db.begin().await?;
@@ -102,7 +105,16 @@ pub async fn snapshot(
     let now = Utc::now();
     let responses: Vec<ProjectionResponse> =
         rows.into_iter().map(|r| r.into_response(now)).collect();
-    Ok(Json(responses))
+    let analysis_subject_id = get_or_create_analysis_subject_id(&state.db, user_id)
+        .await
+        .map_err(AppError::Database)?;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HeaderName::from_static("x-kura-analysis-subject"),
+        HeaderValue::from_str(&analysis_subject_id)
+            .map_err(|e| AppError::Internal(e.to_string()))?,
+    );
+    Ok((headers, Json(responses)))
 }
 
 /// Get a single projection by type and key
@@ -128,7 +140,7 @@ pub async fn get_projection(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     Path((projection_type, key)): Path<(String, String)>,
-) -> Result<Json<ProjectionResponse>, AppError> {
+) -> Result<impl IntoResponse, AppError> {
     let user_id = auth.user_id;
 
     let mut tx = state.db.begin().await?;
@@ -154,16 +166,29 @@ pub async fn get_projection(
 
     tx.commit().await?;
 
+    let analysis_subject_id = get_or_create_analysis_subject_id(&state.db, user_id)
+        .await
+        .map_err(AppError::Database)?;
+    let make_headers = || -> Result<HeaderMap, AppError> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-kura-analysis-subject"),
+            HeaderValue::from_str(&analysis_subject_id)
+                .map_err(|e| AppError::Internal(e.to_string()))?,
+        );
+        Ok(headers)
+    };
+
     let now = Utc::now();
     match row {
-        Some(r) => Ok(Json(r.into_response(now))),
+        Some(r) => Ok((make_headers()?, Json(r.into_response(now))).into_response()),
         // Bootstrap response for new users: return empty profile with
         // onboarding_needed agenda instead of 404 (Decision 8).
         // The full three-layer response becomes available after the first event
         // triggers the Python worker.
         None if projection_type == "user_profile" && key == "me" => {
             let computed_at = now;
-            Ok(Json(ProjectionResponse {
+            Ok((make_headers()?, Json(ProjectionResponse {
                 projection: Projection {
                     id: Uuid::nil(),
                     user_id,
@@ -188,6 +213,7 @@ pub async fn get_projection(
                     freshness: ProjectionFreshness::from_computed_at(computed_at, now),
                 },
             }))
+            .into_response())
         }
         None => Err(AppError::NotFound {
             resource: format!("projection {}/{}", projection_type, key),
@@ -216,7 +242,7 @@ pub async fn list_projections(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     Path(projection_type): Path<String>,
-) -> Result<Json<Vec<ProjectionResponse>>, AppError> {
+) -> Result<impl IntoResponse, AppError> {
     let user_id = auth.user_id;
 
     let mut tx = state.db.begin().await?;
@@ -245,5 +271,14 @@ pub async fn list_projections(
     let now = Utc::now();
     let responses: Vec<ProjectionResponse> =
         rows.into_iter().map(|r| r.into_response(now)).collect();
-    Ok(Json(responses))
+    let analysis_subject_id = get_or_create_analysis_subject_id(&state.db, user_id)
+        .await
+        .map_err(AppError::Database)?;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HeaderName::from_static("x-kura-analysis-subject"),
+        HeaderValue::from_str(&analysis_subject_id)
+            .map_err(|e| AppError::Internal(e.to_string()))?,
+    );
+    Ok((headers, Json(responses)))
 }

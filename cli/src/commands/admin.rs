@@ -38,6 +38,24 @@ pub enum AdminCommands {
         #[arg(long)]
         confirm: bool,
     },
+    /// Audited break-glass identity lookup by user UUID (admin only)
+    SupportReidentify {
+        /// Target user UUID
+        #[arg(long)]
+        user_id: String,
+        /// Mandatory operational reason
+        #[arg(long)]
+        reason: String,
+        /// Incident/support ticket reference
+        #[arg(long)]
+        ticket_id: String,
+        /// Requested mode (identity_lookup|incident_debug)
+        #[arg(long)]
+        requested_mode: Option<String>,
+        /// Optional RFC3339 expiry timestamp for this access grant
+        #[arg(long)]
+        expires_at: Option<String>,
+    },
 }
 
 pub async fn run(api_url: &str, command: AdminCommands) -> i32 {
@@ -54,6 +72,23 @@ pub async fn run(api_url: &str, command: AdminCommands) -> i32 {
         } => create_key(&user_id, &label, expires_in_days).await,
         AdminCommands::DeleteUser { user_id, confirm } => {
             delete_user(api_url, &user_id, confirm).await
+        }
+        AdminCommands::SupportReidentify {
+            user_id,
+            reason,
+            ticket_id,
+            requested_mode,
+            expires_at,
+        } => {
+            support_reidentify(
+                api_url,
+                &user_id,
+                &reason,
+                &ticket_id,
+                requested_mode.as_deref(),
+                expires_at.as_deref(),
+            )
+            .await
         }
     }
 }
@@ -82,23 +117,58 @@ async fn create_user(email: &str, password: &str, display_name: Option<&str>) ->
     };
 
     let user_id = uuid::Uuid::now_v7();
+    let email_norm = email.trim().to_lowercase();
+
+    let mut tx = match pool.begin().await {
+        Ok(tx) => tx,
+        Err(e) => exit_error(&format!("Failed to start transaction: {e}"), None),
+    };
 
     if let Err(e) = sqlx::query(
         "INSERT INTO users (id, email, password_hash, display_name) VALUES ($1, $2, $3, $4)",
     )
     .bind(user_id)
-    .bind(email)
+    .bind(&email_norm)
     .bind(&password_hash)
     .bind(display_name)
-    .execute(&pool)
+    .execute(&mut *tx)
     .await
     {
         exit_error(&format!("Failed to create user: {e}"), None);
     }
 
+    if let Err(e) = sqlx::query(
+        "INSERT INTO user_identities \
+         (user_id, provider, provider_subject, email_norm, email_verified_at) \
+         VALUES ($1, 'email_password', $2, $2, NOW())",
+    )
+    .bind(user_id)
+    .bind(&email_norm)
+    .execute(&mut *tx)
+    .await
+    {
+        exit_error(&format!("Failed to create user identity: {e}"), None);
+    }
+
+    if let Err(e) = sqlx::query(
+        "INSERT INTO analysis_subjects (user_id, analysis_subject_id) \
+         VALUES ($1, 'asub_' || replace(gen_random_uuid()::text, '-', '')) \
+         ON CONFLICT (user_id) DO NOTHING",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await
+    {
+        exit_error(&format!("Failed to create analysis subject: {e}"), None);
+    }
+
+    if let Err(e) = tx.commit().await {
+        exit_error(&format!("Failed to commit user creation: {e}"), None);
+    }
+
     let output = json!({
         "user_id": user_id,
-        "email": email,
+        "email": email_norm,
         "display_name": display_name
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
@@ -191,6 +261,53 @@ async fn delete_user(api_url: &str, user_id: &str, confirm: bool) -> i32 {
         &format!("/v1/admin/users/{user_id}"),
         Some(&token),
         None,
+        &[],
+        &[],
+        false,
+        false,
+    )
+    .await
+}
+
+async fn support_reidentify(
+    api_url: &str,
+    user_id: &str,
+    reason: &str,
+    ticket_id: &str,
+    requested_mode: Option<&str>,
+    expires_at: Option<&str>,
+) -> i32 {
+    let token = match crate::util::resolve_token(api_url).await {
+        Ok(t) => t,
+        Err(e) => exit_error(
+            &e.to_string(),
+            Some("Run `kura login` or set KURA_API_KEY (admin credentials required)"),
+        ),
+    };
+
+    let user_id = match uuid::Uuid::parse_str(user_id) {
+        Ok(v) => v,
+        Err(e) => exit_error(&format!("Invalid user UUID: {e}"), None),
+    };
+
+    let mut body = json!({
+        "user_id": user_id,
+        "reason": reason,
+        "ticket_id": ticket_id,
+    });
+    if let Some(mode) = requested_mode {
+        body["requested_mode"] = json!(mode);
+    }
+    if let Some(expires) = expires_at {
+        body["expires_at"] = json!(expires);
+    }
+
+    api_request(
+        api_url,
+        reqwest::Method::POST,
+        "/v1/admin/support/reidentify",
+        Some(&token),
+        Some(body),
         &[],
         &[],
         false,

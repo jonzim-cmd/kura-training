@@ -1,8 +1,26 @@
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::util::{StoredCredentials, TokenResponse, client, config_path, save_credentials};
 
-pub async fn login(api_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+#[derive(Debug, Deserialize)]
+struct DeviceAuthorizeResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    verification_uri_complete: String,
+    expires_in: i64,
+    interval: i32,
+}
+
+pub async fn login(api_url: &str, device: bool) -> Result<(), Box<dyn std::error::Error>> {
+    if device {
+        return login_device(api_url).await;
+    }
+    login_browser(api_url).await
+}
+
+async fn login_browser(api_url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let code_verifier = kura_core::auth::generate_code_verifier();
     let code_challenge = kura_core::auth::generate_code_challenge(&code_verifier);
     let state = kura_core::auth::generate_code_verifier(); // reuse for random state
@@ -82,6 +100,111 @@ pub async fn login(api_url: &str) -> Result<(), Box<dyn std::error::Error>> {
     });
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
+}
+
+async fn login_device(api_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client()
+        .post(format!("{api_url}/v1/auth/device/authorize"))
+        .json(&json!({
+            "client_id": "kura-cli",
+            "scope": ["agent:read", "agent:write", "agent:resolve"]
+        }))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let body: serde_json::Value = resp.json().await?;
+        return Err(format!(
+            "Device authorization start failed: {}",
+            serde_json::to_string_pretty(&body)?
+        )
+        .into());
+    }
+
+    let device: DeviceAuthorizeResponse = resp.json().await?;
+    eprintln!("Open this URL to authenticate your device:");
+    eprintln!("{}", device.verification_uri_complete);
+    eprintln!(
+        "Or open {} and enter code {}",
+        device.verification_uri, device.user_code
+    );
+    let _ = open::that(&device.verification_uri_complete);
+
+    let timeout = chrono::Duration::seconds(device.expires_in.max(30));
+    let deadline = chrono::Utc::now() + timeout;
+    let mut poll_interval = std::time::Duration::from_secs(device.interval.max(2) as u64);
+
+    loop {
+        if chrono::Utc::now() >= deadline {
+            return Err(
+                "Device authorization timed out. Start `kura login --device` again.".into(),
+            );
+        }
+
+        let poll_resp = client()
+            .post(format!("{api_url}/v1/auth/device/token"))
+            .json(&json!({
+                "device_code": device.device_code,
+                "client_id": "kura-cli"
+            }))
+            .send()
+            .await?;
+
+        if poll_resp.status().is_success() {
+            let token_resp: TokenResponse = poll_resp.json().await?;
+            let creds = StoredCredentials {
+                api_url: api_url.to_string(),
+                access_token: token_resp.access_token,
+                refresh_token: token_resp.refresh_token,
+                expires_at: chrono::Utc::now() + chrono::Duration::seconds(token_resp.expires_in),
+            };
+            save_credentials(&creds)?;
+
+            let output = json!({
+                "status": "authenticated",
+                "method": "device_code",
+                "expires_at": creds.expires_at,
+                "config_path": config_path().to_string_lossy()
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+            return Ok(());
+        }
+
+        let body: serde_json::Value = poll_resp
+            .json()
+            .await
+            .unwrap_or_else(|_| json!({"message":"unknown_error"}));
+        let message = body
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+
+        match message {
+            "authorization_pending" => {
+                tokio::time::sleep(poll_interval).await;
+            }
+            "slow_down" => {
+                poll_interval += std::time::Duration::from_secs(2);
+                tokio::time::sleep(poll_interval).await;
+            }
+            "expired_token" => {
+                return Err("Device code expired. Start `kura login --device` again.".into());
+            }
+            "access_denied" => {
+                return Err("Device authorization denied.".into());
+            }
+            "invalid_device_code" | "invalid_grant" => {
+                return Err("Device authorization invalid or already consumed.".into());
+            }
+            _ => {
+                return Err(format!(
+                    "Device token polling failed: {}",
+                    serde_json::to_string_pretty(&body)?
+                )
+                .into());
+            }
+        }
+    }
 }
 
 async fn wait_for_callback(

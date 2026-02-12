@@ -31,3 +31,5 @@ tower_governor = { workspace = true }
 governor = { workspace = true }
 strsim = { workspace = true }
 regex = { workspace = true }
+jsonwebtoken = "10.3.0"
+reqwest.workspace = true

@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderValue, header::HeaderName};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -18,6 +19,7 @@ use kura_core::events::{
 
 use crate::auth::AuthenticatedUser;
 use crate::error::AppError;
+use crate::privacy::get_or_create_analysis_subject_id;
 use crate::state::AppState;
 
 pub fn write_router() -> Router<AppState> {
@@ -1815,7 +1817,7 @@ pub async fn list_events(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     Query(params): Query<ListEventsParams>,
-) -> Result<Json<PaginatedResponse<Event>>, AppError> {
+) -> Result<impl IntoResponse, AppError> {
     let user_id = auth.user_id;
 
     let limit = params.limit.unwrap_or(50).min(200).max(1);
@@ -1940,11 +1942,25 @@ pub async fn list_events(
         None
     };
 
-    Ok(Json(PaginatedResponse {
-        data: events,
-        next_cursor,
-        has_more,
-    }))
+    let analysis_subject_id = get_or_create_analysis_subject_id(&state.db, user_id)
+        .await
+        .map_err(AppError::Database)?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HeaderName::from_static("x-kura-analysis-subject"),
+        HeaderValue::from_str(&analysis_subject_id)
+            .map_err(|e| AppError::Internal(e.to_string()))?,
+    );
+
+    Ok((
+        headers,
+        Json(PaginatedResponse {
+            data: events,
+            next_cursor,
+            has_more,
+        }),
+    ))
 }
 
 /// Cursor is base64("timestamp\0id") — opaque to the client, stable for pagination
