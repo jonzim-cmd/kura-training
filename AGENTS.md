@@ -25,6 +25,38 @@ scripts/bd-safe.sh close <id>         # Complete work
 scripts/bd-safe.sh sync               # Sync with git
 ```
 
+## Environment Setup
+
+**MANDATORY**: Before running any commands, load the project environment:
+```bash
+set -a && source .env && set +a
+```
+This sets `DATABASE_URL` and other required variables from the project `.env` file.
+
+## Quality Gates
+
+Before completing any task that changed code, run ALL applicable gates:
+```bash
+# Load environment first
+set -a && source .env && set +a
+
+# Python lint
+ruff check workers/src/ workers/tests/
+
+# Python unit tests (no DB needed)
+PYTHONPATH=workers/src uv run --project workers python -m pytest workers/tests/ -q --ignore=workers/tests/test_integration.py
+
+# Python integration tests (needs DATABASE_URL + running PostgreSQL)
+PYTHONPATH=workers/src uv run --project workers python -m pytest workers/tests/test_integration.py -q
+
+# Rust tests
+cargo test --workspace
+```
+
+If integration tests show "skipped", `DATABASE_URL` is not set. Re-run `set -a && source .env && set +a` and retry.
+
+**CI/sandbox environments** without a running PostgreSQL can use `bash scripts/codex-setup.sh` to install and configure one.
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
