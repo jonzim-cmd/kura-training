@@ -1,9 +1,7 @@
-mod commands;
-mod util;
-
 use clap::{Parser, Subcommand};
 
-use util::{exit_error, resolve_token};
+use kura_cli::commands;
+use kura_cli::util::{exit_error, resolve_token};
 
 #[derive(Parser)]
 #[command(

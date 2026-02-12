@@ -1,0 +1,15 @@
+[package]
+name = "kura-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kura-mcp"
+path = "src/main.rs"
+
+[dependencies]
+kura-cli = { path = "../cli" }
+clap = { workspace = true }
+tokio = { workspace = true }
+dotenvy = { workspace = true }
