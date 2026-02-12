@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -355,6 +355,8 @@ pub struct AgentSessionAuditSummary {
     pub mismatch_detected: usize,
     pub mismatch_repaired: usize,
     pub mismatch_unresolved: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mismatch_classes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clarification_question: Option<String>,
 }
@@ -2221,6 +2223,29 @@ const SESSION_AUDIT_MENTION_BOUND_FIELDS: [&str; 4] = ["rest_seconds", "tempo", 
 const SESSION_AUDIT_INVARIANT_ID: &str = "INV-008";
 const EVIDENCE_PARSER_VERSION: &str = "mention_parser.v1";
 const EVIDENCE_CLAIM_EVENT_TYPE: &str = "evidence.claim.logged";
+const AUDIT_CLASS_MISSING_MENTION_FIELD: &str = "missing_mention_bound_field";
+const AUDIT_CLASS_SCALE_NORMALIZED_TO_FIVE: &str = "scale_normalized_to_five";
+const AUDIT_CLASS_SCALE_OUT_OF_BOUNDS: &str = "scale_out_of_bounds";
+const AUDIT_CLASS_NARRATIVE_CONTRADICTION: &str = "narrative_structured_contradiction";
+const AUDIT_CLASS_UNSUPPORTED_INFERRED: &str = "unsupported_inferred_value";
+const SESSION_FEEDBACK_CONTEXT_KEYS: [&str; 6] = [
+    "context",
+    "context_text",
+    "summary",
+    "comment",
+    "notes",
+    "feeling",
+];
+const SESSION_POSITIVE_HINTS: [&str; 9] = [
+    "good", "great", "fun", "strong", "solid", "leicht", "easy", "well", "locker",
+];
+const SESSION_NEGATIVE_HINTS: [&str; 10] = [
+    "bad", "terrible", "schlecht", "pain", "hurt", "injury", "müde", "tired", "awful", "weak",
+];
+const SESSION_EASY_HINTS: [&str; 5] = ["easy", "leicht", "locker", "chill", "smooth"];
+const SESSION_HARD_HINTS: [&str; 8] = [
+    "hard", "brutal", "tough", "exhausting", "all-out", "maxed", "heavy", "grindy",
+];
 
 static TEMPO_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\btempo\s*[:=]?\s*(\d-[\dx]-[\dx]-[\dx])\b").expect("valid tempo regex")
@@ -2668,12 +2693,55 @@ fn canonical_mention_value(value: &Value) -> String {
         .unwrap_or_else(|| value.to_string())
 }
 
+fn extract_session_feedback_context(event: &CreateEventRequest) -> Option<String> {
+    for key in SESSION_FEEDBACK_CONTEXT_KEYS {
+        if let Some(text) = event.data.get(key).and_then(Value::as_str) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_lowercase());
+            }
+        }
+    }
+    None
+}
+
+fn extract_feedback_scale_value(event: &CreateEventRequest, field: &str) -> Option<f64> {
+    event.data.get(field).and_then(Value::as_f64)
+}
+
+fn contains_any_hint(text: &str, hints: &[&str]) -> bool {
+    hints.iter().any(|hint| text.contains(hint))
+}
+
+fn has_unsupported_inferred_value(event: &CreateEventRequest, field: &str) -> bool {
+    let source_key = format!("{field}_source");
+    let evidence_key = format!("{field}_evidence_claim_id");
+    let is_inferred = event
+        .data
+        .get(source_key.as_str())
+        .and_then(Value::as_str)
+        .map(|value| value.eq_ignore_ascii_case("inferred"))
+        .unwrap_or(false);
+    if !is_inferred {
+        return false;
+    }
+    event.data
+        .get(evidence_key.as_str())
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+}
+
 fn audit_field_label(field: &str) -> &'static str {
     match field {
         "rest_seconds" => "Satzpause",
         "tempo" => "Tempo",
         "rir" => "RIR",
         "set_type" => "Satztyp",
+        "enjoyment" => "Session-Freude",
+        "perceived_quality" => "Session-Qualität",
+        "perceived_exertion" => "Session-Anstrengung",
         _ => "Feld",
     }
 }
@@ -2966,6 +3034,7 @@ fn build_save_claim_checked_event(
             "mismatch_detected": session_audit.mismatch_detected,
             "mismatch_repaired": session_audit.mismatch_repaired,
             "mismatch_unresolved": session_audit.mismatch_unresolved,
+            "mismatch_classes": session_audit.mismatch_classes,
             "clarification_question": session_audit.clarification_question,
         },
     });
@@ -3409,6 +3478,7 @@ fn build_session_audit_learning_signal_event(
             "mismatch_detected": summary.mismatch_detected,
             "mismatch_repaired": summary.mismatch_repaired,
             "mismatch_unresolved": summary.mismatch_unresolved,
+            "mismatch_classes": summary.mismatch_classes,
             "clarification_needed": summary.clarification_question.is_some(),
         },
     });
@@ -3437,57 +3507,231 @@ fn build_session_audit_artifacts(
     let mut mismatch_detected = 0usize;
     let mut mismatch_repaired = 0usize;
     let mut mismatch_unresolved = 0usize;
+    let mut mismatch_classes: BTreeMap<String, ()> = BTreeMap::new();
     let mut unresolved: Vec<SessionAuditUnresolved> = Vec::new();
     let mut repair_fields_by_target: BTreeMap<Uuid, BTreeMap<String, Value>> = BTreeMap::new();
     let mut session_id_by_target: HashMap<Uuid, Option<String>> = HashMap::new();
+    let mut session_feedback_repair_events: Vec<CreateEventRequest> = Vec::new();
 
     for (index, event) in requested_events.iter().enumerate() {
-        if event.event_type.trim().to_lowercase() != "set.logged" {
-            continue;
-        }
+        let event_type = event.event_type.trim().to_lowercase();
         let Some(receipt) = requested_receipts.get(index) else {
             continue;
         };
 
-        let mut mentions_by_field: HashMap<String, BTreeMap<String, Value>> = HashMap::new();
-        for text in event_text_candidates(event) {
-            for (field, value) in extract_set_context_mentions_from_text(text) {
-                let canonical = canonical_mention_value(&value);
-                mentions_by_field
-                    .entry(field.to_string())
-                    .or_default()
-                    .entry(canonical)
-                    .or_insert(value);
+        if event_type == "set.logged" {
+            let mut mentions_by_field: HashMap<String, BTreeMap<String, Value>> = HashMap::new();
+            for text in event_text_candidates(event) {
+                for (field, value) in extract_set_context_mentions_from_text(text) {
+                    let canonical = canonical_mention_value(&value);
+                    mentions_by_field
+                        .entry(field.to_string())
+                        .or_default()
+                        .entry(canonical)
+                        .or_insert(value);
+                }
+            }
+
+            for field in SESSION_AUDIT_MENTION_BOUND_FIELDS {
+                let Some(candidates) = mentions_by_field.get(field) else {
+                    continue;
+                };
+                if event_structured_field_present(event, field) {
+                    continue;
+                }
+
+                mismatch_detected += 1;
+                mismatch_classes.insert(AUDIT_CLASS_MISSING_MENTION_FIELD.to_string(), ());
+                if candidates.len() == 1 && auto_repair_allowed {
+                    let value = candidates.values().next().cloned().unwrap_or(Value::Null);
+                    repair_fields_by_target
+                        .entry(receipt.event_id)
+                        .or_default()
+                        .insert(field.to_string(), value);
+                    session_id_by_target
+                        .entry(receipt.event_id)
+                        .or_insert_with(|| event.metadata.session_id.clone());
+                    mismatch_repaired += 1;
+                    continue;
+                }
+
+                mismatch_unresolved += 1;
+                unresolved.push(SessionAuditUnresolved {
+                    exercise_label: exercise_label_for_event(event),
+                    field: field.to_string(),
+                    candidates: candidates.keys().cloned().collect(),
+                });
+            }
+
+            continue;
+        }
+
+        if event_type != "session.completed" {
+            continue;
+        }
+
+        let mut normalized_updates: BTreeMap<String, Value> = BTreeMap::new();
+        for (field, max_scale, allow_ten_to_five) in [
+            ("enjoyment", 5.0_f64, true),
+            ("perceived_quality", 5.0_f64, true),
+            ("perceived_exertion", 10.0_f64, false),
+        ] {
+            if let Some(raw) = extract_feedback_scale_value(event, field) {
+                if allow_ten_to_five && raw > 5.0 && raw <= 10.0 {
+                    mismatch_detected += 1;
+                    mismatch_classes.insert(AUDIT_CLASS_SCALE_NORMALIZED_TO_FIVE.to_string(), ());
+                    let normalized = round_to_two(raw / 2.0);
+                    if auto_repair_allowed {
+                        normalized_updates.insert(field.to_string(), json!(normalized));
+                        mismatch_repaired += 1;
+                    } else {
+                        mismatch_unresolved += 1;
+                        unresolved.push(SessionAuditUnresolved {
+                            exercise_label: "Session-Feedback".to_string(),
+                            field: field.to_string(),
+                            candidates: vec![format!("{normalized:.2}")],
+                        });
+                    }
+                } else if raw < 1.0 || raw > max_scale {
+                    mismatch_detected += 1;
+                    mismatch_unresolved += 1;
+                    mismatch_classes.insert(AUDIT_CLASS_SCALE_OUT_OF_BOUNDS.to_string(), ());
+                    unresolved.push(SessionAuditUnresolved {
+                        exercise_label: "Session-Feedback".to_string(),
+                        field: field.to_string(),
+                        candidates: vec![format!("{raw:.2}")],
+                    });
+                }
+            }
+
+            if has_unsupported_inferred_value(event, field) {
+                mismatch_detected += 1;
+                mismatch_unresolved += 1;
+                mismatch_classes.insert(AUDIT_CLASS_UNSUPPORTED_INFERRED.to_string(), ());
+                let inferred_value = event
+                    .data
+                    .get(field)
+                    .map(canonical_mention_value)
+                    .unwrap_or_else(|| "inferred".to_string());
+                unresolved.push(SessionAuditUnresolved {
+                    exercise_label: "Session-Feedback".to_string(),
+                    field: field.to_string(),
+                    candidates: vec![inferred_value],
+                });
             }
         }
 
-        for field in SESSION_AUDIT_MENTION_BOUND_FIELDS {
-            let Some(candidates) = mentions_by_field.get(field) else {
-                continue;
-            };
-            if event_structured_field_present(event, field) {
-                continue;
+        if let Some(context) = extract_session_feedback_context(event) {
+            let has_positive = contains_any_hint(&context, &SESSION_POSITIVE_HINTS);
+            let has_negative = contains_any_hint(&context, &SESSION_NEGATIVE_HINTS);
+            let has_easy = contains_any_hint(&context, &SESSION_EASY_HINTS);
+            let has_hard = contains_any_hint(&context, &SESSION_HARD_HINTS);
+
+            for field in ["enjoyment", "perceived_quality"] {
+                if let Some(value) = extract_feedback_scale_value(event, field) {
+                    let contradicts = (value >= 4.0 && has_negative) || (value <= 2.5 && has_positive);
+                    if contradicts {
+                        mismatch_detected += 1;
+                        mismatch_unresolved += 1;
+                        mismatch_classes
+                            .insert(AUDIT_CLASS_NARRATIVE_CONTRADICTION.to_string(), ());
+                        unresolved.push(SessionAuditUnresolved {
+                            exercise_label: "Session-Feedback".to_string(),
+                            field: field.to_string(),
+                            candidates: vec![format!("{value:.2}")],
+                        });
+                    }
+                }
             }
 
-            mismatch_detected += 1;
-            if candidates.len() == 1 && auto_repair_allowed {
-                let value = candidates.values().next().cloned().unwrap_or(Value::Null);
-                repair_fields_by_target
-                    .entry(receipt.event_id)
-                    .or_default()
-                    .insert(field.to_string(), value);
-                session_id_by_target
-                    .entry(receipt.event_id)
-                    .or_insert_with(|| event.metadata.session_id.clone());
-                mismatch_repaired += 1;
-                continue;
+            if let Some(exertion) = extract_feedback_scale_value(event, "perceived_exertion") {
+                let contradicts = (exertion >= 8.0 && has_easy) || (exertion <= 4.0 && has_hard);
+                if contradicts {
+                    mismatch_detected += 1;
+                    mismatch_unresolved += 1;
+                    mismatch_classes.insert(AUDIT_CLASS_NARRATIVE_CONTRADICTION.to_string(), ());
+                    unresolved.push(SessionAuditUnresolved {
+                        exercise_label: "Session-Feedback".to_string(),
+                        field: "perceived_exertion".to_string(),
+                        candidates: vec![format!("{exertion:.2}")],
+                    });
+                }
             }
+        }
 
-            mismatch_unresolved += 1;
-            unresolved.push(SessionAuditUnresolved {
-                exercise_label: exercise_label_for_event(event),
-                field: field.to_string(),
-                candidates: candidates.keys().cloned().collect(),
+        if auto_repair_allowed && !normalized_updates.is_empty() {
+            let mut normalized_seed = normalized_updates
+                .iter()
+                .map(|(field, value)| format!("{field}:{}", canonical_mention_value(value)))
+                .collect::<Vec<_>>();
+            normalized_seed.sort();
+            let seed = format!(
+                "session_feedback_audit|{}|{}",
+                receipt.event_id,
+                normalized_seed.join("|")
+            );
+            let retract_key = format!("session-audit-retract-{}", stable_hash_suffix(&seed, 20));
+            let replace_key = format!(
+                "session-audit-replacement-{}",
+                stable_hash_suffix(&(seed.clone() + "|replace"), 20)
+            );
+            let session_id = event
+                .metadata
+                .session_id
+                .clone()
+                .or_else(|| Some("session_audit".to_string()));
+
+            session_feedback_repair_events.push(CreateEventRequest {
+                timestamp: Utc::now(),
+                event_type: "event.retracted".to_string(),
+                data: serde_json::json!({
+                    "retracted_event_id": receipt.event_id,
+                    "retracted_event_type": "session.completed",
+                    "reason": "Session audit deterministic scale normalization."
+                }),
+                metadata: EventMetadata {
+                    source: Some("agent_write_with_proof".to_string()),
+                    agent: Some("api".to_string()),
+                    device: None,
+                    session_id: session_id.clone(),
+                    idempotency_key: retract_key,
+                },
+            });
+
+            let mut replacement_payload = event
+                .data
+                .as_object()
+                .cloned()
+                .unwrap_or_else(serde_json::Map::new);
+            for (field, value) in normalized_updates {
+                replacement_payload.insert(field, value);
+            }
+            replacement_payload.insert(
+                "repair_provenance".to_string(),
+                serde_json::json!({
+                    "source_type": "inferred",
+                    "confidence": 0.98,
+                    "confidence_band": "high",
+                    "applies_scope": "session",
+                    "reason": "Session audit deterministic scale normalization (1..10 -> 1..5)."
+                }),
+            );
+            replacement_payload.insert(
+                "audit_repair_of_event_id".to_string(),
+                serde_json::json!(receipt.event_id),
+            );
+
+            session_feedback_repair_events.push(CreateEventRequest {
+                timestamp: Utc::now(),
+                event_type: "session.completed".to_string(),
+                data: Value::Object(replacement_payload),
+                metadata: EventMetadata {
+                    source: Some("agent_write_with_proof".to_string()),
+                    agent: Some("api".to_string()),
+                    device: None,
+                    session_id,
+                    idempotency_key: replace_key,
+                },
             });
         }
     }
@@ -3549,6 +3793,7 @@ fn build_session_audit_artifacts(
             },
         });
     }
+    repair_events.extend(session_feedback_repair_events);
 
     let status = if mismatch_detected == 0 {
         "clean".to_string()
@@ -3567,6 +3812,7 @@ fn build_session_audit_artifacts(
         mismatch_detected,
         mismatch_repaired,
         mismatch_unresolved,
+        mismatch_classes: mismatch_classes.into_keys().collect(),
         clarification_question,
     };
 
@@ -3603,11 +3849,11 @@ fn build_session_audit_artifacts(
 fn build_repair_feedback_summary(summary: &AgentSessionAuditSummary) -> String {
     match summary.status.as_str() {
         "clean" => {
-            "Keine Reparatur nötig. Alle mention-gebundenen Felder sind konsistent gespeichert."
+            "Keine Reparatur nötig. Mention-gebundene Felder und Session-Feedback sind konsistent gespeichert."
                 .to_string()
         }
         "repaired" => format!(
-            "Ich habe {} fehlende Felder automatisch ergänzt. Bestehende Daten bleiben unverändert.",
+            "Ich habe {} Audit-Mismatches automatisch repariert. Bestehende Daten bleiben nachvollziehbar korrigierbar.",
             summary.mismatch_repaired
         ),
         "needs_clarification" if summary.mismatch_repaired > 0 => format!(
@@ -3630,7 +3876,8 @@ fn build_undo_event_templates(
             timestamp: Utc::now(),
             event_type: "event.retracted".to_string(),
             data: serde_json::json!({
-                "target_event_id": receipt.event_id,
+                "retracted_event_id": receipt.event_id,
+                "retracted_event_type": receipt.event_type,
                 "reason": "Undo session-audit auto-repair batch."
             }),
             metadata: EventMetadata {
@@ -3685,6 +3932,7 @@ fn build_repair_technical_details(
         command_trace: vec![
             "session_audit.scan_mentions".to_string(),
             "session_audit.apply_set_corrected".to_string(),
+            "session_audit.apply_session_feedback_scale_repair".to_string(),
             "session_audit.prepare_undo".to_string(),
         ],
     }
@@ -5637,6 +5885,114 @@ mod tests {
     }
 
     #[test]
+    fn session_audit_session_feedback_scale_guard_auto_repairs() {
+        let user_id = Uuid::now_v7();
+        let requested = vec![make_event(
+            "session.completed",
+            json!({
+                "enjoyment": 8,
+                "perceived_quality": 9,
+                "perceived_exertion": 7,
+                "notes": "felt good and strong"
+            }),
+            "k-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "session.completed".to_string(),
+            idempotency_key: "k-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let policy = default_autonomy_policy();
+
+        let artifacts = build_session_audit_artifacts(user_id, &requested, &receipts, &policy);
+        assert_eq!(artifacts.summary.status, "repaired");
+        assert_eq!(artifacts.summary.mismatch_detected, 2);
+        assert_eq!(artifacts.summary.mismatch_repaired, 2);
+        assert_eq!(artifacts.summary.mismatch_unresolved, 0);
+        assert!(artifacts
+            .summary
+            .mismatch_classes
+            .iter()
+            .any(|c| c == "scale_normalized_to_five"));
+        assert_eq!(artifacts.repair_events.len(), 2);
+        assert_eq!(artifacts.repair_events[0].event_type, "event.retracted");
+        assert_eq!(artifacts.repair_events[1].event_type, "session.completed");
+        assert_eq!(
+            artifacts.repair_events[1].data["enjoyment"],
+            json!(4.0)
+        );
+        assert_eq!(
+            artifacts.repair_events[1].data["perceived_quality"],
+            json!(4.5)
+        );
+    }
+
+    #[test]
+    fn session_audit_session_feedback_contradiction_needs_clarification() {
+        let user_id = Uuid::now_v7();
+        let requested = vec![make_event(
+            "session.completed",
+            json!({
+                "enjoyment": 5,
+                "perceived_quality": 5,
+                "perceived_exertion": 8,
+                "notes": "the session felt bad and awful"
+            }),
+            "k-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "session.completed".to_string(),
+            idempotency_key: "k-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let policy = default_autonomy_policy();
+
+        let artifacts = build_session_audit_artifacts(user_id, &requested, &receipts, &policy);
+        assert_eq!(artifacts.summary.status, "needs_clarification");
+        assert!(artifacts.summary.mismatch_detected >= 1);
+        assert!(artifacts.summary.mismatch_unresolved >= 1);
+        assert!(artifacts
+            .summary
+            .mismatch_classes
+            .iter()
+            .any(|c| c == "narrative_structured_contradiction"));
+        assert!(artifacts.summary.clarification_question.is_some());
+        assert!(artifacts.repair_events.is_empty());
+    }
+
+    #[test]
+    fn session_audit_session_feedback_clean_when_consistent() {
+        let user_id = Uuid::now_v7();
+        let requested = vec![make_event(
+            "session.completed",
+            json!({
+                "enjoyment": 4,
+                "perceived_quality": 4,
+                "perceived_exertion": 7,
+                "notes": "felt good and focused"
+            }),
+            "k-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "session.completed".to_string(),
+            idempotency_key: "k-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let policy = default_autonomy_policy();
+
+        let artifacts = build_session_audit_artifacts(user_id, &requested, &receipts, &policy);
+        assert_eq!(artifacts.summary.status, "clean");
+        assert_eq!(artifacts.summary.mismatch_detected, 0);
+        assert_eq!(artifacts.summary.mismatch_repaired, 0);
+        assert_eq!(artifacts.summary.mismatch_unresolved, 0);
+        assert!(artifacts.summary.mismatch_classes.is_empty());
+        assert!(artifacts.repair_events.is_empty());
+    }
+
+    #[test]
     fn session_audit_respects_policy_when_auto_repair_is_disabled() {
         let user_id = Uuid::now_v7();
         let requested = vec![make_set_event(
@@ -5723,7 +6079,7 @@ mod tests {
         );
 
         assert_eq!(feedback.status, "repaired");
-        assert!(feedback.summary.contains("automatisch ergänzt"));
+        assert!(feedback.summary.contains("automatisch"));
         assert_eq!(feedback.receipt.changed_fields_count, 1);
         assert!(feedback.technical.is_none());
         assert!(feedback.undo.is_some());
@@ -5802,6 +6158,7 @@ mod tests {
             mismatch_detected: 1,
             mismatch_repaired: 1,
             mismatch_unresolved: 0,
+            mismatch_classes: vec!["missing_mention_bound_field".to_string()],
             clarification_question: None,
         };
         let repair_receipts = vec![AgentWriteReceipt {
@@ -5836,7 +6193,7 @@ mod tests {
         assert_eq!(undo.events.len(), 1);
         assert_eq!(undo.events[0].event_type, "event.retracted");
         assert_eq!(
-            undo.events[0].data["target_event_id"],
+            undo.events[0].data["retracted_event_id"],
             json!(repair_receipts[0].event_id)
         );
     }
