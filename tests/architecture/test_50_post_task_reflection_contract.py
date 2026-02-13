@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from kura_workers.learning_telemetry import core_signal_types, signal_category
+from tests.architecture.conftest import assert_kura_api_test_passes
 
 
-AGENT_RS = Path(__file__).resolve().parents[2] / "api" / "src" / "routes" / "agent.rs"
+def test_post_task_reflection_contract_confirms_when_verification_and_audit_are_clean() -> None:
+    assert_kura_api_test_passes(
+        "routes::agent::tests::post_task_reflection_contract_confirms_when_verification_and_audit_are_clean"
+    )
 
 
-def test_post_task_reflection_contract_markers_exist() -> None:
-    src = AGENT_RS.read_text(encoding="utf-8")
-    assert "POST_TASK_REFLECTION_SCHEMA_VERSION" in src
-    assert "struct AgentPostTaskReflection" in src
-    assert "build_post_task_reflection" in src
-    assert "post_task_reflection" in src
+def test_post_task_reflection_contract_marks_unresolved_when_verification_fails() -> None:
+    assert_kura_api_test_passes(
+        "routes::agent::tests::post_task_reflection_contract_marks_unresolved_when_verification_fails"
+    )
 
 
 def test_reflection_signal_taxonomy_is_registered() -> None:

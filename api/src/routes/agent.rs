@@ -6600,6 +6600,97 @@ mod tests {
         }
     }
 
+    fn make_trace_contract_artifacts(
+        verification_status: &str,
+        check_status: &str,
+        session_status: &str,
+        clarification_question: Option<&str>,
+    ) -> (
+        Vec<AgentWriteReceipt>,
+        Vec<BatchEventWarning>,
+        AgentWriteVerificationSummary,
+        super::AgentWriteClaimGuard,
+        AgentWorkflowGate,
+        AgentSessionAuditSummary,
+        AgentRepairFeedback,
+    ) {
+        let receipt = AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.logged".to_string(),
+            idempotency_key: "k-contract-1".to_string(),
+            event_timestamp: Utc::now(),
+        };
+        let receipts = vec![receipt];
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "training_timeline".to_string(),
+            key: "overview".to_string(),
+            status: check_status.to_string(),
+            observed_projection_version: Some(1),
+            observed_last_event_id: None,
+            detail: "contract-fixture".to_string(),
+        }];
+        let warnings = vec![BatchEventWarning {
+            event_index: 0,
+            field: "autonomy.gate".to_string(),
+            message: "confirm".to_string(),
+            severity: "warning".to_string(),
+        }];
+        let verification = make_verification(verification_status, checks.clone());
+        let claim_guard = build_claim_guard(
+            &receipts,
+            1,
+            &checks,
+            &warnings,
+            default_autonomy_policy(),
+            default_autonomy_gate(),
+        );
+        let workflow_gate = AgentWorkflowGate {
+            phase: "planning".to_string(),
+            status: "allowed".to_string(),
+            transition: "none".to_string(),
+            onboarding_closed: true,
+            override_used: false,
+            message: "ok".to_string(),
+            missing_requirements: Vec::new(),
+            planning_event_types: Vec::new(),
+        };
+        let unresolved_count = if session_status == "needs_clarification" {
+            1
+        } else {
+            0
+        };
+        let session_audit = AgentSessionAuditSummary {
+            status: session_status.to_string(),
+            mismatch_detected: unresolved_count,
+            mismatch_repaired: 0,
+            mismatch_unresolved: unresolved_count,
+            mismatch_classes: Vec::new(),
+            clarification_question: clarification_question.map(|value| value.to_string()),
+        };
+        let repair_feedback = AgentRepairFeedback {
+            status: "none".to_string(),
+            summary: "none".to_string(),
+            receipt: AgentRepairReceipt {
+                status: "none".to_string(),
+                changed_fields_count: 0,
+                unchanged_metrics: HashMap::new(),
+            },
+            clarification_question: None,
+            undo: None,
+            technical: None,
+        };
+
+        (
+            receipts,
+            warnings,
+            verification,
+            claim_guard,
+            workflow_gate,
+            session_audit,
+            repair_feedback,
+        )
+    }
+
     async fn integration_state_if_available() -> Option<(AppState, AuthenticatedUser, Uuid)> {
         let Ok(url) = std::env::var("DATABASE_URL") else {
             return None;
@@ -9019,7 +9110,30 @@ mod tests {
     }
 
     #[test]
-    fn intent_handshake_validation_rejects_stale_handshake() {
+    fn intent_handshake_contract_accepts_fresh_matching_payload() {
+        let handshake = super::AgentIntentHandshake {
+            schema_version: "intent_handshake.v1".to_string(),
+            goal: "update training plan".to_string(),
+            planned_action: "write training_plan.updated".to_string(),
+            assumptions: vec!["latest profile is complete".to_string()],
+            non_goals: vec!["no nutrition changes".to_string()],
+            impact_class: "high_impact_write".to_string(),
+            success_criteria: "plan projection reflects update".to_string(),
+            created_at: Utc::now() - Duration::minutes(5),
+            handshake_id: Some("hs-fresh-1".to_string()),
+        };
+
+        super::validate_intent_handshake(&handshake, "high_impact_write")
+            .expect("fresh handshake should be accepted");
+        let confirmation = super::build_intent_handshake_confirmation(&handshake);
+        assert_eq!(confirmation.schema_version, "intent_handshake.v1");
+        assert_eq!(confirmation.status, "accepted");
+        assert_eq!(confirmation.impact_class, "high_impact_write");
+        assert_eq!(confirmation.handshake_id.as_deref(), Some("hs-fresh-1"));
+    }
+
+    #[test]
+    fn intent_handshake_contract_rejects_stale_payload() {
         let handshake = super::AgentIntentHandshake {
             schema_version: "intent_handshake.v1".to_string(),
             goal: "update training plan".to_string(),
@@ -9043,7 +9157,29 @@ mod tests {
     }
 
     #[test]
-    fn memory_guard_escalates_high_impact_allow_to_confirm_first_when_preferences_missing() {
+    fn memory_tier_contract_keeps_allow_when_principles_are_fresh() {
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "timezone": "Europe/Berlin",
+                        "unit_system": "metric"
+                    }
+                }
+            }),
+        );
+        let gate = super::default_autonomy_gate();
+        let merged =
+            super::merge_autonomy_gate_with_memory_guard(gate, "high_impact_write", Some(&profile));
+        assert_eq!(merged.decision, "allow");
+        assert!(merged.reason_codes.is_empty());
+    }
+
+    #[test]
+    fn memory_tier_contract_requires_confirmation_when_principles_missing() {
         let gate = super::default_autonomy_gate();
         let profile = bootstrap_user_profile(Uuid::now_v7());
         let merged =
@@ -9056,76 +9192,16 @@ mod tests {
     }
 
     #[test]
-    fn trace_digest_and_reflection_contracts_are_generated_deterministically() {
-        let receipt = AgentWriteReceipt {
-            event_id: Uuid::now_v7(),
-            event_type: "set.logged".to_string(),
-            idempotency_key: "k-1".to_string(),
-            event_timestamp: Utc::now(),
-        };
-        let receipts = vec![receipt];
-        let checks = vec![AgentReadAfterWriteCheck {
-            projection_type: "training_timeline".to_string(),
-            key: "overview".to_string(),
-            status: "verified".to_string(),
-            observed_projection_version: Some(1),
-            observed_last_event_id: None,
-            detail: "ok".to_string(),
-        }];
-        let warnings = vec![BatchEventWarning {
-            event_index: 0,
-            field: "autonomy.gate".to_string(),
-            message: "confirm".to_string(),
-            severity: "warning".to_string(),
-        }];
-        let verification = AgentWriteVerificationSummary {
-            status: "verified".to_string(),
-            checked_at: Utc::now(),
-            waited_ms: 10,
-            write_path: "fresh_write".to_string(),
-            required_checks: 1,
-            verified_checks: 1,
-            checks: checks.clone(),
-        };
-        let claim_guard = build_claim_guard(
-            &receipts,
-            1,
-            &checks,
-            &warnings,
-            default_autonomy_policy(),
-            default_autonomy_gate(),
-        );
-        let workflow_gate = AgentWorkflowGate {
-            phase: "planning".to_string(),
-            status: "allowed".to_string(),
-            transition: "none".to_string(),
-            onboarding_closed: true,
-            override_used: false,
-            message: "ok".to_string(),
-            missing_requirements: Vec::new(),
-            planning_event_types: Vec::new(),
-        };
-        let session_audit = AgentSessionAuditSummary {
-            status: "clean".to_string(),
-            mismatch_detected: 0,
-            mismatch_repaired: 0,
-            mismatch_unresolved: 0,
-            mismatch_classes: Vec::new(),
-            clarification_question: None,
-        };
-        let repair_feedback = AgentRepairFeedback {
-            status: "none".to_string(),
-            summary: "none".to_string(),
-            receipt: AgentRepairReceipt {
-                status: "none".to_string(),
-                changed_fields_count: 0,
-                unchanged_metrics: HashMap::new(),
-            },
-            clarification_question: None,
-            undo: None,
-            technical: None,
-        };
-
+    fn trace_digest_contract_is_deterministic_when_verification_is_complete() {
+        let (
+            receipts,
+            warnings,
+            verification,
+            claim_guard,
+            workflow_gate,
+            session_audit,
+            repair_feedback,
+        ) = make_trace_contract_artifacts("verified", "verified", "clean", None);
         let digest = super::build_trace_digest(
             &receipts,
             &warnings,
@@ -9142,7 +9218,54 @@ mod tests {
             digest.chat_summary_template_id,
             "trace_digest.chat.short.v1"
         );
+    }
 
+    #[test]
+    fn trace_digest_contract_marks_pending_verification_and_unsaved_claim() {
+        let (
+            receipts,
+            warnings,
+            verification,
+            claim_guard,
+            workflow_gate,
+            session_audit,
+            repair_feedback,
+        ) = make_trace_contract_artifacts("pending", "pending", "clean", None);
+        let digest = super::build_trace_digest(
+            &receipts,
+            &warnings,
+            &verification,
+            &claim_guard,
+            &workflow_gate,
+            &session_audit,
+            &repair_feedback,
+        );
+        assert_eq!(digest.schema_version, "trace_digest.v1");
+        assert_eq!(digest.verification_status, "pending");
+        assert!(!digest.allow_saved_claim);
+        assert_eq!(digest.claim_status, "pending");
+    }
+
+    #[test]
+    fn post_task_reflection_contract_confirms_when_verification_and_audit_are_clean() {
+        let (
+            receipts,
+            warnings,
+            verification,
+            claim_guard,
+            workflow_gate,
+            session_audit,
+            repair_feedback,
+        ) = make_trace_contract_artifacts("verified", "verified", "clean", None);
+        let digest = super::build_trace_digest(
+            &receipts,
+            &warnings,
+            &verification,
+            &claim_guard,
+            &workflow_gate,
+            &session_audit,
+            &repair_feedback,
+        );
         let reflection = super::build_post_task_reflection(
             &digest,
             &verification,
@@ -9151,9 +9274,65 @@ mod tests {
         );
         assert_eq!(reflection.schema_version, "post_task_reflection.v1");
         assert_eq!(reflection.certainty_state, "confirmed");
+        assert_eq!(reflection.next_verification_step, "none_required");
+        assert!(!reflection.follow_up_recommended);
         assert_eq!(
             reflection.chat_summary_template_id,
             "post_task_reflection.chat.short.v1"
+        );
+    }
+
+    #[test]
+    fn post_task_reflection_contract_marks_unresolved_when_verification_fails() {
+        let (
+            receipts,
+            warnings,
+            verification,
+            claim_guard,
+            workflow_gate,
+            session_audit,
+            repair_feedback,
+        ) = make_trace_contract_artifacts(
+            "failed",
+            "pending",
+            "needs_clarification",
+            Some("Welcher Wert stimmt?"),
+        );
+        let digest = super::build_trace_digest(
+            &receipts,
+            &warnings,
+            &verification,
+            &claim_guard,
+            &workflow_gate,
+            &session_audit,
+            &repair_feedback,
+        );
+        let reflection = super::build_post_task_reflection(
+            &digest,
+            &verification,
+            &session_audit,
+            &repair_feedback,
+        );
+        assert_eq!(reflection.schema_version, "post_task_reflection.v1");
+        assert_eq!(reflection.certainty_state, "unresolved");
+        assert!(reflection.follow_up_recommended);
+        assert_eq!(
+            reflection.follow_up_reason.as_deref(),
+            Some("certainty_state_not_confirmed")
+        );
+        assert!(
+            reflection
+                .residual_risks
+                .iter()
+                .any(|risk| risk == "read_after_write_not_fully_verified")
+        );
+        assert_eq!(
+            reflection.clarification_question.as_deref(),
+            Some("Welcher Wert stimmt?")
+        );
+        assert_eq!(
+            reflection.next_verification_step,
+            "ask_user: Welcher Wert stimmt?"
         );
     }
 
