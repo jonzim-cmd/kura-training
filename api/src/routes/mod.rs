@@ -4,6 +4,7 @@ pub mod auth;
 pub mod events;
 pub mod health;
 pub mod imports;
+pub mod invite;
 pub mod projection_rules;
 pub mod projections;
 pub mod provider_connections;

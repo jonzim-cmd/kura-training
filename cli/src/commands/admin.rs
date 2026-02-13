@@ -38,6 +38,37 @@ pub enum AdminCommands {
         #[arg(long)]
         confirm: bool,
     },
+    /// List access requests (admin only, via API)
+    ListRequests {
+        /// Filter by status: pending, approved, rejected
+        #[arg(long, default_value = "pending")]
+        status: String,
+    },
+    /// Approve an access request and generate invite token (admin only, via API)
+    ApproveRequest {
+        /// Access request UUID
+        id: String,
+    },
+    /// Reject an access request (admin only, via API)
+    RejectRequest {
+        /// Access request UUID
+        id: String,
+    },
+    /// Create a manual invite token (admin only, via API)
+    CreateInvite {
+        /// Bind to specific email (optional)
+        #[arg(long)]
+        email: Option<String>,
+        /// Expiration in days (default: 7)
+        #[arg(long, default_value = "7")]
+        expires_in_days: i64,
+    },
+    /// List invite tokens (admin only, via API)
+    ListInvites {
+        /// Filter: unused, used, expired
+        #[arg(long)]
+        status: Option<String>,
+    },
     /// Audited break-glass identity lookup by user UUID (admin only)
     SupportReidentify {
         /// Target user UUID
@@ -72,6 +103,87 @@ pub async fn run(api_url: &str, command: AdminCommands) -> i32 {
         } => create_key(&user_id, &label, expires_in_days).await,
         AdminCommands::DeleteUser { user_id, confirm } => {
             delete_user(api_url, &user_id, confirm).await
+        }
+        AdminCommands::ListRequests { status } => {
+            let query = vec![("status".to_string(), status)];
+            api_request(
+                api_url,
+                reqwest::Method::GET,
+                "/v1/admin/access-requests",
+                None,
+                None,
+                &query,
+                &[],
+                false,
+                false,
+            )
+            .await
+        }
+        AdminCommands::ApproveRequest { id } => {
+            api_request(
+                api_url,
+                reqwest::Method::POST,
+                &format!("/v1/admin/access-requests/{id}/approve"),
+                None,
+                None,
+                &[],
+                &[],
+                false,
+                false,
+            )
+            .await
+        }
+        AdminCommands::RejectRequest { id } => {
+            api_request(
+                api_url,
+                reqwest::Method::POST,
+                &format!("/v1/admin/access-requests/{id}/reject"),
+                None,
+                None,
+                &[],
+                &[],
+                false,
+                false,
+            )
+            .await
+        }
+        AdminCommands::CreateInvite {
+            email,
+            expires_in_days,
+        } => {
+            let body = json!({
+                "email": email,
+                "expires_in_days": expires_in_days
+            });
+            api_request(
+                api_url,
+                reqwest::Method::POST,
+                "/v1/admin/invites",
+                None,
+                Some(body),
+                &[],
+                &[],
+                false,
+                false,
+            )
+            .await
+        }
+        AdminCommands::ListInvites { status } => {
+            let query: Vec<(String, String)> = status
+                .map(|s| vec![("status".to_string(), s)])
+                .unwrap_or_default();
+            api_request(
+                api_url,
+                reqwest::Method::GET,
+                "/v1/admin/invites",
+                None,
+                None,
+                &query,
+                &[],
+                false,
+                false,
+            )
+            .await
         }
         AdminCommands::SupportReidentify {
             user_id,

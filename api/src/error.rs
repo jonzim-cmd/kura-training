@@ -37,6 +37,8 @@ pub enum AppError {
         message: String,
         docs_hint: Option<String>,
     },
+    /// Conflict (409) — generic resource conflict
+    Conflict { message: String },
     /// Not found (404)
     NotFound { resource: String },
     /// Internal error (500)
@@ -142,6 +144,17 @@ impl IntoResponse for AppError {
                     received: None,
                     request_id,
                     docs_hint,
+                },
+            ),
+            AppError::Conflict { message } => (
+                StatusCode::CONFLICT,
+                ApiError {
+                    error: error::codes::CONFLICT.to_string(),
+                    message,
+                    field: None,
+                    received: None,
+                    request_id,
+                    docs_hint: None,
                 },
             ),
             AppError::NotFound { resource } => (

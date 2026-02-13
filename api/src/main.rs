@@ -229,7 +229,10 @@ async fn main() {
         .await
         .expect("Failed to run migrations");
 
-    let app_state = state::AppState { db: pool };
+    let signup_gate = state::SignupGate::from_env();
+    tracing::info!(signup_gate = ?signup_gate, "Signup gate configured");
+
+    let app_state = state::AppState { db: pool, signup_gate };
 
     // HTTPS enforcement (only when KURA_REQUIRE_HTTPS=true)
     let require_https = std::env::var("KURA_REQUIRE_HTTPS")
@@ -281,8 +284,10 @@ async fn main() {
         .merge(routes::auth::token_router().layer(middleware::rate_limit::token_layer()))
         .merge(routes::auth::device_router().layer(middleware::rate_limit::token_layer()))
         .merge(routes::auth::oidc_router().layer(middleware::rate_limit::authorize_layer()))
+        .merge(routes::invite::public_router().layer(middleware::rate_limit::register_layer()))
         .merge(routes::account::self_router())
         .merge(routes::account::admin_router())
+        .merge(routes::invite::admin_router())
         .merge(routes::security::admin_router())
         .layer(middleware::access_log::AccessLogLayer::new(
             app_state.db.clone(),

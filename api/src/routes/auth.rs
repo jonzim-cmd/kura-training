@@ -149,6 +149,10 @@ pub struct RegisterRequest {
     pub password: String,
     #[serde(default)]
     pub display_name: Option<String>,
+    #[serde(default)]
+    pub invite_token: Option<String>,
+    #[serde(default)]
+    pub consent_anonymized_learning: Option<bool>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -174,6 +178,8 @@ pub async fn register(
     State(state): State<AppState>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    use crate::state::SignupGate;
+
     let email_norm = normalize_email(&req.email);
     if email_norm.is_empty() {
         return Err(AppError::Validation {
@@ -192,18 +198,67 @@ pub async fn register(
         });
     }
 
+    // Invite gate: validate token when SIGNUP_GATE=invite
+    let invite_token_id = match state.signup_gate {
+        SignupGate::Invite => {
+            let token_str = req.invite_token.as_deref().unwrap_or("");
+            if token_str.is_empty() {
+                return Err(AppError::Forbidden {
+                    message: "Registration requires an invite token.".to_string(),
+                    docs_hint: Some("Request access at /request-access".to_string()),
+                });
+            }
+
+            let (token_id, bound_email) =
+                super::invite::validate_invite_token(&state.db, token_str).await?;
+
+            // Check email binding if token is bound to a specific email
+            if let Some(ref bound) = bound_email {
+                if bound.to_lowercase() != email_norm {
+                    return Err(AppError::Forbidden {
+                        message: "This invite is bound to a different email address.".to_string(),
+                        docs_hint: Some("Use the email address associated with your invite.".to_string()),
+                    });
+                }
+            }
+
+            // Require consent in invite mode
+            if req.consent_anonymized_learning != Some(true) {
+                return Err(AppError::Validation {
+                    message: "Consent to anonymized data usage is required for early access.".to_string(),
+                    field: Some("consent_anonymized_learning".to_string()),
+                    received: None,
+                    docs_hint: Some("Set consent_anonymized_learning: true".to_string()),
+                });
+            }
+
+            Some(token_id)
+        }
+        SignupGate::Payment => {
+            return Err(AppError::Forbidden {
+                message: "Registration requires a payment subscription.".to_string(),
+                docs_hint: Some("Payment integration coming soon.".to_string()),
+            });
+        }
+        SignupGate::Open => None,
+    };
+
+    let consent = req.consent_anonymized_learning.unwrap_or(false);
     let password_hash = auth::hash_password(&req.password).map_err(|e| AppError::Internal(e))?;
 
     let user_id = Uuid::now_v7();
     let mut tx = state.db.begin().await?;
 
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, display_name) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO users (id, email, password_hash, display_name, consent_anonymized_learning, invited_by_token) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(user_id)
     .bind(&email_norm)
     .bind(&password_hash)
     .bind(&req.display_name)
+    .bind(consent)
+    .bind(invite_token_id)
     .execute(&mut *tx)
     .await
     .map_err(|e| {
@@ -219,6 +274,11 @@ pub async fn register(
         }
         AppError::Database(e)
     })?;
+
+    // Mark invite token as used
+    if let Some(token_id) = invite_token_id {
+        super::invite::mark_invite_used(&mut tx, token_id, user_id).await?;
+    }
 
     sqlx::query(
         "INSERT INTO user_identities \
