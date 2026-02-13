@@ -103,6 +103,10 @@ Not every dimension needs all levels. But the question must be asked.
 
 **Declaration (Decision 7):** Every handler declares `dimension_meta` at registration: description, key_structure, granularity levels, relationships to other dimensions. See Design Doc 002, Decision 7.
 
+### Architektur-Entscheidungen: Executable Specs
+
+Neue Architektur-Entscheidungen werden nicht als Design Docs (Markdown) festgehalten, sondern als ausführbare Tests in `tests/architecture/`. Das "Warum" bleibt kurz in Beads oder hier. Das "Was muss gelten" wird Code, den CI dauerhaft erzwingt. Vollständiger Workflow in `AGENTS.md`.
+
 ## Technische Konfiguration
 
 ### Volta/Node Pfade

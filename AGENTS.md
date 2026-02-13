@@ -33,6 +33,24 @@ set -a && source .env && set +a
 ```
 This sets `DATABASE_URL` and other required variables from the project `.env` file.
 
+## Architektur-Entscheidungen: Executable Specs
+
+**Keine separaten Design Docs mehr** für neue Entscheidungen. Bestehende Docs (`docs/design/*.md`) bleiben als Referenz, werden aber nicht mehr gepflegt.
+
+**Für neue Entscheidungen gilt:**
+
+- **"Warum"** → Kurz in Beads oder CLAUDE.md (3-5 Sätze, Prosa)
+- **"Was muss gelten"** → Tests in `tests/architecture/` (CI erzwingt dauerhaft)
+
+**Workflow:**
+
+1. **Diskussion** — Mensch und Agent klären in Sprache, was gelten soll
+2. **Zusammenfassung** — Agent fasst in 3-5 Sätzen zusammen, Mensch bestätigt oder korrigiert (Review passiert auf Sprach-Ebene, nicht Code-Ebene)
+3. **Tests + Implementierung** — Agent übersetzt in `tests/architecture/` Tests und Code. Bei großen Entscheidungen: separater Spec-Task → dann Impl-Task
+4. **CI als Sicherheitsnetz** — Invarianten werden dauerhaft erzwungen, kein stilles Veralten
+
+**Verantwortungsteilung:** Mensch gibt Richtung und Domänenwissen (Medium: Sprache). Agent übersetzt in Code und Tests (Medium: Code). Vertrauen auf die Übersetzung, CI als Kontrolle.
+
 ## Quality Gates
 
 Before completing any task that changed code, run ALL applicable gates:
