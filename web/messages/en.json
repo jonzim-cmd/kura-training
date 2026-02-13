@@ -58,6 +58,7 @@
     "alreadyHaveAccess": "Already have access?"
   },
   "start": {
+    "title": "Why Kura?",
     "story": {
       "p1": "I trained Olympic athletes. The most annoying part was almost always the same: logging the training \u2014 specifically in a way that actually lets you analyze the data after the season. In practice, it never really worked.",
       "p2": "It was no different with my own training. I tried pretty much every app out there: too clunky, too rigid, too annoying. None lasted long. What I actually wanted was something simple: record my training the way I'd text a friend. A sentence about what I did \u2014 and someone (or something) takes care of the rest.",

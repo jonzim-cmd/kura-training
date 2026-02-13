@@ -10,21 +10,24 @@ export default function StartPage() {
   return (
     <div className={styles.page}>
       {/* Personal Story */}
-      <section className={styles.story}>
-        <div className={styles.storyPhoto}>
-          <Image
-            src="/images/founder.jpg"
-            alt=""
-            width={480}
-            height={600}
-            className={styles.photo}
-          />
+      <section className={styles.storyWrapper}>
+        <h1 className={styles.pageTitle}>{t('title')}</h1>
+        <div className={styles.story}>
+          <div className={styles.storyPhoto}>
+            <Image
+              src="/images/founder.jpg"
+              alt=""
+              width={480}
+              height={600}
+              className={styles.photo}
+            />
+          </div>
+          <div className={styles.storyText}>
+            <p className={styles.storyP}>{t('story.p1')}</p>
+            <p className={styles.storyP}>{t('story.p2')}</p>
+          </div>
         </div>
-        <div className={styles.storyText}>
-          <p className={styles.storyP}>{t('story.p1')}</p>
-          <p className={styles.storyP}>{t('story.p2')}</p>
-          <p className={styles.storyPStrong}>{t('story.p3')}</p>
-        </div>
+        <p className={styles.storyPStrong}>{t('story.p3')}</p>
       </section>
 
       {/* Training apps don't solve this */}
