@@ -228,7 +228,8 @@ pub async fn register(
             // Require consent in invite mode
             if req.consent_anonymized_learning != Some(true) {
                 return Err(AppError::Validation {
-                    message: "Consent to anonymized data usage is required for early access.".to_string(),
+                    message: "Consent to anonymized data usage is required for early access."
+                        .to_string(),
                     field: Some("consent_anonymized_learning".to_string()),
                     received: None,
                     docs_hint: Some("Set consent_anonymized_learning: true".to_string()),
@@ -1802,13 +1803,7 @@ pub async fn email_login(
     let user_id =
         authenticate_email_password_user_id(&state.db, &email_norm, &req.password).await?;
 
-    issue_tokens(
-        &state.db,
-        user_id,
-        "kura-web",
-        default_agent_token_scopes(),
-    )
-    .await
+    issue_tokens(&state.db, user_id, "kura-web", default_agent_token_scopes()).await
 }
 
 // ──────────────────────────────────────────────

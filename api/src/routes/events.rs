@@ -2580,7 +2580,11 @@ mod tests {
         }
     }
 
-    fn make_user_profile(onboarding_closed: bool, override_active: bool, timezone: Option<&str>) -> Value {
+    fn make_user_profile(
+        onboarding_closed: bool,
+        override_active: bool,
+        timezone: Option<&str>,
+    ) -> Value {
         let mut preferences = serde_json::Map::new();
         if let Some(timezone) = timezone {
             preferences.insert("timezone".to_string(), json!(timezone));
@@ -2963,11 +2967,7 @@ mod tests {
         let profile = make_user_profile(true, false, Some("Europe/Berlin"));
         let err = evaluate_legacy_domain_invariants(&events, Some(&profile))
             .expect_err("expected policy violation");
-        assert_policy_violation(
-            err,
-            "inv_plan_write_requires_write_with_proof",
-            "events",
-        );
+        assert_policy_violation(err, "inv_plan_write_requires_write_with_proof", "events");
     }
 
     #[test]

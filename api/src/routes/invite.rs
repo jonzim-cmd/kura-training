@@ -18,7 +18,9 @@ use crate::state::AppState;
 
 fn generate_invite_token() -> String {
     let mut rng = rand::thread_rng();
-    let hex: String = (0..32).map(|_| format!("{:x}", rng.r#gen::<u8>() % 16)).collect();
+    let hex: String = (0..32)
+        .map(|_| format!("{:x}", rng.r#gen::<u8>() % 16))
+        .collect();
     format!("kura_inv_{hex}")
 }
 
@@ -65,8 +67,16 @@ pub async fn submit_access_request(
         });
     }
 
-    let name = req.name.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
-    let context = req.context.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let name = req
+        .name
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let context = req
+        .context
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
 
     // Always return 201 even if duplicate (no info leak)
     sqlx::query(
@@ -467,10 +477,7 @@ pub async fn list_invites(
 
 pub fn admin_router() -> Router<AppState> {
     Router::new()
-        .route(
-            "/v1/admin/access-requests",
-            get(list_access_requests),
-        )
+        .route("/v1/admin/access-requests", get(list_access_requests))
         .route(
             "/v1/admin/access-requests/{id}/approve",
             post(approve_access_request),
@@ -492,9 +499,15 @@ pub async fn validate_invite_token(
     pool: &sqlx::PgPool,
     token: &str,
 ) -> Result<(Uuid, Option<String>), AppError> {
-    let row = sqlx::query_as::<_, (Uuid, Option<String>, chrono::DateTime<Utc>, Option<chrono::DateTime<Utc>>)>(
-        "SELECT id, email, expires_at, used_at FROM invite_tokens WHERE token = $1",
-    )
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Option<String>,
+            chrono::DateTime<Utc>,
+            Option<chrono::DateTime<Utc>>,
+        ),
+    >("SELECT id, email, expires_at, used_at FROM invite_tokens WHERE token = $1")
     .bind(token)
     .fetch_optional(pool)
     .await
@@ -549,7 +562,8 @@ async fn send_invite_email(
         }
     };
 
-    let from = std::env::var("EMAIL_FROM").unwrap_or_else(|_| "Kura <noreply@kura.dev>".to_string());
+    let from =
+        std::env::var("EMAIL_FROM").unwrap_or_else(|_| "Kura <noreply@kura.dev>".to_string());
     let expires_formatted = expires_at.format("%d.%m.%Y").to_string();
 
     let body = format!(

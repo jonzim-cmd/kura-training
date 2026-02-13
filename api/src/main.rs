@@ -232,7 +232,10 @@ async fn main() {
     let signup_gate = state::SignupGate::from_env();
     tracing::info!(signup_gate = ?signup_gate, "Signup gate configured");
 
-    let app_state = state::AppState { db: pool, signup_gate };
+    let app_state = state::AppState {
+        db: pool,
+        signup_gate,
+    };
 
     // HTTPS enforcement (only when KURA_REQUIRE_HTTPS=true)
     let require_https = std::env::var("KURA_REQUIRE_HTTPS")
