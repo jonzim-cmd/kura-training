@@ -4,7 +4,7 @@
     "description": "Eine KI, die mit dir wächst — lernt dein Training, deine Ernährung und deine Erholung, um gemeinsam bessere Entscheidungen zu treffen."
   },
   "nav": {
-    "home": "Warum Kura",
+    "home": "Warum Kura?",
     "setup": "Einrichtung",
     "login": "Anmelden",
     "signup": "Konto erstellen",
@@ -163,7 +163,7 @@
       "text": "Fragen oder Probleme? Schreib an support@kura.dev."
     },
     "danger": {
-      "title": "Gefahrenzone",
+      "title": "Konto löschen",
       "deleteAccount": "Konto löschen",
       "deleteDescription": "Lösche dein Konto und alle zugehörigen Daten permanent. Diese Aktion kann nicht rückgängig gemacht werden.",
       "deleteConfirm": "Gib deine E-Mail ein, um die Löschung zu bestätigen",

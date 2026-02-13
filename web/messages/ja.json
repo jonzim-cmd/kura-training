@@ -4,7 +4,7 @@
     "description": "あなたと共に成長するAI。トレーニング、栄養、回復を学び、共により良い判断を下します。"
   },
   "nav": {
-    "home": "Kuraとは",
+    "home": "Kuraとは?",
     "setup": "設定ガイド",
     "login": "ログイン",
     "signup": "アカウント作成",
@@ -163,7 +163,7 @@
       "text": "ご質問や問題がありましたら、support@kura.devまでお問い合わせください。"
     },
     "danger": {
-      "title": "危険ゾーン",
+      "title": "アカウント削除",
       "deleteAccount": "アカウント削除",
       "deleteDescription": "アカウントとすべての関連データを完全に削除します。この操作は取り消せません。",
       "deleteConfirm": "削除を確認するためにメールアドレスを入力してください",

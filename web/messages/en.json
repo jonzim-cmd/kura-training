@@ -4,7 +4,7 @@
     "description": "An AI that grows with you — learning your training, nutrition, and recovery to make better decisions together."
   },
   "nav": {
-    "home": "Why Kura",
+    "home": "Why Kura?",
     "setup": "Setup",
     "login": "Log in",
     "signup": "Create account",
@@ -163,7 +163,7 @@
       "text": "Questions or issues? Reach out at support@kura.dev."
     },
     "danger": {
-      "title": "Danger zone",
+      "title": "Delete account",
       "deleteAccount": "Delete account",
       "deleteDescription": "Permanently delete your account and all associated data. This action cannot be undone.",
       "deleteConfirm": "Type your email to confirm deletion",

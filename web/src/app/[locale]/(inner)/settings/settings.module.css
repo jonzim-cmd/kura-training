@@ -1,129 +1,256 @@
+/* ============================================================
+   Settings Page — Sidebar + Content (tab-based, centered)
+   Desktop: sidebar left + active content right, centered on page
+   Mobile: horizontal nav top + content below
+   ============================================================ */
+
 .settingsPage {
-  padding: 3rem 0;
+  padding: var(--space-3xl) 0;
+  min-height: calc(100vh - var(--header-height) - 8rem);
 }
 
 .container {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 0 var(--space-xl);
+}
+
+.pageTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  margin-bottom: var(--space-2xl);
+  text-align: center;
+}
+
+/* --- Layout: Sidebar + Content, centered --- */
+
+.layout {
+  display: grid;
+  grid-template-columns: 12rem 1fr;
+  gap: var(--space-3xl);
+  max-width: calc(12rem + var(--space-3xl) + var(--content-width));
+  margin: 0 auto;
+}
+
+/* --- Sidebar --- */
+
+.sidebar {
+  position: sticky;
+  top: calc(var(--header-height) + var(--space-2xl));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.sidebarLink {
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  font-weight: 400;
+  color: var(--ink-faint);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+  background: none;
+  border: none;
+  text-align: left;
+}
+
+.sidebarLink:hover {
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.sidebarLinkActive {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.06);
+  font-weight: 500;
+}
+
+/* --- Content Area --- */
+
+.content {
   max-width: var(--content-width);
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: var(--space-2xl);
 }
 
-.header {
-  margin-bottom: 1rem;
-}
-
-.title {
-  font-family: var(--font-display);
-  font-size: 1.75rem;
-  font-weight: 700;
-  margin-bottom: 0.375rem;
-}
-
-.subtitle {
-  color: var(--ink-faint);
-}
+/* --- Sections (cards) --- */
 
 .sectionTitle {
   font-family: var(--font-display);
-  font-size: 1.125rem;
+  font-size: var(--text-lg);
   font-weight: 700;
-  margin-bottom: 1rem;
+  margin-bottom: var(--space-xl);
 }
+
+.sectionDescription {
+  font-size: var(--text-base);
+  color: var(--ink-mid);
+  line-height: 1.6;
+}
+
+/* --- Setting Row: label left, control right --- */
+
+.settingRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-md) 0;
+  border-bottom: 1px solid var(--thread);
+  gap: var(--space-xl);
+}
+
+.settingRow:last-child {
+  border-bottom: none;
+}
+
+.settingLabel {
+  font-size: var(--text-base);
+  color: var(--ink-mid);
+}
+
+.settingValue {
+  font-size: var(--text-md);
+  font-weight: 500;
+  color: var(--ink);
+}
+
+/* --- Setting with description (toggle rows etc.) --- */
+
+.settingInfo {
+  flex: 1;
+  min-width: 0;
+}
+
+.settingName {
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.settingHint {
+  font-size: var(--text-sm);
+  color: var(--ink-faint);
+  line-height: 1.5;
+  margin-top: var(--space-xs);
+}
+
+/* --- Section Header with Action --- */
 
 .sectionHeader {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 1rem;
+  gap: var(--space-lg);
+  margin-bottom: var(--space-xl);
 }
 
 .sectionHeader .sectionTitle {
-  margin-bottom: 0.25rem;
+  margin-bottom: var(--space-xs);
 }
 
-.sectionDescription {
-  font-size: 0.9375rem;
-  color: var(--ink-mid);
-}
+/* --- API Key Table --- */
 
-/* Info Grid */
-.infoGrid {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.infoRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.5rem 0;
-  border-bottom: 1px solid var(--thread);
-}
-
-.infoRow:last-child {
-  border-bottom: none;
-}
-
-.infoLabel {
-  font-size: 1rem;
-  color: var(--ink-mid);
-}
-
-.infoValue {
-  font-size: 1rem;
-  font-weight: 500;
-}
-
-/* API Key Table */
 .keyTable {
-  font-size: 0.875rem;
+  font-size: var(--text-base);
 }
 
 .keyHeader {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr 1fr auto;
-  gap: 0.75rem;
-  padding: 0.5rem 0;
+  gap: var(--space-md);
+  padding: var(--space-sm) 0;
   border-bottom: 2px solid var(--thread);
   color: var(--ink-faint);
+  font-size: var(--text-sm);
   font-weight: 500;
 }
 
 .keyRow {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr 1fr auto;
-  gap: 0.75rem;
-  padding: 0.75rem 0;
+  gap: var(--space-md);
+  padding: var(--space-md) 0;
   align-items: center;
   border-bottom: 1px solid var(--thread);
 }
 
 .keyName {
   font-weight: 500;
+  color: var(--ink);
 }
 
 .keyValue {
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
 }
 
 .keyDate {
   color: var(--ink-faint);
+  font-size: var(--text-sm);
 }
 
-/* Danger */
+.emptyState {
+  font-size: var(--text-base);
+  color: var(--ink-faint);
+}
+
+/* --- Create Key Form --- */
+
+.createForm {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: flex-end;
+}
+
+.createFormField {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+/* --- Key Created Alert --- */
+
+.keyAlert {
+  background: var(--surface);
+  border: 1px solid var(--thread);
+  border-radius: 6px;
+  padding: var(--space-xl);
+  margin-bottom: var(--space-lg);
+}
+
+.keyAlertTitle {
+  font-weight: 500;
+  font-size: var(--text-base);
+  margin-bottom: var(--space-sm);
+  color: var(--ink);
+}
+
+.keyAlertRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.keyAlertActions {
+  margin-top: var(--space-md);
+}
+
+/* --- Danger Zone --- */
+
 .dangerDescription {
+  font-size: var(--text-base);
   color: var(--ink-mid);
-  font-size: 0.9375rem;
-  margin-bottom: 1rem;
+  line-height: 1.6;
+  margin-bottom: var(--space-lg);
 }
 
 .dangerAction {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--space-md);
   max-width: 24rem;
 }
 
@@ -132,8 +259,49 @@
   flex-direction: column;
 }
 
-/* Mobile */
+/* --- Divider within a card --- */
+
+.divider {
+  border-top: 1px solid var(--thread);
+  padding-top: var(--space-lg);
+  margin-top: var(--space-lg);
+}
+
+/* ============================================================
+   Mobile: horizontal scrolling nav
+   ============================================================ */
+
 @media (max-width: 768px) {
+  .pageTitle {
+    text-align: left;
+  }
+
+  .layout {
+    grid-template-columns: 1fr;
+    gap: var(--space-xl);
+  }
+
+  .sidebar {
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+    gap: var(--space-xs);
+    padding-bottom: var(--space-sm);
+    border-bottom: 1px solid var(--thread);
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .sidebar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .sidebarLink {
+    white-space: nowrap;
+    padding: var(--space-sm) var(--space-lg);
+    font-size: var(--text-sm);
+  }
+
   .sectionHeader {
     flex-direction: column;
   }
@@ -144,6 +312,17 @@
 
   .keyRow {
     grid-template-columns: 1fr;
-    gap: 0.25rem;
+    gap: var(--space-xs);
+  }
+
+  .createForm {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .settingRow {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-sm);
   }
 }

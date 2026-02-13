@@ -14,6 +14,26 @@
   --font-body: 'Roboto Condensed', 'Arial Narrow', sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
 
+  /* Type Scale */
+  --text-xs: 0.6875rem;     /* 11px — badges, micro labels */
+  --text-sm: 0.8125rem;     /* 13px — captions, hints */
+  --text-base: 0.9375rem;   /* 15px — body text, descriptions */
+  --text-md: 1rem;          /* 16px — form inputs, info values */
+  --text-lg: 1.125rem;      /* 18px — section titles, card headers */
+  --text-xl: 1.5rem;        /* 24px — page section headings */
+  --text-2xl: 1.75rem;      /* 28px — page titles */
+  --text-3xl: 2rem;         /* 32px — hero/start page titles */
+
+  /* Spacing Scale */
+  --space-xs: 0.25rem;      /* 4px */
+  --space-sm: 0.5rem;       /* 8px */
+  --space-md: 0.75rem;      /* 12px */
+  --space-lg: 1rem;         /* 16px */
+  --space-xl: 1.5rem;       /* 24px */
+  --space-2xl: 2rem;        /* 32px */
+  --space-3xl: 3rem;        /* 48px */
+  --space-4xl: 4rem;        /* 64px */
+
   /* Kura Palette — butter yellow on black */
   --paper: #000000;
   --ink: #D4D0C8;
@@ -263,6 +283,89 @@ h1, h2, h3, h4 {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--thread); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--ink-ghost); }
+
+/* --- Toggle --- */
+
+.kura-toggle {
+  position: relative;
+  width: 2.5rem;
+  height: 1.375rem;
+  background: var(--ink-ghost);
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.kura-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 1.125rem;
+  height: 1.125rem;
+  background: var(--ink-mid);
+  border-radius: 50%;
+  transition: transform 0.2s ease, background 0.2s ease;
+}
+
+.kura-toggle[aria-checked="true"] {
+  background: rgba(255, 229, 102, 0.2);
+}
+
+.kura-toggle[aria-checked="true"]::after {
+  transform: translateX(1.125rem);
+  background: var(--amber);
+}
+
+.kura-toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* --- Typography Utilities --- */
+
+.kura-page-title {
+  font-family: var(--font-display);
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--ink);
+}
+
+.kura-section-title {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--ink);
+}
+
+.kura-section-description {
+  font-size: var(--text-base);
+  color: var(--ink-mid);
+  line-height: 1.6;
+}
+
+.kura-body {
+  font-size: var(--text-base);
+  line-height: 1.7;
+  color: var(--ink-mid);
+}
+
+.kura-hint {
+  font-size: var(--text-sm);
+  color: var(--ink-faint);
+  line-height: 1.5;
+}
+
+.kura-setting-label {
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--ink);
+}
 
 /* --- Responsive --- */
 

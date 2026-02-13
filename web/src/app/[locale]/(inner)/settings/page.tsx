@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/lib/auth-context';
-import { apiAuth, apiFetch } from '@/lib/api';
+import { apiAuth } from '@/lib/api';
 import { useRouter } from '@/i18n/routing';
 import styles from './settings.module.css';
 
@@ -16,6 +16,9 @@ interface ApiKeyInfo {
   last_used_at: string | null;
   is_revoked: boolean;
 }
+
+const SECTIONS = ['account', 'apiKeys', 'privacy', 'security', 'support', 'danger'] as const;
+type SectionId = typeof SECTIONS[number];
 
 export default function SettingsPage() {
   const t = useTranslations('settings');
@@ -30,6 +33,7 @@ export default function SettingsPage() {
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [activeSection, setActiveSection] = useState<SectionId>('account');
 
   // Redirect if not logged in
   useEffect(() => {
@@ -123,206 +127,250 @@ export default function SettingsPage() {
 
   const formatDate = (iso: string) => new Date(iso).toLocaleDateString();
   const activeKeys = keys.filter(k => !k.is_revoked);
-  const revokedKeys = keys.filter(k => k.is_revoked);
+
+  const sidebarLabels: Record<SectionId, string> = {
+    account: t('account.title'),
+    apiKeys: t('apiKeys.title'),
+    privacy: t('privacy.title'),
+    security: t('security.title'),
+    support: t('support.title'),
+    danger: t('danger.title'),
+  };
 
   return (
     <div className={styles.settingsPage}>
-      <div className={`kura-container ${styles.container}`}>
-        <div className={styles.header}>
-          <h1 className={styles.title}>{t('title')}</h1>
-          <p className={styles.subtitle}>{t('subtitle')}</p>
-        </div>
+      <div className={styles.container}>
+        <h1 className={styles.pageTitle}>{t('title')}</h1>
 
-        {/* Account */}
-        <section className="kura-card">
-          <h2 className={styles.sectionTitle}>{t('account.title')}</h2>
-          <div className={styles.infoGrid}>
-            <div className={styles.infoRow}>
-              <span className={styles.infoLabel}>{t('account.email')}</span>
-              <span className={styles.infoValue}>{user.email}</span>
-            </div>
-            <div className={styles.infoRow}>
-              <span className={styles.infoLabel}>{t('account.memberSince')}</span>
-              <span className={styles.infoValue}>{formatDate(user.created_at)}</span>
-            </div>
-            <div className={styles.infoRow}>
-              <span className={styles.infoLabel}>{t('account.plan')}</span>
-              <span className="kura-badge">{t('account.free')}</span>
-            </div>
-          </div>
-        </section>
-
-        {/* API Keys */}
-        <section className="kura-card" id="api-keys">
-          <div className={styles.sectionHeader}>
-            <div>
-              <h2 className={styles.sectionTitle}>{t('apiKeys.title')}</h2>
-              <p className={styles.sectionDescription}>{t('apiKeys.description')}</p>
-            </div>
-            {!showCreateForm && !newlyCreatedKey && (
+        <div className={styles.layout}>
+          {/* Sidebar Navigation */}
+          <nav className={styles.sidebar}>
+            {SECTIONS.map((id) => (
               <button
-                className="kura-btn kura-btn--primary"
-                onClick={() => setShowCreateForm(true)}
+                key={id}
+                className={`${styles.sidebarLink} ${activeSection === id ? styles.sidebarLinkActive : ''}`}
+                onClick={() => setActiveSection(id)}
               >
-                {t('apiKeys.create')}
+                {sidebarLabels[id]}
               </button>
+            ))}
+          </nav>
+
+          {/* Content — only active section is shown */}
+          <div className={styles.content}>
+
+            {/* === Account === */}
+            {activeSection === 'account' && (
+              <section className="kura-card">
+                <h2 className={styles.sectionTitle}>{t('account.title')}</h2>
+                <div className={styles.settingRow}>
+                  <span className={styles.settingLabel}>{t('account.email')}</span>
+                  <span className={styles.settingValue}>{user.email}</span>
+                </div>
+                <div className={styles.settingRow}>
+                  <span className={styles.settingLabel}>{t('account.memberSince')}</span>
+                  <span className={styles.settingValue}>{formatDate(user.created_at)}</span>
+                </div>
+                <div className={styles.settingRow}>
+                  <span className={styles.settingLabel}>{t('account.plan')}</span>
+                  <span className="kura-badge">{t('account.free')}</span>
+                </div>
+              </section>
             )}
-          </div>
 
-          {/* Newly created key (one-time display) */}
-          {newlyCreatedKey && (
-            <div className="kura-card" style={{ background: 'var(--surface)', marginBottom: '1rem' }}>
-              <p style={{ fontWeight: 500, marginBottom: '0.5rem' }}>{t('apiKeys.copyWarning')}</p>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <code className="kura-code-inline" style={{ flex: 1, wordBreak: 'break-all' }}>
-                  {newlyCreatedKey}
-                </code>
-                <button
-                  className="kura-btn kura-btn--ghost"
-                  onClick={() => handleCopyKey(newlyCreatedKey)}
-                >
-                  {copied ? tc('copied') : 'Copy'}
-                </button>
-              </div>
-              <button
-                className="kura-btn kura-btn--ghost"
-                style={{ marginTop: '0.5rem' }}
-                onClick={() => setNewlyCreatedKey(null)}
-              >
-                {tc('close')}
-              </button>
-            </div>
-          )}
+            {/* === API Keys === */}
+            {activeSection === 'apiKeys' && (
+              <section className="kura-card">
+                <div className={styles.sectionHeader}>
+                  <div>
+                    <h2 className={styles.sectionTitle}>{t('apiKeys.title')}</h2>
+                    <p className={styles.sectionDescription}>{t('apiKeys.description')}</p>
+                  </div>
+                </div>
 
-          {/* Create form */}
-          {showCreateForm && (
-            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', alignItems: 'flex-end' }}>
-              <div className={styles.field} style={{ flex: 1 }}>
-                <label className="kura-label">{t('apiKeys.name')}</label>
-                <input
-                  className="kura-input"
-                  placeholder="Claude Desktop"
-                  value={newKeyLabel}
-                  onChange={(e) => setNewKeyLabel(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleCreateKey()}
-                />
-              </div>
-              <button className="kura-btn kura-btn--primary" onClick={handleCreateKey}>
-                {t('apiKeys.create')}
-              </button>
-              <button className="kura-btn kura-btn--ghost" onClick={() => setShowCreateForm(false)}>
-                {tc('cancel')}
-              </button>
-            </div>
-          )}
+                {/* Newly created key alert */}
+                {newlyCreatedKey && (
+                  <div className={styles.keyAlert}>
+                    <p className={styles.keyAlertTitle}>{t('apiKeys.copyWarning')}</p>
+                    <div className={styles.keyAlertRow}>
+                      <code className="kura-code-inline" style={{ flex: 1, wordBreak: 'break-all' }}>
+                        {newlyCreatedKey}
+                      </code>
+                      <button
+                        className="kura-btn kura-btn--ghost"
+                        onClick={() => handleCopyKey(newlyCreatedKey)}
+                      >
+                        {copied ? tc('copied') : 'Copy'}
+                      </button>
+                    </div>
+                    <div className={styles.keyAlertActions}>
+                      <button
+                        className="kura-btn kura-btn--ghost"
+                        onClick={() => setNewlyCreatedKey(null)}
+                      >
+                        {tc('close')}
+                      </button>
+                    </div>
+                  </div>
+                )}
 
-          {/* Key table */}
-          {activeKeys.length > 0 && (
-            <div className={styles.keyTable}>
-              <div className={styles.keyHeader}>
-                <span>{t('apiKeys.name')}</span>
-                <span>{t('apiKeys.key')}</span>
-                <span>{t('apiKeys.created')}</span>
-                <span>{t('apiKeys.lastUsed')}</span>
-                <span></span>
-              </div>
-              {activeKeys.map((key) => (
-                <div key={key.id} className={styles.keyRow}>
-                  <span className={styles.keyName}>{key.label}</span>
-                  <span className={styles.keyValue}>
-                    <code className="kura-code-inline">{key.key_prefix}</code>
-                  </span>
-                  <span className={styles.keyDate}>{formatDate(key.created_at)}</span>
-                  <span className={styles.keyDate}>
-                    {key.last_used_at ? formatDate(key.last_used_at) : t('apiKeys.never')}
-                  </span>
+                {/* Create form */}
+                {showCreateForm && (
+                  <div className={styles.createForm}>
+                    <div className={styles.createFormField}>
+                      <label className="kura-label">{t('apiKeys.name')}</label>
+                      <input
+                        className="kura-input"
+                        placeholder="Claude Desktop"
+                        value={newKeyLabel}
+                        onChange={(e) => setNewKeyLabel(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleCreateKey()}
+                      />
+                    </div>
+                    <button className="kura-btn kura-btn--primary" onClick={handleCreateKey}>
+                      {t('apiKeys.create')}
+                    </button>
+                    <button className="kura-btn kura-btn--ghost" onClick={() => setShowCreateForm(false)}>
+                      {tc('cancel')}
+                    </button>
+                  </div>
+                )}
+
+                {/* Key table */}
+                {activeKeys.length > 0 && (
+                  <div className={styles.keyTable}>
+                    <div className={styles.keyHeader}>
+                      <span>{t('apiKeys.name')}</span>
+                      <span>{t('apiKeys.key')}</span>
+                      <span>{t('apiKeys.created')}</span>
+                      <span>{t('apiKeys.lastUsed')}</span>
+                      <span></span>
+                    </div>
+                    {activeKeys.map((key) => (
+                      <div key={key.id} className={styles.keyRow}>
+                        <span className={styles.keyName}>{key.label}</span>
+                        <span className={styles.keyValue}>
+                          <code className="kura-code-inline">{key.key_prefix}</code>
+                        </span>
+                        <span className={styles.keyDate}>{formatDate(key.created_at)}</span>
+                        <span className={styles.keyDate}>
+                          {key.last_used_at ? formatDate(key.last_used_at) : t('apiKeys.never')}
+                        </span>
+                        <button
+                          className="kura-btn kura-btn--ghost"
+                          onClick={() => handleRevokeKey(key.id)}
+                        >
+                          {t('apiKeys.revoke')}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Empty state */}
+                {activeKeys.length === 0 && !showCreateForm && !newlyCreatedKey && (
+                  <p className={styles.emptyState}>
+                    {t('apiKeys.noKeys')}
+                  </p>
+                )}
+
+                {/* Create button at bottom */}
+                {!showCreateForm && !newlyCreatedKey && (
+                  <div className={styles.divider}>
+                    <button
+                      className="kura-btn kura-btn--secondary"
+                      onClick={() => setShowCreateForm(true)}
+                    >
+                      {t('apiKeys.create')}
+                    </button>
+                  </div>
+                )}
+              </section>
+            )}
+
+            {/* === Privacy & Data === */}
+            {activeSection === 'privacy' && (
+              <section className="kura-card">
+                <h2 className={styles.sectionTitle}>{t('privacy.title')}</h2>
+
+                <div className={styles.settingRow}>
+                  <div className={styles.settingInfo}>
+                    <span className={styles.settingName}>{t('privacy.consentLabel')}</span>
+                    <p className={styles.settingHint}>{t('privacy.consentHint')}</p>
+                  </div>
                   <button
-                    className="kura-btn kura-btn--ghost"
-                    onClick={() => handleRevokeKey(key.id)}
-                  >
-                    {t('apiKeys.revoke')}
+                    className="kura-toggle"
+                    role="switch"
+                    aria-checked="true"
+                    disabled
+                  />
+                </div>
+
+                <div className={styles.settingRow}>
+                  <div className={styles.settingInfo}>
+                    <span className={styles.settingName}>{t('privacy.exportDescription')}</span>
+                  </div>
+                  <button className="kura-btn kura-btn--secondary" onClick={handleExportData}>
+                    {t('privacy.exportButton')}
                   </button>
                 </div>
-              ))}
-            </div>
-          )}
+              </section>
+            )}
 
-          {activeKeys.length === 0 && !showCreateForm && !newlyCreatedKey && (
-            <p style={{ color: 'var(--ink-faint)', fontSize: '0.875rem' }}>
-              {t('apiKeys.noKeys')}
-            </p>
-          )}
-        </section>
+            {/* === Security === */}
+            {activeSection === 'security' && (
+              <section className="kura-card">
+                <h2 className={styles.sectionTitle}>{t('security.title')}</h2>
+                <div className={styles.settingRow}>
+                  <div className={styles.settingInfo}>
+                    <span className={styles.settingName}>{t('security.twoFactor')}</span>
+                  </div>
+                  <span className="kura-badge">{t('security.comingSoon')}</span>
+                </div>
+              </section>
+            )}
 
-        {/* Privacy & Data */}
-        <section className="kura-card">
-          <h2 className={styles.sectionTitle}>{t('privacy.title')}</h2>
+            {/* === Support === */}
+            {activeSection === 'support' && (
+              <section className="kura-card">
+                <h2 className={styles.sectionTitle}>{t('support.title')}</h2>
+                <p className={styles.sectionDescription}>
+                  {t('support.text')}
+                </p>
+              </section>
+            )}
 
-          {/* Consent toggle (disabled during EA) */}
-          <div className={styles.infoRow} style={{ marginBottom: '0.75rem' }}>
-            <div>
-              <span style={{ fontWeight: 500, fontSize: '0.875rem' }}>{t('privacy.consentLabel')}</span>
-              <p style={{ color: 'var(--ink-faint)', fontSize: '0.8125rem', marginTop: '0.25rem' }}>
-                {t('privacy.consentHint')}
-              </p>
-            </div>
-            <input type="checkbox" checked disabled style={{ opacity: 0.5 }} />
+            {/* === Danger Zone === */}
+            {activeSection === 'danger' && (
+              <section className="kura-card kura-card--danger">
+                <h2 className={styles.sectionTitle}>{t('danger.title')}</h2>
+                <p className={styles.dangerDescription}>{t('danger.deleteDescription')}</p>
+                <div className={styles.dangerAction}>
+                  <div className={styles.field}>
+                    <label htmlFor="deleteConfirm" className="kura-label">
+                      {t('danger.deleteConfirm')}
+                    </label>
+                    <input
+                      id="deleteConfirm"
+                      type="email"
+                      className="kura-input"
+                      value={deleteConfirm}
+                      onChange={(e) => setDeleteConfirm(e.target.value)}
+                    />
+                  </div>
+                  <button
+                    className="kura-btn kura-btn--danger"
+                    disabled={deleteConfirm !== user.email || deleting}
+                    onClick={handleDeleteAccount}
+                  >
+                    {deleting ? tc('loading') : t('danger.deleteButton')}
+                  </button>
+                </div>
+              </section>
+            )}
+
           </div>
-
-          {/* Data export */}
-          <div style={{ borderTop: '1px solid var(--thread)', paddingTop: '0.75rem' }}>
-            <p style={{ fontSize: '0.875rem', marginBottom: '0.5rem' }}>{t('privacy.exportDescription')}</p>
-            <button className="kura-btn kura-btn--ghost" onClick={handleExportData}>
-              {t('privacy.exportButton')}
-            </button>
-          </div>
-        </section>
-
-        {/* Security (placeholder) */}
-        <section className="kura-card">
-          <h2 className={styles.sectionTitle}>{t('security.title')}</h2>
-          <div className={styles.infoRow}>
-            <div>
-              <span style={{ fontWeight: 500, fontSize: '0.875rem' }}>{t('security.twoFactor')}</span>
-            </div>
-            <span className="kura-badge">{t('security.comingSoon')}</span>
-          </div>
-        </section>
-
-        {/* Support */}
-        <section className="kura-card">
-          <h2 className={styles.sectionTitle}>{t('support.title')}</h2>
-          <p style={{ fontSize: '0.875rem', color: 'var(--ink-faint)' }}>
-            {t('support.text')}
-          </p>
-        </section>
-
-        {/* Danger Zone */}
-        <section className="kura-card kura-card--danger">
-          <h2 className={styles.sectionTitle}>{t('danger.title')}</h2>
-          <p className={styles.dangerDescription}>{t('danger.deleteDescription')}</p>
-          <div className={styles.dangerAction}>
-            <div className={styles.field}>
-              <label htmlFor="deleteConfirm" className="kura-label">
-                {t('danger.deleteConfirm')}
-              </label>
-              <input
-                id="deleteConfirm"
-                type="email"
-                className="kura-input"
-                value={deleteConfirm}
-                onChange={(e) => setDeleteConfirm(e.target.value)}
-              />
-            </div>
-            <button
-              className="kura-btn kura-btn--danger"
-              disabled={deleteConfirm !== user.email || deleting}
-              onClick={handleDeleteAccount}
-            >
-              {deleting ? tc('loading') : t('danger.deleteButton')}
-            </button>
-          </div>
-        </section>
+        </div>
       </div>
     </div>
   );
