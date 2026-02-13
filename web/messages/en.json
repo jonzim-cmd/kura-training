@@ -114,8 +114,7 @@
     "forgotPassword": "Forgot password?",
     "orContinueWith": "Or continue with",
     "consentLabel": "I agree that my anonymized training data may be used to improve Kura.",
-    "inviteInvalid": "This invite link is invalid or expired.",
-    "inviteEmailMismatch": "This invite link is for a different email address."
+    "inviteInvalid": "This invite link is invalid or expired."
   },
   "settings": {
     "title": "Settings",

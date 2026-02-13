@@ -114,8 +114,7 @@
     "forgotPassword": "Passwort vergessen?",
     "orContinueWith": "Oder weiter mit",
     "consentLabel": "Ich stimme zu, dass meine anonymisierten Trainingsdaten zur Verbesserung von Kura verwendet werden.",
-    "inviteInvalid": "Dieser Einladungslink ist ung\u00fcltig oder abgelaufen.",
-    "inviteEmailMismatch": "Dieser Einladungslink ist f\u00fcr eine andere E-Mail-Adresse."
+    "inviteInvalid": "Dieser Einladungslink ist ung\u00fcltig oder abgelaufen."
   },
   "settings": {
     "title": "Einstellungen",

@@ -209,18 +209,12 @@ pub async fn register(
                 });
             }
 
-            let (token_id, bound_email) =
+            let (token_id, _bound_email) =
                 super::invite::validate_invite_token(&state.db, token_str).await?;
 
-            // Check email binding if token is bound to a specific email
-            if let Some(ref bound) = bound_email {
-                if bound.to_lowercase() != email_norm {
-                    return Err(AppError::Forbidden {
-                        message: "This invite is bound to a different email address.".to_string(),
-                        docs_hint: Some("Use the email address associated with your invite.".to_string()),
-                    });
-                }
-            }
+            // Token is the gate, not the email. User can sign up with any
+            // method (email/password, Google, Apple) regardless of which
+            // email the invite was sent to.
 
             // Require consent in invite mode
             if req.consent_anonymized_learning != Some(true) {
