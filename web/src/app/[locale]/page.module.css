@@ -591,6 +591,7 @@
   padding: 0 8% 6vh;
   display: flex;
   justify-content: center;
+  gap: 1rem;
 }
 
 .ctaButton {
@@ -610,4 +611,23 @@
 .ctaButton:hover {
   background: #FFE566;
   color: #000;
+}
+
+.ctaButtonSecondary {
+  display: inline-block;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 0.9375rem;
+  letter-spacing: 0.02em;
+  padding: 0.75rem 2rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  color: var(--ink-mid);
+  text-decoration: none;
+  transition: all 0.2s ease;
+}
+
+.ctaButtonSecondary:hover {
+  border-color: rgba(255, 255, 255, 0.25);
+  color: var(--ink);
 }
