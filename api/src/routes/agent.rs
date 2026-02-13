@@ -1,5 +1,5 @@
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
@@ -910,6 +910,15 @@ const MEMORY_TIER_PRINCIPLES_MISSING_CONFIRM_REASON_CODE: &str =
     "memory_principles_missing_confirm_first";
 const KURA_AGENT_MODEL_IDENTITY_ENV: &str = "KURA_AGENT_MODEL_IDENTITY";
 const KURA_AGENT_MODEL_BY_CLIENT_ID_ENV: &str = "KURA_AGENT_MODEL_BY_CLIENT_ID_JSON";
+const KURA_AGENT_DEVELOPER_RAW_CLIENT_ALLOWLIST_ENV: &str =
+    "KURA_AGENT_DEVELOPER_RAW_CLIENT_ALLOWLIST";
+const AGENT_LANGUAGE_MODE_HEADER: &str = "x-kura-debug-language-mode";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentLanguageMode {
+    UserSafe,
+    DeveloperRaw,
+}
 
 const ADVANCED_MODEL_IDENTITIES: [&str; 3] = [
     "openai:gpt-5",
@@ -1009,6 +1018,103 @@ fn resolve_model_identity(auth: &AuthenticatedUser) -> ResolvedModelIdentity {
         client_map_json.as_deref(),
         runtime_default_identity.as_deref(),
     )
+}
+
+fn scope_matches_for_optional_controls(granted: &str, required: &str) -> bool {
+    let granted = granted.trim().to_lowercase();
+    let required = required.trim().to_lowercase();
+    if granted.is_empty() || required.is_empty() {
+        return false;
+    }
+    if granted == "*" || granted == required {
+        return true;
+    }
+    if let Some(prefix) = granted.strip_suffix(":*") {
+        return required == prefix || required.starts_with(&format!("{prefix}:"));
+    }
+    false
+}
+
+fn auth_has_scope(auth: &AuthenticatedUser, required: &str) -> bool {
+    auth.scopes
+        .iter()
+        .any(|scope| scope_matches_for_optional_controls(scope, required))
+}
+
+fn auth_client_id(auth: &AuthenticatedUser) -> Option<&str> {
+    match &auth.auth_method {
+        AuthMethod::AccessToken { client_id, .. } => Some(client_id.as_str()),
+        AuthMethod::ApiKey { .. } => None,
+    }
+}
+
+fn header_requests_developer_raw(mode_header: Option<&str>) -> bool {
+    let Some(raw) = mode_header else {
+        return false;
+    };
+    matches!(
+        raw.trim().to_lowercase().as_str(),
+        "raw" | "developer_raw" | "developer-raw" | "off"
+    )
+}
+
+fn is_allowlisted_developer_raw_client(client_id: &str, allowlist: Option<&str>) -> bool {
+    let normalized_client_id = client_id.trim().to_lowercase();
+    if normalized_client_id.is_empty() {
+        return false;
+    }
+    let Some(raw_allowlist) = allowlist else {
+        return false;
+    };
+    raw_allowlist
+        .split(',')
+        .map(|entry| entry.trim().to_lowercase())
+        .any(|entry| entry == "*" || entry == normalized_client_id)
+}
+
+fn resolve_agent_language_mode_with_sources(
+    auth: &AuthenticatedUser,
+    mode_header: Option<&str>,
+    allowlist: Option<&str>,
+) -> AgentLanguageMode {
+    if !header_requests_developer_raw(mode_header) {
+        return AgentLanguageMode::UserSafe;
+    }
+    let has_debug_scope = auth_has_scope(auth, "agent:debug");
+    let allowlisted_client = auth_client_id(auth)
+        .map(|client_id| is_allowlisted_developer_raw_client(client_id, allowlist))
+        .unwrap_or(false);
+    if has_debug_scope && allowlisted_client {
+        AgentLanguageMode::DeveloperRaw
+    } else {
+        AgentLanguageMode::UserSafe
+    }
+}
+
+fn resolve_agent_language_mode(auth: &AuthenticatedUser, headers: &HeaderMap) -> AgentLanguageMode {
+    let mode_header = headers
+        .get(AGENT_LANGUAGE_MODE_HEADER)
+        .and_then(|value| value.to_str().ok());
+    let allowlist = std::env::var(KURA_AGENT_DEVELOPER_RAW_CLIENT_ALLOWLIST_ENV).ok();
+    let mode = resolve_agent_language_mode_with_sources(auth, mode_header, allowlist.as_deref());
+    if header_requests_developer_raw(mode_header) {
+        if mode == AgentLanguageMode::DeveloperRaw {
+            tracing::info!(
+                user_id = %auth.user_id,
+                client_id = auth_client_id(auth).unwrap_or("n/a"),
+                mode = "developer_raw",
+                "developer raw language mode enabled for write-with-proof response"
+            );
+        } else {
+            tracing::warn!(
+                user_id = %auth.user_id,
+                client_id = auth_client_id(auth).unwrap_or("n/a"),
+                has_debug_scope = auth_has_scope(auth, "agent:debug"),
+                "developer raw language mode request denied; enforcing user_safe mode"
+            );
+        }
+    }
+    mode
 }
 
 fn resolve_model_tier_policy(model_identity: &str) -> ModelTierPolicy {
@@ -4798,6 +4904,307 @@ fn build_post_task_reflection(
     }
 }
 
+static LEAK_DOTTED_TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b[a-z][a-z0-9_]*(?:\.[a-z0-9_]+){1,}\b").expect("valid dotted token regex")
+});
+static LEAK_INVARIANT_CODE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bINV-\d{3}\b").expect("valid invariant code regex"));
+static LEAK_INVARIANT_FN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\binv_[a-z0-9_]+\b").expect("valid invariant fn regex"));
+static LEAK_ENDPOINT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/v1/[a-z0-9/_\.-]+").expect("valid endpoint regex"));
+
+fn is_machine_token_shape(token: &str) -> bool {
+    let trimmed = token.trim();
+    if trimmed.len() < 3 {
+        return false;
+    }
+    trimmed.contains('.')
+        || trimmed.contains('_')
+        || trimmed.contains('/')
+        || trimmed.starts_with("INV-")
+        || trimmed
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
+}
+
+fn insert_machine_token(tokens: &mut HashSet<String>, token: &str) {
+    let trimmed = token.trim();
+    if is_machine_token_shape(trimmed) {
+        tokens.insert(trimmed.to_string());
+    }
+}
+
+fn collect_machine_language_tokens(response: &AgentWriteWithProofResponse) -> HashSet<String> {
+    let mut tokens = HashSet::new();
+
+    for receipt in &response.receipts {
+        insert_machine_token(&mut tokens, &receipt.event_type);
+    }
+    for event_type in &response.workflow_gate.planning_event_types {
+        insert_machine_token(&mut tokens, event_type);
+    }
+    for requirement in &response.workflow_gate.missing_requirements {
+        insert_machine_token(&mut tokens, requirement);
+    }
+    for marker in &response.claim_guard.uncertainty_markers {
+        insert_machine_token(&mut tokens, marker);
+    }
+    for marker in &response.claim_guard.deferred_markers {
+        insert_machine_token(&mut tokens, marker);
+    }
+    for reason in &response.claim_guard.autonomy_gate.reason_codes {
+        insert_machine_token(&mut tokens, reason);
+    }
+    for class_name in &response.session_audit.mismatch_classes {
+        insert_machine_token(&mut tokens, class_name);
+    }
+    for code in &response.trace_digest.warning_codes {
+        insert_machine_token(&mut tokens, code);
+    }
+    for code in &response.trace_digest.autonomy_reason_codes {
+        insert_machine_token(&mut tokens, code);
+    }
+    for risk in &response.post_task_reflection.residual_risks {
+        insert_machine_token(&mut tokens, risk);
+    }
+    for signal in &response.post_task_reflection.emitted_learning_signal_types {
+        insert_machine_token(&mut tokens, signal);
+    }
+    if let Some(technical) = response.repair_feedback.technical.as_ref() {
+        for step in &technical.command_trace {
+            insert_machine_token(&mut tokens, step);
+        }
+    }
+    if !response.verification.write_path.trim().is_empty() {
+        insert_machine_token(&mut tokens, &response.verification.write_path);
+    }
+    if !response
+        .post_task_reflection
+        .next_verification_step
+        .trim()
+        .is_empty()
+    {
+        insert_machine_token(
+            &mut tokens,
+            &response.post_task_reflection.next_verification_step,
+        );
+    }
+    tokens
+}
+
+fn detect_machine_language_leaks(text: &str, machine_tokens: &HashSet<String>) -> Vec<String> {
+    let mut leaks: HashSet<String> = HashSet::new();
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let lowered = trimmed.to_lowercase();
+    for token in machine_tokens {
+        if token.is_empty() {
+            continue;
+        }
+        let token_lower = token.to_lowercase();
+        if lowered.contains(&token_lower) {
+            leaks.insert(token.to_string());
+        }
+    }
+    for capture in LEAK_DOTTED_TOKEN_RE.find_iter(trimmed) {
+        leaks.insert(capture.as_str().to_string());
+    }
+    for capture in LEAK_INVARIANT_CODE_RE.find_iter(trimmed) {
+        leaks.insert(capture.as_str().to_string());
+    }
+    for capture in LEAK_INVARIANT_FN_RE.find_iter(trimmed) {
+        leaks.insert(capture.as_str().to_string());
+    }
+    for capture in LEAK_ENDPOINT_RE.find_iter(trimmed) {
+        leaks.insert(capture.as_str().to_string());
+    }
+    let mut out: Vec<String> = leaks.into_iter().collect();
+    out.sort();
+    out
+}
+
+fn replacement_for_machine_token(token: &str) -> &'static str {
+    let normalized = token.trim().to_lowercase();
+    if normalized.starts_with("inv-") || normalized.starts_with("inv_") {
+        return "interner Pruefhinweis";
+    }
+    if normalized.starts_with("/v1/") {
+        return "interne Schnittstelle";
+    }
+    if normalized.contains("idempotency") {
+        return "Sicherungsmerkmal";
+    }
+    if normalized.contains("read-after-write") || normalized.contains("read_after_write") {
+        return "Bestaetigungspruefung";
+    }
+    if normalized.contains("write-with-proof") || normalized.contains("write_with_proof") {
+        return "Speicherpruefung";
+    }
+    if normalized.contains('.') || normalized.contains('_') || normalized.contains('/') {
+        return "interner Fachbegriff";
+    }
+    "technischer Begriff"
+}
+
+fn replace_case_insensitive(text: &str, needle: &str, replacement: &str) -> String {
+    let trimmed = needle.trim();
+    if trimmed.is_empty() {
+        return text.to_string();
+    }
+    let pattern = format!("(?i){}", regex::escape(trimmed));
+    let Ok(re) = Regex::new(&pattern) else {
+        return text.to_string();
+    };
+    re.replace_all(text, replacement).into_owned()
+}
+
+fn normalize_user_text_output(text: &str) -> String {
+    let mut normalized = text
+        .replace("  ", " ")
+        .replace(" ,", ",")
+        .replace(" .", ".")
+        .replace(" :", ":")
+        .trim()
+        .to_string();
+    if normalized.is_empty() {
+        normalized =
+            "Ich habe das verarbeitet und formuliere es fuer dich in Alltagssprache.".to_string();
+    }
+    normalized
+}
+
+fn rewrite_user_text_once(text: &str, machine_tokens: &HashSet<String>) -> String {
+    let mut rewritten = text.to_string();
+    let mut sorted_tokens: Vec<String> = machine_tokens.iter().cloned().collect();
+    sorted_tokens.sort_by(|a, b| b.len().cmp(&a.len()));
+    for token in sorted_tokens {
+        rewritten =
+            replace_case_insensitive(&rewritten, &token, replacement_for_machine_token(&token));
+    }
+    rewritten = LEAK_INVARIANT_CODE_RE
+        .replace_all(&rewritten, "interner Pruefhinweis")
+        .into_owned();
+    rewritten = LEAK_INVARIANT_FN_RE
+        .replace_all(&rewritten, "interner Pruefhinweis")
+        .into_owned();
+    rewritten = LEAK_ENDPOINT_RE
+        .replace_all(&rewritten, "interne Schnittstelle")
+        .into_owned();
+    rewritten = LEAK_DOTTED_TOKEN_RE
+        .replace_all(&rewritten, "interner Fachbegriff")
+        .into_owned();
+    rewritten = replace_case_insensitive(&rewritten, "write-with-proof", "Speicherpruefung");
+    rewritten = replace_case_insensitive(&rewritten, "read-after-write", "Bestaetigungspruefung");
+    rewritten = replace_case_insensitive(&rewritten, "idempotency keys", "Sicherungsmerkmale");
+    rewritten = replace_case_insensitive(&rewritten, "idempotency key", "Sicherungsmerkmal");
+    rewritten = replace_case_insensitive(&rewritten, "receipt", "Bestaetigung");
+    rewritten = replace_case_insensitive(&rewritten, "receipts", "Bestaetigungen");
+    normalize_user_text_output(&rewritten)
+}
+
+fn user_facing_text_fields(response: &AgentWriteWithProofResponse) -> Vec<&str> {
+    let mut texts = vec![
+        response.claim_guard.recommended_user_phrase.as_str(),
+        response.reliability_ux.assistant_phrase.as_str(),
+        response.workflow_gate.message.as_str(),
+        response.repair_feedback.summary.as_str(),
+        response.trace_digest.chat_summary.as_str(),
+        response.post_task_reflection.chat_summary.as_str(),
+        response
+            .post_task_reflection
+            .next_verification_step
+            .as_str(),
+    ];
+    if let Some(question) = response.reliability_ux.clarification_question.as_deref() {
+        texts.push(question);
+    }
+    if let Some(question) = response.repair_feedback.clarification_question.as_deref() {
+        texts.push(question);
+    }
+    if let Some(confirm) = response.intent_handshake_confirmation.as_ref() {
+        texts.push(confirm.chat_confirmation.as_str());
+    }
+    if let Some(undo) = response.repair_feedback.undo.as_ref() {
+        texts.push(undo.detail.as_str());
+    }
+    for warning in &response.warnings {
+        texts.push(warning.message.as_str());
+    }
+    texts
+}
+
+fn count_leaks_in_user_fields(
+    response: &AgentWriteWithProofResponse,
+    machine_tokens: &HashSet<String>,
+) -> usize {
+    user_facing_text_fields(response)
+        .iter()
+        .map(|text| detect_machine_language_leaks(text, machine_tokens).len())
+        .sum()
+}
+
+fn rewrite_user_facing_fields_once(
+    response: &mut AgentWriteWithProofResponse,
+    machine_tokens: &HashSet<String>,
+) {
+    response.claim_guard.recommended_user_phrase = rewrite_user_text_once(
+        &response.claim_guard.recommended_user_phrase,
+        machine_tokens,
+    );
+    response.reliability_ux.assistant_phrase =
+        rewrite_user_text_once(&response.reliability_ux.assistant_phrase, machine_tokens);
+    if let Some(question) = response.reliability_ux.clarification_question.as_mut() {
+        *question = rewrite_user_text_once(question, machine_tokens);
+    }
+    response.workflow_gate.message =
+        rewrite_user_text_once(&response.workflow_gate.message, machine_tokens);
+    response.repair_feedback.summary =
+        rewrite_user_text_once(&response.repair_feedback.summary, machine_tokens);
+    if let Some(question) = response.repair_feedback.clarification_question.as_mut() {
+        *question = rewrite_user_text_once(question, machine_tokens);
+    }
+    if let Some(undo) = response.repair_feedback.undo.as_mut() {
+        undo.detail = rewrite_user_text_once(&undo.detail, machine_tokens);
+    }
+    if let Some(confirm) = response.intent_handshake_confirmation.as_mut() {
+        confirm.chat_confirmation =
+            rewrite_user_text_once(&confirm.chat_confirmation, machine_tokens);
+    }
+    response.trace_digest.chat_summary =
+        rewrite_user_text_once(&response.trace_digest.chat_summary, machine_tokens);
+    response.post_task_reflection.chat_summary =
+        rewrite_user_text_once(&response.post_task_reflection.chat_summary, machine_tokens);
+    response.post_task_reflection.next_verification_step = rewrite_user_text_once(
+        &response.post_task_reflection.next_verification_step,
+        machine_tokens,
+    );
+    for warning in &mut response.warnings {
+        warning.message = rewrite_user_text_once(&warning.message, machine_tokens);
+    }
+}
+
+fn apply_user_safe_language_guard(
+    mut response: AgentWriteWithProofResponse,
+) -> AgentWriteWithProofResponse {
+    let machine_tokens = collect_machine_language_tokens(&response);
+    let leak_count_before = count_leaks_in_user_fields(&response, &machine_tokens);
+    if leak_count_before == 0 {
+        return response;
+    }
+    rewrite_user_facing_fields_once(&mut response, &machine_tokens);
+    let leak_count_after = count_leaks_in_user_fields(&response, &machine_tokens);
+    tracing::info!(
+        leak_detected_total = leak_count_before,
+        rewrite_applied_total = 1,
+        leak_passed_through_total = leak_count_after,
+        "user-safe language guard executed (fail-open, one rewrite)"
+    );
+    response
+}
+
 fn post_task_reflection_signal_type(certainty_state: &str) -> &'static str {
     match certainty_state {
         "confirmed" => "post_task_reflection_confirmed",
@@ -5979,9 +6386,11 @@ pub async fn get_event_evidence_lineage(
 pub async fn write_with_proof(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
+    headers: HeaderMap,
     Json(req): Json<AgentWriteWithProofRequest>,
 ) -> Result<impl axum::response::IntoResponse, AppError> {
     require_scopes(&auth, &["agent:write"], "POST /v1/agent/write-with-proof")?;
+    let language_mode = resolve_agent_language_mode(&auth, &headers);
     let user_id = auth.user_id;
     let requested_event_count = req.events.len();
     let action_class = classify_write_action_class(&req.events);
@@ -6288,22 +6697,26 @@ pub async fn write_with_proof(
 
     let _ = create_events_batch_internal(&state, user_id, &quality_events).await;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(AgentWriteWithProofResponse {
-            receipts,
-            warnings,
-            verification,
-            claim_guard,
-            reliability_ux,
-            workflow_gate,
-            session_audit: session_audit_summary,
-            repair_feedback,
-            intent_handshake_confirmation,
-            trace_digest,
-            post_task_reflection,
-        }),
-    ))
+    let response = AgentWriteWithProofResponse {
+        receipts,
+        warnings,
+        verification,
+        claim_guard,
+        reliability_ux,
+        workflow_gate,
+        session_audit: session_audit_summary,
+        repair_feedback,
+        intent_handshake_confirmation,
+        trace_digest,
+        post_task_reflection,
+    };
+    let response = if language_mode == AgentLanguageMode::UserSafe {
+        apply_user_safe_language_guard(response)
+    } else {
+        response
+    };
+
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 /// Get machine-readable capability manifest for agent contract negotiation.
@@ -6689,6 +7102,17 @@ mod tests {
             session_audit,
             repair_feedback,
         )
+    }
+
+    fn make_access_token_auth(scopes: &[&str], client_id: &str) -> AuthenticatedUser {
+        AuthenticatedUser {
+            user_id: Uuid::now_v7(),
+            auth_method: AuthMethod::AccessToken {
+                token_id: Uuid::now_v7(),
+                client_id: client_id.to_string(),
+            },
+            scopes: scopes.iter().map(|scope| (*scope).to_string()).collect(),
+        }
     }
 
     async fn integration_state_if_available() -> Option<(AppState, AuthenticatedUser, Uuid)> {
@@ -9107,6 +9531,132 @@ mod tests {
         assert_eq!(mode.source, "user_profile.preference");
         assert!(!mode.onboarding_hint_required);
         assert!(mode.onboarding_hint.is_none());
+    }
+
+    #[test]
+    fn language_mode_defaults_to_user_safe_without_debug_header() {
+        let auth = make_access_token_auth(&["agent:write"], "kura-dev-client");
+        let mode = super::resolve_agent_language_mode_with_sources(&auth, None, Some("*"));
+        assert_eq!(mode, super::AgentLanguageMode::UserSafe);
+    }
+
+    #[test]
+    fn language_mode_denies_developer_raw_without_debug_scope() {
+        let auth = make_access_token_auth(&["agent:write"], "kura-dev-client");
+        let mode = super::resolve_agent_language_mode_with_sources(&auth, Some("raw"), Some("*"));
+        assert_eq!(mode, super::AgentLanguageMode::UserSafe);
+    }
+
+    #[test]
+    fn language_mode_denies_developer_raw_when_client_not_allowlisted() {
+        let auth = make_access_token_auth(&["agent:write", "agent:debug"], "kura-app-client");
+        let mode = super::resolve_agent_language_mode_with_sources(
+            &auth,
+            Some("developer_raw"),
+            Some("kura-dev-client"),
+        );
+        assert_eq!(mode, super::AgentLanguageMode::UserSafe);
+    }
+
+    #[test]
+    fn language_mode_allows_developer_raw_when_scope_and_allowlist_match() {
+        let auth = make_access_token_auth(&["agent:write", "agent:debug"], "kura-dev-client");
+        let mode = super::resolve_agent_language_mode_with_sources(
+            &auth,
+            Some("developer_raw"),
+            Some("kura-dev-client,kura-admin-client"),
+        );
+        assert_eq!(mode, super::AgentLanguageMode::DeveloperRaw);
+    }
+
+    #[test]
+    fn user_safe_guard_rewrites_machine_language_but_remains_fail_open() {
+        let (
+            receipts,
+            warnings,
+            verification,
+            mut claim_guard,
+            mut workflow_gate,
+            mut session_audit,
+            mut repair_feedback,
+        ) = make_trace_contract_artifacts(
+            "failed",
+            "pending",
+            "needs_clarification",
+            Some("Konflikt bei session.completed: INV-008. Welcher Wert stimmt?"),
+        );
+
+        claim_guard.recommended_user_phrase =
+            "Write proof incomplete. Retry with the same idempotency keys.".to_string();
+        workflow_gate.message =
+            "Planning/coaching payload blocked: onboarding close marker workflow.onboarding.closed fehlt."
+                .to_string();
+        session_audit.clarification_question =
+            Some("Konflikt: session.completed oder set.corrected?".to_string());
+        repair_feedback.summary =
+            "Undo via /v1/events/batch und event.retracted moeglich.".to_string();
+        repair_feedback.clarification_question = Some("Bitte INV-004 bestaetigen.".to_string());
+
+        let reliability_ux = super::AgentReliabilityUx {
+            state: "unresolved".to_string(),
+            assistant_phrase:
+                "Unresolved: Write-Proof pending. session.completed konnte nicht bestaetigt werden."
+                    .to_string(),
+            inferred_facts: Vec::new(),
+            clarification_question: Some("INV-009: Welcher Wert stimmt?".to_string()),
+        };
+
+        let trace_digest = super::build_trace_digest(
+            &receipts,
+            &warnings,
+            &verification,
+            &claim_guard,
+            &workflow_gate,
+            &session_audit,
+            &repair_feedback,
+        );
+        let post_task_reflection = super::build_post_task_reflection(
+            &trace_digest,
+            &verification,
+            &session_audit,
+            &repair_feedback,
+        );
+
+        let response = super::AgentWriteWithProofResponse {
+            receipts,
+            warnings,
+            verification,
+            claim_guard,
+            reliability_ux,
+            workflow_gate,
+            session_audit,
+            repair_feedback,
+            intent_handshake_confirmation: Some(super::AgentIntentHandshakeConfirmation {
+                schema_version: "intent_handshake.v1".to_string(),
+                status: "accepted".to_string(),
+                impact_class: "high_impact_write".to_string(),
+                handshake_id: Some("hs-1".to_string()),
+                chat_confirmation:
+                    "Handshake accepted for write-with-proof and read-after-write checks."
+                        .to_string(),
+            }),
+            trace_digest,
+            post_task_reflection,
+        };
+
+        let guarded = super::apply_user_safe_language_guard(response);
+        let merged_text = format!(
+            "{}\n{}\n{}\n{}",
+            guarded.reliability_ux.assistant_phrase,
+            guarded.claim_guard.recommended_user_phrase,
+            guarded.workflow_gate.message,
+            guarded.repair_feedback.summary
+        );
+        assert!(!merged_text.trim().is_empty());
+        assert!(!merged_text.contains("session.completed"));
+        assert!(!merged_text.contains("workflow.onboarding.closed"));
+        assert!(!merged_text.contains("/v1/events/batch"));
+        assert!(!merged_text.contains("INV-008"));
     }
 
     #[test]
