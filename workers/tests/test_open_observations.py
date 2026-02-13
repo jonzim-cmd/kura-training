@@ -132,3 +132,52 @@ def test_projection_builder_keeps_latest_and_quality_counts():
     assert projection["summary"]["latest_value"] == 4.0
     assert projection["summary"]["latest_context_text"] == "Nach Belastung stärker"
     assert projection["summary"]["quality_flags_count"]["scale_out_of_bounds"] == 1
+    assert projection["summary"]["lifecycle"]["status"] == "already_known"
+
+
+def test_projection_builder_marks_insufficient_support_for_unknown_dimension():
+    entries = [
+        {
+            "event_id": "obs-1",
+            "timestamp": "2026-02-12T10:00:00+00:00",
+            "dimension": "coach.note.experimental",
+            "tier": "unknown",
+            "value": {"text": "ankle stiffness"},
+            "unit": None,
+            "scale": None,
+            "context_text": "ankle stiffness in warmup",
+            "tags": ["coach"],
+            "confidence": 0.91,
+            "provenance": {"source_type": "explicit"},
+            "scope": {"level": "session"},
+            "quality_flags": ["unknown_dimension"],
+        }
+    ]
+    projection = _build_dimension_projection("coach.note.experimental", entries)
+    assert projection["summary"]["lifecycle"]["status"] == "insufficient_support"
+    assert projection["summary"]["lifecycle"]["eligible_for_human_review"] is False
+
+
+def test_projection_builder_marks_eligible_for_human_review_when_thresholds_pass():
+    entries = []
+    for idx in range(5):
+        entries.append(
+            {
+                "event_id": f"obs-{idx}",
+                "timestamp": "2026-02-12T10:00:00+00:00",
+                "dimension": "custom.jump_readiness",
+                "tier": "provisional",
+                "value": 7 + idx,
+                "unit": None,
+                "scale": None,
+                "context_text": "custom readiness marker",
+                "tags": [],
+                "confidence": 0.9,
+                "provenance": {"source_type": "explicit"},
+                "scope": {"level": "session"},
+                "quality_flags": ["provisional_dimension"],
+            }
+        )
+    projection = _build_dimension_projection("custom.jump_readiness", entries)
+    assert projection["summary"]["lifecycle"]["status"] == "eligible_for_human_review"
+    assert projection["summary"]["lifecycle"]["eligible_for_human_review"] is True

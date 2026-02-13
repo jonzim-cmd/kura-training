@@ -105,6 +105,23 @@ def _get_conventions() -> dict[str, Any]:
                 "provisional_prefixes": ["x_", "custom.", "provisional."],
                 "unknown_behavior": "store_with_quality_flags",
             },
+            "lifecycle_policy": {
+                "states": ["known", "provisional", "unknown"],
+                "promotion_status_values": [
+                    "already_known",
+                    "insufficient_support",
+                    "confidence_below_threshold",
+                    "eligible_for_human_review",
+                ],
+                "thresholds": {
+                    "promotion_min_support": 5,
+                    "promotion_min_avg_confidence": 0.8,
+                },
+                "non_goals": [
+                    "No automatic schema mutation from projection-only signals.",
+                    "No autonomous promotion to known without explicit human review.",
+                ],
+            },
             "required_fields": [
                 "dimension",
                 "value",
@@ -112,6 +129,28 @@ def _get_conventions() -> dict[str, Any]:
                 "context_text",
                 "provenance",
             ],
+        },
+        "ingestion_locale_v1": {
+            "rules": [
+                "Carry locale hints when known (language, region, timezone) to reduce parsing ambiguity.",
+                "Normalize decimal comma and decimal dot consistently for numeric fields.",
+                "Prefer canonical units in persisted events; preserve original unit context in provenance when available.",
+                "If parsing confidence is low, mark uncertainty explicitly and ask for clarification.",
+            ],
+            "numeric_normalization": {
+                "decimal_comma_example": "8,5 -> 8.5",
+                "mixed_separator_policy": (
+                    "If both comma and dot exist, infer decimal separator from the rightmost symbol."
+                ),
+            },
+            "date_time_normalization": {
+                "timezone_required_for_temporal_claims": True,
+                "fallback_policy": "explicit_assumption_or_clarification",
+            },
+            "terminology_policy": {
+                "source": "language-aware synonym registry + canonical IDs",
+                "unknown_term_behavior": "store_as_observation_or_request_clarification",
+            },
         },
         "learning_clustering_v1": {
             "rules": [

@@ -8,6 +8,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use serde_json::Value;
 use uuid::Uuid;
 
 use kura_core::error::ApiError;
@@ -109,10 +110,223 @@ fn validate_critical_invariants(req: &CreateEventRequest) -> Result<(), AppError
     match req.event_type.as_str() {
         "event.retracted" => validate_retraction_invariants(&req.data),
         "set.corrected" => validate_set_correction_invariants(&req.data),
+        "set.logged" => validate_set_logged_intensity_invariants(&req.data),
+        "training_plan.created" | "training_plan.updated" => {
+            validate_training_plan_intensity_invariants(&req.data)
+        }
         "projection_rule.created" => validate_projection_rule_created_invariants(&req.data),
         "projection_rule.archived" => validate_projection_rule_archived_invariants(&req.data),
         _ => Ok(()),
     }
+}
+
+fn parse_decimal_string(raw: &str) -> Option<f64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let normalized = if trimmed.contains(',') && trimmed.contains('.') {
+        let comma_idx = trimmed.rfind(',')?;
+        let dot_idx = trimmed.rfind('.')?;
+        if comma_idx > dot_idx {
+            trimmed.replace('.', "").replace(',', ".")
+        } else {
+            trimmed.replace(',', "")
+        }
+    } else if trimmed.contains(',') {
+        trimmed.replace(',', ".")
+    } else {
+        trimmed.to_string()
+    };
+    normalized.parse::<f64>().ok()
+}
+
+fn parse_flexible_float(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => parse_decimal_string(text),
+        _ => None,
+    }
+}
+
+fn parse_optional_numeric_field(
+    data: &Value,
+    field_path: &str,
+    invalid_code: &str,
+    docs_hint: &str,
+) -> Result<Option<f64>, AppError> {
+    let field_name = field_path.rsplit('.').next().unwrap_or(field_path);
+    let Some(value) = data.get(field_name) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let Some(parsed) = parse_flexible_float(value) else {
+        return Err(policy_violation(
+            invalid_code,
+            format!("{field_path} must be numeric"),
+            Some(field_path),
+            Some(value.clone()),
+            Some(docs_hint),
+        ));
+    };
+    Ok(Some(parsed))
+}
+
+fn ensure_numeric_range(
+    value: f64,
+    field_path: &str,
+    range_code: &str,
+    min_value: f64,
+    max_value: f64,
+    docs_hint: &str,
+) -> Result<(), AppError> {
+    if value < min_value || value > max_value {
+        return Err(policy_violation(
+            range_code,
+            format!(
+                "{field_path}={} outside required range [{}, {}]",
+                value, min_value, max_value
+            ),
+            Some(field_path),
+            Some(serde_json::json!(value)),
+            Some(docs_hint),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_set_logged_intensity_invariants(data: &Value) -> Result<(), AppError> {
+    let rpe = parse_optional_numeric_field(
+        data,
+        "data.rpe",
+        "inv_set_rpe_invalid_type",
+        "Provide rpe as number (1..10). Locale decimals like '8,5' are accepted.",
+    )?;
+    if let Some(value) = rpe {
+        ensure_numeric_range(
+            value,
+            "data.rpe",
+            "inv_set_rpe_out_of_range",
+            1.0,
+            10.0,
+            "Use an RPE value between 1 and 10.",
+        )?;
+    }
+
+    let rir = parse_optional_numeric_field(
+        data,
+        "data.rir",
+        "inv_set_rir_invalid_type",
+        "Provide rir as number (0..10). Locale decimals like '2,5' are accepted.",
+    )?;
+    if let Some(value) = rir {
+        ensure_numeric_range(
+            value,
+            "data.rir",
+            "inv_set_rir_out_of_range",
+            0.0,
+            10.0,
+            "Use an RIR value between 0 and 10.",
+        )?;
+    }
+
+    Ok(())
+}
+
+fn validate_training_plan_intensity_invariants(data: &Value) -> Result<(), AppError> {
+    let Some(sessions) = data.get("sessions") else {
+        return Ok(());
+    };
+    let Some(session_rows) = sessions.as_array() else {
+        return Err(policy_violation(
+            "inv_training_plan_sessions_invalid",
+            "data.sessions must be an array when provided",
+            Some("data.sessions"),
+            Some(sessions.clone()),
+            Some("Use sessions as an array of session objects."),
+        ));
+    };
+
+    for (session_idx, session) in session_rows.iter().enumerate() {
+        let Some(session_obj) = session.as_object() else {
+            continue;
+        };
+        let Some(exercises) = session_obj.get("exercises") else {
+            continue;
+        };
+        let Some(exercise_rows) = exercises.as_array() else {
+            let field = format!("data.sessions[{session_idx}].exercises");
+            return Err(policy_violation(
+                "inv_training_plan_exercises_invalid",
+                format!("{field} must be an array when provided"),
+                Some(field.as_str()),
+                Some(exercises.clone()),
+                Some("Use exercises as an array of exercise objects."),
+            ));
+        };
+
+        for (exercise_idx, exercise) in exercise_rows.iter().enumerate() {
+            let Some(exercise_obj) = exercise.as_object() else {
+                continue;
+            };
+            for (field_key, invalid_code, range_code, min_v, max_v, docs_hint) in [
+                (
+                    "target_rpe",
+                    "inv_training_plan_target_rpe_invalid_type",
+                    "inv_training_plan_target_rpe_out_of_range",
+                    1.0,
+                    10.0,
+                    "Set target_rpe between 1 and 10.",
+                ),
+                (
+                    "rpe",
+                    "inv_training_plan_rpe_invalid_type",
+                    "inv_training_plan_rpe_out_of_range",
+                    1.0,
+                    10.0,
+                    "Set rpe between 1 and 10.",
+                ),
+                (
+                    "target_rir",
+                    "inv_training_plan_target_rir_invalid_type",
+                    "inv_training_plan_target_rir_out_of_range",
+                    0.0,
+                    10.0,
+                    "Set target_rir between 0 and 10.",
+                ),
+                (
+                    "rir",
+                    "inv_training_plan_rir_invalid_type",
+                    "inv_training_plan_rir_out_of_range",
+                    0.0,
+                    10.0,
+                    "Set rir between 0 and 10.",
+                ),
+            ] {
+                let Some(raw) = exercise_obj.get(field_key) else {
+                    continue;
+                };
+                let field_path =
+                    format!("data.sessions[{session_idx}].exercises[{exercise_idx}].{field_key}");
+                let Some(parsed) = parse_flexible_float(raw) else {
+                    return Err(policy_violation(
+                        invalid_code,
+                        format!("{field_path} must be numeric"),
+                        Some(field_path.as_str()),
+                        Some(raw.clone()),
+                        Some(
+                            "Provide intensity fields as numbers. Locale decimals like '7,5' are accepted.",
+                        ),
+                    ));
+                };
+                ensure_numeric_range(parsed, &field_path, range_code, min_v, max_v, docs_hint)?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_retraction_invariants(data: &serde_json::Value) -> Result<(), AppError> {
@@ -340,6 +554,242 @@ fn validate_projection_rule_archived_invariants(data: &serde_json::Value) -> Res
     Ok(())
 }
 
+const WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE: &str = "workflow.onboarding.closed";
+const WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE: &str = "workflow.onboarding.override_granted";
+const LEGACY_PLANNING_OR_COACHING_EVENT_TYPES: [&str; 8] = [
+    "training_plan.created",
+    "training_plan.updated",
+    "training_plan.archived",
+    "projection_rule.created",
+    "projection_rule.archived",
+    "weight_target.set",
+    "sleep_target.set",
+    "nutrition_target.set",
+];
+const LEGACY_PLAN_EVENT_TYPES: [&str; 3] = [
+    "training_plan.created",
+    "training_plan.updated",
+    "training_plan.archived",
+];
+const LEGACY_TIMEZONE_REQUIRED_EVENT_TYPES: [&str; 10] = [
+    "set.logged",
+    "session.completed",
+    "bodyweight.logged",
+    "measurement.logged",
+    "sleep.logged",
+    "energy.logged",
+    "soreness.logged",
+    "meal.logged",
+    "observation.logged",
+    "external.activity_imported",
+];
+
+fn normalize_event_type(event_type: &str) -> String {
+    event_type.trim().to_lowercase()
+}
+
+fn is_planning_or_coaching_event_type(event_type: &str) -> bool {
+    LEGACY_PLANNING_OR_COACHING_EVENT_TYPES.contains(&event_type)
+}
+
+fn is_plan_event_type(event_type: &str) -> bool {
+    LEGACY_PLAN_EVENT_TYPES.contains(&event_type)
+}
+
+fn is_timezone_required_event_type(event_type: &str) -> bool {
+    LEGACY_TIMEZONE_REQUIRED_EVENT_TYPES.contains(&event_type)
+}
+
+fn event_carries_timezone_context(event: &CreateEventRequest) -> bool {
+    for key in ["timezone", "time_zone"] {
+        let value = event
+            .data
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if !value.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+fn has_timezone_preference_in_user_profile(profile: &Value) -> bool {
+    let Some(user) = profile.get("user").and_then(Value::as_object) else {
+        return false;
+    };
+    let Some(preferences) = user.get("preferences").and_then(Value::as_object) else {
+        return false;
+    };
+    for key in ["timezone", "time_zone"] {
+        let value = preferences
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if !value.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+fn onboarding_closed_in_user_profile(profile: &Value) -> bool {
+    profile
+        .get("user")
+        .and_then(|user| user.get("workflow_state"))
+        .and_then(|workflow| workflow.get("onboarding_closed"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn onboarding_override_active_in_user_profile(profile: &Value) -> bool {
+    profile
+        .get("user")
+        .and_then(|user| user.get("workflow_state"))
+        .and_then(|workflow| workflow.get("override_active"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn evaluate_legacy_domain_invariants(
+    events: &[CreateEventRequest],
+    user_profile: Option<&Value>,
+) -> Result<(), AppError> {
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    let normalized_event_types: Vec<String> = events
+        .iter()
+        .map(|event| normalize_event_type(&event.event_type))
+        .collect();
+    let planning_event_types: Vec<String> = normalized_event_types
+        .iter()
+        .filter(|event_type| is_planning_or_coaching_event_type(event_type))
+        .cloned()
+        .collect();
+    let has_plan_writes = normalized_event_types
+        .iter()
+        .any(|event_type| is_plan_event_type(event_type));
+
+    let requested_close = normalized_event_types
+        .iter()
+        .any(|event_type| event_type == WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE);
+    let requested_override = normalized_event_types
+        .iter()
+        .any(|event_type| event_type == WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE);
+    let onboarding_closed = user_profile
+        .map(onboarding_closed_in_user_profile)
+        .unwrap_or(false);
+    let override_active = user_profile
+        .map(onboarding_override_active_in_user_profile)
+        .unwrap_or(false);
+
+    if !planning_event_types.is_empty()
+        && !(onboarding_closed || override_active || requested_close || requested_override)
+    {
+        return Err(policy_violation(
+            "inv_workflow_phase_required",
+            "Planning/coaching writes require onboarding close or explicit override",
+            Some("events"),
+            Some(serde_json::json!({
+                "planning_event_types": planning_event_types,
+                "onboarding_closed": onboarding_closed,
+                "override_active": override_active,
+            })),
+            Some(
+                "Emit workflow.onboarding.closed (or workflow.onboarding.override_granted) before planning/coaching writes.",
+            ),
+        ));
+    }
+
+    if has_plan_writes {
+        return Err(policy_violation(
+            "inv_plan_write_requires_write_with_proof",
+            "training_plan.* writes require /v1/agent/write-with-proof to satisfy read-after-write guarantees",
+            Some("events"),
+            Some(serde_json::json!({"event_types": normalized_event_types})),
+            Some(
+                "Route plan writes through POST /v1/agent/write-with-proof with read_after_write_targets.",
+            ),
+        ));
+    }
+
+    let timezone_missing = !user_profile
+        .map(has_timezone_preference_in_user_profile)
+        .unwrap_or(false);
+    if timezone_missing {
+        let missing_timezone_for_event_types: Vec<String> = events
+            .iter()
+            .filter_map(|event| {
+                let normalized = normalize_event_type(&event.event_type);
+                if !is_timezone_required_event_type(&normalized) {
+                    return None;
+                }
+                if event_carries_timezone_context(event) {
+                    return None;
+                }
+                Some(normalized)
+            })
+            .collect();
+
+        if !missing_timezone_for_event_types.is_empty() {
+            return Err(policy_violation(
+                "inv_timezone_required_for_temporal_write",
+                "Timezone preference is required before temporal writes",
+                Some("events"),
+                Some(serde_json::json!({
+                    "event_types": missing_timezone_for_event_types,
+                })),
+                Some(
+                    "Persist preference.set {\"key\":\"timezone\"} first, or include data.timezone/time_zone explicitly.",
+                ),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+async fn fetch_user_profile_projection_data(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+) -> Result<Option<Value>, AppError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+    let row = sqlx::query_as::<_, (Value,)>(
+        r#"
+        SELECT data
+        FROM projections
+        WHERE user_id = $1
+          AND projection_type = 'user_profile'
+          AND key = 'me'
+        LIMIT 1
+        "#,
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(row.map(|(data,)| data))
+}
+
+async fn enforce_legacy_domain_invariants(
+    state: &AppState,
+    user_id: Uuid,
+    events: &[CreateEventRequest],
+) -> Result<(), AppError> {
+    let profile = fetch_user_profile_projection_data(&state.db, user_id).await?;
+    evaluate_legacy_domain_invariants(events, profile.as_ref())
+}
+
 /// Check event data for plausibility and return warnings.
 /// These are soft checks — events are always accepted.
 fn check_event_plausibility(event_type: &str, data: &serde_json::Value) -> Vec<EventWarning> {
@@ -361,6 +811,38 @@ fn check_event_plausibility(event_type: &str, data: &serde_json::Value) -> Vec<E
                     warnings.push(EventWarning {
                         field: "reps".to_string(),
                         message: format!("reps={r} outside plausible range [0, 100]"),
+                        severity: "warning".to_string(),
+                    });
+                }
+            }
+            let rpe = data.get("rpe").and_then(parse_flexible_float);
+            if let Some(value) = rpe {
+                if !(1.0..=10.0).contains(&value) {
+                    warnings.push(EventWarning {
+                        field: "rpe".to_string(),
+                        message: format!("rpe={value} outside plausible range [1, 10]"),
+                        severity: "warning".to_string(),
+                    });
+                }
+            }
+            let rir = data.get("rir").and_then(parse_flexible_float);
+            if let Some(value) = rir {
+                if !(0.0..=10.0).contains(&value) {
+                    warnings.push(EventWarning {
+                        field: "rir".to_string(),
+                        message: format!("rir={value} outside plausible range [0, 10]"),
+                        severity: "warning".to_string(),
+                    });
+                }
+            }
+            if let (Some(rpe), Some(rir)) = (rpe, rir) {
+                let delta = (rpe + rir - 10.0).abs();
+                if delta > 2.0 {
+                    warnings.push(EventWarning {
+                        field: "rpe_rir".to_string(),
+                        message: format!(
+                            "rpe+rir consistency warning: rpe={rpe}, rir={rir}, expected sum near 10"
+                        ),
                         severity: "warning".to_string(),
                     });
                 }
@@ -1325,6 +1807,7 @@ pub async fn create_event(
 ) -> Result<impl IntoResponse, AppError> {
     let user_id = auth.user_id;
     validate_event(&req)?;
+    enforce_legacy_domain_invariants(&state, user_id, std::slice::from_ref(&req)).await?;
 
     let mut warnings = check_event_plausibility(&req.event_type, &req.data);
 
@@ -1532,6 +2015,7 @@ pub async fn create_events_batch(
     auth: AuthenticatedUser,
     Json(req): Json<BatchCreateEventsRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    enforce_legacy_domain_invariants(&state, auth.user_id, &req.events).await?;
     let batch_result = create_events_batch_internal(&state, auth.user_id, &req.events).await?;
     Ok((StatusCode::CREATED, Json(batch_result)))
 }
@@ -2096,6 +2580,22 @@ mod tests {
         }
     }
 
+    fn make_user_profile(onboarding_closed: bool, override_active: bool, timezone: Option<&str>) -> Value {
+        let mut preferences = serde_json::Map::new();
+        if let Some(timezone) = timezone {
+            preferences.insert("timezone".to_string(), json!(timezone));
+        }
+        json!({
+            "user": {
+                "preferences": preferences,
+                "workflow_state": {
+                    "onboarding_closed": onboarding_closed,
+                    "override_active": override_active,
+                }
+            }
+        })
+    }
+
     #[test]
     fn test_retraction_requires_target_event_id() {
         let req = make_request("event.retracted", json!({"reason": "oops"}));
@@ -2199,6 +2699,74 @@ mod tests {
     }
 
     #[test]
+    fn test_set_logged_accepts_decimal_comma_intensity_values() {
+        let req = make_request(
+            "set.logged",
+            json!({"exercise": "Bench Press", "reps": 5, "rpe": "8,5", "rir": "1,5"}),
+        );
+        assert!(validate_event(&req).is_ok());
+    }
+
+    #[test]
+    fn test_set_logged_rejects_non_numeric_rpe() {
+        let req = make_request(
+            "set.logged",
+            json!({"exercise": "Bench Press", "reps": 5, "rpe": "hard"}),
+        );
+        let err = validate_event(&req).expect_err("expected policy violation");
+        assert_policy_violation(err, "inv_set_rpe_invalid_type", "data.rpe");
+    }
+
+    #[test]
+    fn test_set_logged_rejects_out_of_range_rir() {
+        let req = make_request(
+            "set.logged",
+            json!({"exercise": "Bench Press", "reps": 5, "rir": 11}),
+        );
+        let err = validate_event(&req).expect_err("expected policy violation");
+        assert_policy_violation(err, "inv_set_rir_out_of_range", "data.rir");
+    }
+
+    #[test]
+    fn test_training_plan_rejects_invalid_target_rpe_type() {
+        let req = make_request(
+            "training_plan.created",
+            json!({
+                "sessions": [{
+                    "day": "monday",
+                    "exercises": [{
+                        "exercise_id": "bench_press",
+                        "target_rpe": "hard"
+                    }]
+                }]
+            }),
+        );
+        let err = validate_event(&req).expect_err("expected policy violation");
+        assert_policy_violation(
+            err,
+            "inv_training_plan_target_rpe_invalid_type",
+            "data.sessions[0].exercises[0].target_rpe",
+        );
+    }
+
+    #[test]
+    fn test_training_plan_accepts_decimal_comma_target_rir() {
+        let req = make_request(
+            "training_plan.updated",
+            json!({
+                "sessions": [{
+                    "day": "monday",
+                    "exercises": [{
+                        "exercise_id": "bench_press",
+                        "target_rir": "2,5"
+                    }]
+                }]
+            }),
+        );
+        assert!(validate_event(&req).is_ok());
+    }
+
+    #[test]
     fn test_normal_set_no_warnings() {
         let w = check_event_plausibility("set.logged", &json!({"weight_kg": 80, "reps": 5}));
         assert!(w.is_empty());
@@ -2223,6 +2791,13 @@ mod tests {
     fn test_set_multiple_warnings() {
         let w = check_event_plausibility("set.logged", &json!({"weight_kg": -5, "reps": 200}));
         assert_eq!(w.len(), 2);
+    }
+
+    #[test]
+    fn test_set_rpe_rir_contradiction_warns() {
+        let w = check_event_plausibility("set.logged", &json!({"rpe": 9, "rir": 5}));
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].field, "rpe_rir");
     }
 
     #[test]
@@ -2337,6 +2912,82 @@ mod tests {
     fn test_warning_severity_is_always_warning() {
         let w = check_event_plausibility("set.logged", &json!({"weight_kg": 999}));
         assert!(w.iter().all(|w| w.severity == "warning"));
+    }
+
+    #[test]
+    fn test_legacy_domain_invariants_block_planning_without_phase_close() {
+        let events = vec![make_request(
+            "training_plan.updated",
+            json!({"name": "push_pull_legs"}),
+        )];
+        let profile = make_user_profile(false, false, Some("Europe/Berlin"));
+        let err = evaluate_legacy_domain_invariants(&events, Some(&profile))
+            .expect_err("expected policy violation");
+        assert_policy_violation(err, "inv_workflow_phase_required", "events");
+    }
+
+    #[test]
+    fn test_legacy_domain_invariants_allow_planning_with_close_transition() {
+        let events = vec![
+            make_request(
+                "workflow.onboarding.closed",
+                json!({"reason": "onboarding complete"}),
+            ),
+            make_request(
+                "projection_rule.created",
+                json!({
+                    "name": "readiness_by_week",
+                    "rule_type": "field_tracking",
+                    "source_events": ["set.logged"],
+                    "fields": ["weight_kg"]
+                }),
+            ),
+        ];
+        let profile = make_user_profile(false, false, Some("Europe/Berlin"));
+        assert!(evaluate_legacy_domain_invariants(&events, Some(&profile)).is_ok());
+    }
+
+    #[test]
+    fn test_legacy_domain_invariants_block_plan_writes_on_legacy_path() {
+        let events = vec![make_request(
+            "training_plan.created",
+            json!({"name": "new_plan"}),
+        )];
+        let profile = make_user_profile(true, false, Some("Europe/Berlin"));
+        let err = evaluate_legacy_domain_invariants(&events, Some(&profile))
+            .expect_err("expected policy violation");
+        assert_policy_violation(
+            err,
+            "inv_plan_write_requires_write_with_proof",
+            "events",
+        );
+    }
+
+    #[test]
+    fn test_legacy_domain_invariants_require_timezone_for_temporal_writes() {
+        let events = vec![make_request(
+            "set.logged",
+            json!({"exercise": "Squat", "reps": 5, "weight_kg": 100}),
+        )];
+        let profile = make_user_profile(true, false, None);
+        let err = evaluate_legacy_domain_invariants(&events, Some(&profile))
+            .expect_err("expected policy violation");
+        assert_policy_violation(err, "inv_timezone_required_for_temporal_write", "events");
+    }
+
+    #[test]
+    fn test_legacy_domain_invariants_allow_temporal_writes_with_event_timezone() {
+        let events = vec![make_request(
+            "set.logged",
+            json!({
+                "exercise": "Squat",
+                "reps": 5,
+                "weight_kg": 100,
+                "timezone": "Europe/Berlin"
+            }),
+        )];
+        let profile = make_user_profile(true, false, None);
+        assert!(evaluate_legacy_domain_invariants(&events, Some(&profile)).is_ok());
     }
 
     // --- Exercise-ID similarity tests ---

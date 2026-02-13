@@ -51,6 +51,41 @@ def get_interview_guide() -> dict[str, Any]:
                 "das Thema wechseln."
             ),
         },
+        "collaboration_primer": {
+            "purpose": (
+                "Set collaboration expectations early: Kura works best when the user "
+                "shares context, asks clarifying questions, and corrects mistakes quickly."
+            ),
+            "positioning": (
+                "Frame the relationship as collaborative coaching support, not just a command tool. "
+                "The user stays in control and can challenge any recommendation."
+            ),
+            "example": (
+                "Du musst nicht perfekt loggen. Gib einfach so viel Kontext wie möglich — "
+                "ich helfe beim Strukturieren. Wenn etwas falsch ist, korrigiere mich direkt; "
+                "genau dadurch wird Kura mit dir besser."
+            ),
+        },
+        "communication_tips": [
+            "Share context, not only commands: what happened, how it felt, and what you are unsure about.",
+            "If something is unclear, ask directly — clarification is better than silent assumptions.",
+            "Correct mistakes immediately; explicit corrections are part of the learning loop.",
+            "Ask for review proactively: trends, missed sessions, fatigue patterns, and plan quality checks.",
+            "Treat coaching as dialogue: challenge recommendations and request alternatives when needed.",
+        ],
+        "logging_guidance": {
+            "principles": [
+                "When logging sets, include exercise, reps, load, and optionally RPE/RIR/context.",
+                "Use one session_id per workout when possible so set and session feedback can be linked.",
+                "Session feedback should include both structured scales and a short context sentence.",
+                "If values are uncertain, say so explicitly — uncertainty is better than fabricated precision.",
+            ],
+            "examples": [
+                "set.logged: 'Squat 5x100kg @8,5 RPE, pause 120s, felt heavy on last rep'",
+                "session.completed: 'enjoyment 4/5, exertion 8/10, context: slept badly, left knee slightly sore'",
+                "correction: 'Earlier set had 90s rest, not 120s' -> emit set.corrected instead of rewriting history",
+            ],
+        },
         "philosophy": [
             "Follow the conversation, don't interrogate. Let the user's answers guide direction.",
             "ONE question per message. Always. Reflect what you heard first, then ask one thing.",

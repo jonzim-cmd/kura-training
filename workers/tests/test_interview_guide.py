@@ -8,6 +8,9 @@ class TestInterviewGuideStructure:
     def test_has_required_sections(self):
         guide = get_interview_guide()
         assert "introduction" in guide
+        assert "collaboration_primer" in guide
+        assert "communication_tips" in guide
+        assert "logging_guidance" in guide
         assert "philosophy" in guide
         assert "phases" in guide
         assert "coverage_areas" in guide
@@ -36,6 +39,19 @@ class TestInterviewGuideStructure:
         guide = get_interview_guide()
         philosophy_text = " ".join(guide["philosophy"]).lower()
         assert "one question" in philosophy_text, "Philosophy must enforce one-question-per-message rule"
+
+    def test_collaboration_primer_and_logging_guidance_are_actionable(self):
+        guide = get_interview_guide()
+        primer = guide["collaboration_primer"]
+        assert "purpose" in primer
+        assert "positioning" in primer
+        assert "example" in primer
+        assert isinstance(guide["communication_tips"], list)
+        assert len(guide["communication_tips"]) >= 3
+        logging_guidance = guide["logging_guidance"]
+        assert isinstance(logging_guidance.get("principles"), list)
+        assert isinstance(logging_guidance.get("examples"), list)
+        assert len(logging_guidance["examples"]) >= 2
 
     def test_phases_have_required_fields(self):
         guide = get_interview_guide()

@@ -53,6 +53,8 @@ _KNOWN_DIMENSIONS: dict[str, dict[str, Any]] = {
     },
 }
 _PROVISIONAL_PREFIXES = ("x_", "custom.", "provisional.")
+_PROMOTION_MIN_SUPPORT = 5
+_PROMOTION_MIN_AVG_CONFIDENCE = 0.8
 
 
 def _round2(value: float) -> float:
@@ -259,12 +261,61 @@ def _normalize_observation_entry(row: dict[str, Any]) -> tuple[str, dict[str, An
     return dimension, entry
 
 
+def _build_lifecycle_summary(tier: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
+    total_entries = len(entries)
+    if total_entries == 0:
+        return {
+            "status": "insufficient_support",
+            "eligible_for_human_review": False,
+            "avg_confidence": 0.0,
+            "support_count": 0,
+            "thresholds": {
+                "promotion_min_support": _PROMOTION_MIN_SUPPORT,
+                "promotion_min_avg_confidence": _PROMOTION_MIN_AVG_CONFIDENCE,
+            },
+        }
+
+    avg_confidence = _round2(
+        sum(float(entry.get("confidence", 0.0)) for entry in entries) / total_entries
+    )
+    quality_flagged_entries = sum(
+        1 for entry in entries if entry.get("quality_flags")
+    )
+    quality_flag_rate = _round2(quality_flagged_entries / total_entries)
+
+    if tier == "known":
+        status = "already_known"
+        eligible = False
+    elif total_entries < _PROMOTION_MIN_SUPPORT:
+        status = "insufficient_support"
+        eligible = False
+    elif avg_confidence < _PROMOTION_MIN_AVG_CONFIDENCE:
+        status = "confidence_below_threshold"
+        eligible = False
+    else:
+        status = "eligible_for_human_review"
+        eligible = True
+
+    return {
+        "status": status,
+        "eligible_for_human_review": eligible,
+        "avg_confidence": avg_confidence,
+        "support_count": total_entries,
+        "quality_flag_rate": quality_flag_rate,
+        "thresholds": {
+            "promotion_min_support": _PROMOTION_MIN_SUPPORT,
+            "promotion_min_avg_confidence": _PROMOTION_MIN_AVG_CONFIDENCE,
+        },
+    }
+
+
 def _build_dimension_projection(dimension: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
     latest = entries[-1]
     quality_counts: dict[str, int] = {}
     for entry in entries:
         for flag in entry.get("quality_flags", []):
             quality_counts[flag] = quality_counts.get(flag, 0) + 1
+    lifecycle = _build_lifecycle_summary(str(latest.get("tier", "unknown")), entries)
 
     return {
         "dimension": dimension,
@@ -279,6 +330,7 @@ def _build_dimension_projection(dimension: str, entries: list[dict[str, Any]]) -
             "latest_context_text": latest.get("context_text"),
             "latest_timestamp": latest.get("timestamp"),
             "quality_flags_count": quality_counts,
+            "lifecycle": lifecycle,
         },
     }
 
@@ -348,6 +400,17 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                 "latest_context_text": "string",
                 "latest_timestamp": "ISO 8601 datetime",
                 "quality_flags_count": {"<flag>": "integer"},
+                "lifecycle": {
+                    "status": "string — already_known|insufficient_support|confidence_below_threshold|eligible_for_human_review",
+                    "eligible_for_human_review": "boolean",
+                    "avg_confidence": "number",
+                    "support_count": "integer",
+                    "quality_flag_rate": "number",
+                    "thresholds": {
+                        "promotion_min_support": "integer",
+                        "promotion_min_avg_confidence": "number",
+                    },
+                },
             },
         },
         "manifest_contribution": _manifest_contribution,

@@ -266,6 +266,21 @@ class TestConventions:
         assert observation["projection_type"] == "open_observations"
         assert "motivation_pre" in observation["validation_tiers"]["known"]
 
+    def test_open_observation_v1_declares_lifecycle_policy(self):
+        result = _get_conventions()
+        lifecycle = result["open_observation_v1"]["lifecycle_policy"]
+        assert "known" in lifecycle["states"]
+        assert lifecycle["thresholds"]["promotion_min_support"] >= 1
+        assert lifecycle["thresholds"]["promotion_min_avg_confidence"] <= 1.0
+
+    def test_has_ingestion_locale_v1_conventions(self):
+        result = _get_conventions()
+        assert "ingestion_locale_v1" in result
+        locale = result["ingestion_locale_v1"]
+        assert "numeric_normalization" in locale
+        assert "decimal_comma_example" in locale["numeric_normalization"]
+        assert locale["date_time_normalization"]["timezone_required_for_temporal_claims"] is True
+
     def test_has_learning_clustering_v1_conventions(self):
         result = _get_conventions()
         assert "learning_clustering_v1" in result

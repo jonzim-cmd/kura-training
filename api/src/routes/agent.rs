@@ -836,7 +836,8 @@ fn classify_system_convention_field(key: &str) -> SystemConventionFieldClass {
         "exercise_normalization"
         | "training_core_fields_v1"
         | "evidence_layer_v1"
-        | "open_observation_v1" => SystemConventionFieldClass::PublicContract,
+        | "open_observation_v1"
+        | "ingestion_locale_v1" => SystemConventionFieldClass::PublicContract,
         "learning_clustering_v1"
         | "extraction_calibration_v1"
         | "learning_backlog_bridge_v1"
@@ -7344,6 +7345,7 @@ mod tests {
                 "training_core_fields_v1": {"rules": ["rule"]},
                 "evidence_layer_v1": {"event_type": "evidence.claim.logged"},
                 "open_observation_v1": {"event_type": "observation.logged"},
+                "ingestion_locale_v1": {"rules": ["normalize decimals"]},
                 "learning_clustering_v1": {"rules": ["internal"]},
                 "shadow_evaluation_gate_v1": {"rules": ["internal"]},
                 "unexpected_convention": {"rules": ["unknown"]}
@@ -7372,6 +7374,7 @@ mod tests {
         assert!(conventions.contains_key("training_core_fields_v1"));
         assert!(conventions.contains_key("evidence_layer_v1"));
         assert!(conventions.contains_key("open_observation_v1"));
+        assert!(conventions.contains_key("ingestion_locale_v1"));
         assert!(!conventions.contains_key("learning_clustering_v1"));
         assert!(!conventions.contains_key("shadow_evaluation_gate_v1"));
         assert!(!conventions.contains_key("unexpected_convention"));

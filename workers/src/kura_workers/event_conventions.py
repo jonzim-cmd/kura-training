@@ -124,8 +124,14 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "exercise_id": "string (required when recognized, canonical ID)",
                 "weight_kg": "number (required for weighted exercises)",
                 "reps": "number (required)",
-                "rpe": "number (optional, 1-10)",
-                "rir": "number (optional, 0-10 reps in reserve)",
+                "rpe": (
+                    "number|string (optional, 1..10). "
+                    "Locale decimal commas are accepted (e.g. '8,5')."
+                ),
+                "rir": (
+                    "number|string (optional, 0..10 reps in reserve). "
+                    "Locale decimal commas are accepted (e.g. '2,5')."
+                ),
                 "rest_seconds": (
                     "number (optional by default, mention-bound: required to persist when pause/rest is mentioned)"
                 ),
@@ -149,6 +155,15 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "If this is the first time the user uses a term, also create "
                 "exercise.alias_created in the same batch. Check user.aliases first."
             ),
+            "intensity_semantics": {
+                "rpe_range": "[1, 10]",
+                "rir_range": "[0, 10]",
+                "consistency_guideline": "rpe + rir should usually be near 10; larger gaps trigger warnings",
+                "precedence": (
+                    "If both are explicitly present, keep both explicit values. "
+                    "Inference only applies when exactly one signal is present."
+                ),
+            },
             "metadata_fields": {
                 "session_id": (
                     "string (recommended). Groups sets into a logical training session. "
@@ -186,7 +201,8 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "plan_id": "string (optional, defaults to 'default')",
                 "sessions": (
                     "list[{day, name, exercises}] (optional). "
-                    "exercise entries may include target_rir (0..10) and/or target_rpe."
+                    "exercise entries may include target_rir (0..10) and/or target_rpe (1..10). "
+                    "Locale decimal commas are accepted for intensity fields."
                 ),
                 "cycle_weeks": "number (optional)",
                 "notes": "string (optional)",
@@ -209,7 +225,8 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "name": "string (optional)",
                 "sessions": (
                     "list[{day, name, exercises}] (optional). "
-                    "exercise entries may include target_rir (0..10) and/or target_rpe."
+                    "exercise entries may include target_rir (0..10) and/or target_rpe (1..10). "
+                    "Locale decimal commas are accepted for intensity fields."
                 ),
                 "cycle_weeks": "number (optional)",
                 "notes": "string (optional)",
