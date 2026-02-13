@@ -7386,6 +7386,15 @@ pub async fn write_with_proof(
         user_profile.as_ref(),
     );
     if autonomy_gate.decision == "block" {
+        let degraded_block = autonomy_gate.reason_codes.iter().any(|code| {
+            code == CALIBRATION_DEGRADED_BLOCK_REASON_CODE
+                || code == INTEGRITY_DEGRADED_BLOCK_REASON_CODE
+        });
+        let docs_hint = if degraded_block {
+            "High-impact writes are temporarily blocked while quality_health is degraded. Use low-impact writes and retry once quality recovers."
+        } else {
+            "Request explicit user confirmation or reduce scope to low-impact writes before retry."
+        };
         return Err(AppError::Validation {
             message: "High-impact write blocked by adaptive autonomy gate.".to_string(),
             field: Some("events".to_string()),
@@ -7395,10 +7404,7 @@ pub async fn write_with_proof(
                 "effective_quality_status": autonomy_gate.effective_quality_status,
                 "reason_codes": autonomy_gate.reason_codes,
             })),
-            docs_hint: Some(
-                "Request explicit user confirmation or reduce scope to low-impact writes before retry."
-                    .to_string(),
-            ),
+            docs_hint: Some(docs_hint.to_string()),
         });
     }
     if autonomy_gate.decision == "confirm_first" && action_class == "high_impact_write" {
