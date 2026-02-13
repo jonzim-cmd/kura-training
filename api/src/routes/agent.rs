@@ -91,6 +91,43 @@ pub struct AgentSelfModel {
     pub docs: AgentSelfModelDocs,
 }
 
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentChallengeMode {
+    pub schema_version: String,
+    /// auto | on | off
+    pub mode: String,
+    /// default_auto | user_profile.preference
+    pub source: String,
+    pub onboarding_hint_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub onboarding_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentMemoryTierSnapshot {
+    /// working | project | principles
+    pub tier: String,
+    /// fresh | aging | stale
+    pub freshness_state: String,
+    /// high | medium | low
+    pub confidence_band: String,
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_verified_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentMemoryTierContract {
+    pub schema_version: String,
+    /// confirm_first | block
+    pub high_impact_stale_action: String,
+    pub tiers: Vec<AgentMemoryTierSnapshot>,
+}
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct AgentContextMeta {
     pub generated_at: DateTime<Utc>,
@@ -102,6 +139,8 @@ pub struct AgentContextMeta {
     pub ranking_strategy: String,
     pub context_contract_version: String,
     pub system_contract: AgentContextSystemContract,
+    pub challenge_mode: AgentChallengeMode,
+    pub memory_tier_contract: AgentMemoryTierContract,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -226,6 +265,23 @@ pub struct AgentReadAfterWriteTarget {
     pub key: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct AgentIntentHandshake {
+    pub schema_version: String,
+    pub goal: String,
+    pub planned_action: String,
+    #[serde(default)]
+    pub assumptions: Vec<String>,
+    #[serde(default)]
+    pub non_goals: Vec<String>,
+    /// low_impact_write | high_impact_write
+    pub impact_class: String,
+    pub success_criteria: String,
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub handshake_id: Option<String>,
+}
+
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct AgentWriteWithProofRequest {
     pub events: Vec<CreateEventRequest>,
@@ -238,6 +294,9 @@ pub struct AgentWriteWithProofRequest {
     /// Default: false (plain-language feedback only).
     #[serde(default)]
     pub include_repair_technical_details: bool,
+    /// Optional pre-execution alignment contract (required for high-impact writes).
+    #[serde(default)]
+    pub intent_handshake: Option<AgentIntentHandshake>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -491,6 +550,69 @@ pub struct AgentReliabilityUx {
     pub clarification_question: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentIntentHandshakeConfirmation {
+    pub schema_version: String,
+    pub status: String,
+    pub impact_class: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handshake_id: Option<String>,
+    pub chat_confirmation: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentTraceDigest {
+    pub schema_version: String,
+    pub action_id: String,
+    pub correlation_id: String,
+    pub receipt_event_ids: Vec<Uuid>,
+    pub write_path: String,
+    pub verification_status: String,
+    pub required_checks: usize,
+    pub verified_checks: usize,
+    pub allow_saved_claim: bool,
+    pub claim_status: String,
+    pub workflow_phase: String,
+    pub workflow_status: String,
+    pub workflow_transition: String,
+    pub autonomy_decision: String,
+    pub autonomy_action_class: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub autonomy_reason_codes: Vec<String>,
+    pub session_audit_status: String,
+    pub mismatch_detected: usize,
+    pub mismatch_repaired: usize,
+    pub mismatch_unresolved: usize,
+    pub repair_status: String,
+    pub warning_count: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warning_codes: Vec<String>,
+    pub chat_summary_template_id: String,
+    pub chat_summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentPostTaskReflection {
+    pub schema_version: String,
+    pub action_id: String,
+    pub related_trace_digest_id: String,
+    pub change_summary: String,
+    /// confirmed | partial | unresolved
+    pub certainty_state: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub residual_risks: Vec<String>,
+    pub next_verification_step: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clarification_question: Option<String>,
+    pub follow_up_recommended: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follow_up_reason: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub emitted_learning_signal_types: Vec<String>,
+    pub chat_summary_template_id: String,
+    pub chat_summary: String,
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AgentWriteWithProofResponse {
     pub receipts: Vec<AgentWriteReceipt>,
@@ -502,6 +624,10 @@ pub struct AgentWriteWithProofResponse {
     pub workflow_gate: AgentWorkflowGate,
     pub session_audit: AgentSessionAuditSummary,
     pub repair_feedback: AgentRepairFeedback,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intent_handshake_confirmation: Option<AgentIntentHandshakeConfirmation>,
+    pub trace_digest: AgentTraceDigest,
+    pub post_task_reflection: AgentPostTaskReflection,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -758,11 +884,18 @@ async fn write_events_with_receipts(
 }
 
 const AGENT_CAPABILITIES_SCHEMA_VERSION: &str = "agent_capabilities.v2.self_model";
-const AGENT_CONTEXT_CONTRACT_VERSION: &str = "agent_context.v3.self_model.redacted";
+const AGENT_CONTEXT_CONTRACT_VERSION: &str = "agent_context.v4.self_model.challenge_memory";
 const AGENT_CONTEXT_SYSTEM_CONTRACT_VERSION: &str = "agent_context.system.v1";
 const AGENT_CONTEXT_SYSTEM_PROFILE: &str = "redacted_v1";
+const AGENT_CHALLENGE_MODE_SCHEMA_VERSION: &str = "challenge_mode.v1";
+const AGENT_CHALLENGE_MODE_ONBOARDING_HINT: &str = "Challenge Mode ist standardmäßig auf auto aktiv. Sag 'Challenge Mode aus', wenn ich weniger challengen soll.";
+const AGENT_MEMORY_TIER_CONTRACT_VERSION: &str = "memory_tier_contract.v1";
 const AGENT_SELF_MODEL_SCHEMA_VERSION: &str = "agent_self_model.v1";
 const MODEL_TIER_REGISTRY_VERSION: &str = "model_tier_registry_v1";
+const INTENT_HANDSHAKE_SCHEMA_VERSION: &str = "intent_handshake.v1";
+const INTENT_HANDSHAKE_MAX_AGE_MINUTES: i64 = 45;
+const TRACE_DIGEST_SCHEMA_VERSION: &str = "trace_digest.v1";
+const POST_TASK_REFLECTION_SCHEMA_VERSION: &str = "post_task_reflection.v1";
 const MODEL_IDENTITY_UNKNOWN_FALLBACK_REASON_CODE: &str = "model_identity_unknown_fallback_strict";
 const MODEL_TIER_STRICT_BLOCK_REASON_CODE: &str = "model_tier_strict_blocks_high_impact_write";
 const MODEL_TIER_CONFIRM_REASON_CODE: &str = "model_tier_requires_confirmation";
@@ -771,6 +904,10 @@ const INTEGRITY_MONITOR_CONFIRM_REASON_CODE: &str = "integrity_monitor_requires_
 const CALIBRATION_DEGRADED_BLOCK_REASON_CODE: &str =
     "calibration_degraded_blocks_high_impact_write";
 const INTEGRITY_DEGRADED_BLOCK_REASON_CODE: &str = "integrity_degraded_blocks_high_impact_write";
+const MEMORY_TIER_PRINCIPLES_STALE_CONFIRM_REASON_CODE: &str =
+    "memory_principles_stale_confirm_first";
+const MEMORY_TIER_PRINCIPLES_MISSING_CONFIRM_REASON_CODE: &str =
+    "memory_principles_missing_confirm_first";
 const KURA_AGENT_MODEL_IDENTITY_ENV: &str = "KURA_AGENT_MODEL_IDENTITY";
 const KURA_AGENT_MODEL_BY_CLIENT_ID_ENV: &str = "KURA_AGENT_MODEL_BY_CLIENT_ID_JSON";
 
@@ -1981,6 +2118,173 @@ fn timezone_from_user_profile(data: &Value) -> Option<String> {
 
 fn has_timezone_preference_in_user_profile(data: &Value) -> bool {
     timezone_from_user_profile(data).is_some()
+}
+
+fn user_preference_string(user_profile: Option<&ProjectionResponse>, key: &str) -> Option<String> {
+    let profile = user_profile?;
+    let user = profile.projection.data.get("user")?.as_object()?;
+    let preferences = user.get("preferences")?.as_object()?;
+    let value = preferences.get(key)?.as_str()?.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn user_preference_bool(user_profile: Option<&ProjectionResponse>, key: &str) -> Option<bool> {
+    let profile = user_profile?;
+    let user = profile.projection.data.get("user")?.as_object()?;
+    let preferences = user.get("preferences")?.as_object()?;
+    preferences.get(key).and_then(Value::as_bool)
+}
+
+fn normalize_challenge_mode(value: Option<&str>) -> String {
+    match value.unwrap_or("auto").trim().to_lowercase().as_str() {
+        "on" | "always" => "on".to_string(),
+        "off" | "disabled" | "disable" => "off".to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
+fn resolve_challenge_mode(user_profile: Option<&ProjectionResponse>) -> AgentChallengeMode {
+    let raw = user_preference_string(user_profile, "challenge_mode");
+    let mode = normalize_challenge_mode(raw.as_deref());
+    let intro_seen =
+        user_preference_bool(user_profile, "challenge_mode_intro_seen").unwrap_or(false);
+    let source = if raw.is_some() {
+        "user_profile.preference"
+    } else {
+        "default_auto"
+    }
+    .to_string();
+
+    AgentChallengeMode {
+        schema_version: AGENT_CHALLENGE_MODE_SCHEMA_VERSION.to_string(),
+        mode,
+        source,
+        onboarding_hint_required: !intro_seen,
+        onboarding_hint: if intro_seen {
+            None
+        } else {
+            Some(AGENT_CHALLENGE_MODE_ONBOARDING_HINT.to_string())
+        },
+    }
+}
+
+fn tier_confidence_band(freshness_state: &str) -> String {
+    match freshness_state {
+        "fresh" => "high".to_string(),
+        "aging" => "medium".to_string(),
+        _ => "low".to_string(),
+    }
+}
+
+fn tier_freshness(
+    observed_at: Option<DateTime<Utc>>,
+    stale_after_days: i64,
+    now: DateTime<Utc>,
+) -> (String, Option<String>) {
+    let Some(observed_at) = observed_at else {
+        return (
+            "stale".to_string(),
+            Some("no_observed_timestamp".to_string()),
+        );
+    };
+    let age_days = (now - observed_at).num_days();
+    if age_days <= (stale_after_days / 3).max(1) {
+        return ("fresh".to_string(), None);
+    }
+    if age_days < stale_after_days {
+        return ("aging".to_string(), Some(format!("age_days={age_days}")));
+    }
+    (
+        "stale".to_string(),
+        Some(format!("stale_age_days={age_days}")),
+    )
+}
+
+fn build_memory_tier_contract(
+    user_profile: &ProjectionResponse,
+    training_plan: Option<&ProjectionResponse>,
+    semantic_memory: Option<&ProjectionResponse>,
+    now: DateTime<Utc>,
+) -> AgentMemoryTierContract {
+    let working_observed_at = semantic_memory.map(|projection| projection.projection.updated_at);
+    let (working_state, working_reason) = tier_freshness(working_observed_at, 7, now);
+
+    let project_observed_at = training_plan.map(|projection| projection.projection.updated_at);
+    let (project_state, project_reason) = tier_freshness(project_observed_at, 30, now);
+
+    let principles_observed_at = Some(user_profile.projection.updated_at);
+    let (principles_state, principles_reason) = tier_freshness(principles_observed_at, 180, now);
+
+    AgentMemoryTierContract {
+        schema_version: AGENT_MEMORY_TIER_CONTRACT_VERSION.to_string(),
+        high_impact_stale_action: "confirm_first".to_string(),
+        tiers: vec![
+            AgentMemoryTierSnapshot {
+                tier: "working".to_string(),
+                freshness_state: working_state.clone(),
+                confidence_band: tier_confidence_band(&working_state),
+                source: "projection:semantic_memory/overview".to_string(),
+                observed_at: working_observed_at,
+                last_verified_at: working_observed_at,
+                stale_reason: working_reason,
+            },
+            AgentMemoryTierSnapshot {
+                tier: "project".to_string(),
+                freshness_state: project_state.clone(),
+                confidence_band: tier_confidence_band(&project_state),
+                source: "projection:training_plan/overview".to_string(),
+                observed_at: project_observed_at,
+                last_verified_at: project_observed_at,
+                stale_reason: project_reason,
+            },
+            AgentMemoryTierSnapshot {
+                tier: "principles".to_string(),
+                freshness_state: principles_state.clone(),
+                confidence_band: tier_confidence_band(&principles_state),
+                source: "projection:user_profile/me.preferences".to_string(),
+                observed_at: principles_observed_at,
+                last_verified_at: principles_observed_at,
+                stale_reason: principles_reason,
+            },
+        ],
+    }
+}
+
+fn memory_tier_confirm_reason(
+    action_class: &str,
+    user_profile: Option<&ProjectionResponse>,
+    now: DateTime<Utc>,
+) -> Option<String> {
+    if action_class != "high_impact_write" {
+        return None;
+    }
+
+    let Some(profile) = user_profile else {
+        return Some(MEMORY_TIER_PRINCIPLES_MISSING_CONFIRM_REASON_CODE.to_string());
+    };
+    let Some(user) = profile
+        .projection
+        .data
+        .get("user")
+        .and_then(Value::as_object)
+    else {
+        return Some(MEMORY_TIER_PRINCIPLES_MISSING_CONFIRM_REASON_CODE.to_string());
+    };
+    let preferences = user.get("preferences").and_then(Value::as_object);
+    if preferences.is_none() || preferences.is_some_and(|map| map.is_empty()) {
+        return Some(MEMORY_TIER_PRINCIPLES_MISSING_CONFIRM_REASON_CODE.to_string());
+    }
+
+    let (freshness_state, _reason) = tier_freshness(Some(profile.projection.updated_at), 180, now);
+    if freshness_state == "stale" {
+        Some(MEMORY_TIER_PRINCIPLES_STALE_CONFIRM_REASON_CODE.to_string())
+    } else {
+        None
+    }
 }
 
 fn normalize_visualization_format(format: &str) -> Option<String> {
@@ -3652,6 +3956,137 @@ fn classify_write_action_class(events: &[CreateEventRequest]) -> String {
     }
 }
 
+fn validate_intent_handshake(
+    handshake: &AgentIntentHandshake,
+    action_class: &str,
+) -> Result<(), AppError> {
+    if handshake.schema_version.trim() != INTENT_HANDSHAKE_SCHEMA_VERSION {
+        return Err(AppError::Validation {
+            message: "intent_handshake.schema_version is not supported".to_string(),
+            field: Some("intent_handshake.schema_version".to_string()),
+            received: Some(json!(handshake.schema_version)),
+            docs_hint: Some(format!(
+                "Use schema_version '{INTENT_HANDSHAKE_SCHEMA_VERSION}'."
+            )),
+        });
+    }
+
+    if handshake.goal.trim().is_empty() {
+        return Err(AppError::Validation {
+            message: "intent_handshake.goal must not be empty".to_string(),
+            field: Some("intent_handshake.goal".to_string()),
+            received: Some(json!(handshake.goal)),
+            docs_hint: Some("Provide a concise execution goal.".to_string()),
+        });
+    }
+    if handshake.planned_action.trim().is_empty() {
+        return Err(AppError::Validation {
+            message: "intent_handshake.planned_action must not be empty".to_string(),
+            field: Some("intent_handshake.planned_action".to_string()),
+            received: Some(json!(handshake.planned_action)),
+            docs_hint: Some("Describe the planned write action before execution.".to_string()),
+        });
+    }
+    if handshake.success_criteria.trim().is_empty() {
+        return Err(AppError::Validation {
+            message: "intent_handshake.success_criteria must not be empty".to_string(),
+            field: Some("intent_handshake.success_criteria".to_string()),
+            received: Some(json!(handshake.success_criteria)),
+            docs_hint: Some("Define how success is validated.".to_string()),
+        });
+    }
+    if handshake.assumptions.is_empty() {
+        return Err(AppError::Validation {
+            message: "intent_handshake.assumptions must not be empty".to_string(),
+            field: Some("intent_handshake.assumptions".to_string()),
+            received: None,
+            docs_hint: Some("List at least one explicit assumption.".to_string()),
+        });
+    }
+    if handshake.non_goals.is_empty() {
+        return Err(AppError::Validation {
+            message: "intent_handshake.non_goals must not be empty".to_string(),
+            field: Some("intent_handshake.non_goals".to_string()),
+            received: None,
+            docs_hint: Some("List at least one explicit non-goal.".to_string()),
+        });
+    }
+
+    let impact_class = handshake.impact_class.trim().to_lowercase();
+    if impact_class != "high_impact_write" && impact_class != "low_impact_write" {
+        return Err(AppError::Validation {
+            message: "intent_handshake.impact_class must be low_impact_write or high_impact_write"
+                .to_string(),
+            field: Some("intent_handshake.impact_class".to_string()),
+            received: Some(json!(handshake.impact_class)),
+            docs_hint: Some("Set impact_class to match the intended write scope.".to_string()),
+        });
+    }
+    if impact_class != action_class {
+        return Err(AppError::Validation {
+            message: "intent_handshake.impact_class does not match detected action class"
+                .to_string(),
+            field: Some("intent_handshake.impact_class".to_string()),
+            received: Some(json!({
+                "handshake": impact_class,
+                "detected_action_class": action_class,
+            })),
+            docs_hint: Some(
+                "Refresh the handshake for the current action scope before executing.".to_string(),
+            ),
+        });
+    }
+
+    let max_age = chrono::Duration::minutes(INTENT_HANDSHAKE_MAX_AGE_MINUTES);
+    if Utc::now() - handshake.created_at > max_age {
+        return Err(AppError::Validation {
+            message: "intent_handshake is stale".to_string(),
+            field: Some("intent_handshake.created_at".to_string()),
+            received: Some(json!(handshake.created_at)),
+            docs_hint: Some(format!(
+                "Create a fresh handshake within {INTENT_HANDSHAKE_MAX_AGE_MINUTES} minutes of execution."
+            )),
+        });
+    }
+
+    Ok(())
+}
+
+fn build_intent_handshake_confirmation(
+    handshake: &AgentIntentHandshake,
+) -> AgentIntentHandshakeConfirmation {
+    AgentIntentHandshakeConfirmation {
+        schema_version: INTENT_HANDSHAKE_SCHEMA_VERSION.to_string(),
+        status: "accepted".to_string(),
+        impact_class: handshake.impact_class.trim().to_lowercase(),
+        handshake_id: handshake.handshake_id.clone(),
+        chat_confirmation: format!(
+            "Intent bestätigt: Ziel='{}', Aktion='{}', Erfolg='{}'.",
+            handshake.goal.trim(),
+            handshake.planned_action.trim(),
+            handshake.success_criteria.trim(),
+        ),
+    }
+}
+
+fn merge_autonomy_gate_with_memory_guard(
+    mut gate: AgentAutonomyGate,
+    action_class: &str,
+    user_profile: Option<&ProjectionResponse>,
+) -> AgentAutonomyGate {
+    let Some(reason_code) = memory_tier_confirm_reason(action_class, user_profile, Utc::now())
+    else {
+        return gate;
+    };
+
+    if gate.decision == "allow" {
+        gate.decision = "confirm_first".to_string();
+    }
+    gate.reason_codes.push(reason_code);
+    dedupe_reason_codes(&mut gate.reason_codes);
+    gate
+}
+
 fn apply_model_tier_policy(
     mut autonomy_policy: AgentAutonomyPolicy,
     model_identity: &str,
@@ -4077,6 +4512,9 @@ fn learning_signal_category(signal_type: &str) -> &'static str {
         "viz_source_bound" => "quality_signal",
         "viz_fallback_used" => "friction_signal",
         "viz_confusion_signal" => "friction_signal",
+        "post_task_reflection_confirmed" => "outcome_signal",
+        "post_task_reflection_partial" => "friction_signal",
+        "post_task_reflection_unresolved" => "friction_signal",
         "mismatch_detected" => "quality_signal",
         "mismatch_repaired" => "correction_signal",
         "mismatch_unresolved" => "friction_signal",
@@ -4205,6 +4643,187 @@ fn build_save_handshake_learning_signal_events(
             receipts.len(),
         ),
     ]
+}
+
+fn warning_code_from_warning(warning: &BatchEventWarning) -> String {
+    let field = warning
+        .field
+        .trim()
+        .to_lowercase()
+        .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+    let severity = warning
+        .severity
+        .trim()
+        .to_lowercase()
+        .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+    format!("{field}:{severity}")
+}
+
+fn build_trace_digest(
+    receipts: &[AgentWriteReceipt],
+    warnings: &[BatchEventWarning],
+    verification: &AgentWriteVerificationSummary,
+    claim_guard: &AgentWriteClaimGuard,
+    workflow_gate: &AgentWorkflowGate,
+    session_audit: &AgentSessionAuditSummary,
+    repair_feedback: &AgentRepairFeedback,
+) -> AgentTraceDigest {
+    let mut receipt_event_ids: Vec<Uuid> =
+        receipts.iter().map(|receipt| receipt.event_id).collect();
+    receipt_event_ids.sort();
+
+    let seed = format!(
+        "{}|{}|{}|{}|{}",
+        receipt_event_ids
+            .iter()
+            .map(Uuid::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        verification.status,
+        claim_guard.claim_status,
+        workflow_gate.phase,
+        session_audit.status
+    );
+    let action_id = format!("action_{}", stable_hash_suffix(&seed, 16));
+    let correlation_id = format!("corr_{}", stable_hash_suffix(&format!("{seed}:corr"), 12));
+    let warning_codes: Vec<String> = warnings.iter().map(warning_code_from_warning).collect();
+    let chat_summary = format!(
+        "Trace: verification={}, claim={}, workflow={}, repairs={}, warnings={}",
+        verification.status,
+        claim_guard.claim_status,
+        workflow_gate.status,
+        repair_feedback.status,
+        warnings.len()
+    );
+
+    AgentTraceDigest {
+        schema_version: TRACE_DIGEST_SCHEMA_VERSION.to_string(),
+        action_id: action_id.clone(),
+        correlation_id,
+        receipt_event_ids,
+        write_path: verification.write_path.clone(),
+        verification_status: verification.status.clone(),
+        required_checks: verification.required_checks,
+        verified_checks: verification.verified_checks,
+        allow_saved_claim: claim_guard.allow_saved_claim,
+        claim_status: claim_guard.claim_status.clone(),
+        workflow_phase: workflow_gate.phase.clone(),
+        workflow_status: workflow_gate.status.clone(),
+        workflow_transition: workflow_gate.transition.clone(),
+        autonomy_decision: claim_guard.autonomy_gate.decision.clone(),
+        autonomy_action_class: claim_guard.autonomy_gate.action_class.clone(),
+        autonomy_reason_codes: claim_guard.autonomy_gate.reason_codes.clone(),
+        session_audit_status: session_audit.status.clone(),
+        mismatch_detected: session_audit.mismatch_detected,
+        mismatch_repaired: session_audit.mismatch_repaired,
+        mismatch_unresolved: session_audit.mismatch_unresolved,
+        repair_status: repair_feedback.status.clone(),
+        warning_count: warnings.len(),
+        warning_codes,
+        chat_summary_template_id: "trace_digest.chat.short.v1".to_string(),
+        chat_summary,
+    }
+}
+
+fn build_post_task_reflection(
+    trace_digest: &AgentTraceDigest,
+    verification: &AgentWriteVerificationSummary,
+    session_audit: &AgentSessionAuditSummary,
+    repair_feedback: &AgentRepairFeedback,
+) -> AgentPostTaskReflection {
+    let certainty_state = if verification.status == "verified" && session_audit.status == "clean" {
+        "confirmed".to_string()
+    } else if verification.status == "failed" || session_audit.status == "needs_clarification" {
+        "unresolved".to_string()
+    } else {
+        "partial".to_string()
+    };
+
+    let mut residual_risks = Vec::new();
+    if verification.status != "verified" {
+        residual_risks.push("read_after_write_not_fully_verified".to_string());
+    }
+    if session_audit.status == "needs_clarification" {
+        residual_risks.push("session_audit_needs_clarification".to_string());
+    }
+    if repair_feedback.status == "needs_clarification" {
+        residual_risks.push("repair_feedback_pending_clarification".to_string());
+    }
+
+    let clarification_question = session_audit
+        .clarification_question
+        .clone()
+        .or_else(|| repair_feedback.clarification_question.clone());
+    let next_verification_step = if certainty_state == "confirmed" {
+        "none_required".to_string()
+    } else if let Some(question) = clarification_question.clone() {
+        format!("ask_user: {question}")
+    } else {
+        "retry_read_after_write_with_same_idempotency_keys".to_string()
+    };
+    let follow_up_recommended = certainty_state != "confirmed";
+    let follow_up_reason = if follow_up_recommended {
+        Some("certainty_state_not_confirmed".to_string())
+    } else {
+        None
+    };
+
+    AgentPostTaskReflection {
+        schema_version: POST_TASK_REFLECTION_SCHEMA_VERSION.to_string(),
+        action_id: trace_digest.action_id.clone(),
+        related_trace_digest_id: trace_digest.action_id.clone(),
+        change_summary: format!(
+            "{} events processed, verification={}, claim_status={}",
+            trace_digest.receipt_event_ids.len(),
+            verification.status,
+            trace_digest.claim_status
+        ),
+        certainty_state: certainty_state.clone(),
+        residual_risks,
+        next_verification_step,
+        clarification_question,
+        follow_up_recommended,
+        follow_up_reason,
+        emitted_learning_signal_types: Vec::new(),
+        chat_summary_template_id: "post_task_reflection.chat.short.v1".to_string(),
+        chat_summary: format!(
+            "Reflection: certainty={}, next_step={}",
+            certainty_state,
+            if follow_up_recommended {
+                "verification_or_clarification"
+            } else {
+                "none"
+            }
+        ),
+    }
+}
+
+fn post_task_reflection_signal_type(certainty_state: &str) -> &'static str {
+    match certainty_state {
+        "confirmed" => "post_task_reflection_confirmed",
+        "partial" => "post_task_reflection_partial",
+        _ => "post_task_reflection_unresolved",
+    }
+}
+
+fn build_post_task_reflection_learning_signal_event(
+    user_id: Uuid,
+    requested_event_count: usize,
+    receipts: &[AgentWriteReceipt],
+    verification: &AgentWriteVerificationSummary,
+    claim_guard: &AgentWriteClaimGuard,
+    certainty_state: &str,
+) -> CreateEventRequest {
+    let signal_type = post_task_reflection_signal_type(certainty_state);
+    build_learning_signal_event(
+        user_id,
+        signal_type,
+        "post_task_reflection_contract",
+        claim_guard,
+        verification,
+        requested_event_count,
+        receipts.len(),
+    )
 }
 
 fn workflow_gate_signal_type(gate: &AgentWorkflowGate) -> Option<&'static str> {
@@ -5365,6 +5984,7 @@ pub async fn write_with_proof(
     require_scopes(&auth, &["agent:write"], "POST /v1/agent/write-with-proof")?;
     let user_id = auth.user_id;
     let requested_event_count = req.events.len();
+    let action_class = classify_write_action_class(&req.events);
     let verify_timeout_ms = clamp_verify_timeout_ms(req.verify_timeout_ms);
     let read_after_write_targets = normalize_read_after_write_targets(req.read_after_write_targets);
 
@@ -5380,6 +6000,25 @@ pub async fn write_with_proof(
         });
     }
     validate_session_feedback_certainty_contract(&req.events)?;
+
+    let intent_handshake_confirmation = match req.intent_handshake.as_ref() {
+        Some(handshake) => {
+            validate_intent_handshake(handshake, &action_class)?;
+            Some(build_intent_handshake_confirmation(handshake))
+        }
+        None if action_class == "high_impact_write" => {
+            return Err(AppError::Validation {
+                message: "intent_handshake is required for high-impact writes".to_string(),
+                field: Some("intent_handshake".to_string()),
+                received: None,
+                docs_hint: Some(
+                    "Provide intent_handshake.v1 with goal, planned_action, assumptions, non_goals, impact_class, and success_criteria."
+                        .to_string(),
+                ),
+            });
+        }
+        None => None,
+    };
 
     let user_profile = fetch_user_profile_projection(&state, user_id).await?;
     let workflow_state = fetch_workflow_state(&state, user_id, user_profile.as_ref()).await?;
@@ -5460,12 +6099,15 @@ pub async fn write_with_proof(
         &tier_policy,
         &model_identity.reason_codes,
     );
-    let action_class = classify_write_action_class(&req.events);
-    let autonomy_gate = evaluate_autonomy_gate(
+    let autonomy_gate = merge_autonomy_gate_with_memory_guard(
+        evaluate_autonomy_gate(
+            &action_class,
+            &autonomy_policy,
+            &tier_policy,
+            &model_identity.reason_codes,
+        ),
         &action_class,
-        &autonomy_policy,
-        &tier_policy,
-        &model_identity.reason_codes,
+        user_profile.as_ref(),
     );
     if autonomy_gate.decision == "block" {
         return Err(AppError::Validation {
@@ -5569,6 +6211,37 @@ pub async fn write_with_proof(
         autonomy_policy,
         autonomy_gate,
     );
+    let evidence_events = build_evidence_claim_events(user_id, &req.events, &receipts);
+    if !evidence_events.is_empty() {
+        let _ = create_events_batch_internal(&state, user_id, &evidence_events).await;
+    }
+    let inferred_facts = collect_reliability_inferred_facts(&evidence_events, &repair_events);
+    let reliability_ux = build_reliability_ux(&claim_guard, &session_audit_summary, inferred_facts);
+    let repair_feedback = build_repair_feedback(
+        req.include_repair_technical_details,
+        &session_audit_summary,
+        &repair_events,
+        &repair_receipts,
+        requested_event_count,
+        &verification,
+        &claim_guard,
+    );
+    let trace_digest = build_trace_digest(
+        &receipts,
+        &warnings,
+        &verification,
+        &claim_guard,
+        &workflow_gate,
+        &session_audit_summary,
+        &repair_feedback,
+    );
+    let mut post_task_reflection = build_post_task_reflection(
+        &trace_digest,
+        &verification,
+        &session_audit_summary,
+        &repair_feedback,
+    );
+
     let quality_signal = build_save_claim_checked_event(
         requested_event_count,
         &receipts,
@@ -5590,22 +6263,30 @@ pub async fn write_with_proof(
         quality_events.push(workflow_signal);
     }
     quality_events.extend(telemetry_events);
-    let _ = create_events_batch_internal(&state, user_id, &quality_events).await;
-    let evidence_events = build_evidence_claim_events(user_id, &req.events, &receipts);
-    if !evidence_events.is_empty() {
-        let _ = create_events_batch_internal(&state, user_id, &evidence_events).await;
-    }
-    let inferred_facts = collect_reliability_inferred_facts(&evidence_events, &repair_events);
-    let reliability_ux = build_reliability_ux(&claim_guard, &session_audit_summary, inferred_facts);
-    let repair_feedback = build_repair_feedback(
-        req.include_repair_technical_details,
-        &session_audit_summary,
-        &repair_events,
-        &repair_receipts,
+    let reflection_signal = build_post_task_reflection_learning_signal_event(
+        user_id,
         requested_event_count,
+        &receipts,
         &verification,
         &claim_guard,
+        &post_task_reflection.certainty_state,
     );
+    quality_events.push(reflection_signal);
+    let mut emitted_learning_signal_types: Vec<String> = quality_events
+        .iter()
+        .filter_map(|event| {
+            event
+                .data
+                .get("signal_type")
+                .and_then(Value::as_str)
+                .map(|value| value.to_string())
+        })
+        .collect();
+    emitted_learning_signal_types.sort();
+    emitted_learning_signal_types.dedup();
+    post_task_reflection.emitted_learning_signal_types = emitted_learning_signal_types;
+
+    let _ = create_events_batch_internal(&state, user_id, &quality_events).await;
 
     Ok((
         StatusCode::CREATED,
@@ -5618,6 +6299,9 @@ pub async fn write_with_proof(
             workflow_gate,
             session_audit: session_audit_summary,
             repair_feedback,
+            intent_handshake_confirmation,
+            trace_digest,
+            post_task_reflection,
         }),
     ))
 }
@@ -5752,6 +6436,14 @@ pub async fn get_agent_context(
     let strength_inference =
         rank_projection_list(strength_candidates, strength_limit, &ranking_context);
     let custom = rank_projection_list(custom_candidates, custom_limit, &ranking_context);
+    let generated_at = Utc::now();
+    let challenge_mode = resolve_challenge_mode(Some(&user_profile));
+    let memory_tier_contract = build_memory_tier_contract(
+        &user_profile,
+        training_plan.as_ref(),
+        semantic_memory.as_ref(),
+        generated_at,
+    );
 
     Ok(Json(AgentContextResponse {
         system,
@@ -5771,7 +6463,7 @@ pub async fn get_agent_context(
         strength_inference,
         custom,
         meta: AgentContextMeta {
-            generated_at: Utc::now(),
+            generated_at,
             exercise_limit,
             strength_limit,
             custom_limit,
@@ -5780,6 +6472,8 @@ pub async fn get_agent_context(
                 .to_string(),
             context_contract_version: AGENT_CONTEXT_CONTRACT_VERSION.to_string(),
             system_contract: build_agent_context_system_contract(),
+            challenge_mode,
+            memory_tier_contract,
         },
     }))
 }
@@ -5787,10 +6481,12 @@ pub async fn get_agent_context(
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentReadAfterWriteCheck, AgentReadAfterWriteTarget, AgentResolveVisualizationRequest,
+        AgentReadAfterWriteCheck, AgentReadAfterWriteTarget, AgentRepairFeedback,
+        AgentRepairReceipt, AgentResolveVisualizationRequest, AgentSessionAuditSummary,
         AgentVisualizationDataSource, AgentVisualizationResolvedSource, AgentVisualizationSpec,
-        AgentVisualizationTimezoneContext, AgentWorkflowState, AgentWriteReceipt, IntentClass,
-        ProjectionResponse, RankingContext, WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE,
+        AgentVisualizationTimezoneContext, AgentWorkflowGate, AgentWorkflowState,
+        AgentWriteReceipt, AgentWriteVerificationSummary, IntentClass, ProjectionResponse,
+        RankingContext, WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE,
         WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE, bind_visualization_source, bootstrap_user_profile,
         build_agent_capabilities, build_auto_onboarding_close_event, build_claim_guard,
         build_evidence_claim_events, build_reliability_ux, build_repair_feedback,
@@ -5818,6 +6514,7 @@ mod tests {
     use kura_core::projections::{Projection, ProjectionFreshness, ProjectionMeta};
     use serde_json::{Value, json};
     use sqlx::postgres::PgPoolOptions;
+    use std::collections::HashMap;
     use uuid::Uuid;
 
     fn make_projection_response(
@@ -8286,6 +8983,194 @@ mod tests {
             let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &tier, &[]);
             assert_eq!(gate.decision, expected_decision);
         }
+    }
+
+    #[test]
+    fn challenge_mode_defaults_to_auto_with_onboarding_hint() {
+        let profile = bootstrap_user_profile(Uuid::now_v7());
+        let mode = super::resolve_challenge_mode(Some(&profile));
+        assert_eq!(mode.schema_version, "challenge_mode.v1");
+        assert_eq!(mode.mode, "auto");
+        assert_eq!(mode.source, "default_auto");
+        assert!(mode.onboarding_hint_required);
+        assert!(mode.onboarding_hint.is_some());
+    }
+
+    #[test]
+    fn challenge_mode_uses_preference_and_intro_seen_marker() {
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "challenge_mode": "off",
+                        "challenge_mode_intro_seen": true
+                    }
+                }
+            }),
+        );
+        let mode = super::resolve_challenge_mode(Some(&profile));
+        assert_eq!(mode.mode, "off");
+        assert_eq!(mode.source, "user_profile.preference");
+        assert!(!mode.onboarding_hint_required);
+        assert!(mode.onboarding_hint.is_none());
+    }
+
+    #[test]
+    fn intent_handshake_validation_rejects_stale_handshake() {
+        let handshake = super::AgentIntentHandshake {
+            schema_version: "intent_handshake.v1".to_string(),
+            goal: "update training plan".to_string(),
+            planned_action: "write training_plan.updated".to_string(),
+            assumptions: vec!["latest profile is complete".to_string()],
+            non_goals: vec!["no nutrition changes".to_string()],
+            impact_class: "high_impact_write".to_string(),
+            success_criteria: "plan projection reflects update".to_string(),
+            created_at: Utc::now() - Duration::minutes(180),
+            handshake_id: Some("hs-1".to_string()),
+        };
+
+        let err = super::validate_intent_handshake(&handshake, "high_impact_write")
+            .expect_err("stale handshake should be rejected");
+        match err {
+            AppError::Validation { field, .. } => {
+                assert_eq!(field.as_deref(), Some("intent_handshake.created_at"));
+            }
+            other => panic!("expected validation error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn memory_guard_escalates_high_impact_allow_to_confirm_first_when_preferences_missing() {
+        let gate = super::default_autonomy_gate();
+        let profile = bootstrap_user_profile(Uuid::now_v7());
+        let merged =
+            super::merge_autonomy_gate_with_memory_guard(gate, "high_impact_write", Some(&profile));
+        assert_eq!(merged.decision, "confirm_first");
+        assert!(merged.reason_codes.iter().any(|code| {
+            code == "memory_principles_missing_confirm_first"
+                || code == "memory_principles_stale_confirm_first"
+        }));
+    }
+
+    #[test]
+    fn trace_digest_and_reflection_contracts_are_generated_deterministically() {
+        let receipt = AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.logged".to_string(),
+            idempotency_key: "k-1".to_string(),
+            event_timestamp: Utc::now(),
+        };
+        let receipts = vec![receipt];
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "training_timeline".to_string(),
+            key: "overview".to_string(),
+            status: "verified".to_string(),
+            observed_projection_version: Some(1),
+            observed_last_event_id: None,
+            detail: "ok".to_string(),
+        }];
+        let warnings = vec![BatchEventWarning {
+            event_index: 0,
+            field: "autonomy.gate".to_string(),
+            message: "confirm".to_string(),
+            severity: "warning".to_string(),
+        }];
+        let verification = AgentWriteVerificationSummary {
+            status: "verified".to_string(),
+            checked_at: Utc::now(),
+            waited_ms: 10,
+            write_path: "fresh_write".to_string(),
+            required_checks: 1,
+            verified_checks: 1,
+            checks: checks.clone(),
+        };
+        let claim_guard = build_claim_guard(
+            &receipts,
+            1,
+            &checks,
+            &warnings,
+            default_autonomy_policy(),
+            default_autonomy_gate(),
+        );
+        let workflow_gate = AgentWorkflowGate {
+            phase: "planning".to_string(),
+            status: "allowed".to_string(),
+            transition: "none".to_string(),
+            onboarding_closed: true,
+            override_used: false,
+            message: "ok".to_string(),
+            missing_requirements: Vec::new(),
+            planning_event_types: Vec::new(),
+        };
+        let session_audit = AgentSessionAuditSummary {
+            status: "clean".to_string(),
+            mismatch_detected: 0,
+            mismatch_repaired: 0,
+            mismatch_unresolved: 0,
+            mismatch_classes: Vec::new(),
+            clarification_question: None,
+        };
+        let repair_feedback = AgentRepairFeedback {
+            status: "none".to_string(),
+            summary: "none".to_string(),
+            receipt: AgentRepairReceipt {
+                status: "none".to_string(),
+                changed_fields_count: 0,
+                unchanged_metrics: HashMap::new(),
+            },
+            clarification_question: None,
+            undo: None,
+            technical: None,
+        };
+
+        let digest = super::build_trace_digest(
+            &receipts,
+            &warnings,
+            &verification,
+            &claim_guard,
+            &workflow_gate,
+            &session_audit,
+            &repair_feedback,
+        );
+        assert_eq!(digest.schema_version, "trace_digest.v1");
+        assert_eq!(digest.receipt_event_ids.len(), 1);
+        assert!(!digest.action_id.is_empty());
+        assert_eq!(
+            digest.chat_summary_template_id,
+            "trace_digest.chat.short.v1"
+        );
+
+        let reflection = super::build_post_task_reflection(
+            &digest,
+            &verification,
+            &session_audit,
+            &repair_feedback,
+        );
+        assert_eq!(reflection.schema_version, "post_task_reflection.v1");
+        assert_eq!(reflection.certainty_state, "confirmed");
+        assert_eq!(
+            reflection.chat_summary_template_id,
+            "post_task_reflection.chat.short.v1"
+        );
+    }
+
+    #[test]
+    fn reflection_signal_types_are_classified() {
+        assert_eq!(
+            super::post_task_reflection_signal_type("confirmed"),
+            "post_task_reflection_confirmed"
+        );
+        assert_eq!(
+            super::learning_signal_category("post_task_reflection_partial"),
+            "friction_signal"
+        );
+        assert_eq!(
+            super::learning_signal_category("post_task_reflection_unresolved"),
+            "friction_signal"
+        );
     }
 
     #[test]

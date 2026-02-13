@@ -10,7 +10,7 @@ import uuid
 from typing import Any
 
 from .conftest import KuraTestClient
-from .contracts import CreateEventRequest, EventMetadata, INVARIANT_CODES
+from .contracts import CreateEventRequest, EventMetadata
 from .scenarios import AdversarialScenario, ScenarioResult
 
 

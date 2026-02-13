@@ -471,6 +471,17 @@ class TestAgentBehavior:
         assert isinstance(rules, list)
         assert len(rules) >= 3
 
+    def test_operational_has_challenge_mode_contract(self):
+        result = _get_agent_behavior()
+        challenge_mode = result["operational"]["challenge_mode"]
+        assert challenge_mode["schema_version"] == "challenge_mode.v1"
+        assert challenge_mode["default"] == "auto"
+        assert challenge_mode["allowed_values"] == ["auto", "on", "off"]
+        assert challenge_mode["storage_contract"]["event_type"] == "preference.set"
+        assert challenge_mode["storage_contract"]["key"] == "challenge_mode"
+        assert challenge_mode["discoverability"]["chat_only_control"] is True
+        assert "onboarding_hint" in challenge_mode["discoverability"]
+
     def test_operational_has_write_protocol(self):
         result = _get_agent_behavior()
         write_protocol = result["operational"]["write_protocol"]

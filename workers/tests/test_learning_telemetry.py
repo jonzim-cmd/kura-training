@@ -19,6 +19,9 @@ def test_core_signal_catalog_is_versioned_and_sufficiently_rich():
     assert "repair_auto_applied" in signal_types
     assert "workflow_violation" in signal_types
     assert "viz_source_bound" in signal_types
+    assert "post_task_reflection_confirmed" in signal_types
+    assert "post_task_reflection_partial" in signal_types
+    assert "post_task_reflection_unresolved" in signal_types
 
 
 def test_pseudonymize_user_id_is_stable_and_non_reversible_in_payload():
@@ -59,3 +62,9 @@ def test_build_learning_signal_event_emits_stable_contract():
 def test_unknown_signal_type_is_rejected():
     with pytest.raises(ValueError):
         signal_category("not_a_real_signal")
+
+
+def test_post_task_reflection_signal_categories_are_stable():
+    assert signal_category("post_task_reflection_confirmed") == "outcome_signal"
+    assert signal_category("post_task_reflection_partial") == "friction_signal"
+    assert signal_category("post_task_reflection_unresolved") == "friction_signal"

@@ -33,12 +33,6 @@ from .contracts import (
 )
 from .strategies import (
     session_completed_data,
-    valid_event,
-)
-from .assertions import (
-    assert_policy_violation,
-    assert_event_always_accepted,
-    InvariantViolation,
 )
 
 FUZZ_SETTINGS = settings(

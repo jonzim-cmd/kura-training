@@ -633,6 +633,25 @@ impl McpServer {
                     if let Some(verify_timeout_ms) = arg_optional_u64(args, "verify_timeout_ms")? {
                         body["verify_timeout_ms"] = json!(verify_timeout_ms);
                     }
+                    if has_high_impact_events(&normalized_events) {
+                        let handshake = match args.get("intent_handshake") {
+                            Some(Value::Object(_)) => {
+                                args.get("intent_handshake").cloned().unwrap_or(Value::Null)
+                            }
+                            Some(_) => {
+                                return Err(ToolError::new(
+                                    "validation_failed",
+                                    "intent_handshake must be an object when provided",
+                                )
+                                .with_field("intent_handshake"));
+                            }
+                            None => {
+                                let goal = arg_optional_string(args, "intent_goal")?;
+                                build_default_intent_handshake(&normalized_events, goal.as_deref())
+                            }
+                        };
+                        body["intent_handshake"] = handshake;
+                    }
                     requested_path = Some(self.capability_profile.preferred_write_endpoint.clone());
                     (
                         self.capability_profile.preferred_write_endpoint.clone(),
@@ -1315,6 +1334,12 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                         }
                     },
                     "verify_timeout_ms": { "type": "integer", "minimum": 100, "maximum": 10000 }
+                    ,
+                    "intent_goal": { "type": "string", "description": "Optional high-level goal used when auto-generating intent_handshake for high-impact write_with_proof calls." },
+                    "intent_handshake": {
+                        "type": "object",
+                        "description": "Optional full intent_handshake.v1 payload. When omitted for high-impact write_with_proof calls, MCP auto-generates one."
+                    }
                 },
                 "required": ["events"],
                 "additionalProperties": false
@@ -2063,6 +2088,62 @@ fn parse_read_after_write_targets(value: Option<&Value>) -> Result<Vec<Value>, T
     }
 
     Ok(out)
+}
+
+fn is_high_impact_event_type(event_type: &str) -> bool {
+    matches!(
+        event_type.trim().to_lowercase().as_str(),
+        "training_plan.created"
+            | "training_plan.updated"
+            | "training_plan.archived"
+            | "projection_rule.created"
+            | "projection_rule.archived"
+            | "weight_target.set"
+            | "sleep_target.set"
+            | "nutrition_target.set"
+            | "workflow.onboarding.closed"
+            | "workflow.onboarding.override_granted"
+    )
+}
+
+fn has_high_impact_events(events: &[Value]) -> bool {
+    events.iter().any(|event| {
+        event
+            .as_object()
+            .and_then(|obj| obj.get("event_type"))
+            .and_then(Value::as_str)
+            .is_some_and(is_high_impact_event_type)
+    })
+}
+
+fn build_default_intent_handshake(events: &[Value], intent_goal: Option<&str>) -> Value {
+    let event_types: Vec<String> = events
+        .iter()
+        .filter_map(|event| {
+            event
+                .as_object()
+                .and_then(|obj| obj.get("event_type"))
+                .and_then(Value::as_str)
+                .map(|value| value.trim().to_lowercase())
+        })
+        .collect();
+    let planned_action = if event_types.is_empty() {
+        "apply high-impact write-with-proof update".to_string()
+    } else {
+        format!("write events: {}", event_types.join(", "))
+    };
+
+    json!({
+        "schema_version": "intent_handshake.v1",
+        "goal": intent_goal.unwrap_or("execute requested high-impact write safely"),
+        "planned_action": planned_action,
+        "assumptions": ["context and request intent are current"],
+        "non_goals": ["no unrelated writes outside current task scope"],
+        "impact_class": "high_impact_write",
+        "success_criteria": "write_with_proof returns verification and claim_guard for this action",
+        "created_at": chrono::Utc::now().to_rfc3339(),
+        "handshake_id": format!("mcp-hs-{}", Uuid::now_v7()),
+    })
 }
 
 fn pairs_to_json_object(pairs: &[(String, String)]) -> Value {

@@ -649,6 +649,34 @@ def _get_agent_behavior() -> dict[str, Any]:
                 "When data is missing, ask follow-up questions — don't guess.",
                 "When suggesting something beyond the request, frame it as a suggestion, not an action.",
             ],
+            "challenge_mode": {
+                "schema_version": "challenge_mode.v1",
+                "default": "auto",
+                "allowed_values": ["auto", "on", "off"],
+                "storage_contract": {
+                    "event_type": "preference.set",
+                    "key": "challenge_mode",
+                },
+                "discoverability": {
+                    "onboarding_hint": (
+                        "Challenge Mode ist standardmäßig auf auto aktiv. "
+                        "Sag 'Challenge Mode aus', wenn ich weniger challengen soll."
+                    ),
+                    "intro_marker_key": "challenge_mode_intro_seen",
+                    "chat_only_control": True,
+                },
+                "behavior_matrix": {
+                    "auto": (
+                        "Challenge only on relevant triggers: high-impact, low confidence, conflicting evidence."
+                    ),
+                    "on": (
+                        "Proactively include at least one risk and one alternative for non-trivial recommendations."
+                    ),
+                    "off": (
+                        "No proactive challenge by default; safety/integrity boundaries remain mandatory."
+                    ),
+                },
+            },
             "write_protocol": {
                 "required_steps": [
                     "write_with_proof: include idempotency_key per event",

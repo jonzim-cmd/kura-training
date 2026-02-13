@@ -23,7 +23,7 @@ import uuid
 from hypothesis import given, settings, HealthCheck
 
 from .conftest import KuraTestClient, pytestmark  # noqa: F401
-from .contracts import CreateEventRequest, EventMetadata, PLAUSIBILITY_RANGES
+from .contracts import CreateEventRequest, EventMetadata
 from .strategies import (
     set_logged_data,
     retraction_data,
@@ -34,10 +34,8 @@ from .strategies import (
     plausibility_data,
     numeric_or_junk,
     locale_decimal,
-    non_numeric_junk,
 )
 from .assertions import (
-    assert_success,
     assert_policy_violation,
     assert_rejection,
     assert_plausibility_warnings,
@@ -276,7 +274,7 @@ class TestProjectionRuleInvariants:
             metadata=EventMetadata(idempotency_key=str(uuid.uuid4())),
         )
         body, status = api_client.post_event(event)
-        code = assert_policy_violation(body, status, expected_code="inv_projection_rule_archive_name_required")
+        assert_policy_violation(body, status, expected_code="inv_projection_rule_archive_name_required")
 
 
 # --- training_plan intensity ---

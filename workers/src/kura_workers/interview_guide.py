@@ -65,6 +65,11 @@ def get_interview_guide() -> dict[str, Any]:
                 "ich helfe beim Strukturieren. Wenn etwas falsch ist, korrigiere mich direkt; "
                 "genau dadurch wird Kura mit dir besser."
             ),
+            "challenge_mode_hint": (
+                "Challenge Mode ist standardmäßig auf auto aktiv. "
+                "Wenn du weniger Gegenfragen oder Gegenhypothesen willst, sag einfach: "
+                "'Challenge Mode aus'."
+            ),
         },
         "communication_tips": [
             "Share context, not only commands: what happened, how it felt, and what you are unsure about.",

@@ -84,6 +84,8 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "time_zone",
                 "nutrition_tracking",
                 "population_priors_opt_in",
+                "challenge_mode",
+                "challenge_mode_intro_seen",
             ],
         },
         "goal.set": {

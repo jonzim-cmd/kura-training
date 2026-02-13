@@ -46,6 +46,9 @@ class TestInterviewGuideStructure:
         assert "purpose" in primer
         assert "positioning" in primer
         assert "example" in primer
+        assert "challenge_mode_hint" in primer
+        assert "auto" in primer["challenge_mode_hint"].lower()
+        assert "aus" in primer["challenge_mode_hint"].lower()
         assert isinstance(guide["communication_tips"], list)
         assert len(guide["communication_tips"]) >= 3
         logging_guidance = guide["logging_guidance"]
@@ -123,6 +126,8 @@ class TestEventConventions:
         assert "value" in pref["example"]
         assert "common_keys" in pref
         assert "timezone" in pref["common_keys"]
+        assert "challenge_mode" in pref["common_keys"]
+        assert "challenge_mode_intro_seen" in pref["common_keys"]
 
     def test_profile_updated_convention(self):
         conventions = get_event_conventions()

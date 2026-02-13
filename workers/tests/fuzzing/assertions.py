@@ -10,12 +10,8 @@ from __future__ import annotations
 from typing import Any
 
 from .contracts import (
-    CERTAINTY_FIELDS,
     INVARIANT_CODES,
-    PLAN_EVENT_TYPES,
-    PLANNING_OR_COACHING_EVENT_TYPES,
     PLAUSIBILITY_RANGES,
-    TIMEZONE_REQUIRED_EVENT_TYPES,
 )
 
 
