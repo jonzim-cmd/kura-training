@@ -11035,6 +11035,14 @@ mod tests {
     }
 
     #[test]
+    fn intent_handshake_contract_schema_version_is_pinned() {
+        assert_eq!(
+            super::INTENT_HANDSHAKE_SCHEMA_VERSION,
+            "intent_handshake.v1"
+        );
+    }
+
+    #[test]
     fn intent_handshake_contract_rejects_stale_payload() {
         let handshake = super::AgentIntentHandshake {
             schema_version: "intent_handshake.v1".to_string(),
@@ -11056,6 +11064,14 @@ mod tests {
             }
             other => panic!("expected validation error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn memory_tier_contract_schema_version_is_pinned() {
+        assert_eq!(
+            super::AGENT_MEMORY_TIER_CONTRACT_VERSION,
+            "memory_tier_contract.v1"
+        );
     }
 
     #[test]
@@ -11091,6 +11107,11 @@ mod tests {
             code == "memory_principles_missing_confirm_first"
                 || code == "memory_principles_stale_confirm_first"
         }));
+    }
+
+    #[test]
+    fn trace_digest_contract_schema_version_is_pinned() {
+        assert_eq!(super::TRACE_DIGEST_SCHEMA_VERSION, "trace_digest.v1");
     }
 
     #[test]
@@ -11146,6 +11167,14 @@ mod tests {
         assert_eq!(digest.verification_status, "pending");
         assert!(!digest.allow_saved_claim);
         assert_eq!(digest.claim_status, "pending");
+    }
+
+    #[test]
+    fn post_task_reflection_contract_schema_version_is_pinned() {
+        assert_eq!(
+            super::POST_TASK_REFLECTION_SCHEMA_VERSION,
+            "post_task_reflection.v1"
+        );
     }
 
     #[test]

@@ -335,18 +335,21 @@ class TestConventions:
         result = _get_conventions()
         assert "model_tier_registry_v1" in result
         registry = result["model_tier_registry_v1"]
-        assert registry["identity_resolution"]["fallback_reason_code"] == (
-            "model_identity_unknown_fallback_strict"
-        )
-        assert registry["identity_resolution"]["online_external_benchmark_lookups_allowed"] is False
+        identity = registry["identity_resolution"]
+        assert identity["identity_purpose"] == "audit_and_quality_track_separation"
+        assert identity["identity_does_not_affect_tier"] is True
+        assert "model_attestation (HMAC-verified runtime identity)" in identity["trusted_sources_order"]
+        assert registry["default_start_tier"] == "moderate"
         assert set(registry["tiers"]) == {"strict", "moderate", "advanced"}
 
     def test_model_tier_registry_v1_tiers_are_machine_readable(self):
         result = _get_conventions()
         tiers = result["model_tier_registry_v1"]["tiers"]
-        assert tiers["strict"]["high_impact_write_policy"] == "block"
+        assert tiers["strict"]["high_impact_write_policy"] == "confirm_first"
+        assert tiers["strict"]["intent_handshake_required"] is True
         assert tiers["moderate"]["high_impact_write_policy"] == "confirm_first"
         assert tiers["advanced"]["high_impact_write_policy"] == "allow"
+        assert tiers["advanced"]["intent_handshake_required"] is False
         assert "reason_codes" in result["model_tier_registry_v1"]["policy_outputs"]
 
     def test_has_learning_backlog_bridge_v1_conventions(self):
