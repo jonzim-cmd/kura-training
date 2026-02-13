@@ -45,6 +45,31 @@ def test_normalize_feedback_maps_legacy_text_without_data_loss():
     assert normalized["perceived_quality"] is None
 
 
+def test_normalize_feedback_respects_unresolved_state_contract():
+    normalized = _normalize_session_feedback_payload(
+        {
+            "enjoyment": 4,
+            "enjoyment_state": "unresolved",
+            "enjoyment_unresolved_reason": "user did not rate enjoyment",
+            "summary": "felt good",
+        }
+    )
+    assert normalized["enjoyment"] is None
+    assert normalized["enjoyment_state"] == "unresolved"
+    assert normalized["enjoyment_unresolved_reason"] == "user did not rate enjoyment"
+
+
+def test_normalize_feedback_confirmed_state_does_not_auto_infer():
+    normalized = _normalize_session_feedback_payload(
+        {
+            "enjoyment_state": "confirmed",
+            "summary": "felt good and fun",
+        }
+    )
+    assert normalized["enjoyment"] is None
+    assert normalized["enjoyment_state"] == "confirmed"
+
+
 def test_compute_enjoyment_trend_detects_improving():
     entries = [
         {"enjoyment": 2.0},

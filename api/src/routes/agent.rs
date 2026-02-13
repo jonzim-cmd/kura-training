@@ -837,7 +837,10 @@ fn classify_system_convention_field(key: &str) -> SystemConventionFieldClass {
         | "training_core_fields_v1"
         | "evidence_layer_v1"
         | "open_observation_v1"
-        | "ingestion_locale_v1" => SystemConventionFieldClass::PublicContract,
+        | "ingestion_locale_v1"
+        | "load_context_v1"
+        | "session_feedback_certainty_v1"
+        | "schema_capability_gate_v1" => SystemConventionFieldClass::PublicContract,
         "learning_clustering_v1"
         | "extraction_calibration_v1"
         | "learning_backlog_bridge_v1"
@@ -2369,6 +2372,9 @@ const AUDIT_CLASS_SCALE_NORMALIZED_TO_FIVE: &str = "scale_normalized_to_five";
 const AUDIT_CLASS_SCALE_OUT_OF_BOUNDS: &str = "scale_out_of_bounds";
 const AUDIT_CLASS_NARRATIVE_CONTRADICTION: &str = "narrative_structured_contradiction";
 const AUDIT_CLASS_UNSUPPORTED_INFERRED: &str = "unsupported_inferred_value";
+const SESSION_FEEDBACK_CERTAINTY_CONFIRMED: &str = "confirmed";
+const SESSION_FEEDBACK_CERTAINTY_INFERRED: &str = "inferred";
+const SESSION_FEEDBACK_CERTAINTY_UNRESOLVED: &str = "unresolved";
 const SESSION_FEEDBACK_CONTEXT_KEYS: [&str; 6] = [
     "context",
     "context_text",
@@ -2878,6 +2884,179 @@ fn has_unsupported_inferred_value(event: &CreateEventRequest, field: &str) -> bo
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .is_none()
+}
+
+fn parse_non_empty_lower_str(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+}
+
+fn has_non_null_field(event: &CreateEventRequest, field: &str) -> bool {
+    event
+        .data
+        .get(field)
+        .map(|value| !value.is_null())
+        .unwrap_or(false)
+}
+
+fn validate_session_feedback_certainty_contract(
+    events: &[CreateEventRequest],
+) -> Result<(), AppError> {
+    for (index, event) in events.iter().enumerate() {
+        if !event.event_type.eq_ignore_ascii_case("session.completed") {
+            continue;
+        }
+
+        for field in ["enjoyment", "perceived_quality", "perceived_exertion"] {
+            let state_key = format!("{field}_state");
+            let source_key = format!("{field}_source");
+            let evidence_key = format!("{field}_evidence_claim_id");
+            let unresolved_reason_key = format!("{field}_unresolved_reason");
+            let field_path = format!("events[{index}].data.{field}");
+            let state = parse_non_empty_lower_str(event.data.get(state_key.as_str()));
+            let source = parse_non_empty_lower_str(event.data.get(source_key.as_str()));
+            let has_value = has_non_null_field(event, field);
+            let has_evidence = parse_non_empty_lower_str(event.data.get(evidence_key.as_str()))
+                .is_some();
+            let has_unresolved_reason =
+                parse_non_empty_lower_str(event.data.get(unresolved_reason_key.as_str())).is_some();
+
+            if let Some(state_value) = state.as_deref() {
+                if ![
+                    SESSION_FEEDBACK_CERTAINTY_CONFIRMED,
+                    SESSION_FEEDBACK_CERTAINTY_INFERRED,
+                    SESSION_FEEDBACK_CERTAINTY_UNRESOLVED,
+                ]
+                .contains(&state_value)
+                {
+                    return Err(AppError::PolicyViolation {
+                        code: "session_feedback_certainty_invalid_state".to_string(),
+                        message: format!(
+                            "{field} has invalid certainty state '{state_value}'. Allowed: confirmed|inferred|unresolved"
+                        ),
+                        field: Some(format!("{field_path}_state")),
+                        received: event.data.get(state_key.as_str()).cloned(),
+                        docs_hint: Some(
+                            "Set <field>_state to confirmed, inferred, or unresolved. "
+                                .to_string(),
+                        ),
+                    });
+                }
+            }
+
+            if let Some(source_value) = source.as_deref() {
+                if !["explicit", "user_confirmed", "estimated", "inferred"]
+                    .contains(&source_value)
+                {
+                    return Err(AppError::PolicyViolation {
+                        code: "session_feedback_source_invalid".to_string(),
+                        message: format!(
+                            "{field} has invalid source '{source_value}'. Allowed: explicit|user_confirmed|estimated|inferred"
+                        ),
+                        field: Some(format!("{field_path}_source")),
+                        received: event.data.get(source_key.as_str()).cloned(),
+                        docs_hint: Some(
+                            "Use canonical source labels for session feedback provenance."
+                                .to_string(),
+                        ),
+                    });
+                }
+            }
+
+            if matches!(
+                state.as_deref(),
+                Some(SESSION_FEEDBACK_CERTAINTY_CONFIRMED)
+            ) && !has_value
+            {
+                return Err(AppError::PolicyViolation {
+                    code: "session_feedback_confirmed_missing_value".to_string(),
+                    message: format!(
+                        "{field} is marked confirmed but no value was provided."
+                    ),
+                    field: Some(field_path.clone()),
+                    received: event.data.get(field).cloned(),
+                    docs_hint: Some(
+                        "When <field>_state=confirmed, provide the numeric <field> value."
+                            .to_string(),
+                    ),
+                });
+            }
+
+            if matches!(
+                state.as_deref(),
+                Some(SESSION_FEEDBACK_CERTAINTY_INFERRED)
+            ) || matches!(source.as_deref(), Some("inferred"))
+            {
+                if !has_value {
+                    return Err(AppError::PolicyViolation {
+                        code: "session_feedback_inferred_missing_value".to_string(),
+                        message: format!(
+                            "{field} is marked inferred but no value was provided."
+                        ),
+                        field: Some(field_path.clone()),
+                        received: event.data.get(field).cloned(),
+                        docs_hint: Some(
+                            "When certainty/source is inferred, include the inferred numeric value."
+                                .to_string(),
+                        ),
+                    });
+                }
+                if !has_evidence {
+                    return Err(AppError::PolicyViolation {
+                        code: "session_feedback_inferred_missing_evidence".to_string(),
+                        message: format!(
+                            "{field} is inferred but missing {field}_evidence_claim_id."
+                        ),
+                        field: Some(format!("{field_path}_evidence_claim_id")),
+                        received: event.data.get(evidence_key.as_str()).cloned(),
+                        docs_hint: Some(
+                            "Inferred subjective values require a linked evidence claim id."
+                                .to_string(),
+                        ),
+                    });
+                }
+            }
+
+            if matches!(
+                state.as_deref(),
+                Some(SESSION_FEEDBACK_CERTAINTY_UNRESOLVED)
+            ) {
+                if has_value {
+                    return Err(AppError::PolicyViolation {
+                        code: "session_feedback_unresolved_has_value".to_string(),
+                        message: format!(
+                            "{field} is marked unresolved but a numeric value was still provided."
+                        ),
+                        field: Some(field_path.clone()),
+                        received: event.data.get(field).cloned(),
+                        docs_hint: Some(
+                            "Use unresolved state only when no value is persisted yet."
+                                .to_string(),
+                        ),
+                    });
+                }
+                if !has_unresolved_reason {
+                    return Err(AppError::PolicyViolation {
+                        code: "session_feedback_unresolved_missing_reason".to_string(),
+                        message: format!(
+                            "{field} is unresolved but {field}_unresolved_reason is missing."
+                        ),
+                        field: Some(format!("{field_path}_unresolved_reason")),
+                        received: event.data.get(unresolved_reason_key.as_str()).cloned(),
+                        docs_hint: Some(
+                            "Provide a short unresolved reason so the agent can ask one precise follow-up question."
+                                .to_string(),
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn audit_field_label(field: &str) -> &'static str {
@@ -4749,6 +4928,7 @@ pub async fn write_with_proof(
             ),
         });
     }
+    validate_session_feedback_certainty_contract(&req.events)?;
 
     let user_profile = fetch_user_profile_projection(&state, user_id).await?;
     let workflow_state = fetch_workflow_state(&state, user_id, user_profile.as_ref()).await?;
@@ -5120,7 +5300,8 @@ mod tests {
         parse_rir_with_span, parse_set_type_with_span, parse_tempo_from_text,
         parse_tempo_with_span, rank_projection_list, ranking_candidate_limit,
         recover_receipts_for_idempotent_retry, resolve_visualization,
-        visualization_policy_decision, workflow_gate_from_request,
+        validate_session_feedback_certainty_contract, visualization_policy_decision,
+        workflow_gate_from_request,
     };
     use crate::auth::{AuthMethod, AuthenticatedUser};
     use crate::error::AppError;
@@ -5253,7 +5434,7 @@ mod tests {
                 "agent:resolve".to_string(),
             ],
         };
-        Some((AppState { db: pool }, auth, user_id))
+        Some((AppState { db: pool, signup_gate: crate::state::SignupGate::Open }, auth, user_id))
     }
 
     async fn upsert_test_projection(
@@ -6408,6 +6589,141 @@ mod tests {
     }
 
     #[test]
+    fn session_feedback_certainty_contract_accepts_valid_states() {
+        let events = vec![make_event(
+            "session.completed",
+            json!({
+                "enjoyment": 4,
+                "enjoyment_state": "confirmed",
+                "perceived_quality_state": "unresolved",
+                "perceived_quality_unresolved_reason": "not asked yet",
+                "perceived_exertion": 7,
+                "perceived_exertion_source": "explicit"
+            }),
+            "k-1",
+        )];
+
+        assert!(validate_session_feedback_certainty_contract(&events).is_ok());
+    }
+
+    #[test]
+    fn session_feedback_certainty_contract_rejects_inferred_without_evidence() {
+        let events = vec![make_event(
+            "session.completed",
+            json!({
+                "enjoyment": 4,
+                "enjoyment_state": "inferred"
+            }),
+            "k-1",
+        )];
+
+        let err = validate_session_feedback_certainty_contract(&events).expect_err("must fail");
+        match err {
+            AppError::PolicyViolation { code, field, .. } => {
+                assert_eq!(code, "session_feedback_inferred_missing_evidence");
+                assert_eq!(
+                    field.as_deref(),
+                    Some("events[0].data.enjoyment_evidence_claim_id")
+                );
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_feedback_certainty_contract_rejects_unresolved_with_value() {
+        let events = vec![make_event(
+            "session.completed",
+            json!({
+                "perceived_quality": 4,
+                "perceived_quality_state": "unresolved",
+                "perceived_quality_unresolved_reason": "user skipped question"
+            }),
+            "k-1",
+        )];
+
+        let err = validate_session_feedback_certainty_contract(&events).expect_err("must fail");
+        match err {
+            AppError::PolicyViolation { code, field, .. } => {
+                assert_eq!(code, "session_feedback_unresolved_has_value");
+                assert_eq!(field.as_deref(), Some("events[0].data.perceived_quality"));
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_feedback_certainty_contract_matrix_fuzz() {
+        let states: [Option<&str>; 4] = [None, Some("confirmed"), Some("inferred"), Some("unresolved")];
+        let sources: [Option<&str>; 5] = [
+            None,
+            Some("explicit"),
+            Some("user_confirmed"),
+            Some("estimated"),
+            Some("inferred"),
+        ];
+
+        for state in states {
+            for source in sources {
+                for has_value in [false, true] {
+                    for has_evidence in [false, true] {
+                        for has_reason in [false, true] {
+                            let mut payload = serde_json::Map::new();
+                            if has_value {
+                                payload.insert("enjoyment".to_string(), json!(4));
+                            }
+                            if let Some(state_value) = state {
+                                payload.insert("enjoyment_state".to_string(), json!(state_value));
+                            }
+                            if let Some(source_value) = source {
+                                payload.insert("enjoyment_source".to_string(), json!(source_value));
+                            }
+                            if has_evidence {
+                                payload.insert(
+                                    "enjoyment_evidence_claim_id".to_string(),
+                                    json!("claim-1"),
+                                );
+                            }
+                            if has_reason {
+                                payload.insert(
+                                    "enjoyment_unresolved_reason".to_string(),
+                                    json!("need clarification"),
+                                );
+                            }
+
+                            let events = vec![make_event(
+                                "session.completed",
+                                Value::Object(payload),
+                                "k-fuzz",
+                            )];
+                            let result = validate_session_feedback_certainty_contract(&events);
+
+                            let inferred_path = matches!(state, Some("inferred"))
+                                || matches!(source, Some("inferred"));
+                            let invalid = (matches!(state, Some("confirmed")) && !has_value)
+                                || (inferred_path && (!has_value || !has_evidence))
+                                || (matches!(state, Some("unresolved"))
+                                    && (has_value || !has_reason));
+
+                            if invalid {
+                                assert!(
+                                    result.is_err(),
+                                    "expected invalid combo to fail: state={state:?} source={source:?} value={has_value} evidence={has_evidence} reason={has_reason}"
+                                );
+                            } else {
+                                assert!(
+                                    result.is_ok(),
+                                    "expected valid combo to pass: state={state:?} source={source:?} value={has_value} evidence={has_evidence} reason={has_reason}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn session_audit_respects_policy_when_auto_repair_is_disabled() {
         let user_id = Uuid::now_v7();
         let requested = vec![make_set_event(
@@ -7346,6 +7662,9 @@ mod tests {
                 "evidence_layer_v1": {"event_type": "evidence.claim.logged"},
                 "open_observation_v1": {"event_type": "observation.logged"},
                 "ingestion_locale_v1": {"rules": ["normalize decimals"]},
+                "load_context_v1": {"event_type": "set.logged"},
+                "session_feedback_certainty_v1": {"event_type": "session.completed"},
+                "schema_capability_gate_v1": {"rules": ["capability checks"]},
                 "learning_clustering_v1": {"rules": ["internal"]},
                 "shadow_evaluation_gate_v1": {"rules": ["internal"]},
                 "unexpected_convention": {"rules": ["unknown"]}
@@ -7375,6 +7694,9 @@ mod tests {
         assert!(conventions.contains_key("evidence_layer_v1"));
         assert!(conventions.contains_key("open_observation_v1"));
         assert!(conventions.contains_key("ingestion_locale_v1"));
+        assert!(conventions.contains_key("load_context_v1"));
+        assert!(conventions.contains_key("session_feedback_certainty_v1"));
+        assert!(conventions.contains_key("schema_capability_gate_v1"));
         assert!(!conventions.contains_key("learning_clustering_v1"));
         assert!(!conventions.contains_key("shadow_evaluation_gate_v1"));
         assert!(!conventions.contains_key("unexpected_convention"));

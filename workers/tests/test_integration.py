@@ -542,6 +542,26 @@ class TestTrainingTimelineIntegration:
             "2026-02-09",
         ]
 
+    async def test_missing_external_import_jobs_table_degrades_gracefully(self, db, test_user_id):
+        """Handler should continue when optional import-job table is missing."""
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "squat", "weight_kg": 100, "reps": 5,
+        }, "TIMESTAMP '2026-02-08 10:00:00+00'")
+        await db.execute("DROP TABLE IF EXISTS external_import_jobs CASCADE")
+
+        await db.execute("SET ROLE app_worker")
+        await update_training_timeline(db, {
+            "user_id": test_user_id, "event_type": "set.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        projection = await get_projection(db, test_user_id, "training_timeline")
+        assert projection is not None
+        schema_caps = projection["data"]["data_quality"]["schema_capabilities"]
+        assert schema_caps["status"] == "degraded"
+        assert "external_import_jobs" in schema_caps["missing_relations"]
+
 
 # ---------------------------------------------------------------------------
 # Recovery
@@ -2155,6 +2175,36 @@ class TestQualityHealthIntegration:
         assert data["integrity_slo_status"] == "degraded"
         assert data["autonomy_policy"]["throttle_active"] is True
 
+    async def test_missing_external_import_jobs_table_sets_schema_capability_degraded(
+        self,
+        db,
+        test_user_id,
+    ):
+        """quality_health should expose degraded schema capability instead of failing."""
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "barbell_back_squat", "weight_kg": 100, "reps": 5,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+        await insert_event(db, test_user_id, "preference.set", {
+            "key": "timezone", "value": "Europe/Berlin",
+        }, "TIMESTAMP '2026-02-01 11:00:00+01'")
+        await insert_event(db, test_user_id, "profile.updated", {
+            "age_deferred": True, "bodyweight_deferred": True,
+        }, "TIMESTAMP '2026-02-01 12:00:00+01'")
+        await db.execute("DROP TABLE IF EXISTS external_import_jobs CASCADE")
+
+        await db.execute("SET ROLE app_worker")
+        await update_quality_health(db, {
+            "user_id": test_user_id, "event_type": "set.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        projection = await get_projection(db, test_user_id, "quality_health")
+        assert projection is not None
+        schema_caps = projection["data"]["schema_capabilities"]
+        assert schema_caps["status"] == "degraded"
+        assert "external_import_jobs" in schema_caps["missing_relations"]
+
 
 # ---------------------------------------------------------------------------
 # Session Feedback (Decision 13 — PDC.8)
@@ -2432,6 +2482,45 @@ class TestSetCorrectionIntegration:
         # 1RM should be based on 85kg x 5 (Epley)
         assert data["estimated_1rm"] > 0
 
+    async def test_set_corrected_exercise_id_rekeys_projection(self, db, test_user_id):
+        """exercise_id corrections should move progression to the new canonical key."""
+        await create_test_user(db, test_user_id)
+        set_event_id = await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "bulgarian_split_squat",
+            "weight_kg": 70,
+            "reps": 10,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+        correction_event_id = await insert_event(db, test_user_id, "set.corrected", {
+            "target_event_id": set_event_id,
+            "changed_fields": {
+                "exercise_id": "bulgarian_split_squat_smith",
+            },
+            "reason": "actually used smith machine",
+        }, "TIMESTAMP '2026-02-01 10:05:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_exercise_progression(db, {
+            "user_id": test_user_id,
+            "event_type": "set.corrected",
+            "event_id": correction_event_id,
+        })
+        await db.execute("RESET ROLE")
+
+        old_projection = await get_projection(
+            db, test_user_id, "exercise_progression", "bulgarian_split_squat"
+        )
+        new_projection = await get_projection(
+            db, test_user_id, "exercise_progression", "bulgarian_split_squat_smith"
+        )
+
+        assert old_projection is None
+        assert new_projection is not None
+        assert new_projection["data"]["total_sets"] == 1
+        assert new_projection["data"]["exercise"] == "bulgarian_split_squat_smith"
+        assert (
+            new_projection["data"]["comparability"]["primary_group"] == "machine:smith"
+        )
+
     async def test_set_corrected_affects_session_feedback_load(self, db, test_user_id):
         """set.corrected should update the session load in session_feedback."""
         await create_test_user(db, test_user_id)
@@ -2460,6 +2549,49 @@ class TestSetCorrectionIntegration:
         load = proj["data"]["recent_sessions"][0]["session_load"]
         # Corrected: 120 * 5 = 600
         assert load["total_volume_kg"] == 600.0
+
+    async def test_exercise_progression_respects_comparability_boundaries(self, db, test_user_id):
+        """Primary progression metrics should not silently merge non-comparable contexts."""
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "barbell_back_squat",
+            "weight_kg": 100,
+            "reps": 5,
+            "load_context": {
+                "implements_type": "barbell",
+                "equipment_profile": "barbell",
+                "comparability_group": "free_weight",
+            },
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+        latest_event_id = await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "barbell_back_squat",
+            "weight_kg": 120,
+            "reps": 5,
+            "load_context": {
+                "implements_type": "machine",
+                "equipment_profile": "smith_machine",
+                "comparability_group": "machine:smith",
+            },
+        }, "TIMESTAMP '2026-02-03 10:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_exercise_progression(db, {
+            "user_id": test_user_id,
+            "event_type": "set.logged",
+            "event_id": latest_event_id,
+        })
+        await db.execute("RESET ROLE")
+
+        projection = await get_projection(
+            db, test_user_id, "exercise_progression", "barbell_back_squat"
+        )
+        assert projection is not None
+        data = projection["data"]
+        assert data["comparability"]["primary_group"] == "machine:smith"
+        assert data["comparability"]["groups_total"] == 2
+        # Primary scope reflects latest comparability group only.
+        assert data["total_sets"] == 1
+        assert data["total_volume_kg"] == 600.0
 
 
 class TestSessionFeedbackIdempotency:

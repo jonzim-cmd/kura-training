@@ -139,6 +139,17 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                     "string (optional by default, mention-bound: required to persist when tempo is mentioned)"
                 ),
                 "set_type": "string (optional: warmup, working, backoff, amrap)",
+                "load_context": {
+                    "implements_type": (
+                        "string (optional: free_weight|barbell|dumbbell|kettlebell|"
+                        "machine|selectorized_machine|plate_loaded_machine|cable_machine|bodyweight)"
+                    ),
+                    "equipment_profile": "string (optional, e.g. smith_machine, trap_bar, rings)",
+                    "comparability_group": (
+                        "string (optional, explicit semantic boundary key for progression comparability)"
+                    ),
+                    "location_context": "string (optional, e.g. commercial_gym, home_gym, outdoor)",
+                },
             },
             "example": {
                 "exercise": "Kniebeuge",
@@ -149,6 +160,12 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "rir": 2,
                 "rest_seconds": 120,
                 "tempo": "3-1-1-0",
+                "load_context": {
+                    "implements_type": "free_weight",
+                    "equipment_profile": "barbell",
+                    "comparability_group": "free_weight",
+                    "location_context": "commercial_gym",
+                },
             },
             "normalization": (
                 "ALWAYS set exercise_id when you recognize the exercise. "
@@ -262,8 +279,20 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             ),
             "fields": {
                 "enjoyment": "number (optional, 1..5)",
+                "enjoyment_state": "string (optional: confirmed|inferred|unresolved)",
+                "enjoyment_source": "string (optional: explicit|user_confirmed|estimated|inferred)",
+                "enjoyment_evidence_claim_id": "string (required when enjoyment_state/source is inferred)",
+                "enjoyment_unresolved_reason": "string (required when enjoyment_state=unresolved)",
                 "perceived_quality": "number (optional, 1..5)",
+                "perceived_quality_state": "string (optional: confirmed|inferred|unresolved)",
+                "perceived_quality_source": "string (optional: explicit|user_confirmed|estimated|inferred)",
+                "perceived_quality_evidence_claim_id": "string (required when perceived_quality_state/source is inferred)",
+                "perceived_quality_unresolved_reason": "string (required when perceived_quality_state=unresolved)",
                 "perceived_exertion": "number (optional, 1..10, session summary)",
+                "perceived_exertion_state": "string (optional: confirmed|inferred|unresolved)",
+                "perceived_exertion_source": "string (optional: explicit|user_confirmed|estimated|inferred)",
+                "perceived_exertion_evidence_claim_id": "string (required when perceived_exertion_state/source is inferred)",
+                "perceived_exertion_unresolved_reason": "string (required when perceived_exertion_state=unresolved)",
                 "pain_discomfort": "number (optional, 0..10)",
                 "pain_signal": "boolean|string (optional)",
                 "context": "string (optional, free text session reflection)",
@@ -278,8 +307,11 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
             "example": {
                 "enjoyment": 4,
+                "enjoyment_state": "confirmed",
                 "perceived_quality": 4,
+                "perceived_quality_state": "confirmed",
                 "perceived_exertion": 7,
+                "perceived_exertion_state": "confirmed",
                 "pain_discomfort": 1,
                 "pain_signal": False,
                 "context": "Session felt good and focused; squat top set moved well.",
@@ -287,6 +319,11 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             "backward_compatibility": (
                 "Legacy session.completed payloads with free-text fields (notes/summary/feeling) "
                 "remain supported; normalization maps them without data loss where feasible."
+            ),
+            "certainty_contract": (
+                "If *_state is inferred (or *_source=inferred), the matching "
+                "*_evidence_claim_id is mandatory. If *_state is unresolved, omit "
+                "the numeric value and include *_unresolved_reason."
             ),
         },
         "observation.logged": {

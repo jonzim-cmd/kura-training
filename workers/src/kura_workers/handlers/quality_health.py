@@ -24,6 +24,10 @@ from ..extraction_calibration import resolve_extraction_calibration_status
 from ..learning_telemetry import build_learning_signal_event
 from ..repair_provenance import build_repair_provenance, summarize_repair_provenance
 from ..registry import projection_handler
+from ..schema_capabilities import (
+    build_schema_capability_report,
+    detect_relation_capabilities,
+)
 from ..semantic_catalog import EXERCISE_CATALOG
 from ..set_corrections import apply_set_correction_chain
 from ..training_core_fields import evaluate_set_context_rows
@@ -1898,6 +1902,7 @@ def _build_quality_projection_data(
     integrity_slos: dict[str, Any] | None = None,
     autonomy_policy: dict[str, Any] | None = None,
     extraction_calibration: dict[str, Any] | None = None,
+    schema_capabilities: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     score = _compute_quality_score(issues)
     quality_status = _status_from_score(score, issues)
@@ -2038,6 +2043,13 @@ def _build_quality_projection_data(
                 extraction_calibration or {}
             ).get("status", "healthy"),
         ),
+        "schema_capabilities": schema_capabilities
+        or {
+            "status": "healthy",
+            "checked_at": evaluated_at,
+            "missing_relations": [],
+            "relations": {},
+        },
         "last_repair_at": last_repair_at,
         "repair_apply_results": repair_apply_results or [],
         "repair_apply_results_total": len(repair_apply_results or []),
@@ -2236,6 +2248,19 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                     "post_save_followup": "string",
                 },
             },
+            "schema_capabilities": {
+                "status": "string — healthy|degraded",
+                "checked_at": "ISO 8601 datetime",
+                "missing_relations": ["string — missing DB relations"],
+                "relations": {
+                    "<relation_name>": {
+                        "available": "boolean",
+                        "required_by": ["string"],
+                        "migration": "string | null",
+                        "fallback_behavior": "string | null",
+                    }
+                },
+            },
             "last_repair_at": "ISO 8601 datetime | null",
             "last_evaluated_at": "ISO 8601 datetime",
             "decision_ref": "string",
@@ -2250,7 +2275,22 @@ async def update_quality_health(
     retracted_ids = await get_retracted_event_ids(conn, user_id)
     rows = await _load_quality_source_rows(conn, user_id)
     rows = [r for r in rows if str(r["id"]) not in retracted_ids]
-    import_job_rows = await _load_external_import_job_rows(conn, user_id)
+    relation_capabilities = await detect_relation_capabilities(
+        conn,
+        ["external_import_jobs"],
+    )
+    schema_capabilities = build_schema_capability_report(relation_capabilities)
+    import_job_rows: list[dict[str, Any]] = []
+    if relation_capabilities.get("external_import_jobs", False):
+        import_job_rows = await _load_external_import_job_rows(conn, user_id)
+    else:
+        logger.warning(
+            (
+                "quality_health schema capability degraded: "
+                "missing relation external_import_jobs for user=%s"
+            ),
+            user_id,
+        )
 
     if not rows:
         async with conn.cursor() as cur:
@@ -2307,7 +2347,11 @@ async def update_quality_health(
                 )
             return
         alias_map = await get_alias_map(conn, user_id, retracted_ids=retracted_ids)
-        issues, metrics = _evaluate_read_only_invariants(rows, alias_map)
+        issues, metrics = _evaluate_read_only_invariants(
+            rows,
+            alias_map,
+            import_job_rows=import_job_rows,
+        )
         verified_at = datetime.now(timezone.utc).isoformat()
         await _verify_applied_repairs(
             conn,
@@ -2341,6 +2385,7 @@ async def update_quality_health(
         integrity_slos=final_integrity_slos,
         autonomy_policy=final_autonomy_policy,
         extraction_calibration=extraction_calibration,
+        schema_capabilities=schema_capabilities,
     )
     last_event_id = str(rows[-1]["id"])
 

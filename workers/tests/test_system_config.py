@@ -250,6 +250,26 @@ class TestConventions:
         assert "mention_bound" in registry["strength"]
         assert "rest_seconds" in registry["strength"]["mention_bound"]
 
+    def test_has_load_context_v1_conventions(self):
+        result = _get_conventions()
+        assert "load_context_v1" in result
+        load_context = result["load_context_v1"]
+        assert load_context["event_type"] == "set.logged"
+        assert "load_context.comparability_group" in load_context["required_fields_when_present"]
+
+    def test_has_session_feedback_certainty_v1_conventions(self):
+        result = _get_conventions()
+        assert "session_feedback_certainty_v1" in result
+        certainty = result["session_feedback_certainty_v1"]
+        assert certainty["event_type"] == "session.completed"
+        assert "enjoyment" in certainty["covered_fields"]
+
+    def test_has_schema_capability_gate_v1_conventions(self):
+        result = _get_conventions()
+        assert "schema_capability_gate_v1" in result
+        gate = result["schema_capability_gate_v1"]
+        assert gate["required_relation_checks"][0]["relation"] == "external_import_jobs"
+
     def test_has_evidence_layer_v1_conventions(self):
         result = _get_conventions()
         assert "evidence_layer_v1" in result

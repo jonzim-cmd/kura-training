@@ -44,6 +44,18 @@ _KNOWN_FIELDS: set[str] = {
     "notes",
     "feeling",
     "felt_good",
+    "enjoyment_state",
+    "enjoyment_source",
+    "enjoyment_evidence_claim_id",
+    "enjoyment_unresolved_reason",
+    "perceived_quality_state",
+    "perceived_quality_source",
+    "perceived_quality_evidence_claim_id",
+    "perceived_quality_unresolved_reason",
+    "perceived_exertion_state",
+    "perceived_exertion_source",
+    "perceived_exertion_evidence_claim_id",
+    "perceived_exertion_unresolved_reason",
 }
 
 _POSITIVE_HINTS = (
@@ -67,6 +79,8 @@ _NEGATIVE_HINTS = (
     "tired",
 )
 _PAIN_HINTS = ("pain", "hurt", "schmerz", "ache", "injury")
+_CERTAINTY_STATES = {"confirmed", "inferred", "unresolved"}
+_CONFIRMED_SOURCES = {"explicit", "user_confirmed", "estimated"}
 
 
 def _as_optional_float(value: Any) -> float | None:
@@ -112,6 +126,33 @@ def _extract_context_text(data: dict[str, Any]) -> str | None:
     return None
 
 
+def _normalize_certainty_state(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if normalized in _CERTAINTY_STATES:
+        return normalized
+    return None
+
+
+def _certainty_state_from_source(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if normalized == "inferred":
+        return "inferred"
+    if normalized in _CONFIRMED_SOURCES:
+        return "confirmed"
+    return None
+
+
+def _resolve_field_state(data: dict[str, Any], field: str) -> str | None:
+    explicit = _normalize_certainty_state(data.get(f"{field}_state"))
+    if explicit is not None:
+        return explicit
+    return _certainty_state_from_source(data.get(f"{field}_source"))
+
+
 def _infer_enjoyment_from_text(text: str | None) -> float | None:
     if not text:
         return None
@@ -152,6 +193,9 @@ def _normalize_pain_signal(value: Any) -> bool | None:
 
 def _normalize_session_feedback_payload(data: dict[str, Any]) -> dict[str, Any]:
     context = _extract_context_text(data)
+    enjoyment_state = _resolve_field_state(data, "enjoyment")
+    quality_state = _resolve_field_state(data, "perceived_quality")
+    exertion_state = _resolve_field_state(data, "perceived_exertion")
 
     enjoyment = None
     for key in ("enjoyment", "enjoyment_score", "session_enjoyment", "fun"):
@@ -163,9 +207,11 @@ def _normalize_session_feedback_payload(data: dict[str, Any]) -> dict[str, Any]:
         )
         if enjoyment is not None:
             break
-    if enjoyment is None and isinstance(data.get("felt_good"), bool):
+    if enjoyment_state == "unresolved":
+        enjoyment = None
+    elif enjoyment is None and isinstance(data.get("felt_good"), bool):
         enjoyment = 4.0 if data.get("felt_good") else 2.0
-    if enjoyment is None:
+    if enjoyment is None and enjoyment_state in {None, "inferred"}:
         enjoyment = _infer_enjoyment_from_text(context)
 
     perceived_quality = None
@@ -178,12 +224,16 @@ def _normalize_session_feedback_payload(data: dict[str, Any]) -> dict[str, Any]:
         )
         if perceived_quality is not None:
             break
+    if quality_state == "unresolved":
+        perceived_quality = None
 
     perceived_exertion = None
     for key in ("perceived_exertion", "session_rpe", "exertion", "rpe_summary"):
         perceived_exertion = _normalize_scale(data.get(key), lower=1, upper=10)
         if perceived_exertion is not None:
             break
+    if exertion_state == "unresolved":
+        perceived_exertion = None
 
     pain_discomfort = None
     for key in ("pain_discomfort", "pain_level", "discomfort"):
@@ -197,7 +247,7 @@ def _normalize_session_feedback_payload(data: dict[str, Any]) -> dict[str, Any]:
     if pain_signal is None and pain_discomfort is not None:
         pain_signal = pain_discomfort > 0
 
-    return {
+    normalized: dict[str, Any] = {
         "enjoyment": enjoyment,
         "perceived_quality": perceived_quality,
         "perceived_exertion": perceived_exertion,
@@ -205,6 +255,22 @@ def _normalize_session_feedback_payload(data: dict[str, Any]) -> dict[str, Any]:
         "pain_signal": pain_signal,
         "context": context,
     }
+    if enjoyment_state is not None:
+        normalized["enjoyment_state"] = enjoyment_state
+    if quality_state is not None:
+        normalized["perceived_quality_state"] = quality_state
+    if exertion_state is not None:
+        normalized["perceived_exertion_state"] = exertion_state
+
+    for field in ("enjoyment", "perceived_quality", "perceived_exertion"):
+        state_key = f"{field}_state"
+        reason_key = f"{field}_unresolved_reason"
+        if normalized.get(state_key) == "unresolved":
+            reason = data.get(reason_key)
+            if isinstance(reason, str) and reason.strip():
+                normalized[reason_key] = reason.strip()
+
+    return normalized
 
 
 def _safe_mean(values: list[float]) -> float | None:
@@ -330,8 +396,14 @@ def _build_session_feedback_projection(
 
         for key in (
             "enjoyment",
+            "enjoyment_state",
+            "enjoyment_unresolved_reason",
             "perceived_quality",
+            "perceived_quality_state",
+            "perceived_quality_unresolved_reason",
             "perceived_exertion",
+            "perceived_exertion_state",
+            "perceived_exertion_unresolved_reason",
             "pain_discomfort",
             "pain_signal",
             "context",

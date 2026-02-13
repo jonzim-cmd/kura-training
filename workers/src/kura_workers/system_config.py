@@ -71,6 +71,73 @@ def _get_conventions() -> dict[str, Any]:
                 "Quality checks flag mention-present/field-missing mismatches with remediation hints."
             ),
         },
+        "load_context_v1": {
+            "rules": [
+                "Persist load_context when equipment or movement context affects comparability.",
+                "Use load_context.comparability_group to prevent semantic mixing (e.g. smith vs free_weight).",
+                "If context changes after correction, recompute progression for old and new canonical targets.",
+                "When comparability is unclear, keep group as unresolved/unspecified and ask a single clarification.",
+            ],
+            "event_type": "set.logged",
+            "required_fields_when_present": [
+                "load_context.implements_type",
+                "load_context.equipment_profile",
+                "load_context.comparability_group",
+            ],
+            "examples": [
+                {
+                    "exercise_id": "bulgarian_split_squat_smith",
+                    "load_context": {
+                        "implements_type": "machine",
+                        "equipment_profile": "smith_machine",
+                        "comparability_group": "machine:smith",
+                    },
+                },
+                {
+                    "exercise_id": "barbell_back_squat",
+                    "load_context": {
+                        "implements_type": "barbell",
+                        "equipment_profile": "barbell",
+                        "comparability_group": "free_weight",
+                    },
+                },
+            ],
+        },
+        "session_feedback_certainty_v1": {
+            "rules": [
+                "Subjective fields use explicit certainty states: confirmed|inferred|unresolved.",
+                "Inferred values require matching evidence claim ids for traceability.",
+                "Unresolved values are persisted as unresolved state + reason, without numeric guessing.",
+                "If no certainty markers are provided, explicit numeric values are treated as confirmed (legacy compatibility).",
+            ],
+            "event_type": "session.completed",
+            "contract_fields": [
+                "<field>",
+                "<field>_state",
+                "<field>_source",
+                "<field>_evidence_claim_id",
+                "<field>_unresolved_reason",
+            ],
+            "covered_fields": [
+                "enjoyment",
+                "perceived_quality",
+                "perceived_exertion",
+            ],
+        },
+        "schema_capability_gate_v1": {
+            "rules": [
+                "Optional relation reads must be capability-gated (to_regclass check) before querying.",
+                "Projection recompute continues with degraded mode when optional relations are missing.",
+                "Degraded capability state is exposed in projection payloads for agent-visible diagnostics.",
+            ],
+            "required_relation_checks": [
+                {
+                    "relation": "external_import_jobs",
+                    "required_by": ["quality_health", "training_timeline"],
+                    "fallback_behavior": "skip_import_job_enrichment",
+                }
+            ],
+        },
         "evidence_layer_v1": {
             "rules": [
                 "Deterministic parsers must emit claim lineage for mention-derived fields.",

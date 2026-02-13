@@ -258,6 +258,7 @@ class TestQualityProjectionData:
         assert data["top_issues"][0]["invariant_id"] == "INV-003"
         assert data["invariant_mode"] == "read_only"
         assert "extraction_calibration" in data
+        assert data["schema_capabilities"]["status"] == "healthy"
 
     def test_projection_includes_repair_proposals(self):
         issues = [

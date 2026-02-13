@@ -20,6 +20,10 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
+from ..schema_capabilities import (
+    build_schema_capability_report,
+    detect_relation_capabilities,
+)
 from ..set_corrections import apply_set_correction_chain
 from ..utils import (
     SessionBoundaryState,
@@ -44,6 +48,7 @@ logger = logging.getLogger(__name__)
 _KNOWN_FIELDS: set[str] = {
     "exercise", "exercise_id", "weight_kg", "weight", "reps",
     "rpe", "rir", "rest_seconds", "tempo", "set_type", "set_number",
+    "load_context", "implements_type", "equipment_profile",
 }
 
 
@@ -302,6 +307,18 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                 "rejected": "integer",
             },
             "external_temporal_uncertainty_hints": "integer",
+            "schema_capabilities": {
+                "status": "string — healthy|degraded",
+                "missing_relations": ["string — missing DB relations"],
+                "relations": {
+                    "<relation_name>": {
+                        "available": "boolean",
+                        "required_by": ["string"],
+                        "migration": "string | null",
+                        "fallback_behavior": "string | null",
+                    }
+                },
+            },
         },
     },
     "manifest_contribution": _manifest_contribution,
@@ -370,18 +387,33 @@ async def update_training_timeline(
         external_rows = await cur.fetchall()
     external_rows = [r for r in external_rows if str(r["id"]) not in retracted_ids]
 
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            """
-            SELECT status, error_code, receipt
-            FROM external_import_jobs
-            WHERE user_id = %s
-            ORDER BY created_at DESC
-            LIMIT 512
-            """,
-            (user_id,),
+    relation_capabilities = await detect_relation_capabilities(
+        conn,
+        ["external_import_jobs"],
+    )
+    schema_capabilities = build_schema_capability_report(relation_capabilities)
+    import_job_rows: list[dict[str, Any]] = []
+    if relation_capabilities.get("external_import_jobs", False):
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT status, error_code, receipt
+                FROM external_import_jobs
+                WHERE user_id = %s
+                ORDER BY created_at DESC
+                LIMIT 512
+                """,
+                (user_id,),
+            )
+            import_job_rows = await cur.fetchall()
+    else:
+        logger.warning(
+            (
+                "training_timeline schema capability degraded: "
+                "missing relation external_import_jobs for user=%s"
+            ),
+            user_id,
         )
-        import_job_rows = await cur.fetchall()
 
     if not rows and not external_rows:
         # Clean up: delete any existing projection (all events retracted)
@@ -661,6 +693,7 @@ async def update_training_timeline(
             "external_unsupported_fields_total": external_unsupported_fields_total,
             "external_temporal_uncertainty_hints": external_temporal_uncertainty_hints,
             "external_dedup_actions": external_dedup_actions,
+            "schema_capabilities": schema_capabilities,
         },
     }
 
