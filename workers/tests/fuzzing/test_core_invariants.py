@@ -237,7 +237,7 @@ class TestProjectionRuleInvariants:
         )
         body, status = api_client.post_event(event)
         if status == 422:
-            code = body.get("code", "")
+            code = body.get("error") or body.get("code", "")
             # Workflow/domain invariants are fine — structural ones should NOT fire
             assert code not in {
                 "inv_projection_rule_name_required",
@@ -300,7 +300,7 @@ class TestTrainingPlanIntensity:
         )
         body, status = api_client.post_event(event)
         if status == 422:
-            code = body.get("code", "")
+            code = body.get("error") or body.get("code", "")
             # Domain invariants (workflow, write-with-proof) are expected
             structural_codes = {
                 "inv_training_plan_sessions_invalid",

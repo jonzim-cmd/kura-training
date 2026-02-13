@@ -53,6 +53,7 @@ def _run_single_event(
             idempotency_key=metadata["idempotency_key"],
             session_id=metadata.get("session_id"),
         ),
+        **({"timestamp": event_dict["timestamp"]} if "timestamp" in event_dict else {}),
     )
 
     body, status = client.post_event(req)
@@ -77,6 +78,7 @@ def _run_batch(
                 idempotency_key=metadata["idempotency_key"],
                 session_id=metadata.get("session_id"),
             ),
+            **({"timestamp": ed["timestamp"]} if "timestamp" in ed else {}),
         ))
 
     body, status = client.post_batch(events)
@@ -89,7 +91,7 @@ def _evaluate(
     status: int,
 ) -> ScenarioResult:
     """Evaluate API response against scenario expectations."""
-    actual_code = body.get("code")
+    actual_code = body.get("error") or body.get("code")
     actual_warnings = body.get("warnings", [])
     expected = scenario.expected_behavior
 

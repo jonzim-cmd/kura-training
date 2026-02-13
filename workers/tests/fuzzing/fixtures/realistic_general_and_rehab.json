@@ -1,0 +1,356 @@
+[
+  {
+    "id": "real_casual_minimal_entry",
+    "category": "realistic",
+    "description": "Casual gym-goer logs bare minimum — just exercise and weight, no reps",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "bench press",
+          "exercise_id": "bench_press",
+          "weight_kg": 60
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "casual", "minimal"]
+  },
+  {
+    "id": "real_casual_notes_as_log",
+    "category": "realistic",
+    "description": "Casual user puts everything in notes field instead of structured data",
+    "events": [
+      {
+        "event_type": "workout.logged",
+        "data": {
+          "notes": "did chest and tris today, about 45 min. bench 60kg, some dips, tricep pushdowns"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "casual", "notes_only", "novel_event_type"]
+  },
+  {
+    "id": "real_casual_round_numbers",
+    "category": "realistic",
+    "description": "Casual user always logs round numbers — 3x10 for everything",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "squat",
+          "exercise_id": "squat",
+          "weight_kg": 60,
+          "reps": 10,
+          "sets": 3
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "casual", "round_numbers"]
+  },
+  {
+    "id": "real_casual_retrospective",
+    "category": "realistic",
+    "description": "Casual user logs workout from yesterday — vague details, estimated values",
+    "events": [
+      {
+        "event_type": "workout.logged",
+        "data": {
+          "notes": "gym yesterday. legs. squats and leg press. maybe 40 min?",
+          "retrospective": true,
+          "estimated": true
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "casual", "retrospective"]
+  },
+  {
+    "id": "real_casual_treadmill",
+    "category": "realistic",
+    "description": "Health-focused user logs treadmill — no weight, no reps, just duration",
+    "events": [
+      {
+        "event_type": "cardio.logged",
+        "data": {
+          "activity": "treadmill",
+          "duration_minutes": 30,
+          "notes": "walked/jogged, felt good"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "health", "cardio", "novel_event_type"]
+  },
+  {
+    "id": "real_casual_bodyweight_no_weight",
+    "category": "realistic",
+    "description": "User logs push-ups — no weight field at all, just reps",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Push Ups",
+          "exercise_id": "push_ups",
+          "reps": 20,
+          "set_number": 3
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "bodyweight", "no_weight"]
+  },
+  {
+    "id": "real_health_bodyweight_logging",
+    "category": "realistic",
+    "description": "Health user logs daily bodyweight — standard tracking",
+    "events": [
+      {
+        "event_type": "bodyweight.logged",
+        "data": {
+          "weight_kg": 82.3,
+          "time_of_day": "morning",
+          "notes": "fasted, after bathroom"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "health", "bodyweight"]
+  },
+  {
+    "id": "real_health_sleep_tracking",
+    "category": "realistic",
+    "description": "Health user logs sleep with subjective quality",
+    "events": [
+      {
+        "event_type": "sleep.logged",
+        "data": {
+          "duration_hours": 7.5,
+          "quality": "good",
+          "went_to_bed": "23:15",
+          "woke_up": "06:45",
+          "notes": "woke once around 3am, fell back asleep quickly"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "health", "sleep"]
+  },
+  {
+    "id": "real_health_meal_logging",
+    "category": "realistic",
+    "description": "Health user logs a meal with macros",
+    "events": [
+      {
+        "event_type": "meal.logged",
+        "data": {
+          "meal_type": "lunch",
+          "calories": 650,
+          "protein_g": 45,
+          "carbs_g": 55,
+          "fat_g": 28,
+          "description": "chicken breast with rice and salad"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "health", "nutrition"]
+  },
+  {
+    "id": "real_rehab_band_exercise",
+    "category": "realistic",
+    "description": "Rehab patient logs band exercise — resistance by color, not kg",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Clamshell",
+          "exercise_id": "clamshell",
+          "reps": 15,
+          "set_number": 2,
+          "side": "left",
+          "band_color": "red",
+          "pain_during": 2,
+          "pain_after": 1,
+          "notes": "PT said focus on not rotating hip"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "rehab", "band", "pain_tracking"]
+  },
+  {
+    "id": "real_rehab_isometric_hold",
+    "category": "realistic",
+    "description": "Rehab isometric exercise — hold_seconds instead of reps",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Wall Sit",
+          "exercise_id": "wall_sit",
+          "hold_seconds": 45,
+          "set_number": 3,
+          "pain_during": 3,
+          "notes": "knee felt shaky at 40s"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "rehab", "isometric"]
+  },
+  {
+    "id": "real_rehab_rom_measurement",
+    "category": "realistic",
+    "description": "Rehab ROM measurement — post-ACL knee flexion tracking",
+    "events": [
+      {
+        "event_type": "measurement.logged",
+        "data": {
+          "type": "range_of_motion",
+          "joint": "knee",
+          "movement": "flexion",
+          "side": "left",
+          "degrees": 105,
+          "notes": "measured by PT, improving"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "rehab", "rom"]
+  },
+  {
+    "id": "real_rehab_pain_journal",
+    "category": "realistic",
+    "description": "Rehab pain tracking — daily pain log with context",
+    "events": [
+      {
+        "event_type": "pain.logged",
+        "data": {
+          "area": "left_knee",
+          "severity": 4,
+          "context": "walking downstairs morning",
+          "notes": "better than yesterday (was 6). Did all HEP exercises"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "rehab", "pain", "novel_event_type"]
+  },
+  {
+    "id": "real_rehab_tempo_exercise",
+    "category": "realistic",
+    "description": "Rehab tempo-prescribed exercise — 5 second eccentric",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Eccentric Step Down",
+          "exercise_id": "eccentric_step_down",
+          "reps": 10,
+          "side": "right",
+          "tempo": "0-0-5-0",
+          "notes": "5 second eccentric lowering, 6 inch step"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "rehab", "tempo"]
+  },
+  {
+    "id": "real_sport_in_season_maintenance",
+    "category": "realistic",
+    "description": "Sport athlete in-season lift — low volume, fatigued from practice",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Trap Bar Deadlift",
+          "exercise_id": "trap_bar_deadlift",
+          "weight_kg": 140,
+          "reps": 3,
+          "set_number": 3,
+          "notes": "in-season maintenance, felt heavy after practice yesterday",
+          "context": "in_season"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "sport_athlete", "in_season"]
+  },
+  {
+    "id": "real_sport_conditioning",
+    "category": "realistic",
+    "description": "Sport athlete conditioning — sprint intervals with times",
+    "events": [
+      {
+        "event_type": "conditioning.logged",
+        "data": {
+          "activity": "sprint_intervals",
+          "description": "6x100m, 45s rest",
+          "notes": "last 2 were slow, times: 12.8, 12.9, 13.1, 13.0, 13.4, 13.6"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "sport_athlete", "conditioning", "novel_event_type"]
+  },
+  {
+    "id": "real_sport_practice",
+    "category": "realistic",
+    "description": "Sport athlete logs practice session — sport context alongside gym work",
+    "events": [
+      {
+        "event_type": "practice.logged",
+        "data": {
+          "sport": "soccer",
+          "duration_minutes": 90,
+          "intensity": "high",
+          "notes": "full scrimmage, left hamstring slightly tight"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "sport_athlete", "practice", "novel_event_type"]
+  },
+  {
+    "id": "real_sport_testing_combine",
+    "category": "realistic",
+    "description": "Sport athlete combine testing — multiple metrics in one event",
+    "events": [
+      {
+        "event_type": "testing.logged",
+        "data": {
+          "vertical_jump_inches": 32,
+          "broad_jump_inches": 108,
+          "forty_yard_seconds": 4.72,
+          "bench_press_225_reps": 8,
+          "pro_agility_seconds": 4.35
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "sport_athlete", "testing", "novel_event_type"]
+  },
+  {
+    "id": "real_sport_plyometrics",
+    "category": "realistic",
+    "description": "Sport athlete box jumps — height in notes, no weight",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Box Jump",
+          "exercise_id": "box_jump",
+          "reps": 5,
+          "set_number": 3,
+          "notes": "30 inch box, focus on landing softly"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "sport_athlete", "plyometric"]
+  }
+]

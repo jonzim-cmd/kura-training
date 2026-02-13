@@ -1,0 +1,323 @@
+[
+  {
+    "id": "real_alias_inconsistent_naming_bench",
+    "category": "realistic",
+    "description": "Same user logs bench press with 3 different names over time — alias system critical",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "bench press",
+          "exercise_id": "bench_press",
+          "weight_kg": 80,
+          "reps": 5
+        }
+      },
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Flat Bench",
+          "exercise_id": "flat_bench",
+          "weight_kg": 80,
+          "reps": 5
+        }
+      },
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "BB Bench Press",
+          "exercise_id": "barbell_bench_press",
+          "weight_kg": 80,
+          "reps": 5
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "alias", "naming_inconsistency", "batch"]
+  },
+  {
+    "id": "real_fat_finger_weight_805",
+    "category": "realistic",
+    "description": "Fat-finger error: 805 instead of 80.5 kg — should trigger plausibility warning",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Bench Press",
+          "exercise_id": "barbell_bench_press",
+          "weight_kg": 805,
+          "reps": 8,
+          "notes": "felt easy"
+        }
+      }
+    ],
+    "expected_behavior": "warning",
+    "tags": ["realistic", "fat_finger", "plausibility_warning"]
+  },
+  {
+    "id": "real_unit_confusion_185_maybe_lbs",
+    "category": "realistic",
+    "description": "185 weight — could be lbs (84kg, normal) or kg (very strong). Within plausibility range so no warning",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Bench Press",
+          "exercise_id": "barbell_bench_press",
+          "weight_kg": 185,
+          "reps": 5,
+          "notes": "gym switched to kg plates"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "unit_confusion"]
+  },
+  {
+    "id": "real_boundary_500kg_deadlift",
+    "category": "realistic",
+    "description": "500 kg deadlift — Eddie Hall territory, exactly at plausibility boundary",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Deadlift",
+          "exercise_id": "barbell_deadlift",
+          "weight_kg": 500,
+          "reps": 1,
+          "notes": "world record territory"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "boundary", "extreme_strength"]
+  },
+  {
+    "id": "real_boundary_100_reps",
+    "category": "realistic",
+    "description": "100 reps — bodyweight challenge (100 push-ups), exactly at plausibility boundary",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Push Ups",
+          "exercise_id": "push_ups",
+          "reps": 100,
+          "notes": "100 push-up challenge, took 4 minutes"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "boundary", "high_reps"]
+  },
+  {
+    "id": "real_dirty_bulk_meal",
+    "category": "realistic",
+    "description": "Dirty bulk meal over 5000 cal — should trigger plausibility warning",
+    "events": [
+      {
+        "event_type": "meal.logged",
+        "data": {
+          "meal_type": "cheat_meal",
+          "calories": 5500,
+          "protein_g": 120,
+          "carbs_g": 450,
+          "fat_g": 280,
+          "description": "all you can eat buffet, lost count"
+        }
+      }
+    ],
+    "expected_behavior": "warning",
+    "tags": ["realistic", "nutrition", "plausibility_warning"]
+  },
+  {
+    "id": "real_session_completed_minimal",
+    "category": "realistic",
+    "description": "Session completed with only enjoyment — not all fields need to be present",
+    "events": [
+      {
+        "event_type": "session.completed",
+        "data": {
+          "enjoyment": 4,
+          "notes": "good session overall"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "session", "minimal"]
+  },
+  {
+    "id": "real_german_exercise_names",
+    "category": "realistic",
+    "description": "German user logs with German exercise names — Kniebeuge, Bankdrücken, Kreuzheben",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Kniebeuge",
+          "exercise_id": "barbell_back_squat",
+          "weight_kg": 120,
+          "reps": 5,
+          "rpe": 7
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "locale", "german"]
+  },
+  {
+    "id": "real_soreness_multi_area",
+    "category": "realistic",
+    "description": "User logs soreness in multiple areas after hard session",
+    "events": [
+      {
+        "event_type": "soreness.logged",
+        "data": {
+          "area": "quads",
+          "severity": 4,
+          "notes": "DOMS from yesterday's heavy squats"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "recovery", "soreness"]
+  },
+  {
+    "id": "real_energy_morning_assessment",
+    "category": "realistic",
+    "description": "User logs morning energy level — daily wellness check",
+    "events": [
+      {
+        "event_type": "energy.logged",
+        "data": {
+          "level": 6,
+          "time_of_day": "morning",
+          "notes": "slept okay but feel a bit groggy"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "recovery", "energy"]
+  },
+  {
+    "id": "real_crossfit_abbreviations",
+    "category": "realistic",
+    "description": "CrossFit user exercise naming — abbreviations like C&J, MU, HSPU",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "HSPU",
+          "exercise_id": "handstand_push_up",
+          "reps": 5,
+          "set_number": 3,
+          "notes": "strict, 2 abmats"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "crossfit", "abbreviation"]
+  },
+  {
+    "id": "real_mixed_units_in_notes",
+    "category": "realistic",
+    "description": "User puts structured data in kg but mentions lbs in notes — common for US gym-goers",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Squat",
+          "exercise_id": "barbell_back_squat",
+          "weight_kg": 102.5,
+          "reps": 5,
+          "notes": "225 lbs, plates were metric so 102.5kg"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "unit_confusion", "notes"]
+  },
+  {
+    "id": "real_empty_session_ghost",
+    "category": "realistic",
+    "description": "User starts workout tracking but logs nothing — ghost session",
+    "events": [
+      {
+        "event_type": "session.completed",
+        "data": {
+          "notes": "forgot to log, just marking as done"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "ghost_session", "minimal"]
+  },
+  {
+    "id": "real_coach_program_paste",
+    "category": "realistic",
+    "description": "User pastes entire coach program into notes — unstructured text blob",
+    "events": [
+      {
+        "event_type": "training.logged",
+        "data": {
+          "notes": "A1. BB Squat 4x5 @RPE8 / A2. Leg Curl 3x10 / B1. RDL 3x8 / B2. DB Lunge 3x10/leg / C. Calf Raise 3x15"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "casual", "program_paste", "novel_event_type"]
+  },
+  {
+    "id": "real_supplement_logging",
+    "category": "realistic",
+    "description": "Health user logs supplement — novel event type the system hasn't seen",
+    "events": [
+      {
+        "event_type": "supplement.logged",
+        "data": {
+          "name": "Creatine Monohydrate",
+          "amount_g": 5,
+          "timing": "post_workout"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "health", "supplement", "novel_event_type"]
+  },
+  {
+    "id": "real_injury_report",
+    "category": "realistic",
+    "description": "User reports injury — important context for training adjustments",
+    "events": [
+      {
+        "event_type": "injury.reported",
+        "data": {
+          "area": "left_shoulder",
+          "type": "strain",
+          "severity": "moderate",
+          "occurred_during": "bench press",
+          "notes": "felt a pop on the last rep at 100kg, sharp pain on overhead movements"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "injury", "rehab"]
+  },
+  {
+    "id": "real_weight_target_set",
+    "category": "realistic",
+    "description": "User sets weight target — body composition goal",
+    "events": [
+      {
+        "event_type": "weight_target.set",
+        "data": {
+          "target_weight_kg": 85,
+          "timeline": "3 months",
+          "notes": "cutting for summer, currently 92kg"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "target", "body_composition"]
+  }
+]

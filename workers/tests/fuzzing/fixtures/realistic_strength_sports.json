@@ -1,0 +1,385 @@
+[
+  {
+    "id": "real_powerlifter_rpe_decimal",
+    "category": "realistic",
+    "description": "Powerlifter logs squat with RPE 8.5 — decimal RPE is standard in RPE-based programming",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Low Bar Squat",
+          "exercise_id": "low_bar_squat",
+          "weight_kg": 170,
+          "reps": 3,
+          "rpe": 8.5,
+          "set_number": 3,
+          "notes": "belt on, felt smooth"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "powerlifter", "rpe_decimal"]
+  },
+  {
+    "id": "real_powerlifter_competition_opener",
+    "category": "realistic",
+    "description": "Powerlifter logs competition opener attempt — heavy single with RPE 9",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Conventional Deadlift",
+          "exercise_id": "conventional_deadlift",
+          "weight_kg": 227.5,
+          "reps": 1,
+          "rpe": 9.5,
+          "notes": "opener attempt, competition commands"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "powerlifter", "competition"]
+  },
+  {
+    "id": "real_powerlifter_amrap_set",
+    "category": "realistic",
+    "description": "Powerlifter AMRAP set — programmed 5+, got 8",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Bench Press",
+          "exercise_id": "barbell_bench_press",
+          "weight_kg": 107.5,
+          "reps": 8,
+          "rpe": 9,
+          "set_type": "amrap",
+          "notes": "programmed 5+, got 8"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "powerlifter", "amrap"]
+  },
+  {
+    "id": "real_powerlifter_ssb_with_chains",
+    "category": "realistic",
+    "description": "Powerlifter specialty bar with accommodating resistance — SSB + chains",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "SSB Squat",
+          "exercise_id": "ssb_squat",
+          "weight_kg": 140,
+          "reps": 5,
+          "rpe": 8,
+          "notes": "safety squat bar, +15kg chain per side"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "powerlifter", "specialty_bar"]
+  },
+  {
+    "id": "real_powerlifter_accessory_no_rpe",
+    "category": "realistic",
+    "description": "Powerlifter accessory work — high reps, no RPE tracking",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Face Pull",
+          "exercise_id": "face_pull",
+          "weight_kg": 25,
+          "reps": 20,
+          "set_number": 3
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "powerlifter", "accessory"]
+  },
+  {
+    "id": "real_powerlifter_wraps_vs_sleeves",
+    "category": "realistic",
+    "description": "Powerlifter tracks equipment variant — wraps vs sleeves affects numbers significantly",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Squat (Wraps)",
+          "exercise_id": "squat_wraps",
+          "weight_kg": 220,
+          "reps": 1,
+          "rpe": 9,
+          "equipment": "wraps",
+          "notes": "wraps added ~20kg to sleeves max"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "powerlifter", "equipment"]
+  },
+  {
+    "id": "real_bodybuilder_drop_set",
+    "category": "realistic",
+    "description": "Bodybuilder logs a drop set — weight decreases across continuous set",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Lateral Raise",
+          "exercise_id": "dumbbell_lateral_raise",
+          "weight_kg": 12,
+          "reps": 10,
+          "set_type": "drop_set",
+          "notes": "12kg x10, 8kg x10, 5kg x15 no rest"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "bodybuilder", "drop_set"]
+  },
+  {
+    "id": "real_bodybuilder_cable_stack",
+    "category": "realistic",
+    "description": "Bodybuilder cable exercise — machine weight in stack number, not kg",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Cable Fly",
+          "exercise_id": "cable_fly",
+          "reps": 15,
+          "set_number": 3,
+          "machine_stack": 7,
+          "notes": "stack 7 on Life Fitness cable, slow eccentric"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "bodybuilder", "machine"]
+  },
+  {
+    "id": "real_bodybuilder_superset",
+    "category": "realistic",
+    "description": "Bodybuilder superset — two exercises paired back to back",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Incline DB Press",
+          "exercise_id": "incline_dumbbell_press",
+          "weight_kg": 32,
+          "reps": 10,
+          "set_number": 2,
+          "superset_with": "cable_fly"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "bodybuilder", "superset"]
+  },
+  {
+    "id": "real_bodybuilder_high_volume",
+    "category": "realistic",
+    "description": "Bodybuilder high-volume arms — 50 reps per set (burnout set)",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Bicep Curl",
+          "exercise_id": "dumbbell_bicep_curl",
+          "weight_kg": 8,
+          "reps": 50,
+          "set_type": "burnout",
+          "notes": "light weight high rep burnout, last set"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "bodybuilder", "high_volume"]
+  },
+  {
+    "id": "real_bodybuilder_rest_pause",
+    "category": "realistic",
+    "description": "Bodybuilder rest-pause set — 10+4+3 pattern with short rests",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Hammer Curl",
+          "exercise_id": "hammer_curl",
+          "weight_kg": 16,
+          "reps": 17,
+          "set_type": "rest_pause",
+          "notes": "10+4+3 rest-pause, 15s between mini-sets"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "bodybuilder", "rest_pause"]
+  },
+  {
+    "id": "real_oly_missed_snatch",
+    "category": "realistic",
+    "description": "Olympic lifter missed snatch — make/miss tracking is critical in Oly",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Snatch",
+          "exercise_id": "snatch",
+          "weight_kg": 105,
+          "reps": 1,
+          "made": false,
+          "notes": "missed behind, didn't finish the pull"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "olympic_lifter", "miss_tracking"]
+  },
+  {
+    "id": "real_oly_complex",
+    "category": "realistic",
+    "description": "Olympic lifter complex — multiple movements in one set",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Clean & Jerk Complex",
+          "exercise_id": "clean_and_jerk_complex",
+          "weight_kg": 110,
+          "reps": 1,
+          "notes": "2 cleans + 1 jerk",
+          "percentage_of_max": 85
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "olympic_lifter", "complex"]
+  },
+  {
+    "id": "real_oly_percentage_work",
+    "category": "realistic",
+    "description": "Olympic lifter percentage-based training — percentage_of_max field",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Clean Pull",
+          "exercise_id": "clean_pull",
+          "weight_kg": 130,
+          "reps": 3,
+          "percentage_of_max": 105,
+          "notes": "pulls at 105% of clean max"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "olympic_lifter", "percentage"]
+  },
+  {
+    "id": "real_oly_session_summary",
+    "category": "realistic",
+    "description": "Olympic lifter logs entire session as summary event — common for lifters who don't log set by set",
+    "events": [
+      {
+        "event_type": "training.logged",
+        "data": {
+          "exercises": [
+            {"exercise": "snatch", "top_weight_kg": 95, "attempts": "5/6"},
+            {"exercise": "clean_and_jerk", "top_weight_kg": 115, "attempts": "4/5"},
+            {"exercise": "front_squat", "sets": "4x3", "weight_kg": 125},
+            {"exercise": "snatch_pull", "sets": "3x3", "weight_kg": 100}
+          ]
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "olympic_lifter", "session_summary", "novel_event_type"]
+  },
+  {
+    "id": "real_crossfit_amrap_wod",
+    "category": "realistic",
+    "description": "CrossFit AMRAP WOD — score is rounds+reps (e.g., '5+3')",
+    "events": [
+      {
+        "event_type": "wod.logged",
+        "data": {
+          "wod_name": "Cindy",
+          "wod_type": "amrap",
+          "time_cap_minutes": 20,
+          "score": "18+7",
+          "rounds": 18,
+          "extra_reps": 7,
+          "rx": true,
+          "movements": ["pull_ups", "push_ups", "air_squats"]
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "crossfit", "amrap", "novel_event_type"]
+  },
+  {
+    "id": "real_crossfit_for_time",
+    "category": "realistic",
+    "description": "CrossFit for-time WOD — Fran, time is the score",
+    "events": [
+      {
+        "event_type": "wod.logged",
+        "data": {
+          "wod_name": "Fran",
+          "wod_type": "for_time",
+          "time_seconds": 245,
+          "rx": false,
+          "scaled_details": "35lb thrusters, ring rows instead of pull-ups",
+          "notes": "3:45 scaled, thrusters were rough"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "crossfit", "for_time", "scaled"]
+  },
+  {
+    "id": "real_crossfit_emom",
+    "category": "realistic",
+    "description": "CrossFit EMOM workout — alternating movements",
+    "events": [
+      {
+        "event_type": "wod.logged",
+        "data": {
+          "wod_name": "custom EMOM",
+          "wod_type": "emom",
+          "duration_minutes": 16,
+          "description": "E2MOM: 3 power cleans (60kg) + 6 burpees over bar",
+          "completed": true,
+          "notes": "got all rounds, last 2 were tight"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "crossfit", "emom"]
+  },
+  {
+    "id": "real_crossfit_oly_in_wod",
+    "category": "realistic",
+    "description": "CrossFit barbell movement logged as set within a WOD context",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Power Clean",
+          "exercise_id": "power_clean",
+          "weight_kg": 60,
+          "reps": 30,
+          "notes": "Grace: 30 clean & jerks for time, 2:15"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["realistic", "crossfit", "oly_in_wod"]
+  }
+]

@@ -893,8 +893,8 @@ fn check_event_plausibility(event_type: &str, data: &serde_json::Value) -> Vec<E
             }
         }
         "soreness.logged" => {
-            if let Some(s) = data.get("severity").and_then(|v| v.as_i64()) {
-                if s < 1 || s > 5 {
+            if let Some(s) = data.get("severity").and_then(|v| v.as_f64()) {
+                if s < 1.0 || s > 5.0 {
                     warnings.push(EventWarning {
                         field: "severity".to_string(),
                         message: format!("severity={s} outside plausible range [1, 5]"),
@@ -2866,6 +2866,13 @@ mod tests {
     #[test]
     fn test_soreness_out_of_range() {
         let w = check_event_plausibility("soreness.logged", &json!({"severity": 0}));
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].field, "severity");
+    }
+
+    #[test]
+    fn test_soreness_out_of_range_float() {
+        let w = check_event_plausibility("soreness.logged", &json!({"severity": 6.0}));
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].field, "severity");
     }

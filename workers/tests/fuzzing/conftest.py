@@ -15,13 +15,14 @@ Run:
 from __future__ import annotations
 
 import os
+import time
 import uuid
 from typing import Any
 
 import httpx
 import pytest
 
-from .contracts import CreateEventRequest
+from .contracts import CreateEventRequest, EventMetadata
 
 KURA_API_URL = os.environ.get("KURA_API_URL", "http://localhost:3000")
 KURA_API_KEY = os.environ.get("KURA_API_KEY", "")
@@ -47,9 +48,19 @@ class KuraTestClient:
             timeout=10.0,
         )
 
+    def _request_with_retry(self, method: str, url: str, **kwargs) -> httpx.Response:
+        """Execute request with automatic retry on 429 rate limit."""
+        for attempt in range(5):
+            resp = self._client.request(method, url, **kwargs)
+            if resp.status_code != 429:
+                return resp
+            retry_after = float(resp.headers.get("retry-after", "1"))
+            time.sleep(max(retry_after, 0.5))
+        return resp  # return last 429 if all retries exhausted
+
     def post_event(self, event: CreateEventRequest) -> tuple[dict[str, Any], int]:
         """POST /v1/events — returns (response_body, status_code)."""
-        resp = self._client.post("/v1/events", json=event.to_dict())
+        resp = self._request_with_retry("POST", "/v1/events", json=event.to_dict())
         try:
             body = resp.json()
         except Exception:
@@ -59,7 +70,7 @@ class KuraTestClient:
     def post_batch(self, events: list[CreateEventRequest]) -> tuple[dict[str, Any], int]:
         """POST /v1/events/batch — returns (response_body, status_code)."""
         payload = {"events": [e.to_dict() for e in events]}
-        resp = self._client.post("/v1/events/batch", json=payload)
+        resp = self._request_with_retry("POST", "/v1/events/batch", json=payload)
         try:
             body = resp.json()
         except Exception:
@@ -68,7 +79,7 @@ class KuraTestClient:
 
     def post_event_raw(self, payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
         """POST /v1/events with raw dict payload — for testing malformed requests."""
-        resp = self._client.post("/v1/events", json=payload)
+        resp = self._request_with_retry("POST", "/v1/events", json=payload)
         try:
             body = resp.json()
         except Exception:
@@ -99,10 +110,31 @@ class KuraTestClient:
 
 @pytest.fixture(scope="session")
 def api_client() -> KuraTestClient:
-    """Session-scoped API client for fuzzing tests."""
+    """Session-scoped API client for fuzzing tests.
+
+    Ensures the test user has timezone preference set (required for temporal writes).
+    """
     client = KuraTestClient(KURA_API_URL, KURA_API_KEY)
+    # Set timezone preference so temporal writes don't get blocked
+    _ensure_user_setup(client)
     yield client
     client.close()
+
+
+def _ensure_user_setup(client: KuraTestClient) -> None:
+    """Ensure fuzzing user has required preferences for testing."""
+    # Timezone preference (required for temporal event types)
+    client.post_event(CreateEventRequest(
+        event_type="preference.set",
+        data={"key": "timezone", "value": "Europe/Berlin"},
+        metadata=EventMetadata(idempotency_key="fuzzing-setup-timezone"),
+    ))
+    # Close onboarding so planning/coaching events are not blocked
+    client.post_event(CreateEventRequest(
+        event_type="profile.updated",
+        data={"onboarding_phase": "closed"},
+        metadata=EventMetadata(idempotency_key="fuzzing-setup-onboarding"),
+    ))
 
 
 @pytest.fixture

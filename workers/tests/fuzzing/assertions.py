@@ -52,11 +52,11 @@ def assert_policy_violation(
             {"status": status_code, "body": response},
         )
 
-    code = response.get("code", "")
+    code = response.get("error") or response.get("code", "")
     if not code:
         raise InvariantViolation(
             "policy_violation_missing_code",
-            f"Policy violation response missing 'code': {response}",
+            f"Policy violation response missing 'error'/'code': {response}",
             {"body": response},
         )
 
@@ -105,14 +105,19 @@ def assert_rejection(response: dict[str, Any], status_code: int) -> str | None:
 
 def _assert_self_correcting_error(response: dict[str, Any]) -> None:
     """Every policy violation must have agent-first error fields."""
-    required_fields = {"error", "code"}
-    for f in required_fields:
-        if f not in response:
-            raise InvariantViolation(
-                "self_correcting_error_incomplete",
-                f"Policy violation missing '{f}' field: {response}",
-                {"body": response},
-            )
+    # API uses 'error' as the code field, plus 'message'
+    if "error" not in response and "code" not in response:
+        raise InvariantViolation(
+            "self_correcting_error_incomplete",
+            f"Policy violation missing 'error' field: {response}",
+            {"body": response},
+        )
+    if "message" not in response:
+        raise InvariantViolation(
+            "self_correcting_error_incomplete",
+            f"Policy violation missing 'message' field: {response}",
+            {"body": response},
+        )
 
     # docs_hint should be present for agent self-correction
     if "docs_hint" not in response:

@@ -75,7 +75,7 @@ class TestCertaintyContract:
         )
         body, status = api_client.post_event(event)
         if status == 422:
-            code = body.get("code", "")
+            code = body.get("error") or body.get("code", "")
             certainty_codes = {
                 "session_feedback_confirmed_missing_value",
                 "session_feedback_inferred_missing_value",
@@ -99,7 +99,7 @@ class TestCertaintyContract:
         body, status = api_client.post_event(event)
         # Should be rejected (either by certainty or domain invariants)
         if status == 422:
-            code = body.get("code", "")
+            code = body.get("error") or body.get("code", "")
             # We expect either a certainty code or a domain invariant
             # Both are valid rejections for broken certainty data
             assert code, f"Missing violation code in 422 response: {body}"
@@ -146,7 +146,7 @@ class TestCertaintyContract:
         body, status = api_client.post_event(event)
 
         if status == 422:
-            code = body.get("code", "")
+            code = body.get("error") or body.get("code", "")
             # Verify the code makes sense for the state
             if state == "confirmed" and not has_value:
                 assert code in {
@@ -220,7 +220,7 @@ class TestWorkflowPhaseGate:
         body, status = api_client.post_event(event)
 
         if status == 422:
-            code = body.get("code", "")
+            code = body.get("error") or body.get("code", "")
             # Should be either workflow gate or write-with-proof requirement
             valid_codes = {
                 "inv_workflow_phase_required",
@@ -277,7 +277,7 @@ class TestTimezoneRequirement:
         body, status = api_client.post_event(event)
 
         if status == 422:
-            code = body.get("code", "")
+            code = body.get("error") or body.get("code", "")
             assert code in {
                 "inv_timezone_required_for_temporal_write",
                 "inv_workflow_phase_required",
@@ -311,7 +311,7 @@ class TestTimezoneRequirement:
         body, status = api_client.post_event(event)
 
         if status == 422:
-            code = body.get("code", "")
+            code = body.get("error") or body.get("code", "")
             # Should NOT be timezone error
             assert code != "inv_timezone_required_for_temporal_write", (
                 f"Inline timezone '{tz_field}={tz_value}' should bypass timezone check"
@@ -434,7 +434,7 @@ class TestFreeFormEventTypes:
         body, status = api_client.post_event(event)
 
         if status == 422:
-            code = body.get("code", "")
+            code = body.get("error") or body.get("code", "")
             # Should only be domain invariants, not structural
             assert code in {
                 "inv_timezone_required_for_temporal_write",

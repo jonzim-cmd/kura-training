@@ -25,7 +25,7 @@
   {
     "id": "fix_certainty_inferred_without_evidence",
     "category": "certainty",
-    "description": "Inferred enjoyment without evidence claim — must reject",
+    "description": "Inferred enjoyment without evidence claim — events API accepts (certainty validation is agent-path only)",
     "events": [
       {
         "event_type": "session.completed",
@@ -36,17 +36,13 @@
         }
       }
     ],
-    "expected_behavior": "rejected",
-    "expected_codes": [
-      "session_feedback_inferred_missing_evidence",
-      "inv_timezone_required_for_temporal_write"
-    ],
-    "tags": ["certainty", "inferred", "regression"]
+    "expected_behavior": "accepted",
+    "tags": ["certainty", "inferred", "regression", "agent_path_only"]
   },
   {
     "id": "fix_certainty_unresolved_with_value",
     "category": "certainty",
-    "description": "Unresolved perceived_quality but with numeric value — must reject",
+    "description": "Unresolved perceived_quality with numeric value — events API accepts (certainty validation is agent-path only)",
     "events": [
       {
         "event_type": "session.completed",
@@ -57,12 +53,8 @@
         }
       }
     ],
-    "expected_behavior": "rejected",
-    "expected_codes": [
-      "session_feedback_unresolved_has_value",
-      "inv_timezone_required_for_temporal_write"
-    ],
-    "tags": ["certainty", "unresolved", "regression"]
+    "expected_behavior": "accepted",
+    "tags": ["certainty", "unresolved", "regression", "agent_path_only"]
   },
   {
     "id": "fix_certainty_mixed_states_complex",

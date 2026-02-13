@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -27,12 +28,14 @@ class EventMetadata:
 class CreateEventRequest:
     event_type: str
     data: dict[str, Any]
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     metadata: EventMetadata = field(default_factory=lambda: EventMetadata(
         idempotency_key=str(uuid.uuid4())
     ))
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "timestamp": self.timestamp,
             "event_type": self.event_type,
             "data": self.data,
             "metadata": self.metadata.to_dict(),
