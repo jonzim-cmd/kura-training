@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kura — Neon Descent Variants</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;700;900&family=Crimson+Pro:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Crimson Pro', Georgia, serif; line-height: 1.7; background: #000; }
+
+  /* ==================== SWITCHER ==================== */
+  .switcher {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
+    display: flex; background: #000; font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
+  }
+  .switcher button {
+    flex: 1; padding: 0.75rem 1rem; border: none; cursor: pointer;
+    font-family: inherit; font-size: inherit; letter-spacing: 0.04em;
+    background: #111; color: #555; transition: all 0.2s;
+  }
+  .switcher button:hover { color: #999; }
+  .switcher button.active { font-weight: 400; }
+  .switcher button[data-variant="lime"].active { color: #CCFF00; background: #1a1d0a; }
+  .switcher button[data-variant="cyan"].active { color: #00E5FF; background: #0a1518; }
+  .switcher button[data-variant="violet"].active { color: #B87CFF; background: #130a1a; }
+  .switcher button[data-variant="current"].active { color: #C4935A; background: #1a1610; }
+
+  .variant { display: none; padding-top: 2.75rem; }
+  .variant.active { display: block; }
+
+  /* ==================== SHARED LAYOUT ==================== */
+
+  .descent { min-height: 100vh; }
+
+  .surface {
+    min-height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+  }
+  .title {
+    font-family: 'Outfit', sans-serif; font-weight: 900;
+    font-size: clamp(6rem, 18vw, 18rem); letter-spacing: -0.01em;
+    line-height: 0.85; user-select: none;
+  }
+
+  .phone-scene { display: flex; justify-content: center; padding: 4rem 1.5rem; min-height: 70vh; align-items: center; }
+  .phone {
+    width: min(380px, 85vw); border-radius: 32px; padding: 3rem 1.5rem 2.5rem; position: relative;
+  }
+  .phone-notch {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    width: 48px; height: 5px; border-radius: 3px;
+  }
+  .chat { display: flex; flex-direction: column; gap: 1rem; }
+  .msg {
+    max-width: 85%; font-size: 1.0625rem; line-height: 1.6;
+    padding: 0.75rem 1rem; border-radius: 16px;
+  }
+  .msg-user { align-self: flex-end; border-bottom-right-radius: 4px; }
+  .typing {
+    align-self: flex-start; display: flex; gap: 6px;
+    padding: 0.85rem 1rem; border-radius: 16px; width: fit-content;
+  }
+  .typing span {
+    width: 7px; height: 7px; border-radius: 50%;
+    animation: bounce 1.4s ease-in-out infinite;
+  }
+  .typing span:nth-child(2) { animation-delay: 0.15s; }
+  .typing span:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes bounce {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.3; }
+    30% { transform: translateY(-4px); opacity: 0.7; }
+  }
+
+  .bridge {
+    padding: 10vh 8%; display: flex; flex-direction: column; align-items: center;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.8125rem; letter-spacing: 0.2em;
+  }
+  .bridge-dots {
+    display: flex; flex-direction: column; align-items: center; gap: 2.5rem; margin-bottom: 1.5rem;
+  }
+  .dot-group { display: flex; gap: 8px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; animation: bounce 1.4s ease-in-out infinite; }
+  .dot-group:nth-child(2) .dot { opacity: 0.6; animation-delay: 0.2s; }
+  .dot-group:nth-child(2) .dot:nth-child(2) { animation-delay: 0.35s; }
+  .dot-group:nth-child(2) .dot:nth-child(3) { animation-delay: 0.5s; }
+  .dot-group:nth-child(3) .dot { opacity: 0.35; animation-delay: 0.4s; }
+  .dot-group:nth-child(3) .dot:nth-child(2) { animation-delay: 0.55s; }
+  .dot-group:nth-child(3) .dot:nth-child(3) { animation-delay: 0.7s; }
+
+  .threshold {
+    min-height: 80vh; padding: 0 8%; display: flex; flex-direction: column; justify-content: center;
+  }
+  .receiving-label {
+    font-family: 'JetBrains Mono', monospace; font-weight: 300;
+    font-size: 0.875rem; letter-spacing: 0.12em; margin-bottom: 2.5rem;
+  }
+  .decomp { display: flex; flex-direction: column; gap: 0.75rem; }
+  .decomp-row { display: flex; align-items: baseline; gap: 2rem; }
+  .field-name {
+    font-family: 'JetBrains Mono', monospace; font-weight: 400;
+    font-size: 0.9375rem; min-width: 11rem; text-align: right; letter-spacing: 0.02em;
+  }
+  .field-value { font-size: 1.25rem; }
+  .field-value-mono { font-family: 'JetBrains Mono', monospace; font-size: 1rem; }
+
+  .inside { min-height: 160vh; position: relative; overflow: hidden; }
+  .event-write { position: relative; z-index: 2; padding: 12vh 8%; }
+  .event-label {
+    font-family: 'JetBrains Mono', monospace; font-weight: 300;
+    font-size: 0.75rem; letter-spacing: 0.2em; text-transform: uppercase; margin-bottom: 1.25rem;
+  }
+  .event-json {
+    font-family: 'JetBrains Mono', monospace; font-weight: 300;
+    font-size: clamp(0.8125rem, 1.4vw, 1rem); line-height: 2.1; max-width: 40rem;
+  }
+
+  .proj-compute {
+    position: relative; z-index: 2; padding: 4vh 8%;
+    display: flex; flex-direction: column; gap: 3rem;
+  }
+  .proj-block { max-width: 42rem; }
+  .proj-label {
+    font-family: 'JetBrains Mono', monospace; font-weight: 300;
+    font-size: 0.8125rem; letter-spacing: 0.15em; margin-bottom: 1rem; display: block;
+  }
+  .proj-data {
+    font-family: 'JetBrains Mono', monospace; font-weight: 300;
+    font-size: clamp(0.8125rem, 1.3vw, 0.9375rem); line-height: 2;
+  }
+
+  .deep { min-height: 100vh; position: relative; overflow: hidden; }
+  .inference-text {
+    position: relative; z-index: 2; padding: 16vh 8%;
+    display: flex; flex-direction: column; gap: 4rem;
+  }
+  .inference-step { max-width: 36rem; }
+  .inference-label {
+    font-family: 'JetBrains Mono', monospace; font-weight: 300;
+    font-size: 0.75rem; letter-spacing: 0.2em; text-transform: uppercase; margin-bottom: 1rem;
+  }
+  .inference-content {
+    font-family: 'JetBrains Mono', monospace; font-weight: 300;
+    font-size: 0.9375rem; line-height: 2.1;
+  }
+
+  .core {
+    min-height: 60vh; display: flex; justify-content: center; align-items: center; padding: 6vh 8%;
+  }
+  .phone-dark {
+    width: min(380px, 85vw); border-radius: 32px;
+    padding: 3rem 1.5rem 2.5rem; position: relative;
+  }
+  .msg-echo {
+    align-self: flex-end; max-width: 85%; font-size: 0.9375rem; line-height: 1.55;
+    padding: 0.65rem 0.9rem; border-radius: 16px; border-bottom-right-radius: 4px;
+  }
+  .msg-agent {
+    align-self: flex-start; max-width: 88%; font-size: 1.0625rem; line-height: 1.65;
+    padding: 0.75rem 1rem; border-radius: 16px; border-bottom-left-radius: 4px;
+  }
+
+  .bottom {
+    min-height: 20vh; display: flex; align-items: center; justify-content: center;
+    padding: 3rem 8%; flex-direction: column; gap: 1.5rem;
+  }
+  .bottom-mark {
+    font-family: 'Outfit', sans-serif; font-weight: 900;
+    font-size: clamp(2rem, 5vw, 4rem); letter-spacing: 0.04em;
+  }
+  .bottom-nav { display: flex; gap: 2rem; }
+  .bottom-link {
+    font-family: 'JetBrains Mono', monospace; font-weight: 300;
+    font-size: 0.75rem; letter-spacing: 0.08em; text-decoration: none; transition: color 0.2s;
+  }
+
+  .cta-section { padding: 0 8% 6vh; display: flex; justify-content: center; }
+  .cta-btn {
+    display: inline-block; font-family: 'Outfit', sans-serif; font-weight: 400;
+    font-size: 0.9375rem; letter-spacing: 0.02em; padding: 0.75rem 2rem;
+    border-radius: 4px; text-decoration: none; transition: all 0.2s;
+  }
+
+  /* ==================== Why Kura page preview ==================== */
+  .page-divider {
+    text-align: center; padding: 4rem 1.5rem;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.6875rem;
+    letter-spacing: 0.12em; text-transform: uppercase;
+  }
+  .page-section {
+    padding: 3rem 1.5rem; max-width: 42rem; margin: 0 auto;
+  }
+  .page-header-bar {
+    height: 3.5rem; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 2rem; border-bottom: 1px solid;
+  }
+  .page-logo {
+    font-family: 'Outfit', sans-serif; font-weight: 900;
+    font-size: 0.9375rem; letter-spacing: 0.06em; text-decoration: none;
+  }
+  .page-nav {
+    display: flex; gap: 1.5rem;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
+    font-weight: 300; letter-spacing: 0.04em;
+  }
+  .page-nav a { text-decoration: none; }
+
+  .problems { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.5rem; }
+  .problem { padding: 1.25rem 1.5rem; border-radius: 6px; border: 1px solid; }
+  .problem strong {
+    display: block; font-family: 'Outfit', sans-serif; font-weight: 700;
+    font-size: 0.9375rem; margin-bottom: 0.5rem;
+  }
+  .problem p { font-size: 0.9375rem; margin: 0; }
+  .section-title {
+    font-family: 'Outfit', sans-serif; font-weight: 700;
+    font-size: 1.375rem; margin-bottom: 1.25rem;
+  }
+
+  .auth-card {
+    max-width: 28rem; margin: 2rem auto 4rem; text-align: center; padding: 0 1rem;
+  }
+  .auth-card h2 {
+    font-family: 'Outfit', sans-serif; font-weight: 700; font-size: 1.75rem; margin-bottom: 0.5rem;
+  }
+  .auth-subtitle { font-size: 1rem; margin-bottom: 2rem; }
+  .auth-social { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1rem; }
+  .social-btn {
+    display: flex; align-items: center; justify-content: center; gap: 0.625rem;
+    width: 100%; padding: 0.6rem 1rem;
+    font-family: 'Outfit', sans-serif; font-size: 0.875rem; font-weight: 400;
+    letter-spacing: 0.02em; border: 1px solid; border-radius: 4px; cursor: pointer;
+  }
+  .divider { display: flex; align-items: center; gap: 1rem; margin: 0.5rem 0; }
+  .divider-line { flex: 1; height: 1px; }
+  .divider-text {
+    font-family: 'JetBrains Mono', monospace; font-size: 0.6875rem;
+    font-weight: 300; letter-spacing: 0.04em; white-space: nowrap;
+  }
+  .auth-form {
+    padding: 2rem; border: 1px solid; border-radius: 6px;
+    display: flex; flex-direction: column; gap: 1.25rem; text-align: left;
+  }
+  .field label {
+    display: block; font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
+    font-weight: 300; letter-spacing: 0.05em; margin-bottom: 0.375rem;
+  }
+  .field input {
+    width: 100%; font-family: 'Crimson Pro', Georgia, serif; font-size: 1rem;
+    padding: 0.6rem 0.875rem; border: 1px solid; border-radius: 4px; line-height: 1.5;
+  }
+  .submit-btn {
+    width: 100%; padding: 0.6rem 1.25rem;
+    font-family: 'Outfit', sans-serif; font-size: 0.875rem; font-weight: 400;
+    letter-spacing: 0.02em; border: none; border-radius: 4px; cursor: pointer;
+  }
+  .auth-switch { margin-top: 1.5rem; font-size: 0.875rem; }
+  .auth-switch a { font-weight: 500; text-decoration: none; }
+
+  @media (max-width: 768px) {
+    .decomp-row { flex-direction: column; gap: 0.25rem; }
+    .field-name { text-align: left; min-width: 0; }
+    .problems { grid-template-columns: 1fr; }
+  }
+
+  /* ==================== CURRENT (warm earth, reference) ==================== */
+  .v-current .descent {
+    background: linear-gradient(to bottom,
+      #FAF8F4 0%, #FAF8F4 3%, #F0EBE2 8%, #E8E0D4 14%, #D8CCBB 20%,
+      #C8BAA3 28%, #A8956E 38%, #8B7355 48%, #6B5A3E 56%,
+      #4A3D2E 66%, #2C2419 76%, #1A1612 86%, #110E0B 100%
+    );
+  }
+  .v-current .title { color: #1A1612; }
+  .v-current .phone { border: 1.5px solid rgba(26,22,18,0.12); background: rgba(250,248,244,0.3); }
+  .v-current .phone-notch { background: rgba(26,22,18,0.08); }
+  .v-current .msg-user { background: rgba(26,22,18,0.06); color: #3D352A; }
+  .v-current .typing span { background: rgba(26,22,18,0.25); }
+  .v-current .bridge { color: #78706A; }
+  .v-current .dot { background: rgba(26,22,18,0.18); }
+  .v-current .receiving-label { color: #7A7068; }
+  .v-current .field-name { color: #8E8274; }
+  .v-current .field-value { color: #504840; }
+  .v-current .field-value-mono { color: #5C5549; }
+  .v-current .hl { color: rgba(196,147,90,0.7); }
+  .v-current .event-label { color: rgba(196,147,90,0.45); }
+  .v-current .event-json { color: rgba(232,224,212,0.45); }
+  .v-current .val { color: rgba(232,224,212,0.7); }
+  .v-current .proj-label { color: rgba(196,147,90,0.55); }
+  .v-current .proj-data { color: rgba(232,224,212,0.4); }
+  .v-current .inference-label { color: rgba(196,147,90,0.4); }
+  .v-current .inference-content { color: rgba(232,224,212,0.35); }
+  .v-current .phone-dark { border: 1.5px solid rgba(232,224,212,0.1); }
+  .v-current .msg-echo { background: rgba(232,224,212,0.06); color: rgba(232,224,212,0.35); }
+  .v-current .msg-agent { border: 1px solid rgba(232,224,212,0.08); color: rgba(232,224,212,0.8); }
+  .v-current .msg-agent strong { color: rgba(220,140,80,0.8); }
+  .v-current .cta-btn { border: 1px solid rgba(196,147,90,0.35); color: rgba(232,224,212,0.7); }
+  .v-current .cta-btn:hover { border-color: rgba(196,147,90,0.6); color: #fff; background: rgba(196,147,90,0.08); }
+  .v-current .bottom-mark { color: rgba(232,224,212,0.06); }
+  .v-current .bottom-link { color: rgba(232,224,212,0.2); }
+  .v-current .bottom-link:hover { color: rgba(232,224,212,0.5); }
+  /* Why Kura page */
+  .v-current .page-bg { background: #FAF8F4; color: #1A1612; }
+  .v-current .page-header-bar { background: #FAF8F4; border-color: #D8CCBB; }
+  .v-current .page-logo { color: #1A1612; }
+  .v-current .page-nav a { color: #9E9282; }
+  .v-current .problem { border-color: #D8CCBB; background: rgba(26,22,18,0.02); }
+  .v-current .problem p { color: #5C5549; }
+  .v-current .page-divider { color: #9E9282; background: #1A1612; }
+  .v-current .auth-card h2 { color: #1A1612; }
+  .v-current .auth-subtitle { color: #9E9282; }
+  .v-current .social-btn { border-color: #D8CCBB; background: #FAF8F4; color: #1A1612; }
+  .v-current .divider-line { background: #D8CCBB; }
+  .v-current .divider-text { color: #C8BAA3; }
+  .v-current .auth-form { border-color: #D8CCBB; }
+  .v-current .field label { color: #9E9282; }
+  .v-current .field input { border-color: #D8CCBB; background: #FAF8F4; color: #1A1612; }
+  .v-current .submit-btn { background: #1A1612; color: #FAF8F4; }
+  .v-current .auth-switch { color: #9E9282; }
+  .v-current .auth-switch a { color: #C4935A; }
+
+  /* ==================== LIME ==================== */
+  .v-lime .descent {
+    background: linear-gradient(to bottom,
+      #F5F5F0 0%, #F5F5F0 3%, #E0E0D8 8%, #C8C8BC 14%, #A0A094 20%,
+      #787868 28%, #585848 38%, #3A3A2C 48%, #282818 56%,
+      #1C1C10 66%, #141408 76%, #0C0C04 86%, #0A0A08 100%
+    );
+  }
+  .v-lime .title { color: #1A1A14; }
+  .v-lime .phone { border: 1.5px solid rgba(26,26,20,0.12); background: rgba(245,245,240,0.3); }
+  .v-lime .phone-notch { background: rgba(26,26,20,0.08); }
+  .v-lime .msg-user { background: rgba(26,26,20,0.06); color: #3A3A30; }
+  .v-lime .typing span { background: rgba(26,26,20,0.25); }
+  .v-lime .bridge { color: #6A6A5E; }
+  .v-lime .dot { background: rgba(26,26,20,0.18); }
+  .v-lime .receiving-label { color: #6A6A5E; }
+  .v-lime .field-name { color: #7A7A6E; }
+  .v-lime .field-value { color: #404038; }
+  .v-lime .field-value-mono { color: #4A4A3E; }
+  .v-lime .hl { color: rgba(180,220,0,0.85); }
+  .v-lime .event-label { color: rgba(204,255,0,0.4); }
+  .v-lime .event-json { color: rgba(232,232,224,0.4); }
+  .v-lime .val { color: rgba(232,232,224,0.7); }
+  .v-lime .proj-label { color: rgba(204,255,0,0.5); }
+  .v-lime .proj-data { color: rgba(232,232,224,0.35); }
+  .v-lime .inference-label { color: rgba(204,255,0,0.35); }
+  .v-lime .inference-content { color: rgba(232,232,224,0.3); }
+  .v-lime .phone-dark { border: 1.5px solid rgba(204,255,0,0.1); }
+  .v-lime .msg-echo { background: rgba(204,255,0,0.04); color: rgba(232,232,224,0.3); }
+  .v-lime .msg-agent { border: 1px solid rgba(204,255,0,0.12); color: rgba(232,232,224,0.8); }
+  .v-lime .msg-agent strong { color: #CCFF00; text-shadow: 0 0 20px rgba(204,255,0,0.3); }
+  .v-lime .cta-btn { border: 1px solid rgba(204,255,0,0.4); color: #CCFF00; }
+  .v-lime .cta-btn:hover { background: rgba(204,255,0,0.08); box-shadow: 0 0 30px rgba(204,255,0,0.15); color: #fff; }
+  .v-lime .bottom-mark { color: rgba(204,255,0,0.06); text-shadow: 0 0 60px rgba(204,255,0,0.08); }
+  .v-lime .bottom-link { color: rgba(204,255,0,0.2); }
+  .v-lime .bottom-link:hover { color: rgba(204,255,0,0.5); }
+  /* Why Kura page */
+  .v-lime .page-bg { background: #0A0A08; color: #E8E8E0; }
+  .v-lime .page-header-bar { background: #0A0A08; border-color: #222220; }
+  .v-lime .page-logo { color: #CCFF00; }
+  .v-lime .page-nav a { color: #5A5A52; }
+  .v-lime .page-nav a:hover { color: #CCFF00; }
+  .v-lime .section-title { color: #E8E8E0; }
+  .v-lime .problem { border-color: #222220; background: rgba(204,255,0,0.04); }
+  .v-lime .problem strong { color: #E8E8E0; }
+  .v-lime .problem p { color: #8A8A80; }
+  .v-lime .page-divider { color: #CCFF00; background: #0C0C08; }
+  .v-lime .auth-card h2 { color: #E8E8E0; }
+  .v-lime .auth-subtitle { color: #5A5A52; }
+  .v-lime .social-btn { border-color: #222220; background: #0A0A08; color: #E8E8E0; }
+  .v-lime .social-btn:hover { border-color: rgba(204,255,0,0.3); }
+  .v-lime .divider-line { background: #222220; }
+  .v-lime .divider-text { color: #2E2E28; }
+  .v-lime .auth-form { border-color: #222220; }
+  .v-lime .field label { color: #5A5A52; }
+  .v-lime .field input { border-color: #222220; background: #0A0A08; color: #E8E8E0; }
+  .v-lime .field input:focus { border-color: rgba(204,255,0,0.4); outline: none; }
+  .v-lime .submit-btn { background: #CCFF00; color: #0A0A08; }
+  .v-lime .auth-switch { color: #5A5A52; }
+  .v-lime .auth-switch a { color: #CCFF00; }
+
+  /* ==================== CYAN ==================== */
+  .v-cyan .descent {
+    background: linear-gradient(to bottom,
+      #F0F4F6 0%, #F0F4F6 3%, #D8E0E6 8%, #B8C8D2 14%, #90A8B8 20%,
+      #6882A0 28%, #486080 38%, #304860 48%, #1E3248 56%,
+      #142438 66%, #0C1828 76%, #081018 86%, #080E12 100%
+    );
+  }
+  .v-cyan .title { color: #0E1820; }
+  .v-cyan .phone { border: 1.5px solid rgba(14,24,32,0.12); background: rgba(240,244,246,0.3); }
+  .v-cyan .phone-notch { background: rgba(14,24,32,0.08); }
+  .v-cyan .msg-user { background: rgba(14,24,32,0.06); color: #2A3844; }
+  .v-cyan .typing span { background: rgba(14,24,32,0.25); }
+  .v-cyan .bridge { color: #607080; }
+  .v-cyan .dot { background: rgba(14,24,32,0.18); }
+  .v-cyan .receiving-label { color: #607080; }
+  .v-cyan .field-name { color: #6A7E90; }
+  .v-cyan .field-value { color: #384858; }
+  .v-cyan .field-value-mono { color: #3E4E5E; }
+  .v-cyan .hl { color: rgba(0,200,230,0.85); }
+  .v-cyan .event-label { color: rgba(0,229,255,0.4); }
+  .v-cyan .event-json { color: rgba(222,230,236,0.4); }
+  .v-cyan .val { color: rgba(222,230,236,0.7); }
+  .v-cyan .proj-label { color: rgba(0,229,255,0.5); }
+  .v-cyan .proj-data { color: rgba(222,230,236,0.35); }
+  .v-cyan .inference-label { color: rgba(0,229,255,0.35); }
+  .v-cyan .inference-content { color: rgba(222,230,236,0.3); }
+  .v-cyan .phone-dark { border: 1.5px solid rgba(0,229,255,0.1); }
+  .v-cyan .msg-echo { background: rgba(0,229,255,0.04); color: rgba(222,230,236,0.3); }
+  .v-cyan .msg-agent { border: 1px solid rgba(0,229,255,0.12); color: rgba(222,230,236,0.8); }
+  .v-cyan .msg-agent strong { color: #00E5FF; text-shadow: 0 0 20px rgba(0,229,255,0.3); }
+  .v-cyan .cta-btn { border: 1px solid rgba(0,229,255,0.4); color: #00E5FF; }
+  .v-cyan .cta-btn:hover { background: rgba(0,229,255,0.08); box-shadow: 0 0 30px rgba(0,229,255,0.15); color: #fff; }
+  .v-cyan .bottom-mark { color: rgba(0,229,255,0.06); text-shadow: 0 0 60px rgba(0,229,255,0.08); }
+  .v-cyan .bottom-link { color: rgba(0,229,255,0.2); }
+  .v-cyan .bottom-link:hover { color: rgba(0,229,255,0.5); }
+  /* Why Kura page */
+  .v-cyan .page-bg { background: #080E12; color: #DEE6EC; }
+  .v-cyan .page-header-bar { background: #080E12; border-color: #162028; }
+  .v-cyan .page-logo { color: #00E5FF; }
+  .v-cyan .page-nav a { color: #4A5E70; }
+  .v-cyan .page-nav a:hover { color: #00E5FF; }
+  .v-cyan .section-title { color: #DEE6EC; }
+  .v-cyan .problem { border-color: #162028; background: rgba(0,229,255,0.04); }
+  .v-cyan .problem strong { color: #DEE6EC; }
+  .v-cyan .problem p { color: #7A8FA0; }
+  .v-cyan .page-divider { color: #00E5FF; background: #0A1014; }
+  .v-cyan .auth-card h2 { color: #DEE6EC; }
+  .v-cyan .auth-subtitle { color: #4A5E70; }
+  .v-cyan .social-btn { border-color: #162028; background: #080E12; color: #DEE6EC; }
+  .v-cyan .social-btn:hover { border-color: rgba(0,229,255,0.3); }
+  .v-cyan .divider-line { background: #162028; }
+  .v-cyan .divider-text { color: #1E2D3A; }
+  .v-cyan .auth-form { border-color: #162028; }
+  .v-cyan .field label { color: #4A5E70; }
+  .v-cyan .field input { border-color: #162028; background: #080E12; color: #DEE6EC; }
+  .v-cyan .field input:focus { border-color: rgba(0,229,255,0.4); outline: none; }
+  .v-cyan .submit-btn { background: #00E5FF; color: #080E12; }
+  .v-cyan .auth-switch { color: #4A5E70; }
+  .v-cyan .auth-switch a { color: #00E5FF; }
+
+  /* ==================== VIOLET ==================== */
+  .v-violet .descent {
+    background: linear-gradient(to bottom,
+      #F4F0F8 0%, #F4F0F8 3%, #DED6E8 8%, #C4B8D4 14%, #A898BE 20%,
+      #8872A0 28%, #684E82 38%, #4A3468 48%, #342450 56%,
+      #241840 66%, #180E30 76%, #0E0818 86%, #0A080E 100%
+    );
+  }
+  .v-violet .title { color: #1A1428; }
+  .v-violet .phone { border: 1.5px solid rgba(26,20,40,0.12); background: rgba(244,240,248,0.3); }
+  .v-violet .phone-notch { background: rgba(26,20,40,0.08); }
+  .v-violet .msg-user { background: rgba(26,20,40,0.06); color: #342A42; }
+  .v-violet .typing span { background: rgba(26,20,40,0.25); }
+  .v-violet .bridge { color: #6A5E7A; }
+  .v-violet .dot { background: rgba(26,20,40,0.18); }
+  .v-violet .receiving-label { color: #6A5E7A; }
+  .v-violet .field-name { color: #7A6E8E; }
+  .v-violet .field-value { color: #443858; }
+  .v-violet .field-value-mono { color: #4A3E5E; }
+  .v-violet .hl { color: rgba(160,100,240,0.85); }
+  .v-violet .event-label { color: rgba(184,124,255,0.4); }
+  .v-violet .event-json { color: rgba(228,222,240,0.4); }
+  .v-violet .val { color: rgba(228,222,240,0.7); }
+  .v-violet .proj-label { color: rgba(184,124,255,0.5); }
+  .v-violet .proj-data { color: rgba(228,222,240,0.35); }
+  .v-violet .inference-label { color: rgba(184,124,255,0.35); }
+  .v-violet .inference-content { color: rgba(228,222,240,0.3); }
+  .v-violet .phone-dark { border: 1.5px solid rgba(184,124,255,0.1); }
+  .v-violet .msg-echo { background: rgba(184,124,255,0.04); color: rgba(228,222,240,0.3); }
+  .v-violet .msg-agent { border: 1px solid rgba(184,124,255,0.12); color: rgba(228,222,240,0.8); }
+  .v-violet .msg-agent strong { color: #B87CFF; text-shadow: 0 0 20px rgba(184,124,255,0.3); }
+  .v-violet .cta-btn { border: 1px solid rgba(184,124,255,0.4); color: #B87CFF; }
+  .v-violet .cta-btn:hover { background: rgba(184,124,255,0.08); box-shadow: 0 0 30px rgba(184,124,255,0.15); color: #fff; }
+  .v-violet .bottom-mark { color: rgba(184,124,255,0.06); text-shadow: 0 0 60px rgba(184,124,255,0.08); }
+  .v-violet .bottom-link { color: rgba(184,124,255,0.2); }
+  .v-violet .bottom-link:hover { color: rgba(184,124,255,0.5); }
+  /* Why Kura page */
+  .v-violet .page-bg { background: #0A080E; color: #E4DEF0; }
+  .v-violet .page-header-bar { background: #0A080E; border-color: #1E1828; }
+  .v-violet .page-logo { color: #B87CFF; }
+  .v-violet .page-nav a { color: #584878; }
+  .v-violet .page-nav a:hover { color: #B87CFF; }
+  .v-violet .section-title { color: #E4DEF0; }
+  .v-violet .problem { border-color: #1E1828; background: rgba(184,124,255,0.04); }
+  .v-violet .problem strong { color: #E4DEF0; }
+  .v-violet .problem p { color: #8878A8; }
+  .v-violet .page-divider { color: #B87CFF; background: #0C0810; }
+  .v-violet .auth-card h2 { color: #E4DEF0; }
+  .v-violet .auth-subtitle { color: #584878; }
+  .v-violet .social-btn { border-color: #1E1828; background: #0A080E; color: #E4DEF0; }
+  .v-violet .social-btn:hover { border-color: rgba(184,124,255,0.3); }
+  .v-violet .divider-line { background: #1E1828; }
+  .v-violet .divider-text { color: #2A2038; }
+  .v-violet .auth-form { border-color: #1E1828; }
+  .v-violet .field label { color: #584878; }
+  .v-violet .field input { border-color: #1E1828; background: #0A080E; color: #E4DEF0; }
+  .v-violet .field input:focus { border-color: rgba(184,124,255,0.4); outline: none; }
+  .v-violet .submit-btn { background: #B87CFF; color: #0A080E; }
+  .v-violet .auth-switch { color: #584878; }
+  .v-violet .auth-switch a { color: #B87CFF; }
+</style>
+</head>
+<body>
+
+<div class="switcher">
+  <button data-variant="current">CURRENT (reference)</button>
+  <button class="active" data-variant="lime">LIME descent</button>
+  <button data-variant="cyan">CYAN descent</button>
+  <button data-variant="violet">VIOLET descent</button>
+</div>
+
+<!-- Macro to avoid repeating. Each variant has identical structure, only class differs -->
+
+<!-- ==================== LIME ==================== -->
+<div id="lime" class="variant v-lime active">
+  <div class="descent">
+    <section class="surface"><div class="title">KURA</div></section>
+    <section class="phone-scene">
+      <div class="phone">
+        <div class="phone-notch"></div>
+        <div class="chat">
+          <div class="msg msg-user">Heute Kniebeugen gemacht, 5x5 mit 100kg. War schwer, die letzten beiden Wiederholungen musste ich rauswuergen. Danach noch leichtes Dehnen.</div>
+          <div class="typing"><span></span><span></span><span></span></div>
+        </div>
+      </div>
+    </section>
+    <section class="bridge">
+      <div class="bridge-dots">
+        <div class="dot-group"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+        <div class="dot-group"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+        <div class="dot-group"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+      </div>
+      <span>was in diesen drei Punkten passiert</span>
+    </section>
+    <section class="threshold">
+      <span class="receiving-label">empfange</span>
+      <div class="decomp">
+        <div class="decomp-row"><span class="field-name">exercise_id</span><span class="field-value-mono hl">barbell_squat</span></div>
+        <div class="decomp-row"><span class="field-name">Saetze x Wdh</span><span class="field-value">5 x 5</span></div>
+        <div class="decomp-row"><span class="field-name">weight_kg</span><span class="field-value-mono">100</span></div>
+        <div class="decomp-row"><span class="field-name">rpe</span><span class="field-value-mono">9</span></div>
+        <div class="decomp-row"><span class="field-name">Notizen</span><span class="field-value">letzte zwei Wiederholungen rausgekampft</span></div>
+        <div class="decomp-row"><span class="field-name">ausserdem</span><span class="field-value">Dehnen &middot; separat geloggt</span></div>
+      </div>
+    </section>
+    <section class="inside">
+      <div class="event-write">
+        <div class="event-label">Event persistieren</div>
+        <div class="event-json">
+          <div>{</div>
+          <div>&nbsp;&nbsp;<span class="hl">"event_type"</span>: <span class="val">"set.logged"</span>,</div>
+          <div>&nbsp;&nbsp;<span class="hl">"data"</span>: {</div>
+          <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl">"exercise_id"</span>: <span class="val">"barbell_squat"</span>,</div>
+          <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl">"sets"</span>: <span class="val">5</span>,</div>
+          <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl">"reps"</span>: <span class="val">5</span>,</div>
+          <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl">"weight_kg"</span>: <span class="val">100</span>,</div>
+          <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl">"rpe"</span>: <span class="val">9</span></div>
+          <div>&nbsp;&nbsp;},</div>
+          <div>&nbsp;&nbsp;<span class="hl">"metadata"</span>: { <span class="hl">"session_id"</span>: <span class="val">"..."</span> }</div>
+          <div>}</div>
+        </div>
+      </div>
+      <div class="proj-compute">
+        <div class="proj-block">
+          <span class="proj-label">exercise_progression</span>
+          <div class="proj-data">estimated_1rm: <span class="hl">116 kg</span> &middot; trend: plateau &middot; weeks_at_weight: 3<br>volume_trend: stable &middot; pr_status: none</div>
+        </div>
+        <div class="proj-block">
+          <span class="proj-label">training_timeline</span>
+          <div class="proj-data">frequency: 4.2/week &middot; streak: 12 days<br>top_set: <span class="val">100kg x5</span> &middot; sessions_this_week: 3</div>
+        </div>
+        <div class="proj-block">
+          <span class="proj-label">recovery</span>
+          <div class="proj-data">sleep: <span class="hl">6.3h avg</span> &middot; unter Ziel 7.5h<br>energy: declining &middot; soreness: lower_back (mild)</div>
+        </div>
+      </div>
+    </section>
+    <section class="deep">
+      <div class="inference-text">
+        <div class="inference-step">
+          <div class="inference-label">Signaldynamik</div>
+          <div class="inference-content">velocity: <span class="hl">-0.3 kg/week</span><br>acceleration: negative<br>trajectory: stall confirmed at week 3</div>
+        </div>
+        <div class="inference-step">
+          <div class="inference-label">dimensionsuebergreifend</div>
+          <div class="inference-content">sleep_deficit correlates with squat_plateau<br>confidence: <span class="hl">0.82</span><br>pattern: recovery_limited_progression</div>
+        </div>
+        <div class="inference-step">
+          <div class="inference-label">Empfehlungsmaschine</div>
+          <div class="inference-content">hypothesis: deload + sleep recovery<br>expected_outcome: +4-6kg within 3 weeks<br>confidence: 0.71</div>
+        </div>
+      </div>
+    </section>
+    <section class="core">
+      <div class="phone-dark">
+        <div class="phone-notch" style="opacity:0.06"></div>
+        <div class="chat">
+          <div class="msg-echo">Heute Kniebeugen gemacht, 5x5 mit 100kg. War schwer...</div>
+          <div class="msg-agent">Geloggt. Dein Kniebeuge-Maximum steht seit drei Wochen bei 116&#8239;kg &mdash; das Volumen stimmt, aber das Gewicht bewegt sich nicht. Ausserdem schlaefst du etwa eine Stunde weniger als gewoehnlich. <strong>Soll ich eine Deload-Woche planen?</strong></div>
+        </div>
+      </div>
+    </section>
+    <section class="cta-section"><a class="cta-btn" href="#">Loslegen</a></section>
+    <section class="bottom">
+      <div class="bottom-mark">KURA</div>
+      <div class="bottom-nav">
+        <a href="#" class="bottom-link">Konto erstellen</a>
+        <a href="#" class="bottom-link">Anmelden</a>
+        <a href="#" class="bottom-link">Einrichtung</a>
+      </div>
+    </section>
+  </div>
+
+  <!-- Why Kura page preview -->
+  <div class="page-divider">&#9660; Why Kura &amp; Auth (separate page) &#9660;</div>
+  <div class="page-bg">
+    <div class="page-header-bar">
+      <a href="#" class="page-logo">KURA</a>
+      <div class="page-nav"><a href="#">Warum Kura</a><a href="#">Einrichtung</a><a href="#">Anmelden</a><a href="#">Konto erstellen</a></div>
+    </div>
+    <div class="page-section">
+      <h2 class="section-title">Chatfenster sind dafuer nicht gebaut</h2>
+      <div class="problems">
+        <div class="problem"><strong>Chats vergessen.</strong><p>Kontextfenster begrenzt. Aelteste Nachrichten fallen raus &mdash; ohne Warnung.</p></div>
+        <div class="problem"><strong>Memory hilft ein Stueck.</strong><p>Muster ja, echte Trainingsdaten nein. Kein Volumentrend, kein Plateau-Zeitpunkt.</p></div>
+        <div class="problem"><strong>Daten nicht exportierbar.</strong><p>Plattformwechsel = Datenverlust. Trainingshistorie steckt in Chatprotokollen.</p></div>
+        <div class="problem"><strong>Alles bleibt Text.</strong><p>Drei Monate Trainingsdaten in Nachrichten. Analysen werden fragil.</p></div>
+      </div>
+    </div>
+    <div class="auth-card">
+      <h2>Konto erstellen</h2>
+      <p class="auth-subtitle">Um deinen Agenten zu verbinden. Aktuell kostenlos.</p>
+      <div class="auth-social">
+        <button class="social-btn">Apple</button>
+        <button class="social-btn">Google</button>
+        <button class="social-btn">GitHub</button>
+      </div>
+      <div class="divider"><div class="divider-line"></div><span class="divider-text">Oder weiter mit</span><div class="divider-line"></div></div>
+      <div class="auth-form">
+        <div class="field"><label>E-Mail</label><input type="email" placeholder="name@example.com"></div>
+        <div class="field"><label>Passwort</label><input type="password"></div>
+        <button class="submit-btn">Konto erstellen</button>
+      </div>
+      <p class="auth-switch">Bereits ein Konto? <a href="#">Anmelden</a></p>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== CYAN ==================== -->
+<div id="cyan" class="variant v-cyan"></div>
+
+<!-- ==================== VIOLET ==================== -->
+<div id="violet" class="variant v-violet"></div>
+
+<!-- ==================== CURRENT ==================== -->
+<div id="current" class="variant v-current"></div>
+
+<script>
+  // Clone lime content into other variants (same structure, different CSS)
+  var source = document.getElementById('lime');
+  ['cyan', 'violet', 'current'].forEach(function(id) {
+    var target = document.getElementById(id);
+    var clone = source.cloneNode(true);
+    // Move all children
+    while (clone.firstChild) {
+      target.appendChild(clone.firstChild);
+    }
+  });
+
+  document.querySelectorAll('.switcher button').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var variant = this.getAttribute('data-variant');
+      document.querySelectorAll('.variant').forEach(function(v) { v.classList.remove('active'); });
+      document.querySelectorAll('.switcher button').forEach(function(b) { b.classList.remove('active'); });
+      document.getElementById(variant).classList.add('active');
+      this.classList.add('active');
+      window.scrollTo(0, 0);
+    });
+  });
+</script>
+</body>
+</html>

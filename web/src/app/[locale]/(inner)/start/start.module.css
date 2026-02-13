@@ -1,0 +1,207 @@
+.page {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 4rem 1.5rem 6rem;
+}
+
+/* === Story === */
+.story {
+  display: grid;
+  grid-template-columns: 2fr 3fr;
+  gap: 3rem;
+  align-items: start;
+  margin-bottom: 5rem;
+}
+
+.storyPhoto {
+  position: relative;
+}
+
+.photo {
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.storyText {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.storyP {
+  font-family: var(--font-body);
+  font-size: 1.0625rem;
+  line-height: 1.75;
+  color: var(--ink-mid);
+}
+
+.storyPStrong {
+  font-family: var(--font-body);
+  font-size: 1.0625rem;
+  line-height: 1.75;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+/* === Sections === */
+.section {
+  margin-bottom: 4rem;
+}
+
+.sectionTitle {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.5rem;
+  color: var(--ink);
+  margin-bottom: 1.25rem;
+}
+
+.text {
+  font-family: var(--font-body);
+  font-size: 1.0625rem;
+  line-height: 1.75;
+  color: var(--ink-mid);
+  margin-bottom: 1rem;
+}
+
+.text:last-child {
+  margin-bottom: 0;
+}
+
+.bridge {
+  font-family: var(--font-body);
+  font-size: 1.0625rem;
+  line-height: 1.75;
+  color: var(--ink);
+  font-style: italic;
+  margin-top: 0.5rem;
+}
+
+/* === Problems === */
+.problems {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-top: 1.25rem;
+}
+
+.problemTitle {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1rem;
+  color: var(--ink);
+}
+
+.problemDesc {
+  font-family: var(--font-body);
+  font-size: 1rem;
+  line-height: 1.7;
+  color: var(--ink-mid);
+  margin-top: 0.25rem;
+}
+
+/* === Punchline === */
+.punchline {
+  font-family: var(--font-body);
+  font-size: 1.125rem;
+  line-height: 1.75;
+  color: var(--ink);
+  font-style: italic;
+  padding: 2.5rem 0;
+  border-top: 1px solid var(--thread);
+  border-bottom: 1px solid var(--thread);
+  margin-bottom: 4rem;
+}
+
+/* === How it works === */
+.steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2.5rem;
+  margin-top: 1.5rem;
+}
+
+.stepNum {
+  font-family: var(--font-mono);
+  font-weight: 300;
+  font-size: 1.5rem;
+  color: var(--amber);
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+.stepTitle {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 1rem;
+  color: var(--ink);
+  margin-bottom: 0.375rem;
+}
+
+.stepDesc {
+  font-family: var(--font-body);
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  color: var(--ink-mid);
+  margin-bottom: 0.75rem;
+}
+
+.agents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin-bottom: 0.75rem;
+}
+
+.agent {
+  font-family: var(--font-mono);
+  font-weight: 300;
+  font-size: 0.6875rem;
+  letter-spacing: 0.04em;
+  color: var(--ink-faint);
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--thread);
+  border-radius: 3px;
+}
+
+.stepLink {
+  font-family: var(--font-mono);
+  font-weight: 300;
+  font-size: 0.75rem;
+  color: var(--amber);
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+.stepLink:hover {
+  color: var(--ink);
+}
+
+/* === CTA === */
+.cta {
+  text-align: center;
+  padding: 3rem 0;
+  border-top: 1px solid var(--thread);
+}
+
+.tagline {
+  font-family: var(--font-body);
+  font-style: italic;
+  font-size: 0.9375rem;
+  color: var(--ink-faint);
+  margin-top: 1rem;
+}
+
+/* === Responsive === */
+@media (max-width: 768px) {
+  .story {
+    grid-template-columns: 1fr;
+    gap: 2rem;
+  }
+
+  .steps {
+    grid-template-columns: 1fr;
+  }
+}

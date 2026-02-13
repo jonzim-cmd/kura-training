@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kura — Butter Yellow Descent</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;700;900&family=Crimson+Pro:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Crimson Pro', Georgia, serif;
+    line-height: 1.7;
+    background: #000;
+  }
+
+  /* ==================== COLORS ==================== */
+  :root {
+    --yellow: #FFE566;
+    --yellow-dim: rgba(255, 229, 102, 0.5);
+    --yellow-faint: rgba(255, 229, 102, 0.15);
+    --yellow-ghost: rgba(255, 229, 102, 0.06);
+
+    /* Code palette — muted, doesn't compete with yellow */
+    --code-key: #8A9A8E;
+    --code-val: #A0A098;
+    --code-str: #B8B0A0;
+    --code-structure: #555550;
+
+    /* Dark theme text */
+    --text: #D4D0C8;
+    --text-dim: #888580;
+    --text-faint: #555550;
+  }
+
+  /* ==================== LANDING PAGE — DESCENT ==================== */
+
+  .descent {
+    background: linear-gradient(to bottom,
+      #FFFDF5 0%,
+      #FFFDF5 3%,
+      #FFF9E8 6%,
+      #FFF3D4 10%,
+      #FFEAB8 15%,
+      #F5D88A 20%,
+      #D4B460 28%,
+      #A88A3A 36%,
+      #7A6428 44%,
+      #524418 52%,
+      #3A2E10 60%,
+      #241C0A 68%,
+      #161006 76%,
+      #0C0804 84%,
+      #060402 90%,
+      #000000 100%
+    );
+  }
+
+  /* --- Surface --- */
+  .surface {
+    min-height: 100vh;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+  }
+  .title {
+    font-family: 'Outfit', sans-serif; font-weight: 900;
+    font-size: clamp(6rem, 18vw, 18rem);
+    letter-spacing: -0.01em; line-height: 0.85;
+    user-select: none;
+    color: #1A1400;
+  }
+
+  /* --- Phone scene (still in light zone) --- */
+  .phone-scene {
+    display: flex; justify-content: center;
+    padding: 4rem 1.5rem; min-height: 70vh; align-items: center;
+  }
+  .phone {
+    width: min(380px, 85vw); border-radius: 32px;
+    padding: 3rem 1.5rem 2.5rem; position: relative;
+    border: 1.5px solid rgba(26, 20, 0, 0.1);
+    background: rgba(255, 253, 245, 0.3);
+  }
+  .phone-notch {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    width: 48px; height: 5px; border-radius: 3px;
+    background: rgba(26, 20, 0, 0.06);
+  }
+  .chat { display: flex; flex-direction: column; gap: 1rem; }
+  .msg {
+    max-width: 85%; font-size: 1.0625rem; line-height: 1.6;
+    padding: 0.75rem 1rem; border-radius: 16px;
+  }
+  .msg-user {
+    align-self: flex-end; border-bottom-right-radius: 4px;
+    background: rgba(26, 20, 0, 0.05);
+    color: #3D3520;
+  }
+  .typing {
+    align-self: flex-start; display: flex; gap: 6px;
+    padding: 0.85rem 1rem; border-radius: 16px; width: fit-content;
+  }
+  .typing span {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: rgba(26, 20, 0, 0.2);
+    animation: bounce 1.4s ease-in-out infinite;
+  }
+  .typing span:nth-child(2) { animation-delay: 0.15s; }
+  .typing span:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes bounce {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.3; }
+    30% { transform: translateY(-4px); opacity: 0.7; }
+  }
+
+  /* --- Bridge (transition zone: light → mid) --- */
+  .bridge {
+    padding: 10vh 8%;
+    display: flex; flex-direction: column; align-items: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8125rem; letter-spacing: 0.2em;
+    color: #8A7A5A;
+  }
+  .bridge-dots {
+    display: flex; flex-direction: column; align-items: center; gap: 2.5rem;
+    margin-bottom: 1.5rem;
+  }
+  .dot-group { display: flex; gap: 8px; }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #C4A44A;
+    animation: bounce 1.4s ease-in-out infinite;
+  }
+  .dot-group:nth-child(2) .dot { opacity: 0.55; animation-delay: 0.2s; }
+  .dot-group:nth-child(2) .dot:nth-child(2) { animation-delay: 0.35s; }
+  .dot-group:nth-child(2) .dot:nth-child(3) { animation-delay: 0.5s; }
+  .dot-group:nth-child(3) .dot { opacity: 0.3; animation-delay: 0.4s; }
+  .dot-group:nth-child(3) .dot:nth-child(2) { animation-delay: 0.55s; }
+  .dot-group:nth-child(3) .dot:nth-child(3) { animation-delay: 0.7s; }
+
+  /* --- Threshold (mid zone — getting darker, yellow emerging) --- */
+  .threshold {
+    min-height: 80vh; padding: 0 8%;
+    display: flex; flex-direction: column; justify-content: center;
+  }
+  .receiving-label {
+    font-family: 'JetBrains Mono', monospace; font-weight: 300;
+    font-size: 0.875rem; letter-spacing: 0.12em; margin-bottom: 2.5rem;
+    color: #9A8A60;
+  }
+  .decomp { display: flex; flex-direction: column; gap: 0.75rem; }
+  .decomp-row { display: flex; align-items: baseline; gap: 2rem; }
+  .field-name {
+    font-family: 'JetBrains Mono', monospace; font-weight: 400;
+    font-size: 0.9375rem; min-width: 11rem; text-align: right;
+    letter-spacing: 0.02em;
+    color: #7A6A48;
+  }
+  .field-value {
+    font-size: 1.25rem;
+    color: #C8B880;
+  }
+  .field-value-mono {
+    font-family: 'JetBrains Mono', monospace; font-size: 1rem;
+    color: #B0A070;
+  }
+  .field-hl {
+    font-family: 'JetBrains Mono', monospace; font-size: 1rem;
+    color: var(--yellow);
+  }
+
+  /* --- Inside (dark zone — yellow is now bright accent) --- */
+  .inside { min-height: 160vh; position: relative; overflow: hidden; }
+  .event-write { position: relative; z-index: 2; padding: 12vh 8%; }
+  .event-label {
+    font-family: 'JetBrains Mono', monospace; font-weight: 300;
+    font-size: 0.75rem; letter-spacing: 0.2em; text-transform: uppercase;
+    margin-bottom: 1.25rem;
+    color: var(--text-faint);
+  }
+  .event-json {
+    font-family: 'JetBrains Mono', monospace; font-weight: 300;
+    font-size: clamp(0.8125rem, 1.4vw, 1rem); line-height: 2.1;
+    max-width: 40rem;
+    color: var(--code-structure);
+  }
+  .json-key { color: var(--code-key); }
+  .json-val { color: var(--code-val); }
+  .json-str { color: var(--code-str); }
+  .json-hl { color: var(--yellow); }
+
+  .proj-compute {
+    position: relative; z-index: 2; padding: 4vh 8%;
+    display: flex; flex-direction: column; gap: 3rem;
+  }
+  .proj-block { max-width: 42rem; }
+  .proj-label {
+    font-family: 'JetBrains Mono', monospace; font-weight: 300;
+    font-size: 0.8125rem; letter-spacing: 0.15em; margin-bottom: 1rem;
+    display: block;
+    color: var(--yellow-dim);
+  }
+  .proj-data {
+    font-family: 'JetBrains Mono', monospace; font-weight: 300;
+    font-size: clamp(0.8125rem, 1.3vw, 0.9375rem); line-height: 2;
+    color: var(--text-faint);
+  }
+  .proj-hl { color: var(--yellow); }
+  .proj-val { color: var(--text-dim); }
+
+  /* --- Deep (fully dark — signature territory) --- */
+  .deep { min-height: 100vh; position: relative; overflow: hidden; }
+  .inference-text {
+    position: relative; z-index: 2; padding: 16vh 8%;
+    display: flex; flex-direction: column; gap: 4rem;
+  }
+  .inference-step { max-width: 36rem; }
+  .inference-label {
+    font-family: 'JetBrains Mono', monospace; font-weight: 300;
+    font-size: 0.75rem; letter-spacing: 0.2em; text-transform: uppercase;
+    margin-bottom: 1rem;
+    color: var(--text-faint);
+  }
+  .inference-content {
+    font-family: 'JetBrains Mono', monospace; font-weight: 300;
+    font-size: 0.9375rem; line-height: 2.1;
+    color: var(--code-val);
+  }
+  .inf-hl { color: var(--yellow); }
+
+  /* --- Core (agent phone — pure black + yellow) --- */
+  .core {
+    min-height: 60vh;
+    display: flex; justify-content: center; align-items: center;
+    padding: 6vh 8%;
+  }
+  .phone-dark {
+    width: min(380px, 85vw); border-radius: 32px;
+    padding: 3rem 1.5rem 2.5rem; position: relative;
+    border: 1px solid rgba(255, 229, 102, 0.08);
+  }
+  .msg-echo {
+    align-self: flex-end; max-width: 85%;
+    font-size: 0.9375rem; line-height: 1.55;
+    padding: 0.65rem 0.9rem; border-radius: 16px; border-bottom-right-radius: 4px;
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--text-faint);
+  }
+  .msg-agent {
+    align-self: flex-start; max-width: 88%;
+    font-size: 1.0625rem; line-height: 1.65;
+    padding: 0.75rem 1rem; border-radius: 16px; border-bottom-left-radius: 4px;
+    border: 1px solid rgba(255, 229, 102, 0.06);
+    color: var(--text);
+  }
+  .msg-agent strong { color: var(--yellow); }
+
+  /* --- CTA + Bottom (pure black, arrived) --- */
+  .cta-section { padding: 0 8% 6vh; display: flex; justify-content: center; }
+  .cta-btn {
+    display: inline-block; font-family: 'Outfit', sans-serif; font-weight: 400;
+    font-size: 0.9375rem; letter-spacing: 0.02em; padding: 0.75rem 2rem;
+    border-radius: 4px; text-decoration: none;
+    border: 1px solid var(--yellow);
+    color: var(--yellow);
+    transition: all 0.2s;
+  }
+  .cta-btn:hover { background: var(--yellow); color: #000; }
+
+  .bottom {
+    min-height: 20vh; display: flex; align-items: center; justify-content: center;
+    padding: 3rem 8%; flex-direction: column; gap: 1.5rem;
+  }
+  .bottom-mark {
+    font-family: 'Outfit', sans-serif; font-weight: 900;
+    font-size: clamp(2rem, 5vw, 4rem); letter-spacing: 0.04em;
+    color: rgba(255, 229, 102, 0.04);
+  }
+  .bottom-nav { display: flex; gap: 2rem; }
+  .bottom-link {
+    font-family: 'JetBrains Mono', monospace; font-weight: 300;
+    font-size: 0.75rem; letter-spacing: 0.08em; text-decoration: none;
+    color: var(--text-faint);
+    transition: color 0.2s;
+  }
+  .bottom-link:hover { color: var(--yellow); }
+
+
+  /* ==================== WHY KURA PAGE (signature: black + yellow) ==================== */
+
+  .page-divider {
+    text-align: center; padding: 4rem 1.5rem;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.6875rem;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--yellow); background: #000;
+    border-top: 1px solid rgba(255, 229, 102, 0.08);
+  }
+
+  .page-bg { background: #000; color: var(--text); }
+
+  .page-header-bar {
+    height: 3.5rem; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 2rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    background: #000;
+  }
+  .page-logo {
+    font-family: 'Outfit', sans-serif; font-weight: 900;
+    font-size: 0.9375rem; letter-spacing: 0.06em; text-decoration: none;
+    color: var(--yellow);
+  }
+  .page-nav {
+    display: flex; gap: 1.5rem;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
+    font-weight: 300; letter-spacing: 0.04em;
+  }
+  .page-nav a { text-decoration: none; color: var(--text-faint); }
+  .page-nav a:hover { color: var(--yellow); }
+
+  .page-section { padding: 3rem 1.5rem; max-width: 42rem; margin: 0 auto; }
+
+  .story-text {
+    font-size: 1.125rem; line-height: 1.85;
+    color: var(--text-dim); margin-bottom: 1.5rem;
+  }
+  .story-text:last-child { margin-bottom: 0; }
+
+  .section-title {
+    font-family: 'Outfit', sans-serif; font-weight: 700;
+    font-size: 1.375rem; margin-bottom: 1.25rem;
+    color: var(--yellow);
+  }
+  .section-subtitle {
+    font-family: 'Outfit', sans-serif; font-weight: 700;
+    font-size: 1.375rem; margin-bottom: 1.25rem;
+    color: var(--text);
+  }
+
+  .problems { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.5rem; }
+  .problem {
+    padding: 1.25rem 1.5rem; border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .problem strong {
+    display: block; font-family: 'Outfit', sans-serif; font-weight: 700;
+    font-size: 0.9375rem; margin-bottom: 0.5rem; color: var(--text);
+  }
+  .problem p { font-size: 0.9375rem; margin: 0; color: var(--text-dim); }
+
+  .body-text {
+    font-size: 1.0625rem; line-height: 1.8;
+    color: var(--text-dim); margin-bottom: 1rem;
+  }
+
+  .steps { display: flex; flex-direction: column; gap: 1.5rem; margin-top: 1.5rem; }
+  .step { display: flex; gap: 1.25rem; align-items: flex-start; }
+  .step-number {
+    font-family: 'Outfit', sans-serif; font-weight: 900;
+    font-size: 1.5rem; color: var(--yellow);
+    min-width: 2rem; line-height: 1; padding-top: 0.2rem;
+  }
+  .step-title {
+    font-family: 'Outfit', sans-serif; font-weight: 700;
+    font-size: 1rem; color: var(--text); margin-bottom: 0.25rem;
+  }
+  .step-desc { font-size: 0.9375rem; color: var(--text-dim); }
+
+  /* ==================== AUTH CARD ==================== */
+
+  .auth-card {
+    max-width: 28rem; margin: 2rem auto 4rem; text-align: center; padding: 0 1rem;
+  }
+  .auth-card h2 {
+    font-family: 'Outfit', sans-serif; font-weight: 700;
+    font-size: 1.75rem; margin-bottom: 0.5rem; color: var(--text);
+  }
+  .auth-subtitle { font-size: 1rem; margin-bottom: 2rem; color: var(--text-dim); }
+  .auth-social { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1rem; }
+  .social-btn {
+    display: flex; align-items: center; justify-content: center; gap: 0.625rem;
+    width: 100%; padding: 0.6rem 1rem;
+    font-family: 'Outfit', sans-serif; font-size: 0.875rem; font-weight: 400;
+    letter-spacing: 0.02em;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 4px; cursor: pointer;
+    background: transparent; color: var(--text);
+    transition: border-color 0.2s;
+  }
+  .social-btn:hover { border-color: var(--yellow-dim); }
+  .social-btn svg { width: 18px; height: 18px; }
+
+  .divider { display: flex; align-items: center; gap: 1rem; margin: 0.5rem 0; }
+  .divider-line { flex: 1; height: 1px; background: rgba(255, 255, 255, 0.06); }
+  .divider-text {
+    font-family: 'JetBrains Mono', monospace; font-size: 0.6875rem;
+    font-weight: 300; letter-spacing: 0.04em; white-space: nowrap;
+    color: var(--text-faint);
+  }
+
+  .auth-form {
+    padding: 2rem; border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 6px;
+    display: flex; flex-direction: column; gap: 1.25rem; text-align: left;
+  }
+  .field label {
+    display: block; font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
+    font-weight: 300; letter-spacing: 0.05em; margin-bottom: 0.375rem;
+    color: var(--text-faint);
+  }
+  .field input {
+    width: 100%; font-family: 'Crimson Pro', Georgia, serif; font-size: 1rem;
+    padding: 0.6rem 0.875rem; border-radius: 4px; line-height: 1.5;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: transparent; color: var(--text);
+  }
+  .field input:focus { border-color: var(--yellow-dim); outline: none; }
+  .submit-btn {
+    width: 100%; padding: 0.6rem 1.25rem;
+    font-family: 'Outfit', sans-serif; font-size: 0.875rem; font-weight: 400;
+    letter-spacing: 0.02em; border: none; border-radius: 4px; cursor: pointer;
+    background: var(--yellow); color: #000;
+    transition: opacity 0.2s;
+  }
+  .submit-btn:hover { opacity: 0.9; }
+  .auth-switch { margin-top: 1.5rem; font-size: 0.875rem; color: var(--text-dim); }
+  .auth-switch a { font-weight: 500; text-decoration: none; color: var(--yellow); }
+
+  /* ==================== FOOTER ==================== */
+  .footer {
+    padding: 3rem 2rem;
+    display: flex; align-items: center; justify-content: center;
+    gap: 2rem; flex-direction: column;
+    border-top: 1px solid rgba(255, 255, 255, 0.04);
+  }
+  .footer-mark {
+    font-family: 'Outfit', sans-serif; font-weight: 900;
+    font-size: 1rem; letter-spacing: 0.06em;
+    color: rgba(255, 229, 102, 0.15);
+  }
+  .footer-links { display: flex; gap: 2rem; }
+  .footer-link {
+    font-family: 'JetBrains Mono', monospace; font-weight: 300;
+    font-size: 0.6875rem; letter-spacing: 0.06em; text-decoration: none;
+    color: var(--text-faint); transition: color 0.2s;
+  }
+  .footer-link:hover { color: var(--yellow); }
+  .footer-tagline { font-size: 0.8125rem; color: var(--text-faint); font-style: italic; }
+
+  @media (max-width: 768px) {
+    .decomp-row { flex-direction: column; gap: 0.25rem; }
+    .field-name { text-align: left; min-width: 0; }
+    .problems { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ==================== LANDING PAGE — DESCENT ==================== -->
+<div class="descent">
+
+  <section class="surface">
+    <div class="title">KURA</div>
+  </section>
+
+  <section class="phone-scene">
+    <div class="phone">
+      <div class="phone-notch"></div>
+      <div class="chat">
+        <div class="msg msg-user">Heute Kniebeugen gemacht, 5x5 mit 100kg. War schwer, die letzten beiden Wiederholungen musste ich rauskämpfen. Danach noch leichtes Dehnen.</div>
+        <div class="typing"><span></span><span></span><span></span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="bridge">
+    <div class="bridge-dots">
+      <div class="dot-group"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+      <div class="dot-group"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+      <div class="dot-group"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+    </div>
+    <span>was in diesen drei Punkten passiert</span>
+  </section>
+
+  <section class="threshold">
+    <span class="receiving-label">empfange</span>
+    <div class="decomp">
+      <div class="decomp-row"><span class="field-name">exercise_id</span><span class="field-hl">barbell_squat</span></div>
+      <div class="decomp-row"><span class="field-name">Sätze × Wdh</span><span class="field-value">5 × 5</span></div>
+      <div class="decomp-row"><span class="field-name">weight_kg</span><span class="field-value-mono">100</span></div>
+      <div class="decomp-row"><span class="field-name">rpe</span><span class="field-value-mono">9</span></div>
+      <div class="decomp-row"><span class="field-name">Notizen</span><span class="field-value">letzte zwei Wiederholungen rausgekämpft</span></div>
+      <div class="decomp-row"><span class="field-name">außerdem</span><span class="field-value">Dehnen · separat geloggt</span></div>
+    </div>
+  </section>
+
+  <section class="inside">
+    <div class="event-write">
+      <div class="event-label">Event persistieren</div>
+      <div class="event-json">
+        <div>{</div>
+        <div>&nbsp;&nbsp;<span class="json-key">"event_type"</span>: <span class="json-str">"set.logged"</span>,</div>
+        <div>&nbsp;&nbsp;<span class="json-key">"data"</span>: {</div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"exercise_id"</span>: <span class="json-str">"barbell_squat"</span>,</div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"sets"</span>: <span class="json-val">5</span>,</div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"reps"</span>: <span class="json-val">5</span>,</div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"weight_kg"</span>: <span class="json-val">100</span>,</div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"rpe"</span>: <span class="json-val">9</span></div>
+        <div>&nbsp;&nbsp;},</div>
+        <div>&nbsp;&nbsp;<span class="json-key">"metadata"</span>: { <span class="json-key">"session_id"</span>: <span class="json-str">"..."</span> }</div>
+        <div>}</div>
+      </div>
+    </div>
+    <div class="proj-compute">
+      <div class="proj-block">
+        <span class="proj-label">exercise_progression</span>
+        <div class="proj-data">estimated_1rm: <span class="proj-hl">116 kg</span> · trend: plateau · weeks_at_weight: 3<br>volume_trend: stable · pr_status: none</div>
+      </div>
+      <div class="proj-block">
+        <span class="proj-label">training_timeline</span>
+        <div class="proj-data">frequency: 4.2/week · streak: 12 days<br>top_set: <span class="proj-val">100kg ×5</span> · sessions_this_week: 3</div>
+      </div>
+      <div class="proj-block">
+        <span class="proj-label">recovery</span>
+        <div class="proj-data">sleep: <span class="proj-hl">6.3h avg</span> · unter Ziel 7.5h<br>energy: declining · soreness: lower_back (mild)</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="deep">
+    <div class="inference-text">
+      <div class="inference-step">
+        <div class="inference-label">Signaldynamik</div>
+        <div class="inference-content">velocity: <span class="inf-hl">−0.3 kg/week</span><br>acceleration: negative<br>trajectory: stall confirmed at week 3</div>
+      </div>
+      <div class="inference-step">
+        <div class="inference-label">dimensionsübergreifend</div>
+        <div class="inference-content">sleep_deficit correlates with squat_plateau<br>confidence: <span class="inf-hl">0.82</span><br>pattern: recovery_limited_progression</div>
+      </div>
+      <div class="inference-step">
+        <div class="inference-label">Empfehlungsmaschine</div>
+        <div class="inference-content">hypothesis: deload + sleep recovery<br>expected_outcome: +4-6kg within 3 weeks<br>confidence: 0.71</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="core">
+    <div class="phone-dark">
+      <div class="phone-notch" style="background: rgba(255,229,102,0.04);"></div>
+      <div class="chat">
+        <div class="msg-echo">Heute Kniebeugen gemacht, 5×5 mit 100kg. War schwer…</div>
+        <div class="msg-agent">Geloggt. Dein Kniebeuge-Maximum steht seit drei Wochen bei 116&#8239;kg — das Volumen stimmt, aber das Gewicht bewegt sich nicht. Außerdem schläfst du etwa eine Stunde weniger als gewöhnlich. <strong>Soll ich eine Deload-Woche planen?</strong></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta-section">
+    <a class="cta-btn" href="#">Loslegen</a>
+  </section>
+
+  <section class="bottom">
+    <div class="bottom-mark">KURA</div>
+    <div class="bottom-nav">
+      <a href="#" class="bottom-link">Konto erstellen</a>
+      <a href="#" class="bottom-link">Anmelden</a>
+      <a href="#" class="bottom-link">Einrichtung</a>
+    </div>
+  </section>
+
+</div>
+
+
+<!-- ==================== WHY KURA PAGE (signature: black + yellow) ==================== -->
+<div class="page-divider">▼ Why Kura &amp; Auth (separate Seite) ▼</div>
+<div class="page-bg">
+  <div class="page-header-bar">
+    <a href="#" class="page-logo">KURA</a>
+    <div class="page-nav">
+      <a href="#">Warum Kura</a>
+      <a href="#">Einrichtung</a>
+      <a href="#">Anmelden</a>
+      <a href="#">Konto erstellen</a>
+    </div>
+  </div>
+
+  <div class="page-section">
+    <p class="story-text">Ich habe Leistungssportler trainiert. Das Nervigste war fast immer dasselbe: das Training dokumentieren — so, dass man die Daten nach der Saison auch wirklich auswerten kann. In der Praxis hat das nie richtig funktioniert.</p>
+    <p class="story-text">Bei meinem eigenen Training war es nicht anders. Ich habe so ziemlich jede App ausprobiert: zu umständlich, zu starr, zu nervig. Keine hat lange gehalten. Was ich eigentlich wollte, war simpel: mein Training aufzeichnen, wie ich einem Freund schreiben würde. Ein Satz über das, was ich gemacht habe — und jemand (oder etwas) kümmert sich um den Rest.</p>
+    <p class="story-text">Genau daher kommt Kura. Ich habe ein Backend gebaut, bei dem der KI-Agent der primäre Nutzer ist, nicht der Mensch. Alles ist darauf ausgelegt, dass der Agent Trainingseinträge zuverlässig versteht, nachfragt wenn etwas fehlt, und sie als saubere Daten abspeichert.</p>
+  </div>
+
+  <div class="page-section">
+    <h2 class="section-title">Apps lösen das falsche Problem</h2>
+    <p class="body-text">Es gibt Hunderte Trainings-Apps. Sie können gut speichern. Aber das eigentliche Problem ist das Logging — und das ist Arbeit. Formulare ausfüllen, Dropdowns, Übungslisten durchscrollen.</p>
+    <p class="body-text">Einem Agenten ist das egal. Du schreibst: „Tempo-Kniebeugen heute, 4 Sekunden runter, Pause unten, 80kg, war brutal" — und er versteht, was du meinst. Wenn etwas fehlt, fragt er nach.</p>
+    <p class="body-text">Die eigentliche Frage ist: wohin gehen diese Einträge, damit sie langfristig nützlich bleiben?</p>
+  </div>
+
+  <div class="page-section">
+    <h2 class="section-title">Chatfenster sind dafür nicht gebaut</h2>
+    <div class="problems">
+      <div class="problem"><strong>Chats vergessen.</strong><p>Kontextfenster begrenzt. Älteste Nachrichten fallen raus — ohne Warnung.</p></div>
+      <div class="problem"><strong>Memory hilft ein Stück.</strong><p>Muster ja, echte Trainingsdaten nein. Kein Volumentrend, kein Plateau-Zeitpunkt.</p></div>
+      <div class="problem"><strong>Daten nicht exportierbar.</strong><p>Plattformwechsel = Datenverlust. Trainingshistorie steckt in Chatprotokollen.</p></div>
+      <div class="problem"><strong>Alles bleibt Text.</strong><p>Drei Monate Trainingsdaten in Nachrichten. Analysen werden fragil.</p></div>
+    </div>
+  </div>
+
+  <div class="page-section">
+    <h2 class="section-subtitle">Was Kura macht</h2>
+    <p class="body-text">Bei Kura ist der Input egal: Chat, Sprache, schnelle Notizen — du formulierst, wie es dir natürlich vorkommt. Der Agent kümmert sich um den Rest und speichert alles nicht als Chatverlauf, sondern als strukturierte Trainingsdaten: typisiert, mit Zeitstempel, verknüpft.</p>
+    <p class="body-text">Ein API-Call reicht, um dem Agenten das volle Bild zu geben: jede Session, jeder PR, jeder Trend über die Zeit — egal welche KI gerade genutzt wird.</p>
+    <p class="body-text">Und weil die Daten strukturiert sind, kann Kura die Mathematik übernehmen, die in einem Chatfenster einfach nicht zuverlässig funktioniert: Bayesianische Methoden die Plateaus früh erkennen, Zusammenhänge zwischen Schlaf und Leistung sichtbar gemacht, Vergleiche die deine Zahlen einordnen statt sie nur zu kommentieren.</p>
+  </div>
+
+  <div class="page-section">
+    <h2 class="section-title">Einrichtung</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-number">1</div>
+        <div class="step-content">
+          <div class="step-title">Konto erstellen</div>
+          <div class="step-desc">Aktuell kostenlos nutzbar.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-number">2</div>
+        <div class="step-content">
+          <div class="step-title">KI verbinden</div>
+          <div class="step-desc">Wähle deinen Agenten und folge der Einrichtungsanleitung.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-number">3</div>
+        <div class="step-content">
+          <div class="step-title">Loslegen</div>
+          <div class="step-desc">Öffne den Chat deiner KI — Claude, ChatGPT, egal — und rede über dein Training. Der Agent macht den Rest.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="auth-card">
+    <h2>Konto erstellen</h2>
+    <p class="auth-subtitle">Um deinen Agenten zu verbinden. Aktuell kostenlos.</p>
+    <div class="auth-social">
+      <button class="social-btn">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
+        Apple
+      </button>
+      <button class="social-btn">
+        <svg viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+        Google
+      </button>
+      <button class="social-btn">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+        GitHub
+      </button>
+    </div>
+    <div class="divider">
+      <div class="divider-line"></div>
+      <span class="divider-text">Oder weiter mit</span>
+      <div class="divider-line"></div>
+    </div>
+    <div class="auth-form">
+      <div class="field"><label>E-Mail</label><input type="email" placeholder="name@example.com"></div>
+      <div class="field"><label>Passwort</label><input type="password"></div>
+      <button class="submit-btn">Konto erstellen</button>
+    </div>
+    <p class="auth-switch">Bereits ein Konto? <a href="#">Anmelden</a></p>
+  </div>
+
+  <div class="footer">
+    <div class="footer-mark">KURA</div>
+    <div class="footer-links">
+      <a href="#" class="footer-link">Datenschutz</a>
+      <a href="#" class="footer-link">Nutzungsbedingungen</a>
+      <a href="#" class="footer-link">GitHub</a>
+    </div>
+    <div class="footer-tagline">Built to remember what matters.</div>
+  </div>
+</div>
+
+</body>
+</html>

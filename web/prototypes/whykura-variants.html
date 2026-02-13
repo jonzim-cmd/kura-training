@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kura — Why Kura Page Color Variants</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;700;900&family=Crimson+Pro:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Crimson Pro', Georgia, serif; line-height: 1.7; }
+
+  /* Variant switcher */
+  .switcher {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
+    display: flex; gap: 0; background: #111; padding: 0;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
+  }
+  .switcher button {
+    flex: 1; padding: 0.75rem 1rem; border: none; cursor: pointer;
+    font-family: inherit; font-size: inherit; letter-spacing: 0.04em;
+    background: #222; color: #888; transition: all 0.2s;
+  }
+  .switcher button:hover { background: #333; color: #ccc; }
+  .switcher button.active { background: #444; color: #fff; font-weight: 400; }
+
+  .variant { display: none; padding-top: 2.75rem; min-height: 100vh; }
+  .variant.active { display: block; }
+
+  /* Header */
+  .header {
+    position: fixed; top: 2.75rem; left: 0; right: 0; z-index: 99;
+    height: 3.5rem; border-bottom: 1px solid;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 2rem;
+  }
+  .header-logo {
+    font-family: 'Outfit', sans-serif; font-weight: 900;
+    font-size: 0.9375rem; letter-spacing: 0.06em; text-decoration: none;
+  }
+  .header-nav {
+    display: flex; gap: 1.5rem;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
+    font-weight: 300; letter-spacing: 0.04em;
+  }
+  .header-nav a { text-decoration: none; }
+
+  /* Content */
+  .content { max-width: 42rem; margin: 0 auto; padding: 6rem 1.5rem 4rem; }
+
+  /* Story section */
+  .story {
+    display: grid; grid-template-columns: 280px 1fr; gap: 3rem;
+    align-items: start; margin-bottom: 4rem; padding-top: 3.5rem;
+  }
+  .story-photo {
+    width: 280px; height: 350px; border-radius: 6px; overflow: hidden;
+  }
+  .story-photo-placeholder {
+    width: 100%; height: 100%; display: flex; align-items: center;
+    justify-content: center; font-family: 'JetBrains Mono', monospace;
+    font-size: 0.6875rem; letter-spacing: 0.06em;
+  }
+  .story p { margin-bottom: 1.25rem; font-size: 1.0625rem; }
+  .story p:last-child { font-weight: 500; }
+
+  /* Section */
+  .section { margin-bottom: 4rem; }
+  .section-title {
+    font-family: 'Outfit', sans-serif; font-weight: 700;
+    font-size: 1.375rem; margin-bottom: 1.25rem;
+  }
+  .section p { margin-bottom: 1rem; font-size: 1.0625rem; }
+
+  /* Problem cards */
+  .problems { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin-top: 1.5rem; }
+  .problem {
+    padding: 1.25rem 1.5rem; border-radius: 6px; border: 1px solid;
+  }
+  .problem strong {
+    display: block; font-family: 'Outfit', sans-serif; font-weight: 700;
+    font-size: 0.9375rem; margin-bottom: 0.5rem;
+  }
+  .problem p { font-size: 0.9375rem; margin: 0; }
+
+  /* Steps */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem; margin-top: 1.5rem; }
+  .step { padding: 1.5rem; border-radius: 6px; border: 1px solid; }
+  .step-num {
+    font-family: 'Outfit', sans-serif; font-weight: 900;
+    font-size: 1.5rem; display: block; margin-bottom: 0.75rem;
+  }
+  .step h3 {
+    font-family: 'Outfit', sans-serif; font-weight: 700;
+    font-size: 0.9375rem; margin-bottom: 0.5rem;
+  }
+  .step p { font-size: 0.875rem; margin: 0; }
+  .agents {
+    display: flex; gap: 0.5rem; margin-top: 0.75rem;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.6875rem;
+  }
+  .agent {
+    padding: 0.15em 0.6em; border-radius: 3px;
+    letter-spacing: 0.04em;
+  }
+
+  /* CTA */
+  .cta { text-align: center; padding: 3rem 0 5rem; }
+  .cta-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    font-family: 'Outfit', sans-serif; font-size: 0.875rem; font-weight: 400;
+    letter-spacing: 0.02em; padding: 0.7rem 2rem; border-radius: 4px;
+    border: 1px solid transparent; cursor: pointer; text-decoration: none;
+  }
+
+  /* Auth card preview */
+  .auth-preview {
+    max-width: 28rem; margin: 3rem auto 0; text-align: center;
+  }
+  .auth-preview h2 {
+    font-family: 'Outfit', sans-serif; font-weight: 700;
+    font-size: 1.75rem; margin-bottom: 0.5rem;
+  }
+  .auth-preview .subtitle { font-size: 1rem; margin-bottom: 2rem; }
+  .auth-form {
+    padding: 2rem; border: 1px solid; border-radius: 6px;
+    display: flex; flex-direction: column; gap: 1.25rem;
+  }
+  .auth-social {
+    display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1rem;
+  }
+  .social-btn {
+    display: flex; align-items: center; justify-content: center; gap: 0.625rem;
+    width: 100%; padding: 0.6rem 1rem;
+    font-family: 'Outfit', sans-serif; font-size: 0.875rem; font-weight: 400;
+    letter-spacing: 0.02em; border: 1px solid; border-radius: 4px; cursor: pointer;
+  }
+  .divider {
+    display: flex; align-items: center; gap: 1rem; margin: 0.25rem 0;
+  }
+  .divider-line { flex: 1; height: 1px; }
+  .divider-text {
+    font-family: 'JetBrains Mono', monospace; font-size: 0.6875rem;
+    font-weight: 300; letter-spacing: 0.04em; white-space: nowrap;
+  }
+  .field { display: flex; flex-direction: column; text-align: left; }
+  .field label {
+    font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
+    font-weight: 300; letter-spacing: 0.05em; margin-bottom: 0.375rem;
+  }
+  .field input {
+    font-family: 'Crimson Pro', Georgia, serif; font-size: 1rem;
+    padding: 0.6rem 0.875rem; border: 1px solid; border-radius: 4px;
+    line-height: 1.5;
+  }
+  .submit-btn {
+    width: 100%; padding: 0.6rem 1.25rem;
+    font-family: 'Outfit', sans-serif; font-size: 0.875rem; font-weight: 400;
+    letter-spacing: 0.02em; border: 1px solid transparent; border-radius: 4px;
+    cursor: pointer;
+  }
+  .auth-switch {
+    margin-top: 1.5rem; font-size: 0.875rem;
+  }
+  .auth-switch a { font-weight: 500; text-decoration: none; }
+
+  /* ===================== COLOR DEFINITIONS ===================== */
+
+  /* CURRENT */
+  .v-current { background: #FAF8F4; color: #1A1612; }
+  .v-current .header { background: #FAF8F4; border-color: #D8CCBB; }
+  .v-current .header-logo { color: #1A1612; }
+  .v-current .header-nav a { color: #9E9282; }
+  .v-current .section-title { color: #1A1612; }
+  .v-current .story-photo-placeholder { background: #D8CCBB; color: #9E9282; }
+  .v-current .problem { border-color: #D8CCBB; background: rgba(26,22,18,0.02); }
+  .v-current .problem p { color: #5C5549; }
+  .v-current .step { border-color: #D8CCBB; }
+  .v-current .step-num { color: #C4935A; }
+  .v-current .step p { color: #5C5549; }
+  .v-current .agent { background: rgba(26,22,18,0.04); color: #9E9282; }
+  .v-current .cta-btn { background: #1A1612; color: #FAF8F4; }
+  .v-current .auth-preview .subtitle { color: #9E9282; }
+  .v-current .auth-form { border-color: #D8CCBB; background: #FAF8F4; }
+  .v-current .social-btn { border-color: #D8CCBB; background: #FAF8F4; color: #1A1612; }
+  .v-current .divider-line { background: #D8CCBB; }
+  .v-current .divider-text { color: #C8BAA3; }
+  .v-current .field label { color: #9E9282; }
+  .v-current .field input { border-color: #D8CCBB; background: #FAF8F4; color: #1A1612; }
+  .v-current .submit-btn { background: #1A1612; color: #FAF8F4; }
+  .v-current .auth-switch { color: #9E9282; }
+  .v-current .auth-switch a { color: #C4935A; }
+
+  /* SLATE */
+  .v-slate { background: #F8FAFB; color: #0F172A; }
+  .v-slate .header { background: #F8FAFB; border-color: #E2E8F0; }
+  .v-slate .header-logo { color: #0F172A; }
+  .v-slate .header-nav a { color: #94A3B8; }
+  .v-slate .section-title { color: #0F172A; }
+  .v-slate .story-photo-placeholder { background: #E2E8F0; color: #94A3B8; }
+  .v-slate .problem { border-color: #E2E8F0; background: rgba(15,23,42,0.02); }
+  .v-slate .problem p { color: #475569; }
+  .v-slate .step { border-color: #E2E8F0; }
+  .v-slate .step-num { color: #6366F1; }
+  .v-slate .step p { color: #475569; }
+  .v-slate .agent { background: rgba(15,23,42,0.04); color: #94A3B8; }
+  .v-slate .cta-btn { background: #0F172A; color: #F8FAFB; }
+  .v-slate .auth-preview .subtitle { color: #94A3B8; }
+  .v-slate .auth-form { border-color: #E2E8F0; background: #F8FAFB; }
+  .v-slate .social-btn { border-color: #E2E8F0; background: #F8FAFB; color: #0F172A; }
+  .v-slate .divider-line { background: #E2E8F0; }
+  .v-slate .divider-text { color: #CBD5E1; }
+  .v-slate .field label { color: #94A3B8; }
+  .v-slate .field input { border-color: #E2E8F0; background: #F8FAFB; color: #0F172A; }
+  .v-slate .submit-btn { background: #0F172A; color: #F8FAFB; }
+  .v-slate .auth-switch { color: #94A3B8; }
+  .v-slate .auth-switch a { color: #6366F1; }
+
+  /* ZINC */
+  .v-zinc { background: #FAFAFA; color: #18181B; }
+  .v-zinc .header { background: #FAFAFA; border-color: #E4E4E7; }
+  .v-zinc .header-logo { color: #18181B; }
+  .v-zinc .header-nav a { color: #A1A1AA; }
+  .v-zinc .section-title { color: #18181B; }
+  .v-zinc .story-photo-placeholder { background: #E4E4E7; color: #A1A1AA; }
+  .v-zinc .problem { border-color: #E4E4E7; background: rgba(24,24,27,0.02); }
+  .v-zinc .problem p { color: #52525B; }
+  .v-zinc .step { border-color: #E4E4E7; }
+  .v-zinc .step-num { color: #F59E0B; }
+  .v-zinc .step p { color: #52525B; }
+  .v-zinc .agent { background: rgba(24,24,27,0.04); color: #A1A1AA; }
+  .v-zinc .cta-btn { background: #18181B; color: #FAFAFA; }
+  .v-zinc .auth-preview .subtitle { color: #A1A1AA; }
+  .v-zinc .auth-form { border-color: #E4E4E7; background: #FAFAFA; }
+  .v-zinc .social-btn { border-color: #E4E4E7; background: #FAFAFA; color: #18181B; }
+  .v-zinc .divider-line { background: #E4E4E7; }
+  .v-zinc .divider-text { color: #D4D4D8; }
+  .v-zinc .field label { color: #A1A1AA; }
+  .v-zinc .field input { border-color: #E4E4E7; background: #FAFAFA; color: #18181B; }
+  .v-zinc .submit-btn { background: #18181B; color: #FAFAFA; }
+  .v-zinc .auth-switch { color: #A1A1AA; }
+  .v-zinc .auth-switch a { color: #F59E0B; }
+
+  /* STONE */
+  .v-stone { background: #FAFAF9; color: #1C1917; }
+  .v-stone .header { background: #FAFAF9; border-color: #E7E5E4; }
+  .v-stone .header-logo { color: #1C1917; }
+  .v-stone .header-nav a { color: #A8A29E; }
+  .v-stone .section-title { color: #1C1917; }
+  .v-stone .story-photo-placeholder { background: #E7E5E4; color: #A8A29E; }
+  .v-stone .problem { border-color: #E7E5E4; background: rgba(28,25,23,0.02); }
+  .v-stone .problem p { color: #57534E; }
+  .v-stone .step { border-color: #E7E5E4; }
+  .v-stone .step-num { color: #EA580C; }
+  .v-stone .step p { color: #57534E; }
+  .v-stone .agent { background: rgba(28,25,23,0.04); color: #A8A29E; }
+  .v-stone .cta-btn { background: #1C1917; color: #FAFAF9; }
+  .v-stone .auth-preview .subtitle { color: #A8A29E; }
+  .v-stone .auth-form { border-color: #E7E5E4; background: #FAFAF9; }
+  .v-stone .social-btn { border-color: #E7E5E4; background: #FAFAF9; color: #1C1917; }
+  .v-stone .divider-line { background: #E7E5E4; }
+  .v-stone .divider-text { color: #D6D3D1; }
+  .v-stone .field label { color: #A8A29E; }
+  .v-stone .field input { border-color: #E7E5E4; background: #FAFAF9; color: #1C1917; }
+  .v-stone .submit-btn { background: #1C1917; color: #FAFAF9; }
+  .v-stone .auth-switch { color: #A8A29E; }
+  .v-stone .auth-switch a { color: #EA580C; }
+
+  @media (max-width: 768px) {
+    .story { grid-template-columns: 1fr; }
+    .problems { grid-template-columns: 1fr; }
+    .steps { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="switcher">
+  <button class="active" data-variant="current">CURRENT (warm earth)</button>
+  <button data-variant="slate">SLATE (cool blue-gray)</button>
+  <button data-variant="zinc">ZINC (pure neutral)</button>
+  <button data-variant="stone">STONE (warm-neutral)</button>
+</div>
+
+<!-- ==================== CURRENT ==================== -->
+<div id="current" class="variant v-current active">
+  <div class="header">
+    <a href="#" class="header-logo">KURA</a>
+    <div class="header-nav">
+      <a href="#">Warum Kura</a>
+      <a href="#">Einrichtung</a>
+      <a href="#">Anmelden</a>
+      <a href="#">Konto erstellen</a>
+    </div>
+  </div>
+
+  <div class="content">
+    <section class="story">
+      <div class="story-photo">
+        <div class="story-photo-placeholder">[FOTO]</div>
+      </div>
+      <div>
+        <p>Ich habe Olympia-Athleten trainiert. Der nervigste Teil war dabei fast immer dasselbe: Training zu loggen &mdash; und zwar so, dass man die Daten nach der Saison auch wirklich auswerten kann. In der Praxis hat das nie richtig funktioniert.</p>
+        <p>Bei meinem eigenen Training war es nicht anders. Ich habe so ziemlich jede App ausprobiert, die es gibt: zu umstaendlich, zu starr, zu nervig. Was ich eigentlich wollte, war etwas Simples: Training festhalten, so wie ich einem Freund schreiben wuerde.</p>
+        <p>Genau daraus ist Kura entstanden. Ich habe ein Backend gebaut, in dem nicht der Mensch der &bdquo;primaere Nutzer&ldquo; ist, sondern der KI-Agent.</p>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Apps loesen das falsche Problem</h2>
+      <p>Es gibt hunderte Training-Apps. Die sind gut darin, Dinge zu speichern. Das eigentliche Problem ist aber das Loggen &mdash; und das ist Arbeit. Formulare ausfuellen, Dropdowns, durch Uebungslisten scrollen.</p>
+      <p>Einem Agenten ist das egal. Du schreibst: &bdquo;Tempo-Squats heute, 4 Sekunden runter, Pause unten, 80&thinsp;kg, war brutal&ldquo; &mdash; und er versteht, was gemeint ist.</p>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Chatfenster sind dafuer nicht gebaut</h2>
+      <div class="problems">
+        <div class="problem">
+          <strong>Chats vergessen.</strong>
+          <p>Kontextfenster sind begrenzt, und nach ein paar Monaten fallen die aeltesten Nachrichten einfach hinten raus.</p>
+        </div>
+        <div class="problem">
+          <strong>Memory hilft ein Stueck weit.</strong>
+          <p>Die KI erinnert sich an Muster, aber es ersetzt keine echten Trainingsdaten.</p>
+        </div>
+        <div class="problem">
+          <strong>Du bekommst die Daten nicht raus.</strong>
+          <p>Wechselst du die Plattform, steckt die gesamte Trainingshistorie in Chatprotokollen.</p>
+        </div>
+        <div class="problem">
+          <strong>Alles bleibt Text.</strong>
+          <p>Drei Monate Trainingsdaten, verteilt ueber Nachrichten. Analysen werden fragil und unzuverlaessig.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Was Kura macht</h2>
+      <p>Mit Kura ist der Input egal: Chat, Sprache, kurze Notizen &mdash; du formulierst so, wie es fuer dich natuerlich ist. Der Agent speichert alles als strukturierte Trainingsdaten.</p>
+      <p>Ein API-Call reicht, um dem Agenten den kompletten Kontext zu geben: jedes Training, jede Bestleistung, jede Entwicklung ueber Zeit.</p>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Einrichtung</h2>
+      <div class="steps">
+        <div class="step">
+          <span class="step-num">1</span>
+          <h3>Konto erstellen</h3>
+          <p>Aktuell kostenlos nutzbar.</p>
+        </div>
+        <div class="step">
+          <span class="step-num">2</span>
+          <h3>KI verbinden</h3>
+          <p>Agent auswaehlen und der Einrichtung folgen.</p>
+          <div class="agents">
+            <span class="agent">Claude</span>
+            <span class="agent">ChatGPT</span>
+            <span class="agent">Gemini</span>
+          </div>
+        </div>
+        <div class="step">
+          <span class="step-num">3</span>
+          <h3>Losreden</h3>
+          <p>Oeffne den Chat deiner KI und rede ueber dein Training.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="cta">
+      <a class="cta-btn" href="#">Konto erstellen</a>
+    </section>
+
+    <!-- Auth card preview -->
+    <section class="auth-preview">
+      <h2>Konto erstellen</h2>
+      <p class="subtitle">Um deinen Agenten zu verbinden. Aktuell kostenlos.</p>
+
+      <div class="auth-social">
+        <button class="social-btn">Apple</button>
+        <button class="social-btn">Google</button>
+        <button class="social-btn">GitHub</button>
+      </div>
+
+      <div class="divider">
+        <div class="divider-line"></div>
+        <span class="divider-text">Oder weiter mit</span>
+        <div class="divider-line"></div>
+      </div>
+
+      <div class="auth-form">
+        <div class="field">
+          <label>E-Mail</label>
+          <input type="email" placeholder="name@example.com">
+        </div>
+        <div class="field">
+          <label>Passwort</label>
+          <input type="password" placeholder="">
+        </div>
+        <div class="field">
+          <label>Passwort bestaetigen</label>
+          <input type="password" placeholder="">
+        </div>
+        <button class="submit-btn">Konto erstellen</button>
+      </div>
+
+      <p class="auth-switch">Bereits ein Konto? <a href="#">Anmelden</a></p>
+    </section>
+  </div>
+</div>
+
+<!-- ==================== SLATE ==================== -->
+<div id="slate" class="variant v-slate">
+  <div class="header">
+    <a href="#" class="header-logo">KURA</a>
+    <div class="header-nav">
+      <a href="#">Why Kura</a>
+      <a href="#">Setup</a>
+      <a href="#">Log in</a>
+      <a href="#">Create account</a>
+    </div>
+  </div>
+  <div class="content">
+    <section class="story">
+      <div class="story-photo"><div class="story-photo-placeholder">[FOTO]</div></div>
+      <div>
+        <p>Ich habe Olympia-Athleten trainiert. Der nervigste Teil war dabei fast immer dasselbe: Training zu loggen &mdash; und zwar so, dass man die Daten nach der Saison auch wirklich auswerten kann.</p>
+        <p>Bei meinem eigenen Training war es nicht anders. Was ich eigentlich wollte, war etwas Simples: Training festhalten, so wie ich einem Freund schreiben wuerde.</p>
+        <p>Genau daraus ist Kura entstanden. Ich habe ein Backend gebaut, in dem nicht der Mensch der &bdquo;primaere Nutzer&ldquo; ist, sondern der KI-Agent.</p>
+      </div>
+    </section>
+    <section class="section">
+      <h2 class="section-title">Apps solve the wrong problem</h2>
+      <p>There are hundreds of training apps. They're good at storing things. But the actual problem is the logging &mdash; and that's work.</p>
+      <p>An agent doesn't care about any of that. You write naturally, and it understands what you mean.</p>
+    </section>
+    <section class="section">
+      <h2 class="section-title">Chat windows aren't built for this</h2>
+      <div class="problems">
+        <div class="problem"><strong>Chats forget.</strong><p>Context windows are limited, and after a few months the oldest messages simply drop off.</p></div>
+        <div class="problem"><strong>Memory helps to a point.</strong><p>The AI remembers patterns, but that doesn't replace real training data.</p></div>
+        <div class="problem"><strong>You can't get the data out.</strong><p>Switch platforms and your entire training history is stuck in chat logs.</p></div>
+        <div class="problem"><strong>Everything stays text.</strong><p>Three months of training data spread across messages. Analyses get fragile.</p></div>
+      </div>
+    </section>
+    <section class="section">
+      <h2 class="section-title">Setup</h2>
+      <div class="steps">
+        <div class="step"><span class="step-num">1</span><h3>Create an account</h3><p>Currently free to use.</p></div>
+        <div class="step"><span class="step-num">2</span><h3>Connect an AI</h3><p>Pick your agent and follow the guide.</p>
+          <div class="agents"><span class="agent">Claude</span><span class="agent">ChatGPT</span><span class="agent">Gemini</span></div>
+        </div>
+        <div class="step"><span class="step-num">3</span><h3>Start talking</h3><p>Open your AI's chat and talk about your training.</p></div>
+      </div>
+    </section>
+    <section class="cta"><a class="cta-btn" href="#">Create account</a></section>
+    <section class="auth-preview">
+      <h2>Create an account</h2>
+      <p class="subtitle">To connect your agent. Currently free.</p>
+      <div class="auth-social">
+        <button class="social-btn">Apple</button>
+        <button class="social-btn">Google</button>
+        <button class="social-btn">GitHub</button>
+      </div>
+      <div class="divider"><div class="divider-line"></div><span class="divider-text">Or continue with</span><div class="divider-line"></div></div>
+      <div class="auth-form">
+        <div class="field"><label>Email</label><input type="email" placeholder="name@example.com"></div>
+        <div class="field"><label>Password</label><input type="password"></div>
+        <div class="field"><label>Confirm password</label><input type="password"></div>
+        <button class="submit-btn">Create account</button>
+      </div>
+      <p class="auth-switch">Already have an account? <a href="#">Log in</a></p>
+    </section>
+  </div>
+</div>
+
+<!-- ==================== ZINC ==================== -->
+<div id="zinc" class="variant v-zinc">
+  <div class="header">
+    <a href="#" class="header-logo">KURA</a>
+    <div class="header-nav">
+      <a href="#">Why Kura</a>
+      <a href="#">Setup</a>
+      <a href="#">Log in</a>
+      <a href="#">Create account</a>
+    </div>
+  </div>
+  <div class="content">
+    <section class="story">
+      <div class="story-photo"><div class="story-photo-placeholder">[FOTO]</div></div>
+      <div>
+        <p>Ich habe Olympia-Athleten trainiert. Der nervigste Teil war dabei fast immer dasselbe: Training zu loggen &mdash; und zwar so, dass man die Daten nach der Saison auch wirklich auswerten kann.</p>
+        <p>Bei meinem eigenen Training war es nicht anders. Was ich eigentlich wollte, war etwas Simples: Training festhalten, so wie ich einem Freund schreiben wuerde.</p>
+        <p>Genau daraus ist Kura entstanden. Ich habe ein Backend gebaut, in dem nicht der Mensch der &bdquo;primaere Nutzer&ldquo; ist, sondern der KI-Agent.</p>
+      </div>
+    </section>
+    <section class="section">
+      <h2 class="section-title">Apps solve the wrong problem</h2>
+      <p>There are hundreds of training apps. They're good at storing things. But the actual problem is the logging &mdash; and that's work.</p>
+      <p>An agent doesn't care about any of that. You write naturally, and it understands what you mean.</p>
+    </section>
+    <section class="section">
+      <h2 class="section-title">Chat windows aren't built for this</h2>
+      <div class="problems">
+        <div class="problem"><strong>Chats forget.</strong><p>Context windows are limited, and after a few months the oldest messages simply drop off.</p></div>
+        <div class="problem"><strong>Memory helps to a point.</strong><p>The AI remembers patterns, but that doesn't replace real training data.</p></div>
+        <div class="problem"><strong>You can't get the data out.</strong><p>Switch platforms and your entire training history is stuck in chat logs.</p></div>
+        <div class="problem"><strong>Everything stays text.</strong><p>Three months of training data spread across messages. Analyses get fragile.</p></div>
+      </div>
+    </section>
+    <section class="section">
+      <h2 class="section-title">Setup</h2>
+      <div class="steps">
+        <div class="step"><span class="step-num">1</span><h3>Create an account</h3><p>Currently free to use.</p></div>
+        <div class="step"><span class="step-num">2</span><h3>Connect an AI</h3><p>Pick your agent and follow the guide.</p>
+          <div class="agents"><span class="agent">Claude</span><span class="agent">ChatGPT</span><span class="agent">Gemini</span></div>
+        </div>
+        <div class="step"><span class="step-num">3</span><h3>Start talking</h3><p>Open your AI's chat and talk about your training.</p></div>
+      </div>
+    </section>
+    <section class="cta"><a class="cta-btn" href="#">Create account</a></section>
+    <section class="auth-preview">
+      <h2>Create an account</h2>
+      <p class="subtitle">To connect your agent. Currently free.</p>
+      <div class="auth-social">
+        <button class="social-btn">Apple</button>
+        <button class="social-btn">Google</button>
+        <button class="social-btn">GitHub</button>
+      </div>
+      <div class="divider"><div class="divider-line"></div><span class="divider-text">Or continue with</span><div class="divider-line"></div></div>
+      <div class="auth-form">
+        <div class="field"><label>Email</label><input type="email" placeholder="name@example.com"></div>
+        <div class="field"><label>Password</label><input type="password"></div>
+        <div class="field"><label>Confirm password</label><input type="password"></div>
+        <button class="submit-btn">Create account</button>
+      </div>
+      <p class="auth-switch">Already have an account? <a href="#">Log in</a></p>
+    </section>
+  </div>
+</div>
+
+<!-- ==================== STONE ==================== -->
+<div id="stone" class="variant v-stone">
+  <div class="header">
+    <a href="#" class="header-logo">KURA</a>
+    <div class="header-nav">
+      <a href="#">Why Kura</a>
+      <a href="#">Setup</a>
+      <a href="#">Log in</a>
+      <a href="#">Create account</a>
+    </div>
+  </div>
+  <div class="content">
+    <section class="story">
+      <div class="story-photo"><div class="story-photo-placeholder">[FOTO]</div></div>
+      <div>
+        <p>Ich habe Olympia-Athleten trainiert. Der nervigste Teil war dabei fast immer dasselbe: Training zu loggen &mdash; und zwar so, dass man die Daten nach der Saison auch wirklich auswerten kann.</p>
+        <p>Bei meinem eigenen Training war es nicht anders. Was ich eigentlich wollte, war etwas Simples: Training festhalten, so wie ich einem Freund schreiben wuerde.</p>
+        <p>Genau daraus ist Kura entstanden. Ich habe ein Backend gebaut, in dem nicht der Mensch der &bdquo;primaere Nutzer&ldquo; ist, sondern der KI-Agent.</p>
+      </div>
+    </section>
+    <section class="section">
+      <h2 class="section-title">Apps solve the wrong problem</h2>
+      <p>There are hundreds of training apps. They're good at storing things. But the actual problem is the logging &mdash; and that's work.</p>
+      <p>An agent doesn't care about any of that. You write naturally, and it understands what you mean.</p>
+    </section>
+    <section class="section">
+      <h2 class="section-title">Chat windows aren't built for this</h2>
+      <div class="problems">
+        <div class="problem"><strong>Chats forget.</strong><p>Context windows are limited, and after a few months the oldest messages simply drop off.</p></div>
+        <div class="problem"><strong>Memory helps to a point.</strong><p>The AI remembers patterns, but that doesn't replace real training data.</p></div>
+        <div class="problem"><strong>You can't get the data out.</strong><p>Switch platforms and your entire training history is stuck in chat logs.</p></div>
+        <div class="problem"><strong>Everything stays text.</strong><p>Three months of training data spread across messages. Analyses get fragile.</p></div>
+      </div>
+    </section>
+    <section class="section">
+      <h2 class="section-title">Setup</h2>
+      <div class="steps">
+        <div class="step"><span class="step-num">1</span><h3>Create an account</h3><p>Currently free to use.</p></div>
+        <div class="step"><span class="step-num">2</span><h3>Connect an AI</h3><p>Pick your agent and follow the guide.</p>
+          <div class="agents"><span class="agent">Claude</span><span class="agent">ChatGPT</span><span class="agent">Gemini</span></div>
+        </div>
+        <div class="step"><span class="step-num">3</span><h3>Start talking</h3><p>Open your AI's chat and talk about your training.</p></div>
+      </div>
+    </section>
+    <section class="cta"><a class="cta-btn" href="#">Create account</a></section>
+    <section class="auth-preview">
+      <h2>Create an account</h2>
+      <p class="subtitle">To connect your agent. Currently free.</p>
+      <div class="auth-social">
+        <button class="social-btn">Apple</button>
+        <button class="social-btn">Google</button>
+        <button class="social-btn">GitHub</button>
+      </div>
+      <div class="divider"><div class="divider-line"></div><span class="divider-text">Or continue with</span><div class="divider-line"></div></div>
+      <div class="auth-form">
+        <div class="field"><label>Email</label><input type="email" placeholder="name@example.com"></div>
+        <div class="field"><label>Password</label><input type="password"></div>
+        <div class="field"><label>Confirm password</label><input type="password"></div>
+        <button class="submit-btn">Create account</button>
+      </div>
+      <p class="auth-switch">Already have an account? <a href="#">Log in</a></p>
+    </section>
+  </div>
+</div>
+
+<script>
+  document.querySelectorAll('.switcher button').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var variant = this.getAttribute('data-variant');
+      document.querySelectorAll('.variant').forEach(function(v) { v.classList.remove('active'); });
+      document.querySelectorAll('.switcher button').forEach(function(b) { b.classList.remove('active'); });
+      document.getElementById(variant).classList.add('active');
+      this.classList.add('active');
+    });
+  });
+</script>
+</body>
+</html>

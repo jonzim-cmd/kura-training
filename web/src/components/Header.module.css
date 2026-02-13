@@ -19,6 +19,10 @@
   justify-content: space-between;
 }
 
+.innerLanding {
+  justify-content: flex-end;
+}
+
 .logo {
   font-family: var(--font-display);
   font-weight: 900;
@@ -50,6 +54,12 @@
 
 .link:hover {
   color: var(--ink);
+}
+
+/* Landing variant — always transparent, no border */
+.landing {
+  background: transparent;
+  border-bottom-color: transparent;
 }
 
 @media (max-width: 640px) {

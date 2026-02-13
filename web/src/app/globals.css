@@ -1,6 +1,6 @@
 /* ============================================================
    KURA — Design System
-   Descent aesthetic: warm earth gradient, structural typography.
+   Descent aesthetic: butter yellow on black, structural typography.
    Fonts: Outfit (display), Crimson Pro (body), JetBrains Mono (system)
    ============================================================ */
 
@@ -14,17 +14,17 @@
   --font-body: 'Crimson Pro', Georgia, serif;
   --font-mono: 'JetBrains Mono', monospace;
 
-  /* Kura Palette — warm earth */
-  --paper: #FAF8F4;
-  --ink: #1A1612;
-  --ink-mid: #5C5549;
-  --ink-faint: #9E9282;
-  --ink-ghost: #C8BAA3;
-  --thread: #D8CCBB;
-  --amber: #C4935A;
-  --amber-dim: rgba(196, 147, 90, 0.5);
-  --alert: rgba(220, 140, 80, 0.8);
-  --surface: rgba(250, 248, 244, 0.3);
+  /* Kura Palette — butter yellow on black */
+  --paper: #000000;
+  --ink: #D4D0C8;
+  --ink-mid: #888580;
+  --ink-faint: #555550;
+  --ink-ghost: #333330;
+  --thread: rgba(255, 255, 255, 0.08);
+  --amber: #FFE566;
+  --amber-dim: rgba(255, 229, 102, 0.5);
+  --alert: #FFE566;
+  --surface: rgba(255, 255, 255, 0.03);
 
   /* Layout */
   --max-width: 72rem;
@@ -46,6 +46,7 @@
 
 html {
   font-size: 16px;
+  scroll-behavior: smooth;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -109,15 +110,15 @@ h1, h2, h3, h4 {
 }
 
 .kura-btn--primary {
-  background: var(--ink);
-  color: var(--paper);
-  border-color: var(--ink);
+  background: var(--amber);
+  color: #000;
+  border-color: var(--amber);
 }
 
 .kura-btn--primary:hover {
-  background: var(--ink-mid);
-  border-color: var(--ink-mid);
-  color: var(--paper);
+  background: #ffd633;
+  border-color: #ffd633;
+  color: #000;
 }
 
 .kura-btn--secondary {
@@ -210,7 +211,7 @@ h1, h2, h3, h4 {
   font-weight: 300;
   padding: 0.15em 0.6em;
   border-radius: 3px;
-  background: rgba(26, 22, 18, 0.04);
+  background: rgba(255, 255, 255, 0.04);
   color: var(--ink-faint);
   letter-spacing: 0.04em;
 }
@@ -226,7 +227,7 @@ h1, h2, h3, h4 {
   font-family: var(--font-mono);
   font-size: 0.875rem;
   font-weight: 300;
-  background: rgba(26, 22, 18, 0.03);
+  background: rgba(255, 255, 255, 0.04);
   padding: 1rem 1.25rem;
   border-radius: 6px;
   overflow-x: auto;
@@ -237,7 +238,7 @@ h1, h2, h3, h4 {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
   font-weight: 300;
-  background: rgba(26, 22, 18, 0.04);
+  background: rgba(255, 255, 255, 0.04);
   padding: 0.15em 0.4em;
   border-radius: 3px;
 }
@@ -245,7 +246,7 @@ h1, h2, h3, h4 {
 /* --- Selection --- */
 
 ::selection {
-  background: rgba(196, 147, 90, 0.15);
+  background: rgba(255, 229, 102, 0.2);
   color: var(--ink);
 }
 

@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kura — Landing Page Color Variants</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;700;900&family=Crimson+Pro:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Crimson Pro', Georgia, serif; line-height: 1.7; }
+
+  /* Variant switcher */
+  .switcher {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
+    display: flex; gap: 0; background: #111; padding: 0;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
+  }
+  .switcher button {
+    flex: 1; padding: 0.75rem 1rem; border: none; cursor: pointer;
+    font-family: inherit; font-size: inherit; letter-spacing: 0.04em;
+    background: #222; color: #888; transition: all 0.2s;
+  }
+  .switcher button:hover { background: #333; color: #ccc; }
+  .switcher button.active { background: #444; color: #fff; font-weight: 400; }
+
+  /* Each variant page */
+  .variant { display: none; padding-top: 2.75rem; min-height: 100vh; }
+  .variant.active { display: block; }
+
+  /* Shared layout */
+  .surface {
+    min-height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; position: relative;
+  }
+  .title {
+    font-family: 'Outfit', sans-serif; font-weight: 900;
+    font-size: clamp(6rem, 14vw, 16rem); letter-spacing: -0.02em;
+    line-height: 0.85; user-select: none;
+  }
+
+  /* Phone scene */
+  .phone-scene {
+    display: flex; justify-content: center; padding: 4rem 1.5rem;
+  }
+  .phone {
+    width: 320px; border-radius: 24px; padding: 2rem 1.25rem;
+    position: relative;
+  }
+  .phone-notch {
+    width: 100px; height: 4px; border-radius: 2px;
+    margin: 0 auto 1.5rem; opacity: 0.15;
+  }
+  .msg {
+    padding: 0.75rem 1rem; border-radius: 14px; max-width: 90%;
+    font-size: 0.9375rem; line-height: 1.5; margin-bottom: 0.75rem;
+  }
+  .msg-user { margin-left: auto; }
+  .msg-agent { margin-right: auto; }
+  .typing {
+    display: flex; gap: 4px; padding: 0.75rem 1rem; border-radius: 14px;
+    width: fit-content;
+  }
+  .typing span {
+    width: 6px; height: 6px; border-radius: 50%; opacity: 0.4;
+    animation: bounce 1.4s infinite;
+  }
+  .typing span:nth-child(2) { animation-delay: 0.2s; }
+  .typing span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes bounce {
+    0%, 60%, 100% { transform: translateY(0); }
+    30% { transform: translateY(-4px); }
+  }
+
+  /* Bridge */
+  .bridge {
+    text-align: center; padding: 4rem 1.5rem;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
+    letter-spacing: 0.06em;
+  }
+  .bridge-dots {
+    display: flex; flex-direction: column; align-items: center;
+    gap: 6px; margin-bottom: 1.5rem;
+  }
+  .bridge-dot { width: 3px; height: 3px; border-radius: 50%; }
+
+  /* Threshold — decomposition table */
+  .threshold {
+    padding: 6rem 1.5rem; display: flex; justify-content: center;
+  }
+  .decomp {
+    font-family: 'JetBrains Mono', monospace; font-size: 0.8125rem;
+    line-height: 2.2; max-width: 500px; width: 100%;
+  }
+  .decomp-row {
+    display: flex; justify-content: space-between;
+    padding: 0.25rem 0; border-bottom: 1px solid;
+  }
+  .decomp-label { font-weight: 300; letter-spacing: 0.04em; }
+  .decomp-value { font-weight: 400; }
+
+  /* Event store */
+  .event-store {
+    padding: 4rem 1.5rem; display: flex; justify-content: center;
+  }
+  .json-block {
+    font-family: 'JetBrains Mono', monospace; font-size: 0.8125rem;
+    padding: 1.5rem 2rem; border-radius: 6px; max-width: 420px;
+    width: 100%; line-height: 1.8;
+  }
+
+  /* Projections */
+  .projections {
+    padding: 2rem 1.5rem 6rem; display: flex; justify-content: center;
+    gap: 1rem; flex-wrap: wrap;
+  }
+  .projection-card {
+    padding: 1.25rem 1.5rem; border-radius: 6px; width: 220px;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
+    line-height: 1.8;
+  }
+  .projection-title {
+    font-family: 'Outfit', sans-serif; font-weight: 700;
+    font-size: 0.8125rem; margin-bottom: 0.5rem;
+    letter-spacing: 0.02em;
+  }
+  .projection-line { opacity: 0.6; }
+
+  /* CTA */
+  .cta-section {
+    padding: 4rem 1.5rem 6rem; text-align: center;
+  }
+  .cta-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    font-family: 'Outfit', sans-serif; font-size: 0.875rem; font-weight: 400;
+    letter-spacing: 0.02em; padding: 0.7rem 2rem; border-radius: 4px;
+    border: 1px solid transparent; cursor: pointer; text-decoration: none;
+  }
+
+  /* Color swatch strip */
+  .swatches {
+    display: flex; gap: 0; padding: 0.5rem 1.5rem; justify-content: center;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.625rem;
+    margin-bottom: 2rem;
+  }
+  .swatch {
+    width: 80px; height: 48px; display: flex; align-items: flex-end;
+    justify-content: center; padding-bottom: 4px; border-radius: 3px;
+  }
+
+  /* ===================== VARIANT: CURRENT (warm earth) ===================== */
+  .v-current { background: #FAF8F4; color: #1A1612; }
+  .v-current .title { color: #1A1612; }
+  .v-current .phone { background: #1A1612; }
+  .v-current .phone-notch { background: #FAF8F4; }
+  .v-current .msg-user { background: rgba(250,248,244,0.12); color: rgba(250,248,244,0.85); }
+  .v-current .msg-agent { background: rgba(250,248,244,0.06); color: rgba(250,248,244,0.7); }
+  .v-current .typing span { background: #FAF8F4; }
+  .v-current .bridge { color: #9E9282; }
+  .v-current .bridge-dot { background: #C8BAA3; }
+  .v-current .decomp-row { border-color: #D8CCBB; }
+  .v-current .decomp-label { color: #9E9282; }
+  .v-current .decomp-value { color: #1A1612; }
+  .v-current .json-block { background: rgba(26,22,18,0.03); color: #5C5549; }
+  .v-current .json-key { color: #9E9282; }
+  .v-current .json-val { color: #1A1612; }
+  .v-current .projection-card { background: rgba(26,22,18,0.03); border: 1px solid #D8CCBB; }
+  .v-current .projection-title { color: #1A1612; }
+  .v-current .projection-line { color: #5C5549; }
+  .v-current .cta-btn { background: #1A1612; color: #FAF8F4; }
+  .v-current .highlight { color: #C4935A; }
+
+  /* ===================== VARIANT: SLATE (cool blue-gray) ===================== */
+  .v-slate { background: #F8FAFB; color: #0F172A; }
+  .v-slate .title { color: #0F172A; }
+  .v-slate .phone { background: #0F172A; }
+  .v-slate .phone-notch { background: #F8FAFB; }
+  .v-slate .msg-user { background: rgba(248,250,251,0.1); color: rgba(248,250,251,0.85); }
+  .v-slate .msg-agent { background: rgba(248,250,251,0.05); color: rgba(248,250,251,0.7); }
+  .v-slate .typing span { background: #F8FAFB; }
+  .v-slate .bridge { color: #94A3B8; }
+  .v-slate .bridge-dot { background: #CBD5E1; }
+  .v-slate .decomp-row { border-color: #E2E8F0; }
+  .v-slate .decomp-label { color: #94A3B8; }
+  .v-slate .decomp-value { color: #0F172A; }
+  .v-slate .json-block { background: rgba(15,23,42,0.03); color: #475569; }
+  .v-slate .json-key { color: #94A3B8; }
+  .v-slate .json-val { color: #0F172A; }
+  .v-slate .projection-card { background: rgba(15,23,42,0.03); border: 1px solid #E2E8F0; }
+  .v-slate .projection-title { color: #0F172A; }
+  .v-slate .projection-line { color: #475569; }
+  .v-slate .cta-btn { background: #0F172A; color: #F8FAFB; }
+  .v-slate .highlight { color: #6366F1; }
+
+  /* ===================== VARIANT: ZINC (pure neutral gray) ===================== */
+  .v-zinc { background: #FAFAFA; color: #18181B; }
+  .v-zinc .title { color: #18181B; }
+  .v-zinc .phone { background: #18181B; }
+  .v-zinc .phone-notch { background: #FAFAFA; }
+  .v-zinc .msg-user { background: rgba(250,250,250,0.1); color: rgba(250,250,250,0.85); }
+  .v-zinc .msg-agent { background: rgba(250,250,250,0.05); color: rgba(250,250,250,0.7); }
+  .v-zinc .typing span { background: #FAFAFA; }
+  .v-zinc .bridge { color: #A1A1AA; }
+  .v-zinc .bridge-dot { background: #D4D4D8; }
+  .v-zinc .decomp-row { border-color: #E4E4E7; }
+  .v-zinc .decomp-label { color: #A1A1AA; }
+  .v-zinc .decomp-value { color: #18181B; }
+  .v-zinc .json-block { background: rgba(24,24,27,0.03); color: #52525B; }
+  .v-zinc .json-key { color: #A1A1AA; }
+  .v-zinc .json-val { color: #18181B; }
+  .v-zinc .projection-card { background: rgba(24,24,27,0.03); border: 1px solid #E4E4E7; }
+  .v-zinc .projection-title { color: #18181B; }
+  .v-zinc .projection-line { color: #52525B; }
+  .v-zinc .cta-btn { background: #18181B; color: #FAFAFA; }
+  .v-zinc .highlight { color: #F59E0B; }
+
+  /* ===================== VARIANT: STONE (warm-neutral gray) ===================== */
+  .v-stone { background: #FAFAF9; color: #1C1917; }
+  .v-stone .title { color: #1C1917; }
+  .v-stone .phone { background: #1C1917; }
+  .v-stone .phone-notch { background: #FAFAF9; }
+  .v-stone .msg-user { background: rgba(250,250,249,0.1); color: rgba(250,250,249,0.85); }
+  .v-stone .msg-agent { background: rgba(250,250,249,0.05); color: rgba(250,250,249,0.7); }
+  .v-stone .typing span { background: #FAFAF9; }
+  .v-stone .bridge { color: #A8A29E; }
+  .v-stone .bridge-dot { background: #D6D3D1; }
+  .v-stone .decomp-row { border-color: #E7E5E4; }
+  .v-stone .decomp-label { color: #A8A29E; }
+  .v-stone .decomp-value { color: #1C1917; }
+  .v-stone .json-block { background: rgba(28,25,23,0.03); color: #57534E; }
+  .v-stone .json-key { color: #A8A29E; }
+  .v-stone .json-val { color: #1C1917; }
+  .v-stone .projection-card { background: rgba(28,25,23,0.03); border: 1px solid #E7E5E4; }
+  .v-stone .projection-title { color: #1C1917; }
+  .v-stone .projection-line { color: #57534E; }
+  .v-stone .cta-btn { background: #1C1917; color: #FAFAF9; }
+  .v-stone .highlight { color: #EA580C; }
+</style>
+</head>
+<body>
+
+<div class="switcher">
+  <button class="active" data-variant="current">CURRENT (warm earth)</button>
+  <button data-variant="slate">SLATE (cool blue-gray)</button>
+  <button data-variant="zinc">ZINC (pure neutral)</button>
+  <button data-variant="stone">STONE (warm-neutral)</button>
+</div>
+
+<!-- ==================== CURRENT ==================== -->
+<div id="current" class="variant v-current active">
+  <div class="swatches">
+    <div class="swatch" style="background:#FAF8F4;color:#9E9282;border:1px solid #D8CCBB">paper</div>
+    <div class="swatch" style="background:#1A1612;color:#9E9282">ink</div>
+    <div class="swatch" style="background:#5C5549;color:#9E9282">mid</div>
+    <div class="swatch" style="background:#9E9282;color:#FAF8F4">faint</div>
+    <div class="swatch" style="background:#C8BAA3;color:#5C5549">ghost</div>
+    <div class="swatch" style="background:#D8CCBB;color:#5C5549">thread</div>
+    <div class="swatch" style="background:#C4935A;color:#FAF8F4">accent</div>
+  </div>
+
+  <section class="surface">
+    <div class="title">KURA</div>
+  </section>
+
+  <section class="phone-scene">
+    <div class="phone">
+      <div class="phone-notch"></div>
+      <div class="msg msg-user">Heute Kniebeugen gemacht, 5x5 mit 100kg. War schwer, die letzten beiden Wiederholungen musste ich rauswuergen.</div>
+      <div class="typing"><span></span><span></span><span></span></div>
+    </div>
+  </section>
+
+  <section class="bridge">
+    <div class="bridge-dots">
+      <div class="bridge-dot"></div>
+      <div class="bridge-dot" style="opacity:0.7"></div>
+      <div class="bridge-dot" style="opacity:0.5"></div>
+      <div class="bridge-dot" style="opacity:0.3"></div>
+    </div>
+    <span>was in diesen drei Punkten passiert</span>
+  </section>
+
+  <section class="threshold">
+    <div class="decomp">
+      <div class="decomp-row"><span class="decomp-label">exercise_id</span><span class="decomp-value highlight">barbell_squat</span></div>
+      <div class="decomp-row"><span class="decomp-label">sets x reps</span><span class="decomp-value">5 x 5</span></div>
+      <div class="decomp-row"><span class="decomp-label">weight_kg</span><span class="decomp-value">100</span></div>
+      <div class="decomp-row"><span class="decomp-label">rpe</span><span class="decomp-value">9</span></div>
+      <div class="decomp-row"><span class="decomp-label">notes</span><span class="decomp-value">letzte zwei reps rausgekampft</span></div>
+    </div>
+  </section>
+
+  <section class="event-store">
+    <div class="json-block">
+      <div>{</div>
+      <div>&nbsp;&nbsp;<span class="json-key">"event_type"</span>: <span class="json-val">"set.logged"</span>,</div>
+      <div>&nbsp;&nbsp;<span class="json-key">"data"</span>: {</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"exercise_id"</span>: <span class="json-val highlight">"barbell_squat"</span>,</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"sets"</span>: <span class="json-val">5</span>,</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"reps"</span>: <span class="json-val">5</span>,</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"weight_kg"</span>: <span class="json-val">100</span></div>
+      <div>&nbsp;&nbsp;}</div>
+      <div>}</div>
+    </div>
+  </section>
+
+  <section class="projections">
+    <div class="projection-card">
+      <div class="projection-title">exercise_progression</div>
+      <div class="projection-line">estimated_1rm: <span class="highlight">116 kg</span></div>
+      <div class="projection-line">trend: plateau</div>
+      <div class="projection-line">weeks_at_weight: 3</div>
+    </div>
+    <div class="projection-card">
+      <div class="projection-title">training_timeline</div>
+      <div class="projection-line">frequency: 4.2/week</div>
+      <div class="projection-line">streak: 12 days</div>
+      <div class="projection-line">top_set: 100kg x5</div>
+    </div>
+    <div class="projection-card">
+      <div class="projection-title">recovery</div>
+      <div class="projection-line">sleep: <span class="highlight">6.3h avg</span></div>
+      <div class="projection-line">below target 7.5h</div>
+      <div class="projection-line">energy: declining</div>
+    </div>
+  </section>
+
+  <section class="cta-section">
+    <button class="cta-btn">Loslegen</button>
+  </section>
+</div>
+
+<!-- ==================== SLATE ==================== -->
+<div id="slate" class="variant v-slate">
+  <div class="swatches">
+    <div class="swatch" style="background:#F8FAFB;color:#94A3B8;border:1px solid #E2E8F0">paper</div>
+    <div class="swatch" style="background:#0F172A;color:#94A3B8">ink</div>
+    <div class="swatch" style="background:#475569;color:#94A3B8">mid</div>
+    <div class="swatch" style="background:#94A3B8;color:#F8FAFB">faint</div>
+    <div class="swatch" style="background:#CBD5E1;color:#475569">ghost</div>
+    <div class="swatch" style="background:#E2E8F0;color:#475569">thread</div>
+    <div class="swatch" style="background:#6366F1;color:#F8FAFB">accent</div>
+  </div>
+
+  <section class="surface">
+    <div class="title">KURA</div>
+  </section>
+
+  <section class="phone-scene">
+    <div class="phone">
+      <div class="phone-notch"></div>
+      <div class="msg msg-user">Heute Kniebeugen gemacht, 5x5 mit 100kg. War schwer, die letzten beiden Wiederholungen musste ich rauswuergen.</div>
+      <div class="typing"><span></span><span></span><span></span></div>
+    </div>
+  </section>
+
+  <section class="bridge">
+    <div class="bridge-dots">
+      <div class="bridge-dot"></div>
+      <div class="bridge-dot" style="opacity:0.7"></div>
+      <div class="bridge-dot" style="opacity:0.5"></div>
+      <div class="bridge-dot" style="opacity:0.3"></div>
+    </div>
+    <span>was in diesen drei Punkten passiert</span>
+  </section>
+
+  <section class="threshold">
+    <div class="decomp">
+      <div class="decomp-row"><span class="decomp-label">exercise_id</span><span class="decomp-value highlight">barbell_squat</span></div>
+      <div class="decomp-row"><span class="decomp-label">sets x reps</span><span class="decomp-value">5 x 5</span></div>
+      <div class="decomp-row"><span class="decomp-label">weight_kg</span><span class="decomp-value">100</span></div>
+      <div class="decomp-row"><span class="decomp-label">rpe</span><span class="decomp-value">9</span></div>
+      <div class="decomp-row"><span class="decomp-label">notes</span><span class="decomp-value">letzte zwei reps rausgekampft</span></div>
+    </div>
+  </section>
+
+  <section class="event-store">
+    <div class="json-block">
+      <div>{</div>
+      <div>&nbsp;&nbsp;<span class="json-key">"event_type"</span>: <span class="json-val">"set.logged"</span>,</div>
+      <div>&nbsp;&nbsp;<span class="json-key">"data"</span>: {</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"exercise_id"</span>: <span class="json-val highlight">"barbell_squat"</span>,</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"sets"</span>: <span class="json-val">5</span>,</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"reps"</span>: <span class="json-val">5</span>,</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"weight_kg"</span>: <span class="json-val">100</span></div>
+      <div>&nbsp;&nbsp;}</div>
+      <div>}</div>
+    </div>
+  </section>
+
+  <section class="projections">
+    <div class="projection-card">
+      <div class="projection-title">exercise_progression</div>
+      <div class="projection-line">estimated_1rm: <span class="highlight">116 kg</span></div>
+      <div class="projection-line">trend: plateau</div>
+      <div class="projection-line">weeks_at_weight: 3</div>
+    </div>
+    <div class="projection-card">
+      <div class="projection-title">training_timeline</div>
+      <div class="projection-line">frequency: 4.2/week</div>
+      <div class="projection-line">streak: 12 days</div>
+      <div class="projection-line">top_set: 100kg x5</div>
+    </div>
+    <div class="projection-card">
+      <div class="projection-title">recovery</div>
+      <div class="projection-line">sleep: <span class="highlight">6.3h avg</span></div>
+      <div class="projection-line">below target 7.5h</div>
+      <div class="projection-line">energy: declining</div>
+    </div>
+  </section>
+
+  <section class="cta-section">
+    <button class="cta-btn">Loslegen</button>
+  </section>
+</div>
+
+<!-- ==================== ZINC ==================== -->
+<div id="zinc" class="variant v-zinc">
+  <div class="swatches">
+    <div class="swatch" style="background:#FAFAFA;color:#A1A1AA;border:1px solid #E4E4E7">paper</div>
+    <div class="swatch" style="background:#18181B;color:#A1A1AA">ink</div>
+    <div class="swatch" style="background:#52525B;color:#A1A1AA">mid</div>
+    <div class="swatch" style="background:#A1A1AA;color:#FAFAFA">faint</div>
+    <div class="swatch" style="background:#D4D4D8;color:#52525B">ghost</div>
+    <div class="swatch" style="background:#E4E4E7;color:#52525B">thread</div>
+    <div class="swatch" style="background:#F59E0B;color:#18181B">accent</div>
+  </div>
+
+  <section class="surface">
+    <div class="title">KURA</div>
+  </section>
+
+  <section class="phone-scene">
+    <div class="phone">
+      <div class="phone-notch"></div>
+      <div class="msg msg-user">Heute Kniebeugen gemacht, 5x5 mit 100kg. War schwer, die letzten beiden Wiederholungen musste ich rauswuergen.</div>
+      <div class="typing"><span></span><span></span><span></span></div>
+    </div>
+  </section>
+
+  <section class="bridge">
+    <div class="bridge-dots">
+      <div class="bridge-dot"></div>
+      <div class="bridge-dot" style="opacity:0.7"></div>
+      <div class="bridge-dot" style="opacity:0.5"></div>
+      <div class="bridge-dot" style="opacity:0.3"></div>
+    </div>
+    <span>was in diesen drei Punkten passiert</span>
+  </section>
+
+  <section class="threshold">
+    <div class="decomp">
+      <div class="decomp-row"><span class="decomp-label">exercise_id</span><span class="decomp-value highlight">barbell_squat</span></div>
+      <div class="decomp-row"><span class="decomp-label">sets x reps</span><span class="decomp-value">5 x 5</span></div>
+      <div class="decomp-row"><span class="decomp-label">weight_kg</span><span class="decomp-value">100</span></div>
+      <div class="decomp-row"><span class="decomp-label">rpe</span><span class="decomp-value">9</span></div>
+      <div class="decomp-row"><span class="decomp-label">notes</span><span class="decomp-value">letzte zwei reps rausgekampft</span></div>
+    </div>
+  </section>
+
+  <section class="event-store">
+    <div class="json-block">
+      <div>{</div>
+      <div>&nbsp;&nbsp;<span class="json-key">"event_type"</span>: <span class="json-val">"set.logged"</span>,</div>
+      <div>&nbsp;&nbsp;<span class="json-key">"data"</span>: {</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"exercise_id"</span>: <span class="json-val highlight">"barbell_squat"</span>,</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"sets"</span>: <span class="json-val">5</span>,</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"reps"</span>: <span class="json-val">5</span>,</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"weight_kg"</span>: <span class="json-val">100</span></div>
+      <div>&nbsp;&nbsp;}</div>
+      <div>}</div>
+    </div>
+  </section>
+
+  <section class="projections">
+    <div class="projection-card">
+      <div class="projection-title">exercise_progression</div>
+      <div class="projection-line">estimated_1rm: <span class="highlight">116 kg</span></div>
+      <div class="projection-line">trend: plateau</div>
+      <div class="projection-line">weeks_at_weight: 3</div>
+    </div>
+    <div class="projection-card">
+      <div class="projection-title">training_timeline</div>
+      <div class="projection-line">frequency: 4.2/week</div>
+      <div class="projection-line">streak: 12 days</div>
+      <div class="projection-line">top_set: 100kg x5</div>
+    </div>
+    <div class="projection-card">
+      <div class="projection-title">recovery</div>
+      <div class="projection-line">sleep: <span class="highlight">6.3h avg</span></div>
+      <div class="projection-line">below target 7.5h</div>
+      <div class="projection-line">energy: declining</div>
+    </div>
+  </section>
+
+  <section class="cta-section">
+    <button class="cta-btn">Loslegen</button>
+  </section>
+</div>
+
+<!-- ==================== STONE ==================== -->
+<div id="stone" class="variant v-stone">
+  <div class="swatches">
+    <div class="swatch" style="background:#FAFAF9;color:#A8A29E;border:1px solid #E7E5E4">paper</div>
+    <div class="swatch" style="background:#1C1917;color:#A8A29E">ink</div>
+    <div class="swatch" style="background:#57534E;color:#A8A29E">mid</div>
+    <div class="swatch" style="background:#A8A29E;color:#FAFAF9">faint</div>
+    <div class="swatch" style="background:#D6D3D1;color:#57534E">ghost</div>
+    <div class="swatch" style="background:#E7E5E4;color:#57534E">thread</div>
+    <div class="swatch" style="background:#EA580C;color:#FAFAF9">accent</div>
+  </div>
+
+  <section class="surface">
+    <div class="title">KURA</div>
+  </section>
+
+  <section class="phone-scene">
+    <div class="phone">
+      <div class="phone-notch"></div>
+      <div class="msg msg-user">Heute Kniebeugen gemacht, 5x5 mit 100kg. War schwer, die letzten beiden Wiederholungen musste ich rauswuergen.</div>
+      <div class="typing"><span></span><span></span><span></span></div>
+    </div>
+  </section>
+
+  <section class="bridge">
+    <div class="bridge-dots">
+      <div class="bridge-dot"></div>
+      <div class="bridge-dot" style="opacity:0.7"></div>
+      <div class="bridge-dot" style="opacity:0.5"></div>
+      <div class="bridge-dot" style="opacity:0.3"></div>
+    </div>
+    <span>was in diesen drei Punkten passiert</span>
+  </section>
+
+  <section class="threshold">
+    <div class="decomp">
+      <div class="decomp-row"><span class="decomp-label">exercise_id</span><span class="decomp-value highlight">barbell_squat</span></div>
+      <div class="decomp-row"><span class="decomp-label">sets x reps</span><span class="decomp-value">5 x 5</span></div>
+      <div class="decomp-row"><span class="decomp-label">weight_kg</span><span class="decomp-value">100</span></div>
+      <div class="decomp-row"><span class="decomp-label">rpe</span><span class="decomp-value">9</span></div>
+      <div class="decomp-row"><span class="decomp-label">notes</span><span class="decomp-value">letzte zwei reps rausgekampft</span></div>
+    </div>
+  </section>
+
+  <section class="event-store">
+    <div class="json-block">
+      <div>{</div>
+      <div>&nbsp;&nbsp;<span class="json-key">"event_type"</span>: <span class="json-val">"set.logged"</span>,</div>
+      <div>&nbsp;&nbsp;<span class="json-key">"data"</span>: {</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"exercise_id"</span>: <span class="json-val highlight">"barbell_squat"</span>,</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"sets"</span>: <span class="json-val">5</span>,</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"reps"</span>: <span class="json-val">5</span>,</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="json-key">"weight_kg"</span>: <span class="json-val">100</span></div>
+      <div>&nbsp;&nbsp;}</div>
+      <div>}</div>
+    </div>
+  </section>
+
+  <section class="projections">
+    <div class="projection-card">
+      <div class="projection-title">exercise_progression</div>
+      <div class="projection-line">estimated_1rm: <span class="highlight">116 kg</span></div>
+      <div class="projection-line">trend: plateau</div>
+      <div class="projection-line">weeks_at_weight: 3</div>
+    </div>
+    <div class="projection-card">
+      <div class="projection-title">training_timeline</div>
+      <div class="projection-line">frequency: 4.2/week</div>
+      <div class="projection-line">streak: 12 days</div>
+      <div class="projection-line">top_set: 100kg x5</div>
+    </div>
+    <div class="projection-card">
+      <div class="projection-title">recovery</div>
+      <div class="projection-line">sleep: <span class="highlight">6.3h avg</span></div>
+      <div class="projection-line">below target 7.5h</div>
+      <div class="projection-line">energy: declining</div>
+    </div>
+  </section>
+
+  <section class="cta-section">
+    <button class="cta-btn">Loslegen</button>
+  </section>
+</div>
+
+<script>
+  document.querySelectorAll('.switcher button').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var variant = this.getAttribute('data-variant');
+      document.querySelectorAll('.variant').forEach(function(v) { v.classList.remove('active'); });
+      document.querySelectorAll('.switcher button').forEach(function(b) { b.classList.remove('active'); });
+      document.getElementById(variant).classList.add('active');
+      this.classList.add('active');
+    });
+  });
+</script>
+</body>
+</html>

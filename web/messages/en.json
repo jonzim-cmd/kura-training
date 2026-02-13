@@ -1,10 +1,10 @@
 {
   "meta": {
-    "title": "Kura — Your body, understood",
+    "title": "Kura | Training",
     "description": "An AI that grows with you — learning your training, nutrition, and recovery to make better decisions together."
   },
   "nav": {
-    "home": "Home",
+    "home": "Why Kura",
     "setup": "Setup",
     "login": "Log in",
     "signup": "Create account",
@@ -70,7 +70,7 @@
     "how": {
       "title": "Setup",
       "step1Title": "Create an account",
-      "step1Desc": "Free, no credit card, takes 30 seconds.",
+      "step1Desc": "Currently free to use.",
       "step2Title": "Connect an AI",
       "step2Desc": "Pick your agent and follow the setup guide.",
       "step2SetupLink": "Setup guide \u2192",
@@ -81,9 +81,9 @@
   },
   "auth": {
     "loginTitle": "Welcome back",
-    "loginSubtitle": "Log in to access your Kura vault.",
-    "signupTitle": "Create your vault",
-    "signupSubtitle": "Free. No credit card required.",
+    "loginSubtitle": "Log in to continue.",
+    "signupTitle": "Create an account",
+    "signupSubtitle": "To connect your agent. Currently free.",
     "email": "Email",
     "password": "Password",
     "confirmPassword": "Confirm password",
@@ -106,7 +106,7 @@
     },
     "apiKeys": {
       "title": "API Keys",
-      "description": "API keys allow your AI to access your Kura vault. Keep them secret.",
+      "description": "API keys allow your agent to access Kura. Keep them secret.",
       "create": "Create new key",
       "name": "Name",
       "key": "Key",

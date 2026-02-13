@@ -51,7 +51,7 @@
 .aiTabActive {
   border-color: var(--amber);
   color: var(--amber);
-  background-color: rgba(196, 147, 90, 0.04);
+  background-color: rgba(255, 229, 102, 0.04);
 }
 
 /* Protocol Tabs */

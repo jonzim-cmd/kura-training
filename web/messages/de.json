@@ -1,10 +1,10 @@
 {
   "meta": {
-    "title": "Kura — Dein Körper, verstanden",
+    "title": "Kura | Training",
     "description": "Eine KI, die mit dir wächst — lernt dein Training, deine Ernährung und deine Erholung, um gemeinsam bessere Entscheidungen zu treffen."
   },
   "nav": {
-    "home": "Start",
+    "home": "Warum Kura",
     "setup": "Einrichtung",
     "login": "Anmelden",
     "signup": "Konto erstellen",
@@ -70,7 +70,7 @@
     "how": {
       "title": "Einrichtung",
       "step1Title": "Konto erstellen",
-      "step1Desc": "Kostenlos, keine Kreditkarte n\u00f6tig, dauert 30 Sekunden.",
+      "step1Desc": "Aktuell kostenlos nutzbar.",
       "step2Title": "KI verbinden",
       "step2Desc": "Agent ausw\u00e4hlen und der Einrichtung folgen.",
       "step2SetupLink": "Zur Einrichtung \u2192",
@@ -81,9 +81,9 @@
   },
   "auth": {
     "loginTitle": "Willkommen zurück",
-    "loginSubtitle": "Melde dich an, um auf deinen Kura-Tresor zuzugreifen.",
-    "signupTitle": "Erstelle deinen Tresor",
-    "signupSubtitle": "Kostenlos. Keine Kreditkarte nötig.",
+    "loginSubtitle": "Melde dich an, um fortzufahren.",
+    "signupTitle": "Konto erstellen",
+    "signupSubtitle": "Um deinen Agenten zu verbinden. Aktuell kostenlos.",
     "email": "E-Mail",
     "password": "Passwort",
     "confirmPassword": "Passwort bestätigen",
@@ -106,7 +106,7 @@
     },
     "apiKeys": {
       "title": "API-Schlüssel",
-      "description": "API-Schlüssel ermöglichen deiner KI den Zugang zu deinem Kura-Tresor. Halte sie geheim.",
+      "description": "API-Schlüssel ermöglichen deinem Agenten den Zugang zu Kura. Halte sie geheim.",
       "create": "Neuen Schlüssel erstellen",
       "name": "Name",
       "key": "Schlüssel",

@@ -1,10 +1,10 @@
 {
   "meta": {
-    "title": "蔵（Kura）— あなたの身体を、理解する",
+    "title": "Kura | Training",
     "description": "あなたと共に成長するAI。トレーニング、栄養、回復を学び、共により良い判断を下します。"
   },
   "nav": {
-    "home": "ホーム",
+    "home": "Kuraとは",
     "setup": "設定ガイド",
     "login": "ログイン",
     "signup": "アカウント作成",
@@ -70,7 +70,7 @@
     "how": {
       "title": "\u30bb\u30c3\u30c8\u30a2\u30c3\u30d7",
       "step1Title": "\u30a2\u30ab\u30a6\u30f3\u30c8\u4f5c\u6210",
-      "step1Desc": "\u7121\u6599\u3001\u30af\u30ec\u30b8\u30c3\u30c8\u30ab\u30fc\u30c9\u4e0d\u8981\u300130\u79d2\u3067\u5b8c\u4e86\u3002",
+      "step1Desc": "現在無料で利用できます。",
       "step2Title": "AI\u3092\u63a5\u7d9a",
       "step2Desc": "\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u3092\u9078\u3093\u3067\u30bb\u30c3\u30c8\u30a2\u30c3\u30d7\u30ac\u30a4\u30c9\u306b\u5f93\u3046\u3002",
       "step2SetupLink": "\u30bb\u30c3\u30c8\u30a2\u30c3\u30d7\u30ac\u30a4\u30c9 \u2192",
@@ -81,9 +81,9 @@
   },
   "auth": {
     "loginTitle": "おかえりなさい",
-    "loginSubtitle": "蔵にアクセスするためにログインしてください。",
-    "signupTitle": "あなたの蔵を作る",
-    "signupSubtitle": "無料。クレジットカード不要。",
+    "loginSubtitle": "続行するにはログインしてください。",
+    "signupTitle": "アカウント作成",
+    "signupSubtitle": "エージェントを接続するために。現在無料。",
     "email": "メールアドレス",
     "password": "パスワード",
     "confirmPassword": "パスワード確認",
@@ -96,7 +96,7 @@
   },
   "settings": {
     "title": "設定",
-    "subtitle": "蔵アカウントとAPIアクセスを管理します。",
+    "subtitle": "KuraアカウントとAPIアクセスを管理します。",
     "account": {
       "title": "アカウント",
       "email": "メールアドレス",
@@ -106,7 +106,7 @@
     },
     "apiKeys": {
       "title": "APIキー",
-      "description": "APIキーを使って、AIが蔵にアクセスできます。秘密にしてください。",
+      "description": "APIキーを使って、エージェントがKuraにアクセスできます。秘密にしてください。",
       "create": "新しいキーを作成",
       "name": "名前",
       "key": "キー",
