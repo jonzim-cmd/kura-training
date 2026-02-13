@@ -284,39 +284,51 @@ def _get_conventions() -> dict[str, Any]:
         },
         "model_tier_registry_v1": {
             "rules": [
-                "Resolve model identity from trusted server-side sources only.",
-                "Map model_identity to capability_tier deterministically.",
-                "Unknown or malformed identities must fall back to strict tier.",
-                "Use public benchmarks only for offline registry curation, never as runtime gate input.",
+                "All models start at moderate tier regardless of identity.",
+                "Auto-tiering adjusts tier based on observed quality (mismatch rate over 30 days).",
+                "Model identity is used for audit/logging and quality track separation only.",
+                "Strict tier additionally requires intent_handshake for high-impact writes.",
             ],
             "identity_resolution": {
                 "trusted_sources_order": [
+                    "model_attestation (HMAC-verified runtime identity)",
                     "oauth_access_token.client_id -> KURA_AGENT_MODEL_BY_CLIENT_ID_JSON",
                     "KURA_AGENT_MODEL_IDENTITY",
                     "unknown",
                 ],
-                "fallback_reason_code": "model_identity_unknown_fallback_strict",
-                "online_external_benchmark_lookups_allowed": False,
+                "identity_purpose": "audit_and_quality_track_separation",
+                "identity_does_not_affect_tier": True,
             },
+            "default_start_tier": "moderate",
             "tiers": {
                 "strict": {
                     "confidence_floor": 0.90,
                     "allowed_action_scope": "strict",
-                    "high_impact_write_policy": "block",
+                    "high_impact_write_policy": "confirm_first",
+                    "intent_handshake_required": True,
                     "repair_auto_apply_cap": "confirm_only",
                 },
                 "moderate": {
                     "confidence_floor": 0.80,
                     "allowed_action_scope": "moderate",
                     "high_impact_write_policy": "confirm_first",
+                    "intent_handshake_required": False,
                     "repair_auto_apply_cap": "confirm_only",
                 },
                 "advanced": {
                     "confidence_floor": 0.70,
                     "allowed_action_scope": "proactive",
                     "high_impact_write_policy": "allow",
+                    "intent_handshake_required": False,
                     "repair_auto_apply_cap": "enabled",
                 },
+            },
+            "auto_tiering": {
+                "lookback_days": 30,
+                "min_samples": 12,
+                "advanced_max_mismatch_pct": 0.60,
+                "moderate_max_mismatch_pct": 4.00,
+                "hysteresis_enabled": True,
             },
             "policy_outputs": [
                 "capability_tier",

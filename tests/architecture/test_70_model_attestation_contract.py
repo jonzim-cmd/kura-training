@@ -29,5 +29,5 @@ def test_auto_tiering_guardrails_have_min_samples_and_hysteresis() -> None:
     src = AGENT_RS.read_text(encoding="utf-8")
     assert "MODEL_TIER_AUTO_MIN_SAMPLES" in src
     assert "apply_model_tier_hysteresis" in src
-    assert "resolve_auto_tier_policy_for_attested_model" in src
+    assert "resolve_auto_tier_policy" in src
     assert "MODEL_TIER_AUTO_LOW_SAMPLES_CONFIRM_REASON_CODE" in src

@@ -994,18 +994,9 @@ enum AgentLanguageMode {
     DeveloperRaw,
 }
 
-const ADVANCED_MODEL_IDENTITIES: [&str; 3] = [
-    "openai:gpt-5",
-    "openai:gpt-5-pro",
-    "anthropic:claude-4-opus",
-];
-const MODERATE_MODEL_IDENTITIES: [&str; 5] = [
-    "openai:gpt-5-mini",
-    "openai:gpt-4.1",
-    "anthropic:claude-3-5-sonnet",
-    "anthropic:claude-3-7-sonnet",
-    "anthropic:claude-4-sonnet",
-];
+// Model tier is determined by auto-tiering (observed quality), not by model name.
+// All models start at moderate and earn advancement through performance.
+// Model identity is retained for audit/logging and quality track separation only.
 
 #[derive(Debug, Clone)]
 struct ResolvedModelIdentity {
@@ -1609,29 +1600,15 @@ fn model_tier_policy_from_name(tier_name: &str) -> ModelTierPolicy {
             capability_tier: "strict",
             confidence_floor: 0.90,
             allowed_action_scope: "strict",
-            high_impact_write_policy: "block",
+            high_impact_write_policy: "confirm_first",
             repair_auto_apply_cap: "confirm_only",
         },
     }
 }
 
-fn resolve_model_tier_policy(model_identity: &str) -> ModelTierPolicy {
-    let normalized =
-        normalize_model_identity(model_identity).unwrap_or_else(|| "unknown".to_string());
-    if ADVANCED_MODEL_IDENTITIES
-        .iter()
-        .any(|candidate| candidate.eq_ignore_ascii_case(&normalized))
-    {
-        return model_tier_policy_from_name("advanced");
-    }
-    if MODERATE_MODEL_IDENTITIES
-        .iter()
-        .any(|candidate| candidate.eq_ignore_ascii_case(&normalized))
-    {
-        return model_tier_policy_from_name("moderate");
-    }
-
-    model_tier_policy_from_name("strict")
+fn resolve_model_tier_policy_default() -> ModelTierPolicy {
+    // All models start at moderate. Auto-tiering adjusts based on observed quality.
+    model_tier_policy_from_name("moderate")
 }
 
 fn candidate_auto_model_tier(sample_count: i64, mismatch_rate_pct: f64) -> &'static str {
@@ -1691,7 +1668,7 @@ fn apply_model_tier_hysteresis(
     candidate_tier.to_string()
 }
 
-async fn resolve_auto_tier_policy_for_attested_model(
+async fn resolve_auto_tier_policy(
     state: &AppState,
     user_id: Uuid,
     model_identity: &str,
@@ -1795,18 +1772,14 @@ async fn resolve_model_tier_policy_for_write(
     user_id: Uuid,
     resolved_model_identity: &ResolvedModelIdentity,
 ) -> Result<(ModelTierPolicy, Vec<String>), AppError> {
-    if resolved_model_identity.source == "attested_runtime" {
-        return resolve_auto_tier_policy_for_attested_model(
-            state,
-            user_id,
-            &resolved_model_identity.model_identity,
-        )
-        .await;
-    }
-    Ok((
-        resolve_model_tier_policy(&resolved_model_identity.model_identity),
-        Vec::new(),
-    ))
+    // Auto-tiering for all models, regardless of attestation source.
+    // Model identity is used as quality track key (audit), not for tier assignment.
+    resolve_auto_tier_policy(
+        state,
+        user_id,
+        &resolved_model_identity.model_identity,
+    )
+    .await
 }
 
 fn dedupe_reason_codes(reason_codes: &mut Vec<String>) {
@@ -1820,12 +1793,14 @@ fn build_agent_self_model(
 ) -> AgentSelfModel {
     let mut known_limitations = match tier_policy.capability_tier {
         "strict" => vec![
-            "High-impact writes are blocked unless policy preconditions are satisfied.".to_string(),
-            "Repair auto-apply is confirmation-gated by default in strict tier.".to_string(),
+            "High-impact writes require confirm-first + mandatory intent_handshake in strict tier.".to_string(),
+            "Repair auto-apply is confirmation-gated in strict tier.".to_string(),
+            "Tier was reduced by auto-tiering due to observed quality issues.".to_string(),
         ],
         "moderate" => vec![
-            "High-impact writes require confirm-first behavior in moderate tier.".to_string(),
+            "High-impact writes require confirm-first in moderate tier.".to_string(),
             "Repair auto-apply remains confirmation-gated in moderate tier.".to_string(),
+            "All models start at moderate; advancement to trusted requires consistent quality.".to_string(),
         ],
         _ => vec![
             "Autonomy can still be reduced by calibration or integrity regressions.".to_string(),
@@ -1837,7 +1812,7 @@ fn build_agent_self_model(
         .any(|code| code == MODEL_IDENTITY_UNKNOWN_FALLBACK_REASON_CODE)
     {
         known_limitations.push(
-            "Model identity could not be resolved; strict fallback policy is active.".to_string(),
+            "Model identity could not be resolved; used as audit label only, does not affect tier.".to_string(),
         );
     }
 
@@ -1851,8 +1826,8 @@ fn build_agent_self_model(
             write: "/v1/agent/write-with-proof".to_string(),
         },
         fallback_behavior: AgentSelfModelFallbackBehavior {
-            unknown_identity_action: "fallback_strict".to_string(),
-            unknown_policy_action: "deny".to_string(),
+            unknown_identity_action: "fallback_moderate".to_string(),
+            unknown_policy_action: "auto_tier".to_string(),
         },
         docs: AgentSelfModelDocs {
             runtime_policy: "system.conventions.model_tier_registry_v1".to_string(),
@@ -1959,7 +1934,7 @@ fn build_agent_capabilities_with_self_model(
 
 fn build_agent_capabilities() -> AgentCapabilitiesResponse {
     let model_identity = resolve_model_identity_with_sources(None, None, None);
-    let tier_policy = resolve_model_tier_policy(&model_identity.model_identity);
+    let tier_policy = resolve_model_tier_policy_default();
     let self_model = build_agent_self_model(&model_identity, &tier_policy);
     build_agent_capabilities_with_self_model(self_model)
 }
@@ -5099,9 +5074,6 @@ fn evaluate_autonomy_gate(
             if reason_codes.is_empty() {
                 reason_codes.push(INTEGRITY_DEGRADED_CONFIRM_REASON_CODE.to_string());
             }
-        } else if tier_policy.high_impact_write_policy == "block" {
-            decision = "confirm_first".to_string();
-            reason_codes.push(MODEL_TIER_STRICT_CONFIRM_REASON_CODE.to_string());
         } else if effective_quality_status == "monitor" {
             decision = "confirm_first".to_string();
             if normalize_quality_status(&autonomy_policy.calibration_status) == "monitor" {
@@ -5111,7 +5083,11 @@ fn evaluate_autonomy_gate(
             }
         } else if tier_policy.high_impact_write_policy == "confirm_first" {
             decision = "confirm_first".to_string();
-            reason_codes.push(MODEL_TIER_CONFIRM_REASON_CODE.to_string());
+            if tier_policy.capability_tier == "strict" {
+                reason_codes.push(MODEL_TIER_STRICT_CONFIRM_REASON_CODE.to_string());
+            } else {
+                reason_codes.push(MODEL_TIER_CONFIRM_REASON_CODE.to_string());
+            }
         }
     }
 
@@ -5130,7 +5106,7 @@ fn default_autonomy_gate() -> AgentAutonomyGate {
     AgentAutonomyGate {
         decision: "allow".to_string(),
         action_class: "low_impact_write".to_string(),
-        model_tier: "strict".to_string(),
+        model_tier: "moderate".to_string(),
         effective_quality_status: "healthy".to_string(),
         reason_codes: Vec::new(),
     }
@@ -7274,21 +7250,12 @@ pub async fn write_with_proof(
     }
     validate_session_feedback_certainty_contract(&req.events)?;
 
+    // intent_handshake is mandatory only for strict tier + high-impact writes.
+    // For moderate/advanced, it's accepted but not required.
     let intent_handshake_confirmation = match req.intent_handshake.as_ref() {
         Some(handshake) => {
             validate_intent_handshake(handshake, &action_class)?;
             Some(build_intent_handshake_confirmation(handshake))
-        }
-        None if action_class == "high_impact_write" => {
-            return Err(AppError::Validation {
-                message: "intent_handshake is required for high-impact writes".to_string(),
-                field: Some("intent_handshake".to_string()),
-                received: None,
-                docs_hint: Some(
-                    "Provide intent_handshake.v1 with goal, planned_action, assumptions, non_goals, impact_class, and success_criteria."
-                        .to_string(),
-                ),
-            });
         }
         None => None,
     };
@@ -7398,6 +7365,21 @@ pub async fn write_with_proof(
             })),
             docs_hint: Some(
                 "Request explicit user confirmation or reduce scope to low-impact writes before retry."
+                    .to_string(),
+            ),
+        });
+    }
+    // Strict tier: require intent_handshake for high-impact writes (must explain reasoning).
+    if autonomy_gate.model_tier == "strict" && action_class == "high_impact_write" && intent_handshake_confirmation.is_none() {
+        return Err(AppError::Validation {
+            message: "intent_handshake is required for high-impact writes in strict tier".to_string(),
+            field: Some("intent_handshake".to_string()),
+            received: Some(serde_json::json!({
+                "model_tier": autonomy_gate.model_tier,
+                "action_class": action_class,
+            })),
+            docs_hint: Some(
+                "Strict tier requires intent_handshake.v1 with goal, planned_action, assumptions, non_goals, impact_class, and success_criteria."
                     .to_string(),
             ),
         });
@@ -7619,7 +7601,7 @@ pub async fn get_agent_capabilities(
 ) -> Result<Json<AgentCapabilitiesResponse>, AppError> {
     require_scopes(&auth, &["agent:read"], "GET /v1/agent/capabilities")?;
     let model_identity = resolve_model_identity(&auth);
-    let tier_policy = resolve_model_tier_policy(&model_identity.model_identity);
+    let tier_policy = resolve_model_tier_policy_default();
     let self_model = build_agent_self_model(&model_identity, &tier_policy);
     Ok(Json(build_agent_capabilities_with_self_model(self_model)))
 }
@@ -7647,7 +7629,7 @@ pub async fn get_agent_context(
     require_scopes(&auth, &["agent:read"], "GET /v1/agent/context")?;
     let user_id = auth.user_id;
     let model_identity = resolve_model_identity(&auth);
-    let tier_policy = resolve_model_tier_policy(&model_identity.model_identity);
+    let tier_policy = resolve_model_tier_policy_default();
     let self_model = build_agent_self_model(&model_identity, &tier_policy);
     let exercise_limit = clamp_limit(params.exercise_limit, 5, 100);
     let strength_limit = clamp_limit(params.strength_limit, 5, 100);
@@ -10556,10 +10538,10 @@ mod tests {
     }
 
     #[test]
-    fn model_tier_policy_defaults_to_strict_for_unknown_identity() {
-        let tier = super::resolve_model_tier_policy("vendor:unknown-model");
-        assert_eq!(tier.capability_tier, "strict");
-        assert_eq!(tier.high_impact_write_policy, "block");
+    fn model_tier_policy_defaults_to_moderate_for_all() {
+        let tier = super::resolve_model_tier_policy_default();
+        assert_eq!(tier.capability_tier, "moderate");
+        assert_eq!(tier.high_impact_write_policy, "confirm_first");
     }
 
     #[test]
@@ -10587,7 +10569,7 @@ mod tests {
         policy.repair_auto_apply_enabled = true;
         policy.require_confirmation_for_repairs = false;
 
-        let strict_tier = super::resolve_model_tier_policy("unknown");
+        let strict_tier = super::model_tier_policy_from_name("strict");
         let applied = super::apply_model_tier_policy(policy, "unknown", &strict_tier, &[]);
         assert_eq!(applied.max_scope_level, "strict");
         assert!(!applied.repair_auto_apply_enabled);
@@ -10598,7 +10580,7 @@ mod tests {
     #[test]
     fn autonomy_gate_requires_confirmation_for_strict_tier() {
         let policy = super::default_autonomy_policy();
-        let strict_tier = super::resolve_model_tier_policy("unknown");
+        let strict_tier = super::model_tier_policy_from_name("strict");
         let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &strict_tier, &[]);
         assert_eq!(gate.decision, "confirm_first");
         assert!(
@@ -10612,7 +10594,7 @@ mod tests {
     fn autonomy_gate_requires_confirmation_when_calibration_is_monitor() {
         let mut policy = super::default_autonomy_policy();
         policy.calibration_status = "monitor".to_string();
-        let advanced_tier = super::resolve_model_tier_policy("openai:gpt-5");
+        let advanced_tier = super::model_tier_policy_from_name("advanced");
         let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &advanced_tier, &[]);
         assert_eq!(gate.decision, "confirm_first");
         assert!(
@@ -10625,7 +10607,7 @@ mod tests {
     #[test]
     fn high_impact_confirmation_requires_payload_when_confirm_first() {
         let policy = super::default_autonomy_policy();
-        let strict_tier = super::resolve_model_tier_policy("unknown");
+        let strict_tier = super::model_tier_policy_from_name("strict");
         let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &strict_tier, &[]);
         let events = vec![make_event(
             "training_plan.created",
@@ -10661,7 +10643,7 @@ mod tests {
     #[test]
     fn high_impact_confirmation_accepts_fresh_payload_when_confirm_first() {
         let policy = super::default_autonomy_policy();
-        let strict_tier = super::resolve_model_tier_policy("unknown");
+        let strict_tier = super::model_tier_policy_from_name("strict");
         let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &strict_tier, &[]);
         let events = vec![make_event(
             "training_plan.created",
@@ -10707,7 +10689,7 @@ mod tests {
     #[test]
     fn high_impact_confirmation_rejects_stale_payload() {
         let policy = super::default_autonomy_policy();
-        let strict_tier = super::resolve_model_tier_policy("unknown");
+        let strict_tier = super::model_tier_policy_from_name("strict");
         let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &strict_tier, &[]);
         let events = vec![make_event(
             "training_plan.created",
@@ -10762,7 +10744,7 @@ mod tests {
     #[test]
     fn high_impact_confirmation_rejects_payload_mismatch_token() {
         let policy = super::default_autonomy_policy();
-        let strict_tier = super::resolve_model_tier_policy("unknown");
+        let strict_tier = super::model_tier_policy_from_name("strict");
         let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &strict_tier, &[]);
         let events_b = vec![make_event(
             "training_plan.created",
@@ -10822,25 +10804,30 @@ mod tests {
 
     #[test]
     fn autonomy_gate_matrix_is_deterministic_for_high_impact_writes() {
+        // Tiers are now determined by auto-tiering, not model name.
+        // Test all tier × quality combinations directly.
         let scenarios = [
-            ("unknown", "healthy", "healthy", "confirm_first"),
-            ("unknown", "healthy", "monitor", "confirm_first"),
-            ("unknown", "healthy", "degraded", "confirm_first"),
-            ("openai:gpt-5-mini", "healthy", "healthy", "confirm_first"),
-            ("openai:gpt-5-mini", "healthy", "monitor", "confirm_first"),
-            ("openai:gpt-5-mini", "healthy", "degraded", "confirm_first"),
-            ("openai:gpt-5", "healthy", "healthy", "allow"),
-            ("openai:gpt-5", "healthy", "monitor", "confirm_first"),
-            ("openai:gpt-5", "healthy", "degraded", "confirm_first"),
+            ("strict", "healthy", "healthy", "confirm_first"),
+            ("strict", "healthy", "monitor", "confirm_first"),
+            ("strict", "healthy", "degraded", "confirm_first"),
+            ("moderate", "healthy", "healthy", "confirm_first"),
+            ("moderate", "healthy", "monitor", "confirm_first"),
+            ("moderate", "healthy", "degraded", "confirm_first"),
+            ("advanced", "healthy", "healthy", "allow"),
+            ("advanced", "healthy", "monitor", "confirm_first"),
+            ("advanced", "healthy", "degraded", "confirm_first"),
         ];
 
-        for (model_identity, slo_status, calibration_status, expected_decision) in scenarios {
+        for (tier_name, slo_status, calibration_status, expected_decision) in scenarios {
             let mut policy = super::default_autonomy_policy();
             policy.slo_status = slo_status.to_string();
             policy.calibration_status = calibration_status.to_string();
-            let tier = super::resolve_model_tier_policy(model_identity);
+            let tier = super::model_tier_policy_from_name(tier_name);
             let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &tier, &[]);
-            assert_eq!(gate.decision, expected_decision);
+            assert_eq!(
+                gate.decision, expected_decision,
+                "tier={tier_name} slo={slo_status} cal={calibration_status}"
+            );
         }
     }
 
@@ -11277,7 +11264,7 @@ mod tests {
             "/v1/agent/write-with-proof"
         );
         assert_eq!(manifest.self_model.schema_version, "agent_self_model.v1");
-        assert_eq!(manifest.self_model.capability_tier, "strict");
+        assert_eq!(manifest.self_model.capability_tier, "moderate");
         assert!(manifest.required_verification_contract.requires_receipts);
         assert!(
             manifest
