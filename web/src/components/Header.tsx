@@ -50,7 +50,6 @@ export function Header({ variant = 'default' }: HeaderProps) {
               {variant !== 'landing' && (
                 <Link href="/start" className={styles.link}>{t('home')}</Link>
               )}
-              <Link href="/setup" className={styles.link}>{t('setup')}</Link>
               <Link href="/login" className={styles.link}>{t('login')}</Link>
               <Link href="/request-access" className={styles.link}>{t('requestAccess')}</Link>
             </>

@@ -1,17 +1,24 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
+import { Link } from '@/i18n/routing';
+import { useAuth } from '@/lib/auth-context';
+import { SETUP_SEEN_STORAGE_KEY } from '@/lib/onboarding';
 import styles from './setup.module.css';
 
 type AI = 'claude' | 'chatgpt' | 'gemini';
 type Protocol = 'cli' | 'mcp';
+const API_KEY_SETTINGS_PATH = '/settings#api-keys';
+const MCP_SERVER_NAME = 'Kura';
+const CONFIGURED_MCP_URL = process.env.NEXT_PUBLIC_KURA_MCP_URL?.trim() ?? '';
+const FALLBACK_MCP_URL = 'https://<dein-mcp-host>/mcp';
 
 const CLI_COMMANDS: Record<AI, Record<string, string>> = {
   claude: {
     install: 'cargo install kura-cli',
     login: 'kura login',
-    apiKey: 'kura admin create-key --name "claude"',
+    apiKey: API_KEY_SETTINGS_PATH,
     configure: `# Add to your CLAUDE.md or project config:
 # Tool: kura CLI at /path/to/kura
 # API Key: kura_sk_...`,
@@ -19,7 +26,7 @@ const CLI_COMMANDS: Record<AI, Record<string, string>> = {
   chatgpt: {
     install: 'cargo install kura-cli',
     login: 'kura login',
-    apiKey: 'kura admin create-key --name "chatgpt"',
+    apiKey: API_KEY_SETTINGS_PATH,
     configure: `# In ChatGPT settings, add a custom tool:
 # Name: Kura
 # Command: kura
@@ -28,7 +35,7 @@ const CLI_COMMANDS: Record<AI, Record<string, string>> = {
   gemini: {
     install: 'cargo install kura-cli',
     login: 'kura login',
-    apiKey: 'kura admin create-key --name "gemini"',
+    apiKey: API_KEY_SETTINGS_PATH,
     configure: `# In Gemini workspace, add Kura tool:
 # Binary: /path/to/kura
 # API Key: kura_sk_...`,
@@ -37,10 +44,96 @@ const CLI_COMMANDS: Record<AI, Record<string, string>> = {
 
 const STEP_KEYS = ['install', 'login', 'apiKey', 'configure'] as const;
 
+function getMcpSnippet(ai: AI, mcpUrl: string) {
+  const base = `{
+  "mcpServers": {
+    "kura": {
+      "url": "${mcpUrl}",
+      "headers": {
+        "Authorization": "Bearer <KURA_API_KEY>"
+      }
+    }
+  }
+}`;
+
+  if (ai === 'claude') {
+    return base;
+  }
+  if (ai === 'chatgpt') {
+    return `// ChatGPT (Web) -> Developer Mode -> Add MCP connector
+${base}`;
+  }
+  return `// Gemini / Other MCP-compatible clients
+${base}`;
+}
+
 export default function SetupPage() {
   const t = useTranslations('setup');
+  const tn = useTranslations('nav');
+  const tc = useTranslations('common');
   const [selectedAI, setSelectedAI] = useState<AI>('claude');
   const [selectedProtocol, setSelectedProtocol] = useState<Protocol>('cli');
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const { user, loading } = useAuth();
+  const isLoggedIn = !loading && Boolean(user);
+  const isMcpLive = CONFIGURED_MCP_URL.length > 0;
+  const mcpUrl = isMcpLive ? CONFIGURED_MCP_URL : FALLBACK_MCP_URL;
+  const mcpSnippet = getMcpSnippet(selectedAI, mcpUrl);
+
+  const markCopied = (id: string) => {
+    setCopiedId(id);
+    window.setTimeout(() => setCopiedId(null), 1800);
+  };
+
+  const copyText = async (value: string, id: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      markCopied(id);
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = value;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      markCopied(id);
+    }
+  };
+
+  const copyLabel = (id: string) => (copiedId === id ? tc('copied') : tc('copy'));
+
+  useEffect(() => {
+    if (!loading && user) {
+      localStorage.setItem(SETUP_SEEN_STORAGE_KEY, '1');
+    }
+  }, [loading, user]);
+
+  const renderSetupActions = () => {
+    if (isLoggedIn) {
+      return (
+        <Link href={API_KEY_SETTINGS_PATH} className="kura-btn kura-btn--ghost">
+          {tn('settings')}
+        </Link>
+      );
+    }
+
+    return (
+      <>
+        <Link href="/login" className="kura-btn kura-btn--primary">
+          {tn('login')}
+        </Link>
+        <Link href="/request-access" className="kura-btn kura-btn--ghost">
+          {tn('requestAccess')}
+        </Link>
+        <Link href={API_KEY_SETTINGS_PATH} className="kura-btn kura-btn--ghost">
+          {tn('settings')}
+        </Link>
+      </>
+    );
+  };
 
   return (
     <div className={styles.setupPage}>
@@ -48,6 +141,14 @@ export default function SetupPage() {
         <div className={styles.header}>
           <h1 className={styles.title}>{t('title')}</h1>
           <p className={styles.subtitle}>{t('subtitle')}</p>
+        </div>
+
+        <div className={`kura-card ${styles.accountCard}`}>
+          <h2 className={styles.accountTitle}>{t('accountGate.title')}</h2>
+          <p className={styles.accountDescription}>
+            {isLoggedIn ? t('accountGate.loggedInDescription') : t('accountGate.loggedOutDescription')}
+          </p>
+          <div className={styles.accountActions}>{renderSetupActions()}</div>
         </div>
 
         {/* AI Selector */}
@@ -102,24 +203,101 @@ export default function SetupPage() {
                     <p className={styles.stepDescription}>
                       {t(`${selectedAI}.cliSteps.${stepKey}.description`)}
                     </p>
-                    <pre className="kura-code">
-                      <code>{CLI_COMMANDS[selectedAI][stepKey]}</code>
-                    </pre>
+                    <div className={styles.codeBlock}>
+                      <pre className="kura-code">
+                        <code>{CLI_COMMANDS[selectedAI][stepKey]}</code>
+                      </pre>
+                      <button
+                        type="button"
+                        className="kura-btn kura-btn--ghost"
+                        onClick={() => copyText(CLI_COMMANDS[selectedAI][stepKey], `cli-${selectedAI}-${stepKey}`)}
+                      >
+                        {copyLabel(`cli-${selectedAI}-${stepKey}`)}
+                      </button>
+                    </div>
+                    {stepKey === 'apiKey' && (
+                      <>
+                        <p className={styles.stepHint}>
+                          {isLoggedIn ? t('accountGate.keyHintLoggedIn') : t('accountGate.keyHintLoggedOut')}
+                        </p>
+                        <div className={styles.stepActions}>{renderSetupActions()}</div>
+                      </>
+                    )}
                   </div>
                 </div>
               ))}
             </div>
           ) : (
             <div className={`kura-card ${styles.mcpCard}`}>
-              <div className={styles.mcpIcon} aria-hidden="true">
-                <svg width="40" height="40" viewBox="0 0 40 40" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <path d="M20 5L35 20L20 35L5 20Z" />
-                  <path d="M20 12L28 20L20 28L12 20Z" />
-                </svg>
+              <h3 className={styles.mcpTitle}>{isMcpLive ? t('mcpReady.title') : t('mcpComingSoon.title')}</h3>
+              <p className={styles.mcpDescription}>
+                {isMcpLive ? t('mcpReady.description') : t('mcpComingSoon.description')}
+              </p>
+              <p className={styles.mcpStatus}>
+                {isMcpLive ? t('mcpReady.status') : t('mcpComingSoon.status')}
+              </p>
+              <p className={styles.stepHint}>
+                {isLoggedIn ? t('accountGate.mcpHintLoggedIn') : t('accountGate.mcpHintLoggedOut')}
+              </p>
+
+              <div className={styles.mcpFields}>
+                <div className={styles.mcpField}>
+                  <div>
+                    <p className={styles.mcpLabel}>{t('mcpFields.name')}</p>
+                    <code className="kura-code-inline">{MCP_SERVER_NAME}</code>
+                  </div>
+                  <button
+                    type="button"
+                    className="kura-btn kura-btn--ghost"
+                    onClick={() => copyText(MCP_SERVER_NAME, 'mcp-name')}
+                  >
+                    {copyLabel('mcp-name')}
+                  </button>
+                </div>
+
+                <div className={styles.mcpField}>
+                  <div>
+                    <p className={styles.mcpLabel}>{t('mcpFields.url')}</p>
+                    <code className="kura-code-inline">{mcpUrl}</code>
+                  </div>
+                  <button
+                    type="button"
+                    className="kura-btn kura-btn--ghost"
+                    onClick={() => copyText(mcpUrl, 'mcp-url')}
+                  >
+                    {copyLabel('mcp-url')}
+                  </button>
+                </div>
+
+                <div className={styles.mcpField}>
+                  <div>
+                    <p className={styles.mcpLabel}>{t('mcpFields.auth')}</p>
+                    <code className="kura-code-inline">{t('mcpFields.authValue')}</code>
+                  </div>
+                  <button
+                    type="button"
+                    className="kura-btn kura-btn--ghost"
+                    onClick={() => copyText(t('mcpFields.authValue'), 'mcp-auth')}
+                  >
+                    {copyLabel('mcp-auth')}
+                  </button>
+                </div>
               </div>
-              <h3 className={styles.mcpTitle}>{t('mcpComingSoon.title')}</h3>
-              <p className={styles.mcpDescription}>{t('mcpComingSoon.description')}</p>
-              <p className={styles.mcpStatus}>{t('mcpComingSoon.status')}</p>
+
+              <div className={styles.stepActions}>{renderSetupActions()}</div>
+
+              <div className={styles.codeBlock}>
+                <pre className="kura-code">
+                  <code>{mcpSnippet}</code>
+                </pre>
+                <button
+                  type="button"
+                  className="kura-btn kura-btn--ghost"
+                  onClick={() => copyText(mcpSnippet, `mcp-snippet-${selectedAI}`)}
+                >
+                  {copyLabel(`mcp-snippet-${selectedAI}`)}
+                </button>
+              </div>
             </div>
           )}
         </div>

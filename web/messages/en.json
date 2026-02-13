@@ -181,7 +181,7 @@
       "cliSteps": {
         "install": { "title": "Install Kura CLI", "description": "Download and install the Kura command-line tool." },
         "login": { "title": "Authenticate", "description": "Log in with your Kura account." },
-        "apiKey": { "title": "Create an API key", "description": "Generate a key for Claude to use." },
+        "apiKey": { "title": "Create an API key", "description": "Generate a key in Settings (requires a Kura account)." },
         "configure": { "title": "Add to Claude", "description": "Add Kura as a tool in your Claude project." }
       }
     },
@@ -190,7 +190,7 @@
       "cliSteps": {
         "install": { "title": "Install Kura CLI", "description": "Download and install the Kura command-line tool." },
         "login": { "title": "Authenticate", "description": "Log in with your Kura account." },
-        "apiKey": { "title": "Create an API key", "description": "Generate a key for ChatGPT to use." },
+        "apiKey": { "title": "Create an API key", "description": "Generate a key in Settings (requires a Kura account)." },
         "configure": { "title": "Add to ChatGPT", "description": "Configure Kura as a custom tool in your ChatGPT settings." }
       }
     },
@@ -199,16 +199,36 @@
       "cliSteps": {
         "install": { "title": "Install Kura CLI", "description": "Download and install the Kura command-line tool." },
         "login": { "title": "Authenticate", "description": "Log in with your Kura account." },
-        "apiKey": { "title": "Create an API key", "description": "Generate a key for Gemini to use." },
+        "apiKey": { "title": "Create an API key", "description": "Generate a key in Settings (requires a Kura account)." },
         "configure": { "title": "Add to Gemini", "description": "Configure Kura as a tool in your Gemini workspace." }
       }
     },
     "ready": "Ready",
     "comingSoon": "Coming soon",
+    "accountGate": {
+      "title": "Before creating a Bearer key",
+      "loggedOutDescription": "API keys (Bearer tokens) are only available for signed-in Kura accounts. Log in or request access first.",
+      "loggedInDescription": "You are signed in. Create your API key in Settings and use it as a Bearer token for CLI or MCP.",
+      "keyHintLoggedIn": "Create the API key in Settings and copy it into your agent setup.",
+      "keyHintLoggedOut": "You need a Kura account first. Then create an API key in Settings.",
+      "mcpHintLoggedIn": "Use your Settings API key as the Bearer token for MCP.",
+      "mcpHintLoggedOut": "MCP auth also needs an API key from a signed-in Kura account."
+    },
+    "mcpReady": {
+      "title": "MCP Integration",
+      "description": "Connect your AI directly via MCP. Use the values below and authenticate with your Kura API key.",
+      "status": "MCP endpoint configured."
+    },
     "mcpComingSoon": {
       "title": "MCP Integration",
       "description": "MCP enables direct integration without the CLI. Your AI connects to Kura natively.",
       "status": "In development. CLI is the recommended path today."
+    },
+    "mcpFields": {
+      "name": "Server name",
+      "url": "Server URL",
+      "auth": "Authentication",
+      "authValue": "Bearer <API key from Settings>"
     }
   },
   "footer": {
@@ -280,6 +300,7 @@
   },
   "common": {
     "back": "Back",
+    "copy": "Copy",
     "cancel": "Cancel",
     "save": "Save",
     "close": "Close",

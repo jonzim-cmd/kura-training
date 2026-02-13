@@ -24,6 +24,32 @@
   font-size: var(--text-base);
 }
 
+.accountCard {
+  margin-bottom: var(--space-xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.accountTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: 700;
+  margin: 0;
+}
+
+.accountDescription {
+  color: var(--ink-faint);
+  font-size: var(--text-base);
+  margin: 0;
+}
+
+.accountActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
 /* AI Selector */
 .aiSelector {
   display: flex;
@@ -148,35 +174,78 @@
   margin-bottom: var(--space-md);
 }
 
-/* MCP Coming Soon */
-.mcpCard {
-  text-align: center;
-  padding: var(--space-4xl) var(--space-xl);
+.stepHint {
+  margin-top: var(--space-sm);
+  margin-bottom: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-faint);
 }
 
-.mcpIcon {
-  color: var(--ink-faint);
-  margin-bottom: var(--space-lg);
+.codeBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.stepActions {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+/* MCP Coming Soon */
+.mcpCard {
+  text-align: left;
+  padding: var(--space-4xl) var(--space-xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
 }
 
 .mcpTitle {
   font-family: var(--font-display);
   font-size: var(--text-xl);
   font-weight: 700;
-  margin-bottom: var(--space-md);
+  margin: 0;
+  text-align: center;
 }
 
 .mcpDescription {
   color: var(--ink-faint);
   font-size: var(--text-base);
   max-width: 32em;
-  margin: 0 auto var(--space-lg);
+  margin: 0 auto;
+  text-align: center;
 }
 
 .mcpStatus {
   font-size: var(--text-base);
   color: var(--ink-ghost);
   font-style: italic;
+  text-align: center;
+}
+
+.mcpFields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.mcpField {
+  border: 1px solid var(--thread);
+  border-radius: var(--radius);
+  padding: var(--space-sm);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.mcpLabel {
+  color: var(--ink-faint);
+  font-size: var(--text-sm);
+  margin-bottom: 0.25rem;
 }
 
 /* Mobile */
@@ -185,7 +254,17 @@
     flex-direction: column;
   }
 
+  .accountActions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
   .step {
     gap: var(--space-md);
+  }
+
+  .mcpField {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }

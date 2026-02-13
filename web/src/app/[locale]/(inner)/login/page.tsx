@@ -1,10 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Link, useRouter } from '@/i18n/routing';
 import { useAuth } from '@/lib/auth-context';
+import { SETUP_SEEN_STORAGE_KEY } from '@/lib/onboarding';
 import styles from '../../auth.module.css';
+
+function postLoginRoute(): '/setup' | '/settings' {
+  if (typeof window === 'undefined') return '/settings';
+  return localStorage.getItem(SETUP_SEEN_STORAGE_KEY) === '1' ? '/settings' : '/setup';
+}
 
 export default function LoginPage() {
   const t = useTranslations('auth');
@@ -15,11 +21,13 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  // Redirect if already logged in
-  if (!loading && user) {
-    router.replace('/settings');
-    return null;
-  }
+  useEffect(() => {
+    if (!loading && user) {
+      router.replace(postLoginRoute());
+    }
+  }, [loading, user, router]);
+
+  if (!loading && user) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,7 +35,7 @@ export default function LoginPage() {
     setSubmitting(true);
     try {
       await login(email, password);
-      router.push('/settings');
+      router.push(postLoginRoute());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {

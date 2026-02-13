@@ -178,12 +178,17 @@
     "step": "Schritt {number}",
     "ready": "Bereit",
     "comingSoon": "Bald verfügbar",
+    "mcpReady": {
+      "title": "MCP-Integration",
+      "description": "Verbinde deine KI direkt per MCP. Nutze die Werte unten und authentifiziere mit deinem Kura API-Key.",
+      "status": "MCP-Endpunkt konfiguriert."
+    },
     "claude": {
       "title": "Claude",
       "cliSteps": {
         "install": { "title": "Kura CLI installieren", "description": "Lade das Kura-Kommandozeilentool herunter und installiere es." },
         "login": { "title": "Authentifizieren", "description": "Melde dich mit deinem Kura-Konto an." },
-        "apiKey": { "title": "API-Schlüssel erstellen", "description": "Erstelle einen Schlüssel für Claude." },
+        "apiKey": { "title": "API-Schlüssel erstellen", "description": "Erstelle den Schlüssel in den Einstellungen (Kura-Konto erforderlich)." },
         "configure": { "title": "Zu Claude hinzufügen", "description": "Füge Kura als Tool in deinem Claude-Projekt hinzu." }
       }
     },
@@ -192,7 +197,7 @@
       "cliSteps": {
         "install": { "title": "Kura CLI installieren", "description": "Lade das Kura-Kommandozeilentool herunter und installiere es." },
         "login": { "title": "Authentifizieren", "description": "Melde dich mit deinem Kura-Konto an." },
-        "apiKey": { "title": "API-Schlüssel erstellen", "description": "Erstelle einen Schlüssel für ChatGPT." },
+        "apiKey": { "title": "API-Schlüssel erstellen", "description": "Erstelle den Schlüssel in den Einstellungen (Kura-Konto erforderlich)." },
         "configure": { "title": "Zu ChatGPT hinzufügen", "description": "Konfiguriere Kura als benutzerdefiniertes Tool in deinen ChatGPT-Einstellungen." }
       }
     },
@@ -201,7 +206,7 @@
       "cliSteps": {
         "install": { "title": "Kura CLI installieren", "description": "Lade das Kura-Kommandozeilentool herunter und installiere es." },
         "login": { "title": "Authentifizieren", "description": "Melde dich mit deinem Kura-Konto an." },
-        "apiKey": { "title": "API-Schlüssel erstellen", "description": "Erstelle einen Schlüssel für Gemini." },
+        "apiKey": { "title": "API-Schlüssel erstellen", "description": "Erstelle den Schlüssel in den Einstellungen (Kura-Konto erforderlich)." },
         "configure": { "title": "Zu Gemini hinzufügen", "description": "Konfiguriere Kura als Tool in deinem Gemini-Workspace." }
       }
     },
@@ -209,6 +214,21 @@
       "title": "MCP-Integration",
       "description": "MCP ermöglicht direkte Integration ohne CLI. Deine KI verbindet sich nativ mit Kura.",
       "status": "In Entwicklung. CLI ist aktuell der empfohlene Weg."
+    },
+    "accountGate": {
+      "title": "Bevor du einen Bearer-Key erstellst",
+      "loggedOutDescription": "API-Schlüssel (Bearer-Token) gibt es nur für angemeldete Kura-Konten. Melde dich zuerst an oder frage Zugang an.",
+      "loggedInDescription": "Du bist angemeldet. Erstelle den API-Schlüssel in den Einstellungen und nutze ihn als Bearer-Token für CLI oder MCP.",
+      "keyHintLoggedIn": "Erstelle den API-Schlüssel in den Einstellungen und trage ihn in deinem Agenten ein.",
+      "keyHintLoggedOut": "Du brauchst zuerst ein Kura-Konto. Danach erstellst du den API-Schlüssel in den Einstellungen.",
+      "mcpHintLoggedIn": "Nutze deinen API-Schlüssel aus den Einstellungen als Bearer-Token für MCP.",
+      "mcpHintLoggedOut": "Auch für MCP brauchst du einen API-Schlüssel aus einem angemeldeten Kura-Konto."
+    },
+    "mcpFields": {
+      "name": "Server-Name",
+      "url": "Server-URL",
+      "auth": "Authentifizierung",
+      "authValue": "Bearer <API-Schlüssel aus Einstellungen>"
     }
   },
   "footer": {
@@ -280,6 +300,7 @@
   },
   "common": {
     "back": "Zurück",
+    "copy": "Kopieren",
     "cancel": "Abbrechen",
     "save": "Speichern",
     "close": "Schließen",
