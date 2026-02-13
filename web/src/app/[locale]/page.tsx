@@ -16,7 +16,7 @@ export default function LandingPage() {
 
       {/* SURFACE */}
       <section className={styles.surface}>
-        <h1 className={styles.surfaceTitle}>KU<span style={{letterSpacing: '0.02em'}}>R</span>A</h1>
+        <h1 className={styles.surfaceTitle}>KU<span style={{letterSpacing: '0.06em'}}>R</span>A</h1>
       </section>
 
       {/* PHONE — User message */}
@@ -45,7 +45,7 @@ export default function LandingPage() {
       {/* BOTTOM */}
       <section className={styles.bottom}>
         <div className={styles.bottomInner}>
-          <div className={styles.bottomMark}>KU<span style={{letterSpacing: '0.02em'}}>R</span>A</div>
+          <div className={styles.bottomMark}>KU<span style={{letterSpacing: '0.06em'}}>R</span>A</div>
           <nav className={styles.bottomNav}>
             <Link href="/signup" className={styles.bottomLink}>{tn('signup')}</Link>
             <Link href="/login" className={styles.bottomLink}>{tn('login')}</Link>

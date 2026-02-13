@@ -15,7 +15,7 @@ export function Header({ variant = 'default' }: HeaderProps) {
     <header className={`${styles.header} ${variant === 'landing' ? styles.landing : ''}`}>
       <div className={`${styles.inner} ${variant === 'landing' ? styles.innerLanding : ''}`}>
         {variant !== 'landing' && (
-          <Link href="/" className={styles.logo}>KU<span style={{letterSpacing: '0.02em'}}>R</span>A</Link>
+          <Link href="/" className={styles.logo}>KU<span style={{letterSpacing: '0.06em'}}>R</span>A</Link>
         )}
         <nav className={styles.nav}>
           {variant !== 'landing' && (
