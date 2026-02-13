@@ -40,7 +40,7 @@ export default function LandingPage() {
       {/* CTA */}
       <section className={styles.cta}>
         <Link href="/request-access" className={styles.ctaButton}>{t('getStarted')}</Link>
-        <Link href="/start" className={styles.ctaButtonSecondary}>{tn('home')}</Link>
+        <Link href="/start" className={styles.ctaWhyLink}>{tn('home')}?</Link>
       </section>
 
       {/* BOTTOM */}

@@ -590,8 +590,9 @@
 .cta {
   padding: 0 8% 6vh;
   display: flex;
-  justify-content: center;
-  gap: 1rem;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.25rem;
 }
 
 .ctaButton {
@@ -613,21 +614,14 @@
   color: #000;
 }
 
-.ctaButtonSecondary {
-  display: inline-block;
-  font-family: var(--font-display);
-  font-weight: 400;
+.ctaWhyLink {
+  font-family: var(--font-body);
   font-size: 0.9375rem;
-  letter-spacing: 0.02em;
-  padding: 0.75rem 2rem;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 4px;
-  color: var(--ink-mid);
+  color: var(--ink-faint);
   text-decoration: none;
-  transition: all 0.2s ease;
+  transition: color 0.2s ease;
 }
 
-.ctaButtonSecondary:hover {
-  border-color: rgba(255, 255, 255, 0.25);
+.ctaWhyLink:hover {
   color: var(--ink);
 }
