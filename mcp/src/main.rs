@@ -1,6 +1,6 @@
 use clap::Parser;
 
-use kura_cli::commands::mcp::{McpCommands, run as run_mcp};
+use kura_mcp::{McpCommands, run as run_mcp};
 
 #[derive(Parser)]
 #[command(

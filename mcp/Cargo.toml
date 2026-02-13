@@ -9,7 +9,12 @@ name = "kura-mcp"
 path = "src/main.rs"
 
 [dependencies]
-kura-cli = { path = "../cli" }
 clap = { workspace = true }
 tokio = { workspace = true }
 dotenvy = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }

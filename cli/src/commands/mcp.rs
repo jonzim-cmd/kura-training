@@ -36,7 +36,7 @@ pub struct McpServeArgs {
 pub async fn run(api_url: &str, inherited_no_auth: bool, command: McpCommands) -> i32 {
     match command {
         McpCommands::Serve(args) => {
-            let server = McpServer::new(McpRuntimeConfig {
+            let mut server = McpServer::new(McpRuntimeConfig {
                 api_url: api_url.to_string(),
                 no_auth: inherited_no_auth || args.no_auth,
                 explicit_token: args.token,
@@ -70,6 +70,115 @@ struct McpRuntimeConfig {
 struct McpServer {
     config: McpRuntimeConfig,
     http: reqwest::Client,
+    capability_profile: CapabilityProfile,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CapabilityMode {
+    PreferredContract,
+    LegacyFallback,
+}
+
+impl CapabilityMode {
+    fn as_str(&self) -> &'static str {
+        match self {
+            CapabilityMode::PreferredContract => "preferred_contract",
+            CapabilityMode::LegacyFallback => "legacy_fallback",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CapabilityProfile {
+    mode: CapabilityMode,
+    negotiated_at: chrono::DateTime<chrono::Utc>,
+    reason: String,
+    preferred_read_endpoint: String,
+    preferred_write_endpoint: String,
+    legacy_read_endpoint: String,
+    legacy_single_write_endpoint: String,
+    legacy_batch_write_endpoint: String,
+    write_with_proof_supported: bool,
+    manifest_snapshot: Option<Value>,
+    warnings: Vec<String>,
+}
+
+impl CapabilityProfile {
+    fn preferred(
+        read: String,
+        write: String,
+        manifest_snapshot: Value,
+        warnings: Vec<String>,
+    ) -> Self {
+        Self {
+            mode: CapabilityMode::PreferredContract,
+            negotiated_at: chrono::Utc::now(),
+            reason: "capabilities_manifest_ok".to_string(),
+            preferred_read_endpoint: read,
+            preferred_write_endpoint: write,
+            legacy_read_endpoint: "/v1/projections".to_string(),
+            legacy_single_write_endpoint: "/v1/events".to_string(),
+            legacy_batch_write_endpoint: "/v1/events/batch".to_string(),
+            write_with_proof_supported: true,
+            manifest_snapshot: Some(manifest_snapshot),
+            warnings,
+        }
+    }
+
+    fn fallback(
+        reason: impl Into<String>,
+        warnings: Vec<String>,
+        manifest_snapshot: Option<Value>,
+    ) -> Self {
+        let reason = reason.into();
+        Self {
+            mode: CapabilityMode::LegacyFallback,
+            negotiated_at: chrono::Utc::now(),
+            reason,
+            preferred_read_endpoint: "/v1/agent/context".to_string(),
+            preferred_write_endpoint: "/v1/agent/write-with-proof".to_string(),
+            legacy_read_endpoint: "/v1/projections".to_string(),
+            legacy_single_write_endpoint: "/v1/events".to_string(),
+            legacy_batch_write_endpoint: "/v1/events/batch".to_string(),
+            write_with_proof_supported: false,
+            manifest_snapshot,
+            warnings,
+        }
+    }
+
+    fn effective_read_endpoint(&self) -> &str {
+        if self.mode == CapabilityMode::PreferredContract {
+            &self.preferred_read_endpoint
+        } else {
+            &self.legacy_read_endpoint
+        }
+    }
+
+    fn supports_write_with_proof(&self) -> bool {
+        self.mode == CapabilityMode::PreferredContract && self.write_with_proof_supported
+    }
+
+    fn to_value(&self) -> Value {
+        let mut payload = json!({
+            "mode": self.mode.as_str(),
+            "reason": self.reason,
+            "negotiated_at": self.negotiated_at,
+            "preferred_read_endpoint": self.preferred_read_endpoint,
+            "preferred_write_endpoint": self.preferred_write_endpoint,
+            "legacy_read_endpoint": self.legacy_read_endpoint,
+            "legacy_single_write_endpoint": self.legacy_single_write_endpoint,
+            "legacy_batch_write_endpoint": self.legacy_batch_write_endpoint,
+            "write_with_proof_supported": self.supports_write_with_proof(),
+        });
+        if !self.warnings.is_empty() {
+            payload["warnings"] =
+                Value::Array(self.warnings.iter().cloned().map(Value::String).collect());
+        }
+        if let Some(manifest_snapshot) = &self.manifest_snapshot {
+            payload["manifest_snapshot"] = manifest_snapshot.clone();
+        }
+        payload
+    }
 }
 
 impl McpServer {
@@ -77,10 +186,14 @@ impl McpServer {
         Self {
             config,
             http: client(),
+            capability_profile: CapabilityProfile::fallback("not_negotiated_yet", Vec::new(), None),
         }
     }
 
-    async fn serve_stdio(&self) -> Result<(), String> {
+    async fn serve_stdio(&mut self) -> Result<(), String> {
+        self.capability_profile = self.negotiate_capability_profile().await;
+        self.emit_capability_status();
+
         let stdin = io::stdin();
         let mut reader = BufReader::new(stdin);
         let mut stdout = io::stdout();
@@ -102,6 +215,30 @@ impl McpServer {
         }
 
         Ok(())
+    }
+
+    fn emit_capability_status(&self) {
+        let payload = json!({
+            "event": "mcp_capability_negotiation",
+            "server": MCP_SERVER_NAME,
+            "version": env!("CARGO_PKG_VERSION"),
+            "profile": self.capability_profile.to_value(),
+        });
+        eprintln!("{}", to_pretty_json(&payload));
+    }
+
+    async fn negotiate_capability_profile(&self) -> CapabilityProfile {
+        let result = self
+            .send_api_request(
+                Method::GET,
+                "/v1/agent/capabilities",
+                &[],
+                None,
+                true,
+                false,
+            )
+            .await;
+        capability_profile_from_negotiation(result)
     }
 
     async fn handle_incoming_message(&self, incoming: Value) -> Vec<Value> {
@@ -187,6 +324,10 @@ impl McpServer {
     }
 
     fn initialize_payload(&self) -> Value {
+        let instructions = format!(
+            "Start with kura_discover, read projections as source of truth, and prefer kura_events_write with mode=simulate before commit for higher confidence. Capability mode: {}.",
+            self.capability_profile.mode.as_str()
+        );
         json!({
             "protocolVersion": MCP_PROTOCOL_VERSION,
             "capabilities": {
@@ -204,7 +345,8 @@ impl McpServer {
                 "name": MCP_SERVER_NAME,
                 "version": env!("CARGO_PKG_VERSION")
             },
-            "instructions": "Start with kura_discover, read projections as source of truth, and prefer kura_events_write with mode=simulate before commit for higher confidence."
+            "instructions": instructions,
+            "capabilityStatus": self.capability_profile.to_value()
         })
     }
 
@@ -244,16 +386,31 @@ impl McpServer {
 
         let result = self.execute_tool(name, &args).await;
         Ok(match result {
-            Ok(payload) => json!({
-                "content": [{ "type": "text", "text": to_pretty_json(&payload) }],
-                "structuredContent": payload
-            }),
+            Ok(payload) => {
+                let status = tool_completion_status(&payload);
+                let envelope = json!({
+                    "status": status,
+                    "phase": "final",
+                    "tool": name,
+                    "data": payload
+                });
+                json!({
+                    "content": [{ "type": "text", "text": to_pretty_json(&envelope) }],
+                    "structuredContent": envelope
+                })
+            }
             Err(err) => {
                 let payload = err.to_value();
+                let envelope = json!({
+                    "status": "error",
+                    "phase": "final",
+                    "tool": name,
+                    "error": payload
+                });
                 json!({
                     "isError": true,
-                    "content": [{ "type": "text", "text": to_pretty_json(&payload) }],
-                    "structuredContent": payload
+                    "content": [{ "type": "text", "text": to_pretty_json(&envelope) }],
+                    "structuredContent": envelope
                 })
             }
         })
@@ -266,6 +423,7 @@ impl McpServer {
     ) -> Result<Value, ToolError> {
         match tool_name {
             "kura_discover" => self.tool_discover(args).await,
+            "kura_mcp_status" => self.tool_mcp_status(args).await,
             "kura_api_request" => self.tool_api_request(args).await,
             "kura_events_write" => self.tool_events_write(args).await,
             "kura_events_list" => self.tool_events_list(args).await,
@@ -363,8 +521,20 @@ impl McpServer {
         if !warnings.is_empty() {
             payload["warnings"] = Value::Array(warnings.into_iter().map(Value::String).collect());
         }
+        payload["mcp_capability_status"] = self.capability_profile.to_value();
 
         Ok(payload)
+    }
+
+    async fn tool_mcp_status(&self, _args: &Map<String, Value>) -> Result<Value, ToolError> {
+        Ok(json!({
+            "server": {
+                "name": MCP_SERVER_NAME,
+                "version": env!("CARGO_PKG_VERSION"),
+                "protocol_version": MCP_PROTOCOL_VERSION
+            },
+            "capability_negotiation": self.capability_profile.to_value()
+        }))
     }
 
     async fn tool_api_request(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
@@ -437,46 +607,104 @@ impl McpServer {
             &self.config.default_agent,
         )?;
         let normalized_events = ensure_event_defaults(events, &defaults, strategy)?;
+        let mut compatibility_notes = Vec::<String>::new();
+        let mut fallback_applied = false;
+        let mut requested_path: Option<String> = None;
+        let mut effective_mode = mode.as_str().to_string();
 
         let (path, body) = match mode {
-            WriteMode::Commit => {
-                if normalized_events.len() == 1 {
-                    ("/v1/events".to_string(), normalized_events[0].clone())
-                } else {
-                    (
-                        "/v1/events/batch".to_string(),
-                        json!({ "events": normalized_events }),
-                    )
-                }
-            }
+            WriteMode::Commit => legacy_write_target(
+                &normalized_events,
+                &self.capability_profile.legacy_single_write_endpoint,
+                &self.capability_profile.legacy_batch_write_endpoint,
+            ),
             WriteMode::Simulate => (
                 "/v1/events/simulate".to_string(),
                 json!({ "events": normalized_events }),
             ),
             WriteMode::WriteWithProof => {
-                let targets = parse_read_after_write_targets(args.get("read_after_write_targets"))?;
-                let mut body = json!({
-                    "events": normalized_events,
-                    "read_after_write_targets": targets
-                });
-                if let Some(verify_timeout_ms) = arg_optional_u64(args, "verify_timeout_ms")? {
-                    body["verify_timeout_ms"] = json!(verify_timeout_ms);
+                if self.capability_profile.supports_write_with_proof() {
+                    let targets =
+                        parse_read_after_write_targets(args.get("read_after_write_targets"))?;
+                    let mut body = json!({
+                        "events": normalized_events,
+                        "read_after_write_targets": targets
+                    });
+                    if let Some(verify_timeout_ms) = arg_optional_u64(args, "verify_timeout_ms")? {
+                        body["verify_timeout_ms"] = json!(verify_timeout_ms);
+                    }
+                    requested_path = Some(self.capability_profile.preferred_write_endpoint.clone());
+                    (
+                        self.capability_profile.preferred_write_endpoint.clone(),
+                        body,
+                    )
+                } else {
+                    fallback_applied = true;
+                    effective_mode = "write_with_proof_fallback_commit".to_string();
+                    compatibility_notes.push(
+                        "write_with_proof is unavailable in legacy compatibility mode; routing to classic event write endpoints.".to_string(),
+                    );
+                    legacy_write_target(
+                        &normalized_events,
+                        &self.capability_profile.legacy_single_write_endpoint,
+                        &self.capability_profile.legacy_batch_write_endpoint,
+                    )
                 }
-                ("/v1/agent/write-with-proof".to_string(), body)
             }
         };
 
-        let response = self
-            .send_api_request(Method::POST, &path, &[], Some(body), true, false)
+        let mut response = self
+            .send_api_request(Method::POST, &path, &[], Some(body.clone()), true, false)
             .await?;
+        let mut effective_path = path.clone();
+
+        if mode == WriteMode::WriteWithProof
+            && requested_path.is_some()
+            && should_apply_contract_fallback(response.status)
+        {
+            let unsupported_status = response.status;
+            let (legacy_path, legacy_body) = legacy_write_target(
+                &normalized_events,
+                &self.capability_profile.legacy_single_write_endpoint,
+                &self.capability_profile.legacy_batch_write_endpoint,
+            );
+            response = self
+                .send_api_request(
+                    Method::POST,
+                    &legacy_path,
+                    &[],
+                    Some(legacy_body),
+                    true,
+                    false,
+                )
+                .await?;
+            fallback_applied = true;
+            effective_mode = "write_with_proof_fallback_commit".to_string();
+            compatibility_notes.push(format!(
+                "Preferred write-with-proof endpoint returned unsupported status {}; routed to {}.",
+                unsupported_status, legacy_path
+            ));
+            effective_path = legacy_path;
+        }
 
         Ok(json!({
             "request": {
                 "mode": mode.as_str(),
-                "path": path,
+                "effective_mode": effective_mode,
+                "path": effective_path,
                 "event_count": events.len()
             },
-            "response": response.to_value()
+            "response": response.to_value(),
+            "completion": {
+                "status": if fallback_applied { "complete_with_fallback" } else { "complete" },
+                "event_count": events.len(),
+                "verification_contract_enforced": mode != WriteMode::WriteWithProof || !fallback_applied
+            },
+            "compatibility": {
+                "capability_mode": self.capability_profile.mode.as_str(),
+                "fallback_applied": fallback_applied,
+                "notes": compatibility_notes
+            }
         }))
     }
 
@@ -561,17 +789,72 @@ impl McpServer {
         if let Some(task_intent) = arg_optional_string(args, "task_intent")? {
             query.push(("task_intent".to_string(), task_intent));
         }
-
-        let response = self
-            .send_api_request(Method::GET, "/v1/agent/context", &query, None, true, false)
+        let mut compatibility_notes = Vec::<String>::new();
+        let preferred_path = self
+            .capability_profile
+            .effective_read_endpoint()
+            .to_string();
+        let mut effective_query = if self.capability_profile.mode
+            == CapabilityMode::PreferredContract
+        {
+            query.clone()
+        } else {
+            compatibility_notes.push(
+                "Agent context contract unavailable; using legacy /v1/projections snapshot semantics."
+                    .to_string(),
+            );
+            Vec::new()
+        };
+        let mut response = self
+            .send_api_request(
+                Method::GET,
+                &preferred_path,
+                &effective_query,
+                None,
+                true,
+                false,
+            )
             .await?;
+        let mut effective_path = preferred_path.clone();
+        let mut fallback_applied = false;
+
+        if self.capability_profile.mode == CapabilityMode::PreferredContract
+            && should_apply_contract_fallback(response.status)
+        {
+            let unsupported_status = response.status;
+            fallback_applied = true;
+            effective_path = self.capability_profile.legacy_read_endpoint.clone();
+            effective_query.clear();
+            compatibility_notes.push(format!(
+                "Preferred context endpoint returned unsupported status {}; routed to legacy {}.",
+                unsupported_status, effective_path
+            ));
+            response = self
+                .send_api_request(
+                    Method::GET,
+                    &effective_path,
+                    &effective_query,
+                    None,
+                    true,
+                    false,
+                )
+                .await?;
+        }
 
         Ok(json!({
             "request": {
-                "path": "/v1/agent/context",
-                "query": pairs_to_json_object(&query)
+                "path": effective_path,
+                "query": pairs_to_json_object(&effective_query)
             },
-            "response": response.to_value()
+            "response": response.to_value(),
+            "completion": {
+                "status": if fallback_applied { "complete_with_fallback" } else { "complete" }
+            },
+            "compatibility": {
+                "capability_mode": self.capability_profile.mode.as_str(),
+                "fallback_applied": fallback_applied,
+                "notes": compatibility_notes
+            }
         }))
     }
 
@@ -674,6 +957,7 @@ impl McpServer {
                 .tool_discover(&Map::new())
                 .await
                 .map_err(|e| RpcError::internal(e.message))?,
+            "kura://mcp/capability-status" => self.capability_profile.to_value(),
             _ => {
                 return Err(RpcError::invalid_params(format!(
                     "Unknown resource uri '{uri}'"
@@ -944,6 +1228,15 @@ fn tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "kura_mcp_status",
+            description: "Show MCP capability negotiation status and active routing mode.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
             name: "kura_api_request",
             description: "Generic API request fallback for non-hardcoded workflows.",
             input_schema: json!({
@@ -1130,7 +1423,165 @@ fn resource_definitions() -> Vec<ResourceDefinition> {
             name: "MCP Discovery Summary",
             description: "Convenience bundle: openapi + capabilities + system config",
         },
+        ResourceDefinition {
+            uri: "kura://mcp/capability-status",
+            name: "MCP Capability Status",
+            description: "Startup negotiation outcome, active routing mode, and fallback reason",
+        },
     ]
+}
+
+fn tool_completion_status(payload: &Value) -> &'static str {
+    if payload
+        .get("compatibility")
+        .and_then(|v| v.get("fallback_applied"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        "complete_with_fallback"
+    } else {
+        "complete"
+    }
+}
+
+fn legacy_write_target(
+    normalized_events: &[Value],
+    single_path: &str,
+    batch_path: &str,
+) -> (String, Value) {
+    if normalized_events.len() == 1 {
+        (single_path.to_string(), normalized_events[0].clone())
+    } else {
+        (
+            batch_path.to_string(),
+            json!({ "events": normalized_events.to_vec() }),
+        )
+    }
+}
+
+fn should_apply_contract_fallback(status: u16) -> bool {
+    matches!(status, 404 | 405 | 406 | 410 | 501)
+}
+
+fn capability_profile_from_negotiation(
+    result: Result<ApiCallResult, ToolError>,
+) -> CapabilityProfile {
+    let result = match result {
+        Ok(result) => result,
+        Err(err) => {
+            return CapabilityProfile::fallback(
+                "capability_negotiation_request_failed",
+                vec![err.message],
+                None,
+            );
+        }
+    };
+
+    if !result.is_success() {
+        return CapabilityProfile::fallback(
+            format!("capability_negotiation_http_{}", result.status),
+            vec![format!(
+                "GET /v1/agent/capabilities returned status {}. Falling back to legacy endpoints.",
+                result.status
+            )],
+            Some(result.body),
+        );
+    }
+
+    let Some(read_endpoint) = result
+        .body
+        .get("preferred_read_endpoint")
+        .and_then(Value::as_str)
+        .map(str::trim)
+    else {
+        return CapabilityProfile::fallback(
+            "capability_negotiation_invalid_schema",
+            vec![
+                "Capabilities manifest missing preferred_read_endpoint; using legacy fallback."
+                    .to_string(),
+            ],
+            Some(result.body),
+        );
+    };
+    let Some(write_endpoint) = result
+        .body
+        .get("preferred_write_endpoint")
+        .and_then(Value::as_str)
+        .map(str::trim)
+    else {
+        return CapabilityProfile::fallback(
+            "capability_negotiation_invalid_schema",
+            vec![
+                "Capabilities manifest missing preferred_write_endpoint; using legacy fallback."
+                    .to_string(),
+            ],
+            Some(result.body),
+        );
+    };
+
+    if !read_endpoint.starts_with('/') || !write_endpoint.starts_with('/') {
+        return CapabilityProfile::fallback(
+            "capability_negotiation_invalid_endpoints",
+            vec![
+                "Capabilities manifest contains non-path preferred endpoints; using legacy fallback."
+                    .to_string(),
+            ],
+            Some(result.body),
+        );
+    }
+
+    let mut warnings = Vec::new();
+    if let Some(min_mcp_version) = result
+        .body
+        .get("min_mcp_version")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        if min_mcp_version != "not_implemented" {
+            match is_version_older(env!("CARGO_PKG_VERSION"), min_mcp_version) {
+                Some(true) => {
+                    return CapabilityProfile::fallback(
+                        "capability_negotiation_version_mismatch",
+                        vec![format!(
+                            "MCP version {} is older than required min_mcp_version {}. Using legacy fallback.",
+                            env!("CARGO_PKG_VERSION"),
+                            min_mcp_version
+                        )],
+                        Some(result.body),
+                    );
+                }
+                Some(false) => {}
+                None => warnings.push(format!(
+                    "Could not parse min_mcp_version '{}' as semver. Continuing with preferred contract.",
+                    min_mcp_version
+                )),
+            }
+        }
+    }
+
+    CapabilityProfile::preferred(
+        read_endpoint.to_string(),
+        write_endpoint.to_string(),
+        result.body,
+        warnings,
+    )
+}
+
+fn is_version_older(current: &str, minimum: &str) -> Option<bool> {
+    let current = parse_semver_triplet(current)?;
+    let minimum = parse_semver_triplet(minimum)?;
+    Some(current < minimum)
+}
+
+fn parse_semver_triplet(raw: &str) -> Option<(u64, u64, u64)> {
+    let clean = raw.trim().trim_start_matches('v');
+    let base = clean.split_once('-').map(|(base, _)| base).unwrap_or(clean);
+    let mut parts = base.split('.');
+    let major = parts.next()?.parse::<u64>().ok()?;
+    let minor = parts.next()?.parse::<u64>().ok()?;
+    let patch = parts.next()?.parse::<u64>().ok()?;
+    Some((major, minor, patch))
 }
 
 fn parse_http_method(raw: &str) -> Result<Method, ToolError> {
@@ -1866,5 +2317,64 @@ mod tests {
         assert_eq!(endpoints[0]["path"], "/health");
         assert_eq!(endpoints[1]["method"], "GET");
         assert_eq!(endpoints[2]["method"], "POST");
+    }
+
+    #[test]
+    fn capability_negotiation_prefers_agent_contract_when_manifest_is_valid() {
+        let response = ApiCallResult {
+            status: 200,
+            body: json!({
+                "preferred_read_endpoint": "/v1/agent/context",
+                "preferred_write_endpoint": "/v1/agent/write-with-proof",
+                "min_mcp_version": "0.1.0"
+            }),
+            headers: None,
+        };
+        let profile = capability_profile_from_negotiation(Ok(response));
+
+        assert_eq!(profile.mode, CapabilityMode::PreferredContract);
+        assert_eq!(profile.effective_read_endpoint(), "/v1/agent/context");
+        assert!(profile.supports_write_with_proof());
+        assert_eq!(profile.reason, "capabilities_manifest_ok");
+    }
+
+    #[test]
+    fn capability_negotiation_falls_back_for_legacy_server() {
+        let response = ApiCallResult {
+            status: 404,
+            body: json!({
+                "error": "not_found"
+            }),
+            headers: None,
+        };
+        let profile = capability_profile_from_negotiation(Ok(response));
+
+        assert_eq!(profile.mode, CapabilityMode::LegacyFallback);
+        assert_eq!(profile.effective_read_endpoint(), "/v1/projections");
+        assert!(!profile.supports_write_with_proof());
+        assert!(profile.reason.starts_with("capability_negotiation_http_"));
+    }
+
+    #[test]
+    fn capability_negotiation_falls_back_on_min_version_mismatch() {
+        let response = ApiCallResult {
+            status: 200,
+            body: json!({
+                "preferred_read_endpoint": "/v1/agent/context",
+                "preferred_write_endpoint": "/v1/agent/write-with-proof",
+                "min_mcp_version": "999.0.0"
+            }),
+            headers: None,
+        };
+        let profile = capability_profile_from_negotiation(Ok(response));
+
+        assert_eq!(profile.mode, CapabilityMode::LegacyFallback);
+        assert_eq!(profile.reason, "capability_negotiation_version_mismatch");
+        assert!(
+            profile
+                .warnings
+                .iter()
+                .any(|w| w.contains("min_mcp_version"))
+        );
     }
 }
