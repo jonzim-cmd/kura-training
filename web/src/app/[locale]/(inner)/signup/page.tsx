@@ -1,16 +1,47 @@
 'use client';
 
+import { useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
-import { Link } from '@/i18n/routing';
+import { Link, useRouter } from '@/i18n/routing';
 import styles from '../../auth.module.css';
 
 export default function SignupPage() {
   const t = useTranslations('auth');
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const inviteToken = searchParams.get('invite');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [error, setError] = useState<string | null>(null);
+  const [consentError, setConsentError] = useState(false);
+
+  // No invite token → redirect to request-access
+  useEffect(() => {
+    if (!inviteToken) {
+      router.replace('/request-access');
+    }
+  }, [inviteToken, router]);
+
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    // TODO: OAuth PKCE flow
+    setError(null);
+    setConsentError(false);
+
+    const form = e.currentTarget;
+    const consent = (form.elements.namedItem('consent') as HTMLInputElement).checked;
+
+    if (!consent) {
+      setConsentError(true);
+      return;
+    }
+
+    // TODO: OAuth PKCE flow with invite_token + consent_anonymized_learning
   };
+
+  // Don't render form if no invite (will redirect)
+  if (!inviteToken) {
+    return null;
+  }
 
   return (
     <div className={styles.authPage}>
@@ -19,6 +50,10 @@ export default function SignupPage() {
           <h1 className={styles.authTitle}>{t('signupTitle')}</h1>
           <p className={styles.authSubtitle}>{t('signupSubtitle')}</p>
         </div>
+
+        {error && (
+          <div className={styles.errorBanner}>{error}</div>
+        )}
 
         <div className={styles.socialProviders}>
           <button type="button" className={styles.socialBtn}>
@@ -72,6 +107,15 @@ export default function SignupPage() {
               className="kura-input"
             />
           </div>
+
+          <label className={`${styles.consent} ${consentError ? styles.consentError : ''}`}>
+            <input
+              type="checkbox"
+              name="consent"
+              className={styles.consentCheckbox}
+            />
+            <span className={styles.consentText}>{t('consentLabel')}</span>
+          </label>
 
           <button type="submit" className="kura-btn kura-btn--primary" style={{ width: '100%' }}>
             {t('signupButton')}

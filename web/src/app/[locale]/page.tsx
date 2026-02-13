@@ -39,7 +39,7 @@ export default function LandingPage() {
 
       {/* CTA */}
       <section className={styles.cta}>
-        <Link href="/start" className={styles.ctaButton}>{t('getStarted')}</Link>
+        <Link href="/request-access" className={styles.ctaButton}>{t('getStarted')}</Link>
       </section>
 
       {/* BOTTOM */}
@@ -47,7 +47,7 @@ export default function LandingPage() {
         <div className={styles.bottomInner}>
           <div className={styles.bottomMark}>KU<span style={{letterSpacing: '0.06em'}}>R</span>A</div>
           <nav className={styles.bottomNav}>
-            <Link href="/signup" className={styles.bottomLink}>{tn('signup')}</Link>
+            <Link href="/request-access" className={styles.bottomLink}>{tn('requestAccess')}</Link>
             <Link href="/login" className={styles.bottomLink}>{tn('login')}</Link>
             <Link href="/setup" className={styles.bottomLink}>{tn('setup')}</Link>
           </nav>

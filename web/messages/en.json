@@ -8,6 +8,7 @@
     "setup": "Setup",
     "login": "Log in",
     "signup": "Create account",
+    "requestAccess": "Request access",
     "settings": "Settings",
     "logout": "Log out"
   },
@@ -35,7 +36,26 @@
     },
     "agentResponse": "Logged. Your squat has been at 116\u2009kg estimated max for three weeks now — volume is there, but the weight isn't moving. You've also been sleeping about an hour less than usual. That's probably not a coincidence.",
     "agentQuestion": "Want me to program a deload week?",
-    "getStarted": "Get started"
+    "getStarted": "Request access"
+  },
+  "requestAccess": {
+    "title": "Request access",
+    "subtitle": "Kura is in early access. Leave your email and we'll get back to you.",
+    "pitch": {
+      "free": "Early access is free. No trial, no hidden costs.",
+      "full": "Full access to everything: API, CLI, all dimensions.",
+      "help": "Your usage helps us improve Kura. Anonymized data feeds population-level statistics that benefit all users."
+    },
+    "email": "Email",
+    "name": "Name",
+    "context": "What do you train?",
+    "contextPlaceholder": "Strength, running, climbing, whatever you do...",
+    "optional": "optional",
+    "submitButton": "Request access",
+    "submitting": "Sending...",
+    "successTitle": "Request received",
+    "successText": "We'll review your request and send an invite to your email. This usually takes a day or two.",
+    "alreadyHaveAccess": "Already have access?"
   },
   "start": {
     "story": {
@@ -69,8 +89,8 @@
     },
     "how": {
       "title": "Setup",
-      "step1Title": "Create an account",
-      "step1Desc": "Currently free to use.",
+      "step1Title": "Request access",
+      "step1Desc": "Early access is free. We review requests within a day or two.",
       "step2Title": "Connect an AI",
       "step2Desc": "Pick your agent and follow the setup guide.",
       "step2SetupLink": "Setup guide \u2192",
@@ -92,7 +112,10 @@
     "noAccount": "No account yet?",
     "hasAccount": "Already have an account?",
     "forgotPassword": "Forgot password?",
-    "orContinueWith": "Or continue with"
+    "orContinueWith": "Or continue with",
+    "consentLabel": "I agree that my anonymized training data may be used to improve Kura.",
+    "inviteInvalid": "This invite link is invalid or expired.",
+    "inviteEmailMismatch": "This invite link is for a different email address."
   },
   "settings": {
     "title": "Settings",

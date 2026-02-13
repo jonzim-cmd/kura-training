@@ -87,7 +87,7 @@ export default function StartPage() {
 
       {/* CTA */}
       <section className={styles.cta}>
-        <Link href="/signup" className="kura-btn kura-btn--primary">{tn('signup')}</Link>
+        <Link href="/request-access" className="kura-btn kura-btn--primary">{tn('requestAccess')}</Link>
         <p className={styles.tagline}>{t('tagline')}</p>
       </section>
     </div>

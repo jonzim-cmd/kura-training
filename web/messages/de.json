@@ -8,6 +8,7 @@
     "setup": "Einrichtung",
     "login": "Anmelden",
     "signup": "Konto erstellen",
+    "requestAccess": "Zugang anfragen",
     "settings": "Einstellungen",
     "logout": "Abmelden"
   },
@@ -35,7 +36,26 @@
     },
     "agentResponse": "Geloggt. Dein Kniebeuge-Maximum steht seit drei Wochen bei 116\u2009kg — das Volumen stimmt, aber das Gewicht bewegt sich nicht. Außerdem schläfst du etwa eine Stunde weniger als gewöhnlich. Das ist wahrscheinlich kein Zufall.",
     "agentQuestion": "Soll ich eine Deload-Woche planen?",
-    "getStarted": "Loslegen"
+    "getStarted": "Zugang anfragen"
+  },
+  "requestAccess": {
+    "title": "Zugang anfragen",
+    "subtitle": "Kura ist in Early Access. Hinterlasse deine E-Mail und wir melden uns.",
+    "pitch": {
+      "free": "Early Access ist kostenlos. Kein Trial, keine versteckten Kosten.",
+      "full": "Voller Zugang zu allem: API, CLI, alle Dimensionen.",
+      "help": "Deine Nutzung hilft uns, Kura zu verbessern. Anonymisierte Daten flie\u00dfen in populationsbasierte Statistiken, von denen alle Nutzer profitieren."
+    },
+    "email": "E-Mail",
+    "name": "Name",
+    "context": "Was trainierst du?",
+    "contextPlaceholder": "Krafttraining, Laufen, Klettern, was auch immer du machst...",
+    "optional": "optional",
+    "submitButton": "Zugang anfragen",
+    "submitting": "Wird gesendet...",
+    "successTitle": "Anfrage eingegangen",
+    "successText": "Wir pr\u00fcfen deine Anfrage und senden dir eine Einladung per E-Mail. Das dauert in der Regel ein bis zwei Tage.",
+    "alreadyHaveAccess": "Bereits Zugang?"
   },
   "start": {
     "story": {
@@ -69,8 +89,8 @@
     },
     "how": {
       "title": "Einrichtung",
-      "step1Title": "Konto erstellen",
-      "step1Desc": "Aktuell kostenlos nutzbar.",
+      "step1Title": "Zugang anfragen",
+      "step1Desc": "Early Access ist kostenlos. Anfragen werden in ein bis zwei Tagen gepr\u00fcft.",
       "step2Title": "KI verbinden",
       "step2Desc": "Agent ausw\u00e4hlen und der Einrichtung folgen.",
       "step2SetupLink": "Zur Einrichtung \u2192",
@@ -92,7 +112,10 @@
     "noAccount": "Noch kein Konto?",
     "hasAccount": "Bereits ein Konto?",
     "forgotPassword": "Passwort vergessen?",
-    "orContinueWith": "Oder weiter mit"
+    "orContinueWith": "Oder weiter mit",
+    "consentLabel": "Ich stimme zu, dass meine anonymisierten Trainingsdaten zur Verbesserung von Kura verwendet werden.",
+    "inviteInvalid": "Dieser Einladungslink ist ung\u00fcltig oder abgelaufen.",
+    "inviteEmailMismatch": "Dieser Einladungslink ist f\u00fcr eine andere E-Mail-Adresse."
   },
   "settings": {
     "title": "Einstellungen",
