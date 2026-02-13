@@ -284,6 +284,8 @@ async fn main() {
         .merge(routes::auth::token_router().layer(middleware::rate_limit::token_layer()))
         .merge(routes::auth::device_router().layer(middleware::rate_limit::token_layer()))
         .merge(routes::auth::oidc_router().layer(middleware::rate_limit::authorize_layer()))
+        .merge(routes::auth::email_login_router().layer(middleware::rate_limit::authorize_layer()))
+        .merge(routes::auth::me_router())
         .merge(routes::invite::public_router().layer(middleware::rate_limit::register_layer()))
         .merge(routes::account::self_router())
         .merge(routes::account::admin_router())

@@ -115,7 +115,12 @@
     "forgotPassword": "Forgot password?",
     "orContinueWith": "Or continue with",
     "consentLabel": "I agree that my anonymized training data may be used to improve Kura.",
-    "inviteInvalid": "This invite link is invalid or expired."
+    "inviteInvalid": "This invite link is invalid or expired.",
+    "loggingIn": "Logging in...",
+    "creating": "Creating account...",
+    "requestAccessLink": "Request access",
+    "passwordMismatch": "Passwords do not match",
+    "passwordTooShort": "Password must be at least 8 characters"
   },
   "settings": {
     "title": "Settings",
@@ -138,7 +143,24 @@
       "never": "Never",
       "revoke": "Revoke",
       "copied": "Copied to clipboard",
-      "copyWarning": "This key will only be shown once. Copy it now."
+      "copyWarning": "This key will only be shown once. Copy it now.",
+      "noKeys": "No API keys yet. Create one to connect your agent."
+    },
+    "privacy": {
+      "title": "Privacy & Data",
+      "consentLabel": "Share anonymized data",
+      "consentHint": "During Early Access, anonymized data sharing is a condition of participation. This toggle will become active after launch.",
+      "exportDescription": "Download all your events and projections as a JSON file.",
+      "exportButton": "Export my data"
+    },
+    "security": {
+      "title": "Security",
+      "twoFactor": "Two-factor authentication",
+      "comingSoon": "Coming soon"
+    },
+    "support": {
+      "title": "Support",
+      "text": "Questions or issues? Reach out at support@kura.dev."
     },
     "danger": {
       "title": "Danger zone",
@@ -190,10 +212,71 @@
     }
   },
   "footer": {
+    "impressum": "Legal Notice",
+    "datenschutz": "Privacy",
+    "nutzungsbedingungen": "Terms",
+    "copyright": "\u00a9 2026 Kura",
     "privacy": "Privacy",
     "terms": "Terms",
     "github": "GitHub",
     "tagline": "Built to remember what matters."
+  },
+  "impressum": {
+    "title": "Legal Notice",
+    "tmg": "Information pursuant to \u00a7 5 TMG",
+    "name": "Name",
+    "namePlaceholder": "To be added",
+    "address": "Address",
+    "addressPlaceholder": "To be added",
+    "contact": "Contact",
+    "contactPlaceholder": "To be added",
+    "responsible": "Responsible for content",
+    "responsiblePlaceholder": "To be added",
+    "note": "Content will be added."
+  },
+  "datenschutz": {
+    "title": "Privacy Policy",
+    "controller": {
+      "title": "Controller",
+      "text": "The controller within the meaning of the GDPR will be named here. Details to follow."
+    },
+    "dataCollected": {
+      "title": "Data Collected",
+      "text": "Information about the personal data collected will be listed here. Details to follow."
+    },
+    "purpose": {
+      "title": "Purpose of Processing",
+      "text": "The purposes for which personal data is processed will be explained here. Details to follow."
+    },
+    "rights": {
+      "title": "Rights of the Data Subject",
+      "text": "Information about your rights under GDPR (access, rectification, erasure, restriction, data portability, objection) will be provided here. Details to follow."
+    },
+    "contactSection": {
+      "title": "Contact",
+      "text": "Contact options for privacy inquiries will be provided here. Details to follow."
+    },
+    "note": "The full privacy policy will be added."
+  },
+  "nutzungsbedingungen": {
+    "title": "Terms of Use",
+    "earlyAccess": {
+      "title": "Early Access Terms",
+      "text": "Kura is in early access. The service is provided without guarantees of availability or completeness. Features may change at any time. Details to follow."
+    },
+    "dataConsent": {
+      "title": "Consent to Anonymized Data Analysis",
+      "text": "By using Kura, you agree that anonymized training data may be used to improve population-level statistics. Details to follow."
+    },
+    "liability": {
+      "title": "Liability Disclaimer (Beta)",
+      "text": "Kura is a beta product. Recommendations and analyses do not replace professional medical or sports advice. Use at your own risk. Details to follow."
+    },
+    "changes": {
+      "title": "Changes",
+      "text": "We reserve the right to modify these terms of use at any time. Changes will be communicated via the platform. Details to follow."
+    },
+    "note": "The full terms of use will be added."
   },
   "common": {
     "back": "Back",

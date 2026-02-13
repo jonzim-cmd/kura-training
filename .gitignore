@@ -31,9 +31,15 @@ docker/.env
 .coverage
 htmlcov/
 .pytest_cache/
+.hypothesis/
 
 # Fuzzing — generated artifacts (LLM-generated scenarios, not committed)
 workers/tests/fuzzing/generated/
+
+# Next.js
+.next/
+out/
+web/.next/
 
 # Database
 *.db

@@ -1,9 +1,13 @@
 use axum::extract::Path;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use kura_core::auth;
 
 use crate::auth::AuthenticatedUser;
 use crate::error::AppError;
@@ -288,10 +292,230 @@ async fn ensure_admin(pool: &sqlx::PgPool, user_id: Uuid) -> Result<(), AppError
     Ok(())
 }
 
+// ──────────────────────────────────────────────
+// Self-service API Key Management
+// ──────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct CreateApiKeyRequest {
+    pub label: String,
+    #[serde(default = "default_api_key_scopes")]
+    pub scopes: Vec<String>,
+}
+
+fn default_api_key_scopes() -> Vec<String> {
+    vec![
+        "agent:read".to_string(),
+        "agent:write".to_string(),
+        "agent:resolve".to_string(),
+    ]
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct CreateApiKeyResponse {
+    pub id: Uuid,
+    pub label: String,
+    pub key: String,
+    pub key_prefix: String,
+    pub scopes: Vec<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ApiKeyInfo {
+    pub id: Uuid,
+    pub label: String,
+    pub key_prefix: String,
+    pub scopes: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub is_revoked: bool,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ApiKeyListResponse {
+    pub keys: Vec<ApiKeyInfo>,
+}
+
+#[derive(sqlx::FromRow)]
+struct ApiKeyListRow {
+    id: Uuid,
+    label: String,
+    key_prefix: String,
+    scopes: Vec<String>,
+    created_at: DateTime<Utc>,
+    last_used_at: Option<DateTime<Utc>>,
+    is_revoked: bool,
+}
+
+/// POST /v1/account/api-keys — create an API key for the current user
+#[utoipa::path(
+    post,
+    path = "/v1/account/api-keys",
+    request_body = CreateApiKeyRequest,
+    responses(
+        (status = 201, description = "API key created (key shown once)", body = CreateApiKeyResponse),
+        (status = 400, description = "Validation error", body = kura_core::error::ApiError),
+        (status = 401, description = "Not authenticated"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "account"
+)]
+pub async fn create_api_key(
+    user: AuthenticatedUser,
+    state: axum::extract::State<AppState>,
+    Json(req): Json<CreateApiKeyRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let label = req.label.trim().to_string();
+    if label.is_empty() || label.len() > 100 {
+        return Err(AppError::Validation {
+            message: "label must be 1-100 characters".to_string(),
+            field: Some("label".to_string()),
+            received: Some(serde_json::Value::String(req.label)),
+            docs_hint: None,
+        });
+    }
+
+    let allowed_scopes = ["agent:read", "agent:write", "agent:resolve"];
+    for scope in &req.scopes {
+        if !allowed_scopes.contains(&scope.as_str()) {
+            return Err(AppError::Validation {
+                message: format!("Invalid scope: '{}'. Allowed: {:?}", scope, allowed_scopes),
+                field: Some("scopes".to_string()),
+                received: Some(serde_json::Value::String(scope.clone())),
+                docs_hint: None,
+            });
+        }
+    }
+
+    let scopes = if req.scopes.is_empty() {
+        default_api_key_scopes()
+    } else {
+        req.scopes
+    };
+
+    let key_id = Uuid::now_v7();
+    let (raw_key, key_hash) = auth::generate_api_key();
+    let key_prefix = format!("{}...{}", &raw_key[..12], &raw_key[raw_key.len() - 4..]);
+    let now = Utc::now();
+
+    sqlx::query(
+        "INSERT INTO api_keys (id, user_id, key_hash, key_prefix, label, scopes, created_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(key_id)
+    .bind(user.user_id)
+    .bind(&key_hash)
+    .bind(&key_prefix)
+    .bind(&label)
+    .bind(&scopes)
+    .bind(now)
+    .execute(&state.db)
+    .await
+    .map_err(AppError::Database)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateApiKeyResponse {
+            id: key_id,
+            label,
+            key: raw_key,
+            key_prefix,
+            scopes,
+            created_at: now,
+        }),
+    ))
+}
+
+/// GET /v1/account/api-keys — list the current user's API keys
+#[utoipa::path(
+    get,
+    path = "/v1/account/api-keys",
+    responses(
+        (status = 200, description = "List of API keys", body = ApiKeyListResponse),
+        (status = 401, description = "Not authenticated"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "account"
+)]
+pub async fn list_api_keys(
+    user: AuthenticatedUser,
+    state: axum::extract::State<AppState>,
+) -> Result<Json<ApiKeyListResponse>, AppError> {
+    let rows = sqlx::query_as::<_, ApiKeyListRow>(
+        "SELECT id, label, key_prefix, scopes, created_at, last_used_at, is_revoked \
+         FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC",
+    )
+    .bind(user.user_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(AppError::Database)?;
+
+    let keys = rows
+        .into_iter()
+        .map(|r| ApiKeyInfo {
+            id: r.id,
+            label: r.label,
+            key_prefix: r.key_prefix,
+            scopes: r.scopes,
+            created_at: r.created_at,
+            last_used_at: r.last_used_at,
+            is_revoked: r.is_revoked,
+        })
+        .collect();
+
+    Ok(Json(ApiKeyListResponse { keys }))
+}
+
+/// DELETE /v1/account/api-keys/{key_id} — revoke an API key
+#[utoipa::path(
+    delete,
+    path = "/v1/account/api-keys/{key_id}",
+    params(("key_id" = Uuid, Path, description = "API key ID to revoke")),
+    responses(
+        (status = 200, description = "API key revoked"),
+        (status = 401, description = "Not authenticated"),
+        (status = 404, description = "API key not found"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "account"
+)]
+pub async fn revoke_api_key(
+    user: AuthenticatedUser,
+    state: axum::extract::State<AppState>,
+    Path(key_id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let updated = sqlx::query(
+        "UPDATE api_keys SET is_revoked = TRUE WHERE id = $1 AND user_id = $2 AND is_revoked = FALSE",
+    )
+    .bind(key_id)
+    .bind(user.user_id)
+    .execute(&state.db)
+    .await
+    .map_err(AppError::Database)?;
+
+    if updated.rows_affected() == 0 {
+        return Err(AppError::NotFound {
+            resource: format!("API key {}", key_id),
+        });
+    }
+
+    Ok(Json(serde_json::json!({
+        "message": "API key revoked",
+        "key_id": key_id
+    })))
+}
+
 pub fn self_router() -> Router<AppState> {
     Router::new()
         .route("/v1/account", delete(delete_own_account))
         .route("/v1/account/analysis-subject", get(get_analysis_subject))
+        .route(
+            "/v1/account/api-keys",
+            get(list_api_keys).post(create_api_key),
+        )
+        .route("/v1/account/api-keys/{key_id}", delete(revoke_api_key))
 }
 
 pub fn admin_router() -> Router<AppState> {

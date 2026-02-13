@@ -11,11 +11,20 @@ use uuid::Uuid;
 
 use kura_core::auth;
 
+use crate::auth::AuthenticatedUser;
 use crate::error::AppError;
 use crate::state::AppState;
 
 pub fn register_router() -> Router<AppState> {
     Router::new().route("/v1/auth/register", post(register))
+}
+
+pub fn email_login_router() -> Router<AppState> {
+    Router::new().route("/v1/auth/email/login", post(email_login))
+}
+
+pub fn me_router() -> Router<AppState> {
+    Router::new().route("/v1/auth/me", get(get_me))
 }
 
 pub fn authorize_router() -> Router<AppState> {
@@ -1753,6 +1762,106 @@ async fn issue_tokens(
         refresh_token,
         token_type: "Bearer".to_string(),
         expires_in: AGENT_ACCESS_TOKEN_TTL_MINUTES * 60,
+    }))
+}
+
+// ──────────────────────────────────────────────
+// POST /v1/auth/email/login — SPA-friendly email/password → tokens
+// ──────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct EmailLoginRequest {
+    pub email: String,
+    pub password: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/auth/email/login",
+    request_body = EmailLoginRequest,
+    responses(
+        (status = 200, description = "Login successful, tokens issued", body = TokenResponse),
+        (status = 401, description = "Invalid credentials", body = kura_core::error::ApiError)
+    ),
+    tag = "auth"
+)]
+pub async fn email_login(
+    State(state): State<AppState>,
+    Json(req): Json<EmailLoginRequest>,
+) -> Result<Json<TokenResponse>, AppError> {
+    let email_norm = normalize_email(&req.email);
+    if email_norm.is_empty() {
+        return Err(AppError::Validation {
+            message: "email must not be empty".to_string(),
+            field: Some("email".to_string()),
+            received: None,
+            docs_hint: None,
+        });
+    }
+
+    let user_id =
+        authenticate_email_password_user_id(&state.db, &email_norm, &req.password).await?;
+
+    issue_tokens(
+        &state.db,
+        user_id,
+        "kura-web",
+        default_agent_token_scopes(),
+    )
+    .await
+}
+
+// ──────────────────────────────────────────────
+// GET /v1/auth/me — current user info
+// ──────────────────────────────────────────────
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct MeResponse {
+    pub user_id: Uuid,
+    pub email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    pub is_admin: bool,
+    pub created_at: chrono::DateTime<Utc>,
+}
+
+#[derive(sqlx::FromRow)]
+struct MeRow {
+    id: Uuid,
+    email: String,
+    display_name: Option<String>,
+    is_admin: bool,
+    created_at: chrono::DateTime<Utc>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/auth/me",
+    responses(
+        (status = 200, description = "Current user info", body = MeResponse),
+        (status = 401, description = "Not authenticated", body = kura_core::error::ApiError)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "auth"
+)]
+pub async fn get_me(
+    user: AuthenticatedUser,
+    State(state): State<AppState>,
+) -> Result<Json<MeResponse>, AppError> {
+    let row = sqlx::query_as::<_, MeRow>(
+        "SELECT id, email, display_name, is_admin, created_at FROM users WHERE id = $1",
+    )
+    .bind(user.user_id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(AppError::Database)?;
+
+    Ok(Json(MeResponse {
+        user_id: row.id,
+        email: row.email,
+        display_name: row.display_name,
+        is_admin: row.is_admin,
+        created_at: row.created_at,
     }))
 }
 

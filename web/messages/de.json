@@ -115,7 +115,12 @@
     "forgotPassword": "Passwort vergessen?",
     "orContinueWith": "Oder weiter mit",
     "consentLabel": "Ich stimme zu, dass meine anonymisierten Trainingsdaten zur Verbesserung von Kura verwendet werden.",
-    "inviteInvalid": "Dieser Einladungslink ist ung\u00fcltig oder abgelaufen."
+    "inviteInvalid": "Dieser Einladungslink ist ung\u00fcltig oder abgelaufen.",
+    "loggingIn": "Anmeldung...",
+    "creating": "Konto wird erstellt...",
+    "requestAccessLink": "Zugang anfragen",
+    "passwordMismatch": "Passw\u00f6rter stimmen nicht \u00fcberein",
+    "passwordTooShort": "Passwort muss mindestens 8 Zeichen lang sein"
   },
   "settings": {
     "title": "Einstellungen",
@@ -138,7 +143,24 @@
       "never": "Nie",
       "revoke": "Widerrufen",
       "copied": "In Zwischenablage kopiert",
-      "copyWarning": "Dieser Schlüssel wird nur einmal angezeigt. Kopiere ihn jetzt."
+      "copyWarning": "Dieser Schlüssel wird nur einmal angezeigt. Kopiere ihn jetzt.",
+      "noKeys": "Noch keine API-Schl\u00fcssel. Erstelle einen, um deinen Agenten zu verbinden."
+    },
+    "privacy": {
+      "title": "Datenschutz & Daten",
+      "consentLabel": "Anonymisierte Daten teilen",
+      "consentHint": "W\u00e4hrend des Early Access ist die anonymisierte Datenweitergabe Teilnahmebedingung. Dieser Schalter wird nach dem Launch aktivierbar.",
+      "exportDescription": "Lade alle deine Events und Projektionen als JSON-Datei herunter.",
+      "exportButton": "Meine Daten exportieren"
+    },
+    "security": {
+      "title": "Sicherheit",
+      "twoFactor": "Zwei-Faktor-Authentifizierung",
+      "comingSoon": "Bald verf\u00fcgbar"
+    },
+    "support": {
+      "title": "Support",
+      "text": "Fragen oder Probleme? Schreib an support@kura.dev."
     },
     "danger": {
       "title": "Gefahrenzone",
@@ -190,10 +212,71 @@
     }
   },
   "footer": {
+    "impressum": "Impressum",
+    "datenschutz": "Datenschutz",
+    "nutzungsbedingungen": "Nutzungsbedingungen",
+    "copyright": "\u00a9 2026 Kura",
     "privacy": "Datenschutz",
     "terms": "AGB",
     "github": "GitHub",
-    "tagline": "Gebaut, um zu bewahren, was zählt."
+    "tagline": "Gebaut, um zu bewahren, was z\u00e4hlt."
+  },
+  "impressum": {
+    "title": "Impressum",
+    "tmg": "Angaben gem\u00e4\u00df \u00a7 5 TMG",
+    "name": "Name",
+    "namePlaceholder": "Wird erg\u00e4nzt",
+    "address": "Adresse",
+    "addressPlaceholder": "Wird erg\u00e4nzt",
+    "contact": "Kontakt",
+    "contactPlaceholder": "Wird erg\u00e4nzt",
+    "responsible": "Verantwortlich f\u00fcr den Inhalt",
+    "responsiblePlaceholder": "Wird erg\u00e4nzt",
+    "note": "Inhalte werden erg\u00e4nzt."
+  },
+  "datenschutz": {
+    "title": "Datenschutzerkl\u00e4rung",
+    "controller": {
+      "title": "Verantwortlicher",
+      "text": "Der Verantwortliche im Sinne der DSGVO wird hier benannt. Angaben folgen."
+    },
+    "dataCollected": {
+      "title": "Erhobene Daten",
+      "text": "Informationen zu den erhobenen personenbezogenen Daten werden hier aufgef\u00fchrt. Angaben folgen."
+    },
+    "purpose": {
+      "title": "Zweck der Verarbeitung",
+      "text": "Die Zwecke, f\u00fcr die personenbezogene Daten verarbeitet werden, werden hier erl\u00e4utert. Angaben folgen."
+    },
+    "rights": {
+      "title": "Rechte der betroffenen Person",
+      "text": "Informationen zu Ihren Rechten nach DSGVO (Auskunft, Berichtigung, L\u00f6schung, Einschr\u00e4nkung, Daten\u00fcbertragbarkeit, Widerspruch) werden hier dargestellt. Angaben folgen."
+    },
+    "contactSection": {
+      "title": "Kontakt",
+      "text": "Kontaktm\u00f6glichkeiten f\u00fcr Datenschutzanfragen werden hier angegeben. Angaben folgen."
+    },
+    "note": "Die vollst\u00e4ndige Datenschutzerkl\u00e4rung wird erg\u00e4nzt."
+  },
+  "nutzungsbedingungen": {
+    "title": "Nutzungsbedingungen",
+    "earlyAccess": {
+      "title": "Early-Access-Bedingungen",
+      "text": "Kura befindet sich im Early Access. Der Dienst wird ohne Garantie auf Verf\u00fcgbarkeit oder Vollst\u00e4ndigkeit bereitgestellt. Funktionen k\u00f6nnen sich jederzeit \u00e4ndern. Angaben folgen."
+    },
+    "dataConsent": {
+      "title": "Zustimmung zur anonymisierten Datenanalyse",
+      "text": "Mit der Nutzung von Kura stimmen Sie zu, dass anonymisierte Trainingsdaten zur Verbesserung populationsbasierter Statistiken verwendet werden d\u00fcrfen. Angaben folgen."
+    },
+    "liability": {
+      "title": "Haftungsausschluss (Beta)",
+      "text": "Kura ist ein Beta-Produkt. Empfehlungen und Analysen ersetzen keine professionelle medizinische oder sportfachliche Beratung. Die Nutzung erfolgt auf eigene Verantwortung. Angaben folgen."
+    },
+    "changes": {
+      "title": "\u00c4nderungen",
+      "text": "Wir behalten uns vor, diese Nutzungsbedingungen jederzeit zu \u00e4ndern. \u00c4nderungen werden \u00fcber die Plattform mitgeteilt. Angaben folgen."
+    },
+    "note": "Die vollst\u00e4ndigen Nutzungsbedingungen werden erg\u00e4nzt."
   },
   "common": {
     "back": "Zurück",
