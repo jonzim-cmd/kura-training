@@ -265,6 +265,53 @@ async def _load_user_cohorts(
     return cohort_by_user
 
 
+def _quality_health_status_from_projection(data: dict[str, Any] | None) -> str:
+    if not isinstance(data, dict):
+        return "unknown"
+    autonomy_policy = data.get("autonomy_policy")
+    if not isinstance(autonomy_policy, dict):
+        autonomy_policy = {}
+    candidates = (
+        data.get("status"),
+        data.get("quality_status"),
+        data.get("integrity_slo_status"),
+        autonomy_policy.get("slo_status"),
+        autonomy_policy.get("calibration_status"),
+    )
+    for raw in candidates:
+        status = _normalize(raw)
+        if status in {"healthy", "monitor", "degraded"}:
+            return status
+    return "unknown"
+
+
+async def _load_quality_health_statuses(
+    conn: psycopg.AsyncConnection[Any],
+    user_ids: list[str],
+) -> dict[str, str]:
+    if not user_ids:
+        return {}
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT user_id::text AS user_id, data
+            FROM projections
+            WHERE projection_type = 'quality_health'
+              AND key = 'overview'
+              AND user_id::text = ANY(%s)
+            """,
+            (user_ids,),
+        )
+        rows = await cur.fetchall()
+
+    status_by_user = {user_id: "unknown" for user_id in user_ids}
+    for row in rows:
+        user_id = str(row["user_id"])
+        data = row.get("data") if isinstance(row.get("data"), dict) else None
+        status_by_user[user_id] = _quality_health_status_from_projection(data)
+    return status_by_user
+
+
 def _add_aggregate_sample(
     bucket_by_group: dict[tuple[str, str], dict[str, Any]],
     *,
@@ -755,22 +802,28 @@ async def refresh_population_prior_profiles(
     try:
         retracted_ids = await _global_retracted_event_ids(conn)
         opted_in_users = await _load_opted_in_users(conn, retracted_event_ids=retracted_ids)
-        user_ids = sorted(opted_in_users)
-        cohort_by_user = await _load_user_cohorts(conn, user_ids)
+        opted_in_user_ids = sorted(opted_in_users)
+        quality_statuses = await _load_quality_health_statuses(conn, opted_in_user_ids)
+        eligible_user_ids = [
+            user_id
+            for user_id in opted_in_user_ids
+            if quality_statuses.get(user_id) != "degraded"
+        ]
+        cohort_by_user = await _load_user_cohorts(conn, eligible_user_ids)
 
         strength_rows = await _load_strength_projection_rows(
             conn,
-            user_ids=user_ids,
+            user_ids=eligible_user_ids,
             window_days=window_days,
         )
         readiness_rows = await _load_readiness_projection_rows(
             conn,
-            user_ids=user_ids,
+            user_ids=eligible_user_ids,
             window_days=window_days,
         )
         causal_rows = await _load_causal_projection_rows(
             conn,
-            user_ids=user_ids,
+            user_ids=eligible_user_ids,
             window_days=window_days,
         )
 
@@ -835,6 +888,9 @@ async def refresh_population_prior_profiles(
                 "strength_candidates": len(strength_rows),
                 "readiness_candidates": len(readiness_rows),
                 "causal_candidates": len(causal_rows),
+                "users_eligible_quality": len(eligible_user_ids),
+                "users_excluded_degraded_quality": len(opted_in_user_ids)
+                - len(eligible_user_ids),
                 "min_cohort_size": min_cohort_size,
                 "window_days": window_days,
             },
@@ -844,6 +900,9 @@ async def refresh_population_prior_profiles(
         summary = {
             "status": "success",
             "users_opted_in": len(opted_in_users),
+            "users_eligible_quality": len(eligible_user_ids),
+            "users_excluded_degraded_quality": len(opted_in_user_ids)
+            - len(eligible_user_ids),
             "cohorts_considered": cohorts_considered,
             "priors_written": len(prior_rows),
             "min_cohort_size": min_cohort_size,

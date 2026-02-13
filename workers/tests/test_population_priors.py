@@ -9,6 +9,7 @@ from kura_workers.population_priors import (
     _build_readiness_prior_rows,
     _build_strength_prior_rows,
     _cohort_key_from_user_profile,
+    _quality_health_status_from_projection,
     _weighted_stats,
     build_causal_estimand_target_key,
     population_prior_blend_weight,
@@ -31,6 +32,22 @@ def test_cohort_key_from_user_profile_defaults_unknown():
     assert _cohort_key_from_user_profile(
         {"user": {"profile": {"training_modality": "Strength", "experience_level": "Advanced"}}}
     ) == "tm:strength|el:advanced"
+
+
+def test_quality_health_status_from_projection_prefers_explicit_status():
+    assert _quality_health_status_from_projection(
+        {"status": "degraded", "integrity_slo_status": "healthy"}
+    ) == "degraded"
+    assert _quality_health_status_from_projection(
+        {"quality_status": "monitor"}
+    ) == "monitor"
+
+
+def test_quality_health_status_from_projection_falls_back_to_autonomy_policy():
+    assert _quality_health_status_from_projection(
+        {"autonomy_policy": {"calibration_status": "degraded"}}
+    ) == "degraded"
+    assert _quality_health_status_from_projection({}) == "unknown"
 
 
 def test_weighted_stats_has_variance_floor():

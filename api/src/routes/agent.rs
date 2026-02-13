@@ -952,9 +952,8 @@ const MODEL_TIER_STRICT_CONFIRM_REASON_CODE: &str = "model_tier_strict_requires_
 const MODEL_TIER_CONFIRM_REASON_CODE: &str = "model_tier_requires_confirmation";
 const CALIBRATION_MONITOR_CONFIRM_REASON_CODE: &str = "calibration_monitor_requires_confirmation";
 const INTEGRITY_MONITOR_CONFIRM_REASON_CODE: &str = "integrity_monitor_requires_confirmation";
-const CALIBRATION_DEGRADED_BLOCK_REASON_CODE: &str =
-    "calibration_degraded_blocks_high_impact_write";
-const INTEGRITY_DEGRADED_BLOCK_REASON_CODE: &str = "integrity_degraded_blocks_high_impact_write";
+const CALIBRATION_DEGRADED_CONFIRM_REASON_CODE: &str = "calibration_degraded_requires_confirmation";
+const INTEGRITY_DEGRADED_CONFIRM_REASON_CODE: &str = "integrity_degraded_requires_confirmation";
 const HIGH_IMPACT_CONFIRMATION_REQUIRED_REASON_CODE: &str = "high_impact_confirmation_required";
 const HIGH_IMPACT_CONFIRMATION_INVALID_REASON_CODE: &str = "high_impact_confirmation_invalid";
 const HIGH_IMPACT_CONFIRMATION_TOKEN_MISSING_REASON_CODE: &str =
@@ -1725,6 +1724,7 @@ async fn resolve_auto_tier_policy_for_attested_model(
         WHERE user_id = $1
           AND event_type = 'quality.save_claim.checked'
           AND timestamp >= NOW() - (($3)::TEXT || ' days')::INTERVAL
+          AND LOWER(COALESCE(data->'autonomy_gate'->>'effective_quality_status', 'healthy')) <> 'degraded'
           AND COALESCE(
                 NULLIF(data->>'runtime_model_identity', ''),
                 NULLIF(data->'autonomy_policy'->>'model_identity', '')
@@ -1744,6 +1744,7 @@ async fn resolve_auto_tier_policy_for_attested_model(
         WHERE user_id = $1
           AND event_type = 'quality.save_claim.checked'
           AND timestamp >= NOW() - (($3)::TEXT || ' days')::INTERVAL
+          AND LOWER(COALESCE(data->'autonomy_gate'->>'effective_quality_status', 'healthy')) <> 'degraded'
           AND COALESCE(
                 NULLIF(data->>'runtime_model_identity', ''),
                 NULLIF(data->'autonomy_policy'->>'model_identity', '')
@@ -5088,15 +5089,15 @@ fn evaluate_autonomy_gate(
 
     if action_class == "high_impact_write" {
         if effective_quality_status == "degraded" {
-            decision = "block".to_string();
+            decision = "confirm_first".to_string();
             if normalize_quality_status(&autonomy_policy.calibration_status) == "degraded" {
-                reason_codes.push(CALIBRATION_DEGRADED_BLOCK_REASON_CODE.to_string());
+                reason_codes.push(CALIBRATION_DEGRADED_CONFIRM_REASON_CODE.to_string());
             }
             if normalize_quality_status(&autonomy_policy.slo_status) == "degraded" {
-                reason_codes.push(INTEGRITY_DEGRADED_BLOCK_REASON_CODE.to_string());
+                reason_codes.push(INTEGRITY_DEGRADED_CONFIRM_REASON_CODE.to_string());
             }
             if reason_codes.is_empty() {
-                reason_codes.push(INTEGRITY_DEGRADED_BLOCK_REASON_CODE.to_string());
+                reason_codes.push(INTEGRITY_DEGRADED_CONFIRM_REASON_CODE.to_string());
             }
         } else if tier_policy.high_impact_write_policy == "block" {
             decision = "confirm_first".to_string();
@@ -7386,15 +7387,6 @@ pub async fn write_with_proof(
         user_profile.as_ref(),
     );
     if autonomy_gate.decision == "block" {
-        let degraded_block = autonomy_gate.reason_codes.iter().any(|code| {
-            code == CALIBRATION_DEGRADED_BLOCK_REASON_CODE
-                || code == INTEGRITY_DEGRADED_BLOCK_REASON_CODE
-        });
-        let docs_hint = if degraded_block {
-            "High-impact writes are temporarily blocked while quality_health is degraded. Use low-impact writes and retry once quality recovers."
-        } else {
-            "Request explicit user confirmation or reduce scope to low-impact writes before retry."
-        };
         return Err(AppError::Validation {
             message: "High-impact write blocked by adaptive autonomy gate.".to_string(),
             field: Some("events".to_string()),
@@ -7404,7 +7396,10 @@ pub async fn write_with_proof(
                 "effective_quality_status": autonomy_gate.effective_quality_status,
                 "reason_codes": autonomy_gate.reason_codes,
             })),
-            docs_hint: Some(docs_hint.to_string()),
+            docs_hint: Some(
+                "Request explicit user confirmation or reduce scope to low-impact writes before retry."
+                    .to_string(),
+            ),
         });
     }
     if autonomy_gate.decision == "confirm_first" && action_class == "high_impact_write" {
@@ -10830,13 +10825,13 @@ mod tests {
         let scenarios = [
             ("unknown", "healthy", "healthy", "confirm_first"),
             ("unknown", "healthy", "monitor", "confirm_first"),
-            ("unknown", "healthy", "degraded", "block"),
+            ("unknown", "healthy", "degraded", "confirm_first"),
             ("openai:gpt-5-mini", "healthy", "healthy", "confirm_first"),
             ("openai:gpt-5-mini", "healthy", "monitor", "confirm_first"),
-            ("openai:gpt-5-mini", "healthy", "degraded", "block"),
+            ("openai:gpt-5-mini", "healthy", "degraded", "confirm_first"),
             ("openai:gpt-5", "healthy", "healthy", "allow"),
             ("openai:gpt-5", "healthy", "monitor", "confirm_first"),
-            ("openai:gpt-5", "healthy", "degraded", "block"),
+            ("openai:gpt-5", "healthy", "degraded", "confirm_first"),
         ];
 
         for (model_identity, slo_status, calibration_status, expected_decision) in scenarios {
