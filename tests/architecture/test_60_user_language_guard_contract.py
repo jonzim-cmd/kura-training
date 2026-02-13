@@ -11,7 +11,7 @@ def test_user_language_guard_contract_markers_exist() -> None:
     assert "enum AgentLanguageMode" in src
     assert "UserSafe" in src
     assert "DeveloperRaw" in src
-    assert "KURA_AGENT_DEVELOPER_RAW_CLIENT_ALLOWLIST_ENV" in src
+    assert "KURA_AGENT_DEVELOPER_RAW_USER_ALLOWLIST_ENV" in src
     assert "AGENT_LANGUAGE_MODE_HEADER" in src
     assert "resolve_agent_language_mode" in src
     assert "apply_user_safe_language_guard" in src

@@ -2,7 +2,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
+use hmac::{Hmac, Mac};
 use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -10,7 +11,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -259,7 +260,7 @@ pub struct AgentAutonomyGate {
     pub reason_codes: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct AgentReadAfterWriteTarget {
     pub projection_type: String,
     pub key: String,
@@ -282,6 +283,22 @@ pub struct AgentIntentHandshake {
     pub handshake_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct AgentModelAttestation {
+    /// model_attestation.v1
+    pub schema_version: String,
+    /// Runtime model identity observed by the gateway/provider (e.g. openai:gpt-5-mini).
+    pub runtime_model_identity: String,
+    /// Stable digest of the signed write request payload.
+    pub request_digest: String,
+    /// Gateway-generated id for replay protection.
+    pub request_id: String,
+    /// Issued-at timestamp from gateway.
+    pub issued_at: DateTime<Utc>,
+    /// Hex(HMAC-SHA256(secret, canonical_payload))
+    pub signature: String,
+}
+
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct AgentWriteWithProofRequest {
     pub events: Vec<CreateEventRequest>,
@@ -297,6 +314,9 @@ pub struct AgentWriteWithProofRequest {
     /// Optional pre-execution alignment contract (required for high-impact writes).
     #[serde(default)]
     pub intent_handshake: Option<AgentIntentHandshake>,
+    /// Optional runtime model attestation from agent gateway.
+    #[serde(default)]
+    pub model_attestation: Option<AgentModelAttestation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -892,11 +912,25 @@ const AGENT_CHALLENGE_MODE_ONBOARDING_HINT: &str = "Challenge Mode ist standardm
 const AGENT_MEMORY_TIER_CONTRACT_VERSION: &str = "memory_tier_contract.v1";
 const AGENT_SELF_MODEL_SCHEMA_VERSION: &str = "agent_self_model.v1";
 const MODEL_TIER_REGISTRY_VERSION: &str = "model_tier_registry_v1";
+const MODEL_ATTESTATION_SCHEMA_VERSION: &str = "model_attestation.v1";
 const INTENT_HANDSHAKE_SCHEMA_VERSION: &str = "intent_handshake.v1";
 const INTENT_HANDSHAKE_MAX_AGE_MINUTES: i64 = 45;
 const TRACE_DIGEST_SCHEMA_VERSION: &str = "trace_digest.v1";
 const POST_TASK_REFLECTION_SCHEMA_VERSION: &str = "post_task_reflection.v1";
 const MODEL_IDENTITY_UNKNOWN_FALLBACK_REASON_CODE: &str = "model_identity_unknown_fallback_strict";
+const MODEL_ATTESTATION_MISSING_REASON_CODE: &str = "model_attestation_missing_fallback";
+const MODEL_ATTESTATION_INVALID_SCHEMA_REASON_CODE: &str = "model_attestation_invalid_schema";
+const MODEL_ATTESTATION_INVALID_DIGEST_REASON_CODE: &str =
+    "model_attestation_invalid_request_digest";
+const MODEL_ATTESTATION_INVALID_SIGNATURE_REASON_CODE: &str = "model_attestation_invalid_signature";
+const MODEL_ATTESTATION_STALE_REASON_CODE: &str = "model_attestation_stale";
+const MODEL_ATTESTATION_REPLAY_REASON_CODE: &str = "model_attestation_replayed";
+const MODEL_ATTESTATION_MALFORMED_REASON_CODE: &str = "model_attestation_malformed";
+const MODEL_ATTESTATION_SECRET_UNCONFIGURED_REASON_CODE: &str =
+    "model_attestation_secret_unconfigured";
+const MODEL_TIER_AUTO_LOW_SAMPLES_CONFIRM_REASON_CODE: &str =
+    "model_tier_auto_low_samples_confirm_first";
+const MODEL_TIER_AUTO_STRICT_REASON_CODE: &str = "model_tier_auto_quality_strict";
 const MODEL_TIER_STRICT_BLOCK_REASON_CODE: &str = "model_tier_strict_blocks_high_impact_write";
 const MODEL_TIER_CONFIRM_REASON_CODE: &str = "model_tier_requires_confirmation";
 const CALIBRATION_MONITOR_CONFIRM_REASON_CODE: &str = "calibration_monitor_requires_confirmation";
@@ -908,11 +942,21 @@ const MEMORY_TIER_PRINCIPLES_STALE_CONFIRM_REASON_CODE: &str =
     "memory_principles_stale_confirm_first";
 const MEMORY_TIER_PRINCIPLES_MISSING_CONFIRM_REASON_CODE: &str =
     "memory_principles_missing_confirm_first";
+const MODEL_ATTESTATION_SECRET_ENV: &str = "KURA_AGENT_MODEL_ATTESTATION_SECRET";
 const KURA_AGENT_MODEL_IDENTITY_ENV: &str = "KURA_AGENT_MODEL_IDENTITY";
 const KURA_AGENT_MODEL_BY_CLIENT_ID_ENV: &str = "KURA_AGENT_MODEL_BY_CLIENT_ID_JSON";
-const KURA_AGENT_DEVELOPER_RAW_CLIENT_ALLOWLIST_ENV: &str =
-    "KURA_AGENT_DEVELOPER_RAW_CLIENT_ALLOWLIST";
+const KURA_AGENT_DEVELOPER_RAW_USER_ALLOWLIST_ENV: &str = "KURA_AGENT_DEVELOPER_RAW_USER_ALLOWLIST";
 const AGENT_LANGUAGE_MODE_HEADER: &str = "x-kura-debug-language-mode";
+const MODEL_ATTESTATION_MAX_AGE_SECONDS: i64 = 300;
+const MODEL_ATTESTATION_MAX_FUTURE_SKEW_SECONDS: i64 = 30;
+const MODEL_TIER_AUTO_LOOKBACK_DAYS: i64 = 30;
+const MODEL_TIER_AUTO_MIN_SAMPLES: i64 = 12;
+const MODEL_TIER_AUTO_ADVANCED_MAX_MISMATCH_PCT: f64 = 0.60;
+const MODEL_TIER_AUTO_MODERATE_MAX_MISMATCH_PCT: f64 = 4.00;
+const MODEL_TIER_AUTO_ADVANCED_PROMOTE_PCT: f64 = 0.40;
+const MODEL_TIER_AUTO_ADVANCED_DEMOTE_PCT: f64 = 1.50;
+const MODEL_TIER_AUTO_STRICT_ENTER_PCT: f64 = 6.00;
+const MODEL_TIER_AUTO_STRICT_EXIT_PCT: f64 = 2.00;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentLanguageMode {
@@ -937,7 +981,26 @@ const MODERATE_MODEL_IDENTITIES: [&str; 5] = [
 struct ResolvedModelIdentity {
     model_identity: String,
     reason_codes: Vec<String>,
+    source: String,
+    attestation_request_id: Option<String>,
 }
+
+#[derive(Debug, Clone)]
+struct VerifiedModelAttestation {
+    model_identity: String,
+    request_id: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct ModelTierTelemetryRow {
+    sample_count: i64,
+    mismatch_count: i64,
+}
+
+type HmacSha256 = Hmac<Sha256>;
+
+static MODEL_ATTESTATION_NONCES: LazyLock<Mutex<HashMap<String, DateTime<Utc>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Debug, Clone, Copy)]
 struct ModelTierPolicy {
@@ -989,6 +1052,8 @@ fn resolve_model_identity_with_sources(
             return ResolvedModelIdentity {
                 model_identity,
                 reason_codes: Vec::new(),
+                source: "client_map".to_string(),
+                attestation_request_id: None,
             };
         }
     }
@@ -997,12 +1062,16 @@ fn resolve_model_identity_with_sources(
         return ResolvedModelIdentity {
             model_identity: runtime_identity,
             reason_codes: Vec::new(),
+            source: "runtime_default".to_string(),
+            attestation_request_id: None,
         };
     }
 
     ResolvedModelIdentity {
         model_identity: "unknown".to_string(),
         reason_codes: vec![MODEL_IDENTITY_UNKNOWN_FALLBACK_REASON_CODE.to_string()],
+        source: "unknown_fallback".to_string(),
+        attestation_request_id: None,
     }
 }
 
@@ -1020,11 +1089,240 @@ fn resolve_model_identity(auth: &AuthenticatedUser) -> ResolvedModelIdentity {
     )
 }
 
-fn auth_client_id(auth: &AuthenticatedUser) -> Option<&str> {
-    match &auth.auth_method {
-        AuthMethod::AccessToken { client_id, .. } => Some(client_id.as_str()),
-        AuthMethod::ApiKey { .. } => None,
+fn canonical_model_attestation_issued_at(issued_at: DateTime<Utc>) -> String {
+    issued_at.to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+fn build_model_attestation_request_digest(
+    req: &AgentWriteWithProofRequest,
+    action_class: &str,
+) -> String {
+    let events = req
+        .events
+        .iter()
+        .map(|event| {
+            serde_json::json!({
+                "timestamp": event.timestamp.to_rfc3339(),
+                "event_type": event.event_type,
+                "data": event.data,
+                "metadata": {
+                    "source": event.metadata.source,
+                    "agent": event.metadata.agent,
+                    "device": event.metadata.device,
+                    "session_id": event.metadata.session_id,
+                    "idempotency_key": event.metadata.idempotency_key,
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    let targets = req
+        .read_after_write_targets
+        .iter()
+        .map(|target| {
+            serde_json::json!({
+                "projection_type": target.projection_type,
+                "key": target.key,
+            })
+        })
+        .collect::<Vec<_>>();
+    let payload = serde_json::json!({
+        "events": events,
+        "read_after_write_targets": targets,
+        "verify_timeout_ms": req.verify_timeout_ms,
+        "include_repair_technical_details": req.include_repair_technical_details,
+        "intent_handshake": req.intent_handshake,
+        "action_class": action_class,
+    });
+    let serialized = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+    stable_hash_suffix(&serialized, 64)
+}
+
+fn compute_model_attestation_signature(
+    secret: &str,
+    model_identity: &str,
+    issued_at: DateTime<Utc>,
+    request_id: &str,
+    request_digest: &str,
+    user_id: Uuid,
+) -> Option<String> {
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).ok()?;
+    let payload = format!(
+        "{}|{}|{}|{}|{}|{}",
+        MODEL_ATTESTATION_SCHEMA_VERSION,
+        model_identity.trim().to_lowercase(),
+        canonical_model_attestation_issued_at(issued_at),
+        request_id.trim(),
+        request_digest.trim().to_lowercase(),
+        user_id
+    );
+    mac.update(payload.as_bytes());
+    Some(hex::encode(mac.finalize().into_bytes()))
+}
+
+fn normalize_attestation_signature(signature: &str) -> Option<String> {
+    let trimmed = signature.trim().to_lowercase();
+    if trimmed.is_empty() {
+        return None;
     }
+    let normalized = trimmed
+        .strip_prefix("sha256=")
+        .unwrap_or(trimmed.as_str())
+        .to_string();
+    if normalized.len() != 64 || !normalized.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn consume_model_attestation_nonce(request_id: &str, now: DateTime<Utc>) -> bool {
+    let mut cache = MODEL_ATTESTATION_NONCES
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let retention = chrono::Duration::seconds(MODEL_ATTESTATION_MAX_AGE_SECONDS * 4);
+    cache.retain(|_, seen_at| *seen_at + retention >= now);
+
+    if cache.contains_key(request_id) {
+        return false;
+    }
+    cache.insert(request_id.to_string(), now);
+    true
+}
+
+#[cfg(test)]
+fn clear_model_attestation_nonce_cache() {
+    MODEL_ATTESTATION_NONCES
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clear();
+}
+
+fn verify_model_attestation(
+    attestation: &AgentModelAttestation,
+    expected_request_digest: &str,
+    user_id: Uuid,
+    now: DateTime<Utc>,
+    secret: Option<&str>,
+) -> Result<VerifiedModelAttestation, Vec<String>> {
+    let mut reason_codes = Vec::new();
+
+    if attestation.schema_version.trim() != MODEL_ATTESTATION_SCHEMA_VERSION {
+        reason_codes.push(MODEL_ATTESTATION_INVALID_SCHEMA_REASON_CODE.to_string());
+    }
+    let Some(model_identity) = normalize_model_identity(&attestation.runtime_model_identity) else {
+        reason_codes.push(MODEL_ATTESTATION_MALFORMED_REASON_CODE.to_string());
+        return Err(reason_codes);
+    };
+
+    let request_id = attestation.request_id.trim();
+    if request_id.is_empty() || request_id.len() > 256 {
+        reason_codes.push(MODEL_ATTESTATION_MALFORMED_REASON_CODE.to_string());
+    }
+
+    let digest = attestation.request_digest.trim().to_lowercase();
+    if digest.is_empty() || digest != expected_request_digest.trim().to_lowercase() {
+        reason_codes.push(MODEL_ATTESTATION_INVALID_DIGEST_REASON_CODE.to_string());
+    }
+
+    let age = now.signed_duration_since(attestation.issued_at);
+    if age > chrono::Duration::seconds(MODEL_ATTESTATION_MAX_AGE_SECONDS)
+        || age < chrono::Duration::seconds(-MODEL_ATTESTATION_MAX_FUTURE_SKEW_SECONDS)
+    {
+        reason_codes.push(MODEL_ATTESTATION_STALE_REASON_CODE.to_string());
+    }
+
+    let Some(secret_value) = secret.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    }) else {
+        reason_codes.push(MODEL_ATTESTATION_SECRET_UNCONFIGURED_REASON_CODE.to_string());
+        dedupe_reason_codes(&mut reason_codes);
+        return Err(reason_codes);
+    };
+
+    let Some(expected_signature) = compute_model_attestation_signature(
+        secret_value,
+        &model_identity,
+        attestation.issued_at,
+        request_id,
+        &digest,
+        user_id,
+    ) else {
+        reason_codes.push(MODEL_ATTESTATION_MALFORMED_REASON_CODE.to_string());
+        dedupe_reason_codes(&mut reason_codes);
+        return Err(reason_codes);
+    };
+
+    let provided_signature = normalize_attestation_signature(&attestation.signature);
+    if provided_signature.as_deref() != Some(expected_signature.as_str()) {
+        reason_codes.push(MODEL_ATTESTATION_INVALID_SIGNATURE_REASON_CODE.to_string());
+    }
+
+    if !consume_model_attestation_nonce(request_id, now) {
+        reason_codes.push(MODEL_ATTESTATION_REPLAY_REASON_CODE.to_string());
+    }
+
+    dedupe_reason_codes(&mut reason_codes);
+    if !reason_codes.is_empty() {
+        return Err(reason_codes);
+    }
+
+    Ok(VerifiedModelAttestation {
+        model_identity,
+        request_id: request_id.to_string(),
+    })
+}
+
+fn resolve_model_identity_for_write(
+    auth: &AuthenticatedUser,
+    req: &AgentWriteWithProofRequest,
+    action_class: &str,
+    now: DateTime<Utc>,
+) -> ResolvedModelIdentity {
+    let request_digest = build_model_attestation_request_digest(req, action_class);
+    let attestation_secret = std::env::var(MODEL_ATTESTATION_SECRET_ENV).ok();
+    if let Some(attestation) = req.model_attestation.as_ref() {
+        return match verify_model_attestation(
+            attestation,
+            &request_digest,
+            auth.user_id,
+            now,
+            attestation_secret.as_deref(),
+        ) {
+            Ok(verified) => ResolvedModelIdentity {
+                model_identity: verified.model_identity,
+                reason_codes: Vec::new(),
+                source: "attested_runtime".to_string(),
+                attestation_request_id: Some(verified.request_id),
+            },
+            Err(mut reason_codes) => {
+                reason_codes.push(MODEL_IDENTITY_UNKNOWN_FALLBACK_REASON_CODE.to_string());
+                dedupe_reason_codes(&mut reason_codes);
+                ResolvedModelIdentity {
+                    model_identity: "unknown".to_string(),
+                    reason_codes,
+                    source: "attestation_invalid".to_string(),
+                    attestation_request_id: None,
+                }
+            }
+        };
+    }
+
+    let mut fallback = resolve_model_identity(auth);
+    if fallback
+        .reason_codes
+        .iter()
+        .any(|code| code == MODEL_IDENTITY_UNKNOWN_FALLBACK_REASON_CODE)
+    {
+        fallback
+            .reason_codes
+            .push(MODEL_ATTESTATION_MISSING_REASON_CODE.to_string());
+        dedupe_reason_codes(&mut fallback.reason_codes);
+    }
+    fallback
 }
 
 fn header_requests_developer_raw(mode_header: Option<&str>) -> bool {
@@ -1047,18 +1345,15 @@ fn header_requests_user_safe(mode_header: Option<&str>) -> bool {
     )
 }
 
-fn is_allowlisted_developer_raw_client(client_id: &str, allowlist: Option<&str>) -> bool {
-    let normalized_client_id = client_id.trim().to_lowercase();
-    if normalized_client_id.is_empty() {
-        return false;
-    }
+fn is_allowlisted_developer_raw_user(user_id: Uuid, allowlist: Option<&str>) -> bool {
+    let normalized_user_id = user_id.to_string().to_lowercase();
     let Some(raw_allowlist) = allowlist else {
         return false;
     };
     raw_allowlist
         .split(',')
         .map(|entry| entry.trim().to_lowercase())
-        .any(|entry| entry == "*" || entry == normalized_client_id)
+        .any(|entry| entry == "*" || entry == normalized_user_id)
 }
 
 fn resolve_agent_language_mode_with_sources(
@@ -1066,10 +1361,8 @@ fn resolve_agent_language_mode_with_sources(
     mode_header: Option<&str>,
     allowlist: Option<&str>,
 ) -> AgentLanguageMode {
-    let allowlisted_client = auth_client_id(auth)
-        .map(|client_id| is_allowlisted_developer_raw_client(client_id, allowlist))
-        .unwrap_or(false);
-    if allowlisted_client {
+    let allowlisted_user = is_allowlisted_developer_raw_user(auth.user_id, allowlist);
+    if allowlisted_user {
         if header_requests_user_safe(mode_header) {
             return AgentLanguageMode::UserSafe;
         }
@@ -1083,23 +1376,50 @@ fn resolve_agent_language_mode(auth: &AuthenticatedUser, headers: &HeaderMap) ->
     let mode_header = headers
         .get(AGENT_LANGUAGE_MODE_HEADER)
         .and_then(|value| value.to_str().ok());
-    let allowlist = std::env::var(KURA_AGENT_DEVELOPER_RAW_CLIENT_ALLOWLIST_ENV).ok();
+    let allowlist = std::env::var(KURA_AGENT_DEVELOPER_RAW_USER_ALLOWLIST_ENV).ok();
     let mode = resolve_agent_language_mode_with_sources(auth, mode_header, allowlist.as_deref());
     if mode == AgentLanguageMode::DeveloperRaw {
         tracing::info!(
             user_id = %auth.user_id,
-            client_id = auth_client_id(auth).unwrap_or("n/a"),
             mode = "developer_raw",
             "developer raw language mode enabled for write-with-proof response"
         );
     } else if header_requests_developer_raw(mode_header) {
         tracing::warn!(
             user_id = %auth.user_id,
-            client_id = auth_client_id(auth).unwrap_or("n/a"),
             "developer raw language mode request denied; enforcing user_safe mode"
         );
     }
     mode
+}
+
+fn model_tier_policy_from_name(tier_name: &str) -> ModelTierPolicy {
+    match tier_name {
+        "advanced" => ModelTierPolicy {
+            registry_version: MODEL_TIER_REGISTRY_VERSION,
+            capability_tier: "advanced",
+            confidence_floor: 0.70,
+            allowed_action_scope: "proactive",
+            high_impact_write_policy: "allow",
+            repair_auto_apply_cap: "enabled",
+        },
+        "moderate" => ModelTierPolicy {
+            registry_version: MODEL_TIER_REGISTRY_VERSION,
+            capability_tier: "moderate",
+            confidence_floor: 0.80,
+            allowed_action_scope: "moderate",
+            high_impact_write_policy: "confirm_first",
+            repair_auto_apply_cap: "confirm_only",
+        },
+        _ => ModelTierPolicy {
+            registry_version: MODEL_TIER_REGISTRY_VERSION,
+            capability_tier: "strict",
+            confidence_floor: 0.90,
+            allowed_action_scope: "strict",
+            high_impact_write_policy: "block",
+            repair_auto_apply_cap: "confirm_only",
+        },
+    }
 }
 
 fn resolve_model_tier_policy(model_identity: &str) -> ModelTierPolicy {
@@ -1109,37 +1429,184 @@ fn resolve_model_tier_policy(model_identity: &str) -> ModelTierPolicy {
         .iter()
         .any(|candidate| candidate.eq_ignore_ascii_case(&normalized))
     {
-        return ModelTierPolicy {
-            registry_version: MODEL_TIER_REGISTRY_VERSION,
-            capability_tier: "advanced",
-            confidence_floor: 0.70,
-            allowed_action_scope: "proactive",
-            high_impact_write_policy: "allow",
-            repair_auto_apply_cap: "enabled",
-        };
+        return model_tier_policy_from_name("advanced");
     }
     if MODERATE_MODEL_IDENTITIES
         .iter()
         .any(|candidate| candidate.eq_ignore_ascii_case(&normalized))
     {
-        return ModelTierPolicy {
-            registry_version: MODEL_TIER_REGISTRY_VERSION,
-            capability_tier: "moderate",
-            confidence_floor: 0.80,
-            allowed_action_scope: "moderate",
-            high_impact_write_policy: "confirm_first",
-            repair_auto_apply_cap: "confirm_only",
-        };
+        return model_tier_policy_from_name("moderate");
     }
 
-    ModelTierPolicy {
-        registry_version: MODEL_TIER_REGISTRY_VERSION,
-        capability_tier: "strict",
-        confidence_floor: 0.90,
-        allowed_action_scope: "strict",
-        high_impact_write_policy: "block",
-        repair_auto_apply_cap: "confirm_only",
+    model_tier_policy_from_name("strict")
+}
+
+fn candidate_auto_model_tier(sample_count: i64, mismatch_rate_pct: f64) -> &'static str {
+    if sample_count < MODEL_TIER_AUTO_MIN_SAMPLES {
+        return "moderate";
     }
+    if mismatch_rate_pct <= MODEL_TIER_AUTO_ADVANCED_MAX_MISMATCH_PCT {
+        return "advanced";
+    }
+    if mismatch_rate_pct <= MODEL_TIER_AUTO_MODERATE_MAX_MISMATCH_PCT {
+        return "moderate";
+    }
+    "strict"
+}
+
+fn apply_model_tier_hysteresis(
+    previous_tier: Option<&str>,
+    candidate_tier: &str,
+    sample_count: i64,
+    mismatch_rate_pct: f64,
+) -> String {
+    let Some(previous) = previous_tier else {
+        return candidate_tier.to_string();
+    };
+
+    match previous {
+        "advanced" => {
+            if candidate_tier != "advanced"
+                && (sample_count < MODEL_TIER_AUTO_MIN_SAMPLES
+                    || mismatch_rate_pct < MODEL_TIER_AUTO_ADVANCED_DEMOTE_PCT)
+            {
+                return "advanced".to_string();
+            }
+        }
+        "moderate" => {
+            if candidate_tier == "advanced"
+                && (sample_count < (MODEL_TIER_AUTO_MIN_SAMPLES + 5)
+                    || mismatch_rate_pct > MODEL_TIER_AUTO_ADVANCED_PROMOTE_PCT)
+            {
+                return "moderate".to_string();
+            }
+            if candidate_tier == "strict" && mismatch_rate_pct < MODEL_TIER_AUTO_STRICT_ENTER_PCT {
+                return "moderate".to_string();
+            }
+        }
+        "strict" => {
+            if candidate_tier != "strict"
+                && (sample_count < (MODEL_TIER_AUTO_MIN_SAMPLES + 3)
+                    || mismatch_rate_pct > MODEL_TIER_AUTO_STRICT_EXIT_PCT)
+            {
+                return "strict".to_string();
+            }
+        }
+        _ => {}
+    }
+
+    candidate_tier.to_string()
+}
+
+async fn resolve_auto_tier_policy_for_attested_model(
+    state: &AppState,
+    user_id: Uuid,
+    model_identity: &str,
+) -> Result<(ModelTierPolicy, Vec<String>), AppError> {
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+    let metrics = sqlx::query_as::<_, ModelTierTelemetryRow>(
+        r#"
+        SELECT
+            COUNT(*)::BIGINT AS sample_count,
+            COALESCE(
+                SUM(
+                    CASE
+                        WHEN LOWER(COALESCE(data->>'mismatch_detected', 'false')) = 'true' THEN 1
+                        ELSE 0
+                    END
+                ),
+                0
+            )::BIGINT AS mismatch_count
+        FROM events
+        WHERE user_id = $1
+          AND event_type = 'quality.save_claim.checked'
+          AND timestamp >= NOW() - (($3)::TEXT || ' days')::INTERVAL
+          AND COALESCE(
+                NULLIF(data->>'runtime_model_identity', ''),
+                NULLIF(data->'autonomy_policy'->>'model_identity', '')
+          ) = $2
+        "#,
+    )
+    .bind(user_id)
+    .bind(model_identity)
+    .bind(MODEL_TIER_AUTO_LOOKBACK_DAYS)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let previous_tier = sqlx::query_scalar::<_, Option<String>>(
+        r#"
+        SELECT data->'autonomy_policy'->>'capability_tier'
+        FROM events
+        WHERE user_id = $1
+          AND event_type = 'quality.save_claim.checked'
+          AND timestamp >= NOW() - (($3)::TEXT || ' days')::INTERVAL
+          AND COALESCE(
+                NULLIF(data->>'runtime_model_identity', ''),
+                NULLIF(data->'autonomy_policy'->>'model_identity', '')
+          ) = $2
+        ORDER BY timestamp DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(user_id)
+    .bind(model_identity)
+    .bind(MODEL_TIER_AUTO_LOOKBACK_DAYS)
+    .fetch_optional(&mut *tx)
+    .await?
+    .flatten();
+
+    tx.commit().await?;
+
+    let sample_count = metrics.sample_count.max(0);
+    let mismatch_count = metrics.mismatch_count.max(0);
+    let mismatch_rate_pct = if sample_count > 0 {
+        (mismatch_count as f64 / sample_count as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let candidate = candidate_auto_model_tier(sample_count, mismatch_rate_pct);
+    let effective_tier = apply_model_tier_hysteresis(
+        previous_tier.as_deref(),
+        candidate,
+        sample_count,
+        mismatch_rate_pct,
+    );
+
+    let mut reason_codes = Vec::new();
+    if sample_count < MODEL_TIER_AUTO_MIN_SAMPLES {
+        reason_codes.push(MODEL_TIER_AUTO_LOW_SAMPLES_CONFIRM_REASON_CODE.to_string());
+    }
+    if effective_tier == "strict" && sample_count >= MODEL_TIER_AUTO_MIN_SAMPLES {
+        reason_codes.push(MODEL_TIER_AUTO_STRICT_REASON_CODE.to_string());
+    }
+    dedupe_reason_codes(&mut reason_codes);
+
+    Ok((model_tier_policy_from_name(&effective_tier), reason_codes))
+}
+
+async fn resolve_model_tier_policy_for_write(
+    state: &AppState,
+    user_id: Uuid,
+    resolved_model_identity: &ResolvedModelIdentity,
+) -> Result<(ModelTierPolicy, Vec<String>), AppError> {
+    if resolved_model_identity.source == "attested_runtime" {
+        return resolve_auto_tier_policy_for_attested_model(
+            state,
+            user_id,
+            &resolved_model_identity.model_identity,
+        )
+        .await;
+    }
+    Ok((
+        resolve_model_tier_policy(&resolved_model_identity.model_identity),
+        Vec::new(),
+    ))
 }
 
 fn dedupe_reason_codes(reason_codes: &mut Vec<String>) {
@@ -4519,6 +4986,7 @@ fn build_save_claim_checked_event(
     verification: &AgentWriteVerificationSummary,
     claim_guard: &AgentWriteClaimGuard,
     session_audit: &AgentSessionAuditSummary,
+    model_identity: &ResolvedModelIdentity,
 ) -> CreateEventRequest {
     let mismatch_detected = !claim_guard.allow_saved_claim;
     let event_data = serde_json::json!({
@@ -4531,6 +4999,9 @@ fn build_save_claim_checked_event(
         "required_checks": verification.required_checks,
         "verified_checks": verification.verified_checks,
         "mismatch_detected": mismatch_detected,
+        "runtime_model_identity": model_identity.model_identity,
+        "model_identity_source": model_identity.source,
+        "model_attestation_request_id": model_identity.attestation_request_id,
         "next_action_confirmation_prompt": claim_guard.next_action_confirmation_prompt,
         "uncertainty_markers": claim_guard.uncertainty_markers,
         "deferred_markers": claim_guard.deferred_markers,
@@ -4635,6 +5106,7 @@ fn build_learning_signal_event(
     verification: &AgentWriteVerificationSummary,
     requested_event_count: usize,
     receipt_count: usize,
+    model_identity: &ResolvedModelIdentity,
 ) -> CreateEventRequest {
     let captured_at = Utc::now();
     let confidence_band = save_claim_confidence_band(claim_guard);
@@ -4678,6 +5150,9 @@ fn build_learning_signal_event(
             "required_checks": verification.required_checks,
             "verified_checks": verification.verified_checks,
             "mismatch_detected": !claim_guard.allow_saved_claim,
+            "runtime_model_identity": model_identity.model_identity,
+            "model_identity_source": model_identity.source,
+            "model_attestation_request_id": model_identity.attestation_request_id,
         },
     });
 
@@ -4701,6 +5176,7 @@ fn build_save_handshake_learning_signal_events(
     receipts: &[AgentWriteReceipt],
     verification: &AgentWriteVerificationSummary,
     claim_guard: &AgentWriteClaimGuard,
+    model_identity: &ResolvedModelIdentity,
 ) -> Vec<CreateEventRequest> {
     if claim_guard.allow_saved_claim {
         return vec![build_learning_signal_event(
@@ -4711,6 +5187,7 @@ fn build_save_handshake_learning_signal_events(
             verification,
             requested_event_count,
             receipts.len(),
+            model_identity,
         )];
     }
 
@@ -4723,6 +5200,7 @@ fn build_save_handshake_learning_signal_events(
             verification,
             requested_event_count,
             receipts.len(),
+            model_identity,
         ),
         build_learning_signal_event(
             user_id,
@@ -4732,6 +5210,7 @@ fn build_save_handshake_learning_signal_events(
             verification,
             requested_event_count,
             receipts.len(),
+            model_identity,
         ),
     ]
 }
@@ -5205,6 +5684,7 @@ fn build_post_task_reflection_learning_signal_event(
     verification: &AgentWriteVerificationSummary,
     claim_guard: &AgentWriteClaimGuard,
     certainty_state: &str,
+    model_identity: &ResolvedModelIdentity,
 ) -> CreateEventRequest {
     let signal_type = post_task_reflection_signal_type(certainty_state);
     build_learning_signal_event(
@@ -5215,6 +5695,7 @@ fn build_post_task_reflection_learning_signal_event(
         verification,
         requested_event_count,
         receipts.len(),
+        model_identity,
     )
 }
 
@@ -6380,7 +6861,8 @@ pub async fn write_with_proof(
     let requested_event_count = req.events.len();
     let action_class = classify_write_action_class(&req.events);
     let verify_timeout_ms = clamp_verify_timeout_ms(req.verify_timeout_ms);
-    let read_after_write_targets = normalize_read_after_write_targets(req.read_after_write_targets);
+    let read_after_write_targets =
+        normalize_read_after_write_targets(req.read_after_write_targets.clone());
 
     if read_after_write_targets.is_empty() {
         return Err(AppError::Validation {
@@ -6485,20 +6967,24 @@ pub async fn write_with_proof(
     }
 
     let quality_health = fetch_quality_health_projection(&state, user_id).await?;
-    let model_identity = resolve_model_identity(&auth);
-    let tier_policy = resolve_model_tier_policy(&model_identity.model_identity);
+    let model_identity = resolve_model_identity_for_write(&auth, &req, &action_class, Utc::now());
+    let (tier_policy, tier_reason_codes) =
+        resolve_model_tier_policy_for_write(&state, user_id, &model_identity).await?;
+    let mut model_reason_codes = model_identity.reason_codes.clone();
+    model_reason_codes.extend(tier_reason_codes);
+    dedupe_reason_codes(&mut model_reason_codes);
     let autonomy_policy = apply_model_tier_policy(
         autonomy_policy_from_quality_health(quality_health.as_ref()),
         &model_identity.model_identity,
         &tier_policy,
-        &model_identity.reason_codes,
+        &model_reason_codes,
     );
     let autonomy_gate = merge_autonomy_gate_with_memory_guard(
         evaluate_autonomy_gate(
             &action_class,
             &autonomy_policy,
             &tier_policy,
-            &model_identity.reason_codes,
+            &model_reason_codes,
         ),
         &action_class,
         user_profile.as_ref(),
@@ -6642,6 +7128,7 @@ pub async fn write_with_proof(
         &verification,
         &claim_guard,
         &session_audit_summary,
+        &model_identity,
     );
     let mut quality_events = vec![quality_signal];
     quality_events.extend(build_save_handshake_learning_signal_events(
@@ -6650,6 +7137,7 @@ pub async fn write_with_proof(
         &receipts,
         &verification,
         &claim_guard,
+        &model_identity,
     ));
     if let Some(workflow_signal) =
         build_workflow_gate_learning_signal_event(user_id, &workflow_gate)
@@ -6664,6 +7152,7 @@ pub async fn write_with_proof(
         &verification,
         &claim_guard,
         &post_task_reflection.certainty_state,
+        &model_identity,
     );
     quality_events.push(reflection_signal);
     let mut emitted_learning_signal_types: Vec<String> = quality_events
@@ -6979,6 +7468,22 @@ mod tests {
         }
     }
 
+    fn make_write_with_proof_request(
+        events: Vec<CreateEventRequest>,
+    ) -> super::AgentWriteWithProofRequest {
+        super::AgentWriteWithProofRequest {
+            events,
+            read_after_write_targets: vec![super::AgentReadAfterWriteTarget {
+                projection_type: "user_profile".to_string(),
+                key: "me".to_string(),
+            }],
+            verify_timeout_ms: Some(1200),
+            include_repair_technical_details: false,
+            intent_handshake: None,
+            model_attestation: None,
+        }
+    }
+
     fn make_verification(
         status: &str,
         checks: Vec<AgentReadAfterWriteCheck>,
@@ -7092,6 +7597,21 @@ mod tests {
     fn make_access_token_auth(scopes: &[&str], client_id: &str) -> AuthenticatedUser {
         AuthenticatedUser {
             user_id: Uuid::now_v7(),
+            auth_method: AuthMethod::AccessToken {
+                token_id: Uuid::now_v7(),
+                client_id: client_id.to_string(),
+            },
+            scopes: scopes.iter().map(|scope| (*scope).to_string()).collect(),
+        }
+    }
+
+    fn make_access_token_auth_with_user(
+        user_id: Uuid,
+        scopes: &[&str],
+        client_id: &str,
+    ) -> AuthenticatedUser {
+        AuthenticatedUser {
+            user_id,
             auth_method: AuthMethod::AccessToken {
                 token_id: Uuid::now_v7(),
                 client_id: client_id.to_string(),
@@ -8992,6 +9512,12 @@ mod tests {
             default_autonomy_policy(),
             default_autonomy_gate(),
         );
+        let model_identity = super::ResolvedModelIdentity {
+            model_identity: "openai:gpt-5-mini".to_string(),
+            reason_codes: Vec::new(),
+            source: "test".to_string(),
+            attestation_request_id: None,
+        };
 
         let events = build_save_handshake_learning_signal_events(
             user_id,
@@ -8999,6 +9525,7 @@ mod tests {
             &receipts,
             &verification,
             &guard,
+            &model_identity,
         );
 
         assert_eq!(events.len(), 1);
@@ -9045,6 +9572,12 @@ mod tests {
             default_autonomy_policy(),
             default_autonomy_gate(),
         );
+        let model_identity = super::ResolvedModelIdentity {
+            model_identity: "openai:gpt-5-mini".to_string(),
+            reason_codes: Vec::new(),
+            source: "test".to_string(),
+            attestation_request_id: None,
+        };
 
         let events = build_save_handshake_learning_signal_events(
             user_id,
@@ -9052,6 +9585,7 @@ mod tests {
             &receipts,
             &verification,
             &guard,
+            &model_identity,
         );
 
         assert_eq!(events.len(), 2);
@@ -9413,10 +9947,226 @@ mod tests {
     }
 
     #[test]
+    fn model_attestation_verification_accepts_valid_signature() {
+        super::clear_model_attestation_nonce_cache();
+        let auth = make_access_token_auth(&["agent:write"], "kura-web");
+        let req = make_write_with_proof_request(vec![make_event(
+            "set.logged",
+            json!({"exercise_id": "barbell_bench_press", "reps": 5}),
+            "k-attest-1",
+        )]);
+        let action_class = super::classify_write_action_class(&req.events);
+        let digest = super::build_model_attestation_request_digest(&req, &action_class);
+        let request_id = format!("att-{}", Uuid::now_v7());
+        let issued_at = Utc::now();
+        let signature = super::compute_model_attestation_signature(
+            "unit-test-secret",
+            "openai:gpt-5-mini",
+            issued_at,
+            &request_id,
+            &digest,
+            auth.user_id,
+        )
+        .expect("signature");
+        let attestation = super::AgentModelAttestation {
+            schema_version: "model_attestation.v1".to_string(),
+            runtime_model_identity: "openai:gpt-5-mini".to_string(),
+            request_digest: digest,
+            request_id,
+            issued_at,
+            signature,
+        };
+        let verified = super::verify_model_attestation(
+            &attestation,
+            &attestation.request_digest,
+            auth.user_id,
+            Utc::now(),
+            Some("unit-test-secret"),
+        )
+        .expect("attestation should verify");
+        assert_eq!(verified.model_identity, "openai:gpt-5-mini");
+    }
+
+    #[test]
+    fn model_attestation_verification_rejects_invalid_signature() {
+        super::clear_model_attestation_nonce_cache();
+        let auth = make_access_token_auth(&["agent:write"], "kura-web");
+        let req = make_write_with_proof_request(vec![make_event(
+            "set.logged",
+            json!({"exercise_id": "barbell_back_squat", "reps": 5}),
+            "k-attest-2",
+        )]);
+        let action_class = super::classify_write_action_class(&req.events);
+        let digest = super::build_model_attestation_request_digest(&req, &action_class);
+        let attestation = super::AgentModelAttestation {
+            schema_version: "model_attestation.v1".to_string(),
+            runtime_model_identity: "openai:gpt-5-mini".to_string(),
+            request_digest: digest.clone(),
+            request_id: format!("att-{}", Uuid::now_v7()),
+            issued_at: Utc::now(),
+            signature: "deadbeef".to_string(),
+        };
+        let err_codes = super::verify_model_attestation(
+            &attestation,
+            &digest,
+            auth.user_id,
+            Utc::now(),
+            Some("unit-test-secret"),
+        )
+        .expect_err("invalid signature must fail");
+        assert!(
+            err_codes
+                .iter()
+                .any(|code| code == "model_attestation_invalid_signature")
+        );
+    }
+
+    #[test]
+    fn model_attestation_verification_rejects_replay_request_id() {
+        super::clear_model_attestation_nonce_cache();
+        let auth = make_access_token_auth(&["agent:write"], "kura-web");
+        let req = make_write_with_proof_request(vec![make_event(
+            "set.logged",
+            json!({"exercise_id": "romanian_deadlift", "reps": 6}),
+            "k-attest-3",
+        )]);
+        let action_class = super::classify_write_action_class(&req.events);
+        let digest = super::build_model_attestation_request_digest(&req, &action_class);
+        let request_id = format!("att-{}", Uuid::now_v7());
+        let issued_at = Utc::now();
+        let signature = super::compute_model_attestation_signature(
+            "unit-test-secret",
+            "openai:gpt-5-mini",
+            issued_at,
+            &request_id,
+            &digest,
+            auth.user_id,
+        )
+        .expect("signature");
+        let attestation = super::AgentModelAttestation {
+            schema_version: "model_attestation.v1".to_string(),
+            runtime_model_identity: "openai:gpt-5-mini".to_string(),
+            request_digest: digest.clone(),
+            request_id,
+            issued_at,
+            signature,
+        };
+
+        super::verify_model_attestation(
+            &attestation,
+            &digest,
+            auth.user_id,
+            Utc::now(),
+            Some("unit-test-secret"),
+        )
+        .expect("first verification should pass");
+
+        let err_codes = super::verify_model_attestation(
+            &attestation,
+            &digest,
+            auth.user_id,
+            Utc::now(),
+            Some("unit-test-secret"),
+        )
+        .expect_err("second verification should fail due to replay");
+        assert!(
+            err_codes
+                .iter()
+                .any(|code| code == "model_attestation_replayed")
+        );
+    }
+
+    #[test]
+    fn model_attestation_verification_rejects_stale_attestation() {
+        super::clear_model_attestation_nonce_cache();
+        let auth = make_access_token_auth(&["agent:write"], "kura-web");
+        let req = make_write_with_proof_request(vec![make_event(
+            "set.logged",
+            json!({"exercise_id": "pull_up", "reps": 8}),
+            "k-attest-4",
+        )]);
+        let action_class = super::classify_write_action_class(&req.events);
+        let digest = super::build_model_attestation_request_digest(&req, &action_class);
+        let request_id = format!("att-{}", Uuid::now_v7());
+        let issued_at =
+            Utc::now() - Duration::seconds(super::MODEL_ATTESTATION_MAX_AGE_SECONDS + 10);
+        let signature = super::compute_model_attestation_signature(
+            "unit-test-secret",
+            "openai:gpt-5-mini",
+            issued_at,
+            &request_id,
+            &digest,
+            auth.user_id,
+        )
+        .expect("signature");
+        let attestation = super::AgentModelAttestation {
+            schema_version: "model_attestation.v1".to_string(),
+            runtime_model_identity: "openai:gpt-5-mini".to_string(),
+            request_digest: digest.clone(),
+            request_id,
+            issued_at,
+            signature,
+        };
+
+        let err_codes = super::verify_model_attestation(
+            &attestation,
+            &digest,
+            auth.user_id,
+            Utc::now(),
+            Some("unit-test-secret"),
+        )
+        .expect_err("stale attestation must fail");
+        assert!(
+            err_codes
+                .iter()
+                .any(|code| code == "model_attestation_stale")
+        );
+    }
+
+    #[test]
+    fn model_identity_for_write_marks_missing_attestation_on_unknown_fallback() {
+        let auth = make_access_token_auth(&["agent:write"], "unmapped-client");
+        let req = make_write_with_proof_request(vec![make_event(
+            "set.logged",
+            json!({"exercise_id": "barbell_row", "reps": 6}),
+            "k-attest-5",
+        )]);
+        let action_class = super::classify_write_action_class(&req.events);
+        let resolved =
+            super::resolve_model_identity_for_write(&auth, &req, &action_class, Utc::now());
+        if resolved.model_identity == "unknown" {
+            assert!(
+                resolved
+                    .reason_codes
+                    .iter()
+                    .any(|code| code == "model_attestation_missing_fallback")
+            );
+        }
+    }
+
+    #[test]
     fn model_tier_policy_defaults_to_strict_for_unknown_identity() {
         let tier = super::resolve_model_tier_policy("vendor:unknown-model");
         assert_eq!(tier.capability_tier, "strict");
         assert_eq!(tier.high_impact_write_policy, "block");
+    }
+
+    #[test]
+    fn auto_tier_candidate_defaults_to_moderate_for_low_samples() {
+        let candidate = super::candidate_auto_model_tier(3, 0.0);
+        assert_eq!(candidate, "moderate");
+    }
+
+    #[test]
+    fn auto_tier_hysteresis_keeps_advanced_when_regression_is_small() {
+        let effective = super::apply_model_tier_hysteresis(Some("advanced"), "moderate", 20, 1.0);
+        assert_eq!(effective, "advanced");
+    }
+
+    #[test]
+    fn auto_tier_hysteresis_keeps_strict_until_clear_recovery() {
+        let effective = super::apply_model_tier_hysteresis(Some("strict"), "moderate", 20, 2.4);
+        assert_eq!(effective, "strict");
     }
 
     #[test]
@@ -9519,48 +10269,58 @@ mod tests {
     }
 
     #[test]
-    fn language_mode_defaults_to_developer_raw_for_allowlisted_client() {
-        let auth = make_access_token_auth(&["agent:write"], "kura-dev-client");
-        let mode = super::resolve_agent_language_mode_with_sources(&auth, None, Some("*"));
+    fn language_mode_defaults_to_developer_raw_for_allowlisted_user() {
+        let user_id = Uuid::now_v7();
+        let auth = make_access_token_auth_with_user(user_id, &["agent:write"], "kura-dev-client");
+        let mode = super::resolve_agent_language_mode_with_sources(
+            &auth,
+            None,
+            Some(&user_id.to_string()),
+        );
         assert_eq!(mode, super::AgentLanguageMode::DeveloperRaw);
     }
 
     #[test]
-    fn language_mode_allows_developer_raw_without_debug_scope_when_allowlisted() {
+    fn language_mode_allows_developer_raw_for_wildcard_user_allowlist() {
         let auth = make_access_token_auth(&["agent:write"], "kura-dev-client");
         let mode = super::resolve_agent_language_mode_with_sources(&auth, Some("raw"), Some("*"));
         assert_eq!(mode, super::AgentLanguageMode::DeveloperRaw);
     }
 
     #[test]
-    fn language_mode_denies_developer_raw_when_client_not_allowlisted() {
-        let auth = make_access_token_auth(&["agent:write"], "kura-app-client");
+    fn language_mode_denies_developer_raw_when_user_not_allowlisted() {
+        let allowlisted_user = Uuid::now_v7();
+        let auth =
+            make_access_token_auth_with_user(Uuid::now_v7(), &["agent:write"], "kura-app-client");
         let mode = super::resolve_agent_language_mode_with_sources(
             &auth,
             Some("developer_raw"),
-            Some("kura-dev-client"),
+            Some(&allowlisted_user.to_string()),
         );
         assert_eq!(mode, super::AgentLanguageMode::UserSafe);
     }
 
     #[test]
-    fn language_mode_allows_developer_raw_when_allowlist_matches() {
-        let auth = make_access_token_auth(&["agent:write"], "kura-dev-client");
+    fn language_mode_allows_developer_raw_when_user_allowlist_matches() {
+        let user_id = Uuid::now_v7();
+        let auth = make_access_token_auth_with_user(user_id, &["agent:write"], "kura-dev-client");
+        let allowlist = format!("{},{}", Uuid::now_v7(), user_id);
         let mode = super::resolve_agent_language_mode_with_sources(
             &auth,
             Some("developer_raw"),
-            Some("kura-dev-client,kura-admin-client"),
+            Some(&allowlist),
         );
         assert_eq!(mode, super::AgentLanguageMode::DeveloperRaw);
     }
 
     #[test]
-    fn language_mode_can_be_forced_to_user_safe_via_header_for_allowlisted_client() {
-        let auth = make_access_token_auth(&["agent:write"], "kura-dev-client");
+    fn language_mode_can_be_forced_to_user_safe_via_header_for_allowlisted_user() {
+        let user_id = Uuid::now_v7();
+        let auth = make_access_token_auth_with_user(user_id, &["agent:write"], "kura-dev-client");
         let mode = super::resolve_agent_language_mode_with_sources(
             &auth,
             Some("user_safe"),
-            Some("kura-dev-client"),
+            Some(&user_id.to_string()),
         );
         assert_eq!(mode, super::AgentLanguageMode::UserSafe);
     }
