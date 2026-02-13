@@ -299,6 +299,16 @@ pub struct AgentModelAttestation {
     pub signature: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct AgentHighImpactConfirmation {
+    /// high_impact_confirmation.v1
+    pub schema_version: String,
+    /// Must be true when the user explicitly approved this high-impact change.
+    pub confirmed: bool,
+    /// Timestamp of explicit user confirmation.
+    pub confirmed_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct AgentWriteWithProofRequest {
     pub events: Vec<CreateEventRequest>,
@@ -317,6 +327,9 @@ pub struct AgentWriteWithProofRequest {
     /// Optional runtime model attestation from agent gateway.
     #[serde(default)]
     pub model_attestation: Option<AgentModelAttestation>,
+    /// Explicit user confirmation required when confirm-first policy is active for high-impact writes.
+    #[serde(default)]
+    pub high_impact_confirmation: Option<AgentHighImpactConfirmation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -913,6 +926,7 @@ const AGENT_MEMORY_TIER_CONTRACT_VERSION: &str = "memory_tier_contract.v1";
 const AGENT_SELF_MODEL_SCHEMA_VERSION: &str = "agent_self_model.v1";
 const MODEL_TIER_REGISTRY_VERSION: &str = "model_tier_registry_v1";
 const MODEL_ATTESTATION_SCHEMA_VERSION: &str = "model_attestation.v1";
+const HIGH_IMPACT_CONFIRMATION_SCHEMA_VERSION: &str = "high_impact_confirmation.v1";
 const INTENT_HANDSHAKE_SCHEMA_VERSION: &str = "intent_handshake.v1";
 const INTENT_HANDSHAKE_MAX_AGE_MINUTES: i64 = 45;
 const TRACE_DIGEST_SCHEMA_VERSION: &str = "trace_digest.v1";
@@ -931,13 +945,15 @@ const MODEL_ATTESTATION_SECRET_UNCONFIGURED_REASON_CODE: &str =
 const MODEL_TIER_AUTO_LOW_SAMPLES_CONFIRM_REASON_CODE: &str =
     "model_tier_auto_low_samples_confirm_first";
 const MODEL_TIER_AUTO_STRICT_REASON_CODE: &str = "model_tier_auto_quality_strict";
-const MODEL_TIER_STRICT_BLOCK_REASON_CODE: &str = "model_tier_strict_blocks_high_impact_write";
+const MODEL_TIER_STRICT_CONFIRM_REASON_CODE: &str = "model_tier_strict_requires_confirmation";
 const MODEL_TIER_CONFIRM_REASON_CODE: &str = "model_tier_requires_confirmation";
 const CALIBRATION_MONITOR_CONFIRM_REASON_CODE: &str = "calibration_monitor_requires_confirmation";
 const INTEGRITY_MONITOR_CONFIRM_REASON_CODE: &str = "integrity_monitor_requires_confirmation";
 const CALIBRATION_DEGRADED_BLOCK_REASON_CODE: &str =
     "calibration_degraded_blocks_high_impact_write";
 const INTEGRITY_DEGRADED_BLOCK_REASON_CODE: &str = "integrity_degraded_blocks_high_impact_write";
+const HIGH_IMPACT_CONFIRMATION_REQUIRED_REASON_CODE: &str = "high_impact_confirmation_required";
+const HIGH_IMPACT_CONFIRMATION_INVALID_REASON_CODE: &str = "high_impact_confirmation_invalid";
 const MEMORY_TIER_PRINCIPLES_STALE_CONFIRM_REASON_CODE: &str =
     "memory_principles_stale_confirm_first";
 const MEMORY_TIER_PRINCIPLES_MISSING_CONFIRM_REASON_CODE: &str =
@@ -957,6 +973,8 @@ const MODEL_TIER_AUTO_ADVANCED_PROMOTE_PCT: f64 = 0.40;
 const MODEL_TIER_AUTO_ADVANCED_DEMOTE_PCT: f64 = 1.50;
 const MODEL_TIER_AUTO_STRICT_ENTER_PCT: f64 = 6.00;
 const MODEL_TIER_AUTO_STRICT_EXIT_PCT: f64 = 2.00;
+const HIGH_IMPACT_CONFIRMATION_MAX_AGE_MINUTES: i64 = 45;
+const HIGH_IMPACT_CONFIRMATION_MAX_FUTURE_SKEW_MINUTES: i64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentLanguageMode {
@@ -1131,6 +1149,7 @@ fn build_model_attestation_request_digest(
         "verify_timeout_ms": req.verify_timeout_ms,
         "include_repair_technical_details": req.include_repair_technical_details,
         "intent_handshake": req.intent_handshake,
+        "high_impact_confirmation": req.high_impact_confirmation,
         "action_class": action_class,
     });
     let serialized = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
@@ -1516,7 +1535,12 @@ async fn resolve_auto_tier_policy_for_attested_model(
             COALESCE(
                 SUM(
                     CASE
-                        WHEN LOWER(COALESCE(data->>'mismatch_detected', 'false')) = 'true' THEN 1
+                        WHEN LOWER(COALESCE(data->>'mismatch_detected', 'false')) = 'true'
+                             AND NOT (
+                                 COALESCE(data->'uncertainty_markers', '[]'::jsonb) ? 'write_receipt_incomplete'
+                                 OR COALESCE(data->'uncertainty_markers', '[]'::jsonb) ? 'read_after_write_unverified'
+                             )
+                        THEN 1
                         ELSE 0
                     END
                 ),
@@ -4514,6 +4538,115 @@ fn classify_write_action_class(events: &[CreateEventRequest]) -> String {
     }
 }
 
+fn summarize_high_impact_change_set(events: &[CreateEventRequest]) -> Vec<String> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for event in events {
+        let event_type = event.event_type.trim().to_lowercase();
+        if is_planning_or_coaching_event_type(&event_type)
+            || event_type == WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE
+            || event_type == WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE
+        {
+            *counts.entry(event_type).or_insert(0) += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .map(|(event_type, count)| format!("{event_type}:{count}"))
+        .collect()
+}
+
+fn validate_high_impact_confirmation(
+    confirmation: Option<&AgentHighImpactConfirmation>,
+    events: &[CreateEventRequest],
+    autonomy_gate: &AgentAutonomyGate,
+    now: DateTime<Utc>,
+) -> Result<(), AppError> {
+    let mut confirmation_reasons = autonomy_gate.reason_codes.clone();
+    confirmation_reasons.push(HIGH_IMPACT_CONFIRMATION_REQUIRED_REASON_CODE.to_string());
+    dedupe_reason_codes(&mut confirmation_reasons);
+
+    let pending_change_set = {
+        let summary = summarize_high_impact_change_set(events);
+        if summary.is_empty() {
+            vec!["high_impact_write:1".to_string()]
+        } else {
+            summary
+        }
+    };
+
+    let docs_hint = format!(
+        "Show pending_change_set to the user, then resend with high_impact_confirmation {{ schema_version: '{HIGH_IMPACT_CONFIRMATION_SCHEMA_VERSION}', confirmed: true, confirmed_at: <current_utc_timestamp> }}."
+    );
+    let Some(confirmation) = confirmation else {
+        return Err(AppError::Validation {
+            message: "Explicit user confirmation is required for this high-impact write."
+                .to_string(),
+            field: Some("high_impact_confirmation".to_string()),
+            received: Some(json!({
+                "required_reason_codes": confirmation_reasons,
+                "pending_change_set": pending_change_set,
+            })),
+            docs_hint: Some(docs_hint),
+        });
+    };
+
+    if confirmation.schema_version.trim() != HIGH_IMPACT_CONFIRMATION_SCHEMA_VERSION {
+        let mut reason_codes = confirmation_reasons.clone();
+        reason_codes.push(HIGH_IMPACT_CONFIRMATION_INVALID_REASON_CODE.to_string());
+        dedupe_reason_codes(&mut reason_codes);
+        return Err(AppError::Validation {
+            message: "high_impact_confirmation.schema_version is not supported".to_string(),
+            field: Some("high_impact_confirmation.schema_version".to_string()),
+            received: Some(json!({
+                "schema_version": confirmation.schema_version,
+                "reason_codes": reason_codes,
+            })),
+            docs_hint: Some(format!(
+                "Use schema_version '{HIGH_IMPACT_CONFIRMATION_SCHEMA_VERSION}'."
+            )),
+        });
+    }
+    if !confirmation.confirmed {
+        let mut reason_codes = confirmation_reasons.clone();
+        reason_codes.push(HIGH_IMPACT_CONFIRMATION_INVALID_REASON_CODE.to_string());
+        dedupe_reason_codes(&mut reason_codes);
+        return Err(AppError::Validation {
+            message: "high_impact_confirmation.confirmed must be true".to_string(),
+            field: Some("high_impact_confirmation.confirmed".to_string()),
+            received: Some(json!({
+                "confirmed": confirmation.confirmed,
+                "reason_codes": reason_codes,
+            })),
+            docs_hint: Some(
+                "Set confirmed=true only after the user explicitly approves the pending change set."
+                    .to_string(),
+            ),
+        });
+    }
+
+    let age = now.signed_duration_since(confirmation.confirmed_at);
+    if age > chrono::Duration::minutes(HIGH_IMPACT_CONFIRMATION_MAX_AGE_MINUTES)
+        || age < chrono::Duration::minutes(-HIGH_IMPACT_CONFIRMATION_MAX_FUTURE_SKEW_MINUTES)
+    {
+        let mut reason_codes = confirmation_reasons.clone();
+        reason_codes.push(HIGH_IMPACT_CONFIRMATION_INVALID_REASON_CODE.to_string());
+        dedupe_reason_codes(&mut reason_codes);
+        return Err(AppError::Validation {
+            message: "high_impact_confirmation is stale".to_string(),
+            field: Some("high_impact_confirmation.confirmed_at".to_string()),
+            received: Some(json!({
+                "confirmed_at": confirmation.confirmed_at,
+                "reason_codes": reason_codes,
+            })),
+            docs_hint: Some(format!(
+                "Send confirmation within {HIGH_IMPACT_CONFIRMATION_MAX_AGE_MINUTES} minutes of execution."
+            )),
+        });
+    }
+
+    Ok(())
+}
+
 fn validate_intent_handshake(
     handshake: &AgentIntentHandshake,
     action_class: &str,
@@ -4705,8 +4838,8 @@ fn evaluate_autonomy_gate(
                 reason_codes.push(INTEGRITY_DEGRADED_BLOCK_REASON_CODE.to_string());
             }
         } else if tier_policy.high_impact_write_policy == "block" {
-            decision = "block".to_string();
-            reason_codes.push(MODEL_TIER_STRICT_BLOCK_REASON_CODE.to_string());
+            decision = "confirm_first".to_string();
+            reason_codes.push(MODEL_TIER_STRICT_CONFIRM_REASON_CODE.to_string());
         } else if effective_quality_status == "monitor" {
             decision = "confirm_first".to_string();
             if normalize_quality_status(&autonomy_policy.calibration_status) == "monitor" {
@@ -7005,6 +7138,14 @@ pub async fn write_with_proof(
             ),
         });
     }
+    if autonomy_gate.decision == "confirm_first" && action_class == "high_impact_write" {
+        validate_high_impact_confirmation(
+            req.high_impact_confirmation.as_ref(),
+            &req.events,
+            &autonomy_gate,
+            Utc::now(),
+        )?;
+    }
     if autonomy_gate.decision == "confirm_first" {
         workflow_warnings.push(BatchEventWarning {
             event_index: 0,
@@ -7481,6 +7622,7 @@ mod tests {
             include_repair_technical_details: false,
             intent_handshake: None,
             model_attestation: None,
+            high_impact_confirmation: None,
         }
     }
 
@@ -10185,15 +10327,15 @@ mod tests {
     }
 
     #[test]
-    fn autonomy_gate_blocks_high_impact_write_for_strict_tier() {
+    fn autonomy_gate_requires_confirmation_for_strict_tier() {
         let policy = super::default_autonomy_policy();
         let strict_tier = super::resolve_model_tier_policy("unknown");
         let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &strict_tier, &[]);
-        assert_eq!(gate.decision, "block");
+        assert_eq!(gate.decision, "confirm_first");
         assert!(
             gate.reason_codes
                 .iter()
-                .any(|code| code == "model_tier_strict_blocks_high_impact_write")
+                .any(|code| code == "model_tier_strict_requires_confirmation")
         );
     }
 
@@ -10212,10 +10354,90 @@ mod tests {
     }
 
     #[test]
+    fn high_impact_confirmation_requires_payload_when_confirm_first() {
+        let policy = super::default_autonomy_policy();
+        let strict_tier = super::resolve_model_tier_policy("unknown");
+        let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &strict_tier, &[]);
+        let events = vec![make_event(
+            "training_plan.created",
+            json!({"name": "Upper/Lower"}),
+            "k-confirm-1",
+        )];
+
+        let err = super::validate_high_impact_confirmation(None, &events, &gate, Utc::now())
+            .expect_err("confirm_first high-impact must require explicit confirmation");
+        match err {
+            AppError::Validation { field, .. } => {
+                assert_eq!(field.as_deref(), Some("high_impact_confirmation"));
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn high_impact_confirmation_accepts_fresh_payload_when_confirm_first() {
+        let policy = super::default_autonomy_policy();
+        let strict_tier = super::resolve_model_tier_policy("unknown");
+        let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &strict_tier, &[]);
+        let events = vec![make_event(
+            "training_plan.created",
+            json!({"name": "Upper/Lower"}),
+            "k-confirm-2",
+        )];
+        let confirmation = super::AgentHighImpactConfirmation {
+            schema_version: "high_impact_confirmation.v1".to_string(),
+            confirmed: true,
+            confirmed_at: Utc::now(),
+        };
+
+        let result = super::validate_high_impact_confirmation(
+            Some(&confirmation),
+            &events,
+            &gate,
+            Utc::now(),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn high_impact_confirmation_rejects_stale_payload() {
+        let policy = super::default_autonomy_policy();
+        let strict_tier = super::resolve_model_tier_policy("unknown");
+        let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &strict_tier, &[]);
+        let events = vec![make_event(
+            "training_plan.created",
+            json!({"name": "Upper/Lower"}),
+            "k-confirm-3",
+        )];
+        let confirmation = super::AgentHighImpactConfirmation {
+            schema_version: "high_impact_confirmation.v1".to_string(),
+            confirmed: true,
+            confirmed_at: Utc::now() - Duration::minutes(90),
+        };
+
+        let err = super::validate_high_impact_confirmation(
+            Some(&confirmation),
+            &events,
+            &gate,
+            Utc::now(),
+        )
+        .expect_err("stale confirmation must fail");
+        match err {
+            AppError::Validation { field, .. } => {
+                assert_eq!(
+                    field.as_deref(),
+                    Some("high_impact_confirmation.confirmed_at")
+                );
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
     fn autonomy_gate_matrix_is_deterministic_for_high_impact_writes() {
         let scenarios = [
-            ("unknown", "healthy", "healthy", "block"),
-            ("unknown", "healthy", "monitor", "block"),
+            ("unknown", "healthy", "healthy", "confirm_first"),
+            ("unknown", "healthy", "monitor", "confirm_first"),
             ("unknown", "healthy", "degraded", "block"),
             ("openai:gpt-5-mini", "healthy", "healthy", "confirm_first"),
             ("openai:gpt-5-mini", "healthy", "monitor", "confirm_first"),
