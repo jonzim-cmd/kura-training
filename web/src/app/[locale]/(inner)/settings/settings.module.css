@@ -44,8 +44,8 @@
 }
 
 .sectionDescription {
-  font-size: 0.875rem;
-  color: var(--ink-faint);
+  font-size: 0.9375rem;
+  color: var(--ink-mid);
 }
 
 /* Info Grid */
@@ -68,12 +68,12 @@
 }
 
 .infoLabel {
-  font-size: 0.875rem;
-  color: var(--ink-faint);
+  font-size: 1rem;
+  color: var(--ink-mid);
 }
 
 .infoValue {
-  font-size: 0.875rem;
+  font-size: 1rem;
   font-weight: 500;
 }
 
@@ -115,8 +115,8 @@
 
 /* Danger */
 .dangerDescription {
-  color: var(--ink-faint);
-  font-size: 0.875rem;
+  color: var(--ink-mid);
+  font-size: 0.9375rem;
   margin-bottom: 1rem;
 }
 

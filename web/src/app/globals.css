@@ -1,24 +1,24 @@
 /* ============================================================
    KURA — Design System
    Descent aesthetic: butter yellow on black, structural typography.
-   Fonts: Outfit (display), Crimson Pro (body), JetBrains Mono (system)
+   Fonts: Outfit (display), Roboto Condensed (body), JetBrains Mono (system)
    ============================================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;700;900&family=Crimson+Pro:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@300;400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;700;900&family=Roboto+Condensed:ital,wght@0,300;0,400;0,500;0,700;1,400&family=JetBrains+Mono:wght@300;400&display=swap');
 
 /* --- Design Tokens --- */
 
 :root {
   /* Typography */
   --font-display: 'Outfit', sans-serif;
-  --font-body: 'Crimson Pro', Georgia, serif;
+  --font-body: 'Roboto Condensed', 'Arial Narrow', sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
 
   /* Kura Palette — butter yellow on black */
   --paper: #000000;
   --ink: #D4D0C8;
-  --ink-mid: #888580;
-  --ink-faint: #555550;
+  --ink-mid: #9A9690;
+  --ink-faint: #706B65;
   --ink-ghost: #333330;
   --thread: rgba(255, 255, 255, 0.08);
   --amber: #FFE566;
