@@ -43,6 +43,15 @@ const AuthContext = createContext<AuthContextType | null>(null);
 
 const REFRESH_TOKEN_KEY = 'kura_rt';
 const CLIENT_ID = 'kura-web';
+const MOCK_AUTH = process.env.NEXT_PUBLIC_MOCK_AUTH === 'true';
+
+const MOCK_USER: User = {
+  user_id: 'mock-00000000-0000-0000-0000-000000000000',
+  email: 'dev@kura.dev',
+  display_name: 'Dev User',
+  is_admin: true,
+  created_at: '2026-01-01T00:00:00Z',
+};
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -115,8 +124,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [fetchUser, scheduleRefresh],
   );
 
-  // Bootstrap: try refresh token on mount
+  // Bootstrap: try refresh token on mount (or mock in dev)
   useEffect(() => {
+    if (MOCK_AUTH) {
+      setUser(MOCK_USER);
+      setAccessToken('mock-token');
+      setLoading(false);
+      return;
+    }
     const tryRestore = async () => {
       const rt = localStorage.getItem(REFRESH_TOKEN_KEY);
       if (!rt) {
