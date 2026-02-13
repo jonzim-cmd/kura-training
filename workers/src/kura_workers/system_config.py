@@ -282,6 +282,50 @@ def _get_conventions() -> dict[str, Any]:
                 "monitor_effect": "throttle_auto_repair",
             },
         },
+        "model_tier_registry_v1": {
+            "rules": [
+                "Resolve model identity from trusted server-side sources only.",
+                "Map model_identity to capability_tier deterministically.",
+                "Unknown or malformed identities must fall back to strict tier.",
+                "Use public benchmarks only for offline registry curation, never as runtime gate input.",
+            ],
+            "identity_resolution": {
+                "trusted_sources_order": [
+                    "oauth_access_token.client_id -> KURA_AGENT_MODEL_BY_CLIENT_ID_JSON",
+                    "KURA_AGENT_MODEL_IDENTITY",
+                    "unknown",
+                ],
+                "fallback_reason_code": "model_identity_unknown_fallback_strict",
+                "online_external_benchmark_lookups_allowed": False,
+            },
+            "tiers": {
+                "strict": {
+                    "confidence_floor": 0.90,
+                    "allowed_action_scope": "strict",
+                    "high_impact_write_policy": "block",
+                    "repair_auto_apply_cap": "confirm_only",
+                },
+                "moderate": {
+                    "confidence_floor": 0.80,
+                    "allowed_action_scope": "moderate",
+                    "high_impact_write_policy": "confirm_first",
+                    "repair_auto_apply_cap": "confirm_only",
+                },
+                "advanced": {
+                    "confidence_floor": 0.70,
+                    "allowed_action_scope": "proactive",
+                    "high_impact_write_policy": "allow",
+                    "repair_auto_apply_cap": "enabled",
+                },
+            },
+            "policy_outputs": [
+                "capability_tier",
+                "allowed_action_scope",
+                "high_impact_write_policy",
+                "repair_auto_apply_cap",
+                "reason_codes",
+            ],
+        },
         "learning_backlog_bridge_v1": {
             "rules": [
                 "Generate machine-readable issue candidates from weekly learning_issue_clusters and extraction underperformance reports.",

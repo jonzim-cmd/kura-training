@@ -17,7 +17,7 @@ use uuid::Uuid;
 use kura_core::error::ApiError;
 use kura_core::projections::{Projection, ProjectionFreshness, ProjectionMeta, ProjectionResponse};
 
-use crate::auth::{AuthenticatedUser, require_scopes};
+use crate::auth::{AuthMethod, AuthenticatedUser, require_scopes};
 use crate::error::AppError;
 use crate::routes::events::create_events_batch_internal;
 use crate::routes::system::SystemConfigResponse;
@@ -62,6 +62,35 @@ pub struct AgentContextSystemContract {
     pub redacted_field_classes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentSelfModelPreferredContracts {
+    pub read: String,
+    pub write: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentSelfModelFallbackBehavior {
+    pub unknown_identity_action: String,
+    pub unknown_policy_action: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentSelfModelDocs {
+    pub runtime_policy: String,
+    pub upgrade_hint: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentSelfModel {
+    pub schema_version: String,
+    pub model_identity: String,
+    pub capability_tier: String,
+    pub known_limitations: Vec<String>,
+    pub preferred_contracts: AgentSelfModelPreferredContracts,
+    pub fallback_behavior: AgentSelfModelFallbackBehavior,
+    pub docs: AgentSelfModelDocs,
+}
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct AgentContextMeta {
     pub generated_at: DateTime<Utc>,
@@ -79,6 +108,7 @@ pub struct AgentContextMeta {
 pub struct AgentContextResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<SystemConfigResponse>,
+    pub self_model: AgentSelfModel,
     pub user_profile: ProjectionResponse,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub training_timeline: Option<ProjectionResponse>,
@@ -150,6 +180,7 @@ pub struct AgentCapabilitiesResponse {
     pub protocol_version: String,
     pub preferred_read_endpoint: String,
     pub preferred_write_endpoint: String,
+    pub self_model: AgentSelfModel,
     pub required_verification_contract: AgentVerificationContract,
     pub supported_fallbacks: Vec<AgentFallbackContract>,
     pub min_cli_version: String,
@@ -162,6 +193,10 @@ pub struct AgentAutonomyPolicy {
     pub policy_version: String,
     pub slo_status: String,
     pub calibration_status: String,
+    pub model_identity: String,
+    pub capability_tier: String,
+    pub tier_policy_version: String,
+    pub tier_confidence_floor: f64,
     pub throttle_active: bool,
     pub max_scope_level: String,
     pub require_confirmation_for_non_trivial_actions: bool,
@@ -170,6 +205,19 @@ pub struct AgentAutonomyPolicy {
     pub repair_auto_apply_enabled: bool,
     pub reason: String,
     pub confirmation_templates: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentAutonomyGate {
+    /// allow | confirm_first | block
+    pub decision: String,
+    /// low_impact_write | high_impact_write
+    pub action_class: String,
+    pub model_tier: String,
+    /// healthy | monitor | degraded
+    pub effective_quality_status: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reason_codes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -356,6 +404,7 @@ pub struct AgentWriteClaimGuard {
     pub recommended_user_phrase: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_action_confirmation_prompt: Option<String>,
+    pub autonomy_gate: AgentAutonomyGate,
     pub autonomy_policy: AgentAutonomyPolicy,
 }
 
@@ -708,12 +757,224 @@ async fn write_events_with_receipts(
     Ok((receipts, warnings, write_path))
 }
 
-fn build_agent_capabilities() -> AgentCapabilitiesResponse {
+const AGENT_CAPABILITIES_SCHEMA_VERSION: &str = "agent_capabilities.v2.self_model";
+const AGENT_CONTEXT_CONTRACT_VERSION: &str = "agent_context.v3.self_model.redacted";
+const AGENT_CONTEXT_SYSTEM_CONTRACT_VERSION: &str = "agent_context.system.v1";
+const AGENT_CONTEXT_SYSTEM_PROFILE: &str = "redacted_v1";
+const AGENT_SELF_MODEL_SCHEMA_VERSION: &str = "agent_self_model.v1";
+const MODEL_TIER_REGISTRY_VERSION: &str = "model_tier_registry_v1";
+const MODEL_IDENTITY_UNKNOWN_FALLBACK_REASON_CODE: &str = "model_identity_unknown_fallback_strict";
+const MODEL_TIER_STRICT_BLOCK_REASON_CODE: &str = "model_tier_strict_blocks_high_impact_write";
+const MODEL_TIER_CONFIRM_REASON_CODE: &str = "model_tier_requires_confirmation";
+const CALIBRATION_MONITOR_CONFIRM_REASON_CODE: &str = "calibration_monitor_requires_confirmation";
+const INTEGRITY_MONITOR_CONFIRM_REASON_CODE: &str = "integrity_monitor_requires_confirmation";
+const CALIBRATION_DEGRADED_BLOCK_REASON_CODE: &str =
+    "calibration_degraded_blocks_high_impact_write";
+const INTEGRITY_DEGRADED_BLOCK_REASON_CODE: &str = "integrity_degraded_blocks_high_impact_write";
+const KURA_AGENT_MODEL_IDENTITY_ENV: &str = "KURA_AGENT_MODEL_IDENTITY";
+const KURA_AGENT_MODEL_BY_CLIENT_ID_ENV: &str = "KURA_AGENT_MODEL_BY_CLIENT_ID_JSON";
+
+const ADVANCED_MODEL_IDENTITIES: [&str; 3] = [
+    "openai:gpt-5",
+    "openai:gpt-5-pro",
+    "anthropic:claude-4-opus",
+];
+const MODERATE_MODEL_IDENTITIES: [&str; 5] = [
+    "openai:gpt-5-mini",
+    "openai:gpt-4.1",
+    "anthropic:claude-3-5-sonnet",
+    "anthropic:claude-3-7-sonnet",
+    "anthropic:claude-4-sonnet",
+];
+
+#[derive(Debug, Clone)]
+struct ResolvedModelIdentity {
+    model_identity: String,
+    reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ModelTierPolicy {
+    registry_version: &'static str,
+    capability_tier: &'static str,
+    confidence_floor: f64,
+    allowed_action_scope: &'static str,
+    high_impact_write_policy: &'static str,
+    repair_auto_apply_cap: &'static str,
+}
+
+fn normalize_model_identity(raw: &str) -> Option<String> {
+    let normalized = raw.trim().to_lowercase();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn resolve_model_identity_from_client_map(client_id: &str, raw_map: &str) -> Option<String> {
+    let Value::Object(map) = serde_json::from_str::<Value>(raw_map).ok()? else {
+        return None;
+    };
+    let normalized_client_id = client_id.trim().to_lowercase();
+    for (candidate_client_id, value) in map {
+        if !candidate_client_id
+            .trim()
+            .eq_ignore_ascii_case(&normalized_client_id)
+        {
+            continue;
+        }
+        if let Some(model_identity) = value.as_str() {
+            return normalize_model_identity(model_identity);
+        }
+    }
+    None
+}
+
+fn resolve_model_identity_with_sources(
+    client_id: Option<&str>,
+    client_map_json: Option<&str>,
+    runtime_default_identity: Option<&str>,
+) -> ResolvedModelIdentity {
+    if let (Some(client_id), Some(client_map_json)) = (client_id, client_map_json) {
+        if let Some(model_identity) =
+            resolve_model_identity_from_client_map(client_id, client_map_json)
+        {
+            return ResolvedModelIdentity {
+                model_identity,
+                reason_codes: Vec::new(),
+            };
+        }
+    }
+
+    if let Some(runtime_identity) = runtime_default_identity.and_then(normalize_model_identity) {
+        return ResolvedModelIdentity {
+            model_identity: runtime_identity,
+            reason_codes: Vec::new(),
+        };
+    }
+
+    ResolvedModelIdentity {
+        model_identity: "unknown".to_string(),
+        reason_codes: vec![MODEL_IDENTITY_UNKNOWN_FALLBACK_REASON_CODE.to_string()],
+    }
+}
+
+fn resolve_model_identity(auth: &AuthenticatedUser) -> ResolvedModelIdentity {
+    let client_id = match &auth.auth_method {
+        AuthMethod::AccessToken { client_id, .. } => Some(client_id.as_str()),
+        AuthMethod::ApiKey { .. } => None,
+    };
+    let client_map_json = std::env::var(KURA_AGENT_MODEL_BY_CLIENT_ID_ENV).ok();
+    let runtime_default_identity = std::env::var(KURA_AGENT_MODEL_IDENTITY_ENV).ok();
+    resolve_model_identity_with_sources(
+        client_id,
+        client_map_json.as_deref(),
+        runtime_default_identity.as_deref(),
+    )
+}
+
+fn resolve_model_tier_policy(model_identity: &str) -> ModelTierPolicy {
+    let normalized =
+        normalize_model_identity(model_identity).unwrap_or_else(|| "unknown".to_string());
+    if ADVANCED_MODEL_IDENTITIES
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(&normalized))
+    {
+        return ModelTierPolicy {
+            registry_version: MODEL_TIER_REGISTRY_VERSION,
+            capability_tier: "advanced",
+            confidence_floor: 0.70,
+            allowed_action_scope: "proactive",
+            high_impact_write_policy: "allow",
+            repair_auto_apply_cap: "enabled",
+        };
+    }
+    if MODERATE_MODEL_IDENTITIES
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(&normalized))
+    {
+        return ModelTierPolicy {
+            registry_version: MODEL_TIER_REGISTRY_VERSION,
+            capability_tier: "moderate",
+            confidence_floor: 0.80,
+            allowed_action_scope: "moderate",
+            high_impact_write_policy: "confirm_first",
+            repair_auto_apply_cap: "confirm_only",
+        };
+    }
+
+    ModelTierPolicy {
+        registry_version: MODEL_TIER_REGISTRY_VERSION,
+        capability_tier: "strict",
+        confidence_floor: 0.90,
+        allowed_action_scope: "strict",
+        high_impact_write_policy: "block",
+        repair_auto_apply_cap: "confirm_only",
+    }
+}
+
+fn dedupe_reason_codes(reason_codes: &mut Vec<String>) {
+    let mut seen = HashSet::new();
+    reason_codes.retain(|code| seen.insert(code.clone()));
+}
+
+fn build_agent_self_model(
+    model_identity: &ResolvedModelIdentity,
+    tier_policy: &ModelTierPolicy,
+) -> AgentSelfModel {
+    let mut known_limitations = match tier_policy.capability_tier {
+        "strict" => vec![
+            "High-impact writes are blocked unless policy preconditions are satisfied.".to_string(),
+            "Repair auto-apply is confirmation-gated by default in strict tier.".to_string(),
+        ],
+        "moderate" => vec![
+            "High-impact writes require confirm-first behavior in moderate tier.".to_string(),
+            "Repair auto-apply remains confirmation-gated in moderate tier.".to_string(),
+        ],
+        _ => vec![
+            "Autonomy can still be reduced by calibration or integrity regressions.".to_string(),
+        ],
+    };
+    if model_identity
+        .reason_codes
+        .iter()
+        .any(|code| code == MODEL_IDENTITY_UNKNOWN_FALLBACK_REASON_CODE)
+    {
+        known_limitations.push(
+            "Model identity could not be resolved; strict fallback policy is active.".to_string(),
+        );
+    }
+
+    AgentSelfModel {
+        schema_version: AGENT_SELF_MODEL_SCHEMA_VERSION.to_string(),
+        model_identity: model_identity.model_identity.clone(),
+        capability_tier: tier_policy.capability_tier.to_string(),
+        known_limitations,
+        preferred_contracts: AgentSelfModelPreferredContracts {
+            read: "/v1/agent/context".to_string(),
+            write: "/v1/agent/write-with-proof".to_string(),
+        },
+        fallback_behavior: AgentSelfModelFallbackBehavior {
+            unknown_identity_action: "fallback_strict".to_string(),
+            unknown_policy_action: "deny".to_string(),
+        },
+        docs: AgentSelfModelDocs {
+            runtime_policy: "system.conventions.model_tier_registry_v1".to_string(),
+            upgrade_hint: "/v1/agent/capabilities".to_string(),
+        },
+    }
+}
+
+fn build_agent_capabilities_with_self_model(
+    self_model: AgentSelfModel,
+) -> AgentCapabilitiesResponse {
     AgentCapabilitiesResponse {
-        schema_version: "agent_capabilities.v1".to_string(),
+        schema_version: AGENT_CAPABILITIES_SCHEMA_VERSION.to_string(),
         protocol_version: "2026-02-11.agent-contract.v1".to_string(),
         preferred_read_endpoint: "/v1/agent/context".to_string(),
         preferred_write_endpoint: "/v1/agent/write-with-proof".to_string(),
+        self_model,
         required_verification_contract: AgentVerificationContract {
             requires_receipts: true,
             requires_read_after_write: true,
@@ -801,9 +1062,12 @@ fn build_agent_capabilities() -> AgentCapabilitiesResponse {
     }
 }
 
-const AGENT_CONTEXT_CONTRACT_VERSION: &str = "agent_context.v2.redacted";
-const AGENT_CONTEXT_SYSTEM_CONTRACT_VERSION: &str = "agent_context.system.v1";
-const AGENT_CONTEXT_SYSTEM_PROFILE: &str = "redacted_v1";
+fn build_agent_capabilities() -> AgentCapabilitiesResponse {
+    let model_identity = resolve_model_identity_with_sources(None, None, None);
+    let tier_policy = resolve_model_tier_policy(&model_identity.model_identity);
+    let self_model = build_agent_self_model(&model_identity, &tier_policy);
+    build_agent_capabilities_with_self_model(self_model)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SystemConfigFieldClass {
@@ -840,7 +1104,8 @@ fn classify_system_convention_field(key: &str) -> SystemConventionFieldClass {
         | "ingestion_locale_v1"
         | "load_context_v1"
         | "session_feedback_certainty_v1"
-        | "schema_capability_gate_v1" => SystemConventionFieldClass::PublicContract,
+        | "schema_capability_gate_v1"
+        | "model_tier_registry_v1" => SystemConventionFieldClass::PublicContract,
         "learning_clustering_v1"
         | "extraction_calibration_v1"
         | "learning_backlog_bridge_v1"
@@ -2919,8 +3184,8 @@ fn validate_session_feedback_certainty_contract(
             let state = parse_non_empty_lower_str(event.data.get(state_key.as_str()));
             let source = parse_non_empty_lower_str(event.data.get(source_key.as_str()));
             let has_value = has_non_null_field(event, field);
-            let has_evidence = parse_non_empty_lower_str(event.data.get(evidence_key.as_str()))
-                .is_some();
+            let has_evidence =
+                parse_non_empty_lower_str(event.data.get(evidence_key.as_str())).is_some();
             let has_unresolved_reason =
                 parse_non_empty_lower_str(event.data.get(unresolved_reason_key.as_str())).is_some();
 
@@ -2940,16 +3205,14 @@ fn validate_session_feedback_certainty_contract(
                         field: Some(format!("{field_path}_state")),
                         received: event.data.get(state_key.as_str()).cloned(),
                         docs_hint: Some(
-                            "Set <field>_state to confirmed, inferred, or unresolved. "
-                                .to_string(),
+                            "Set <field>_state to confirmed, inferred, or unresolved. ".to_string(),
                         ),
                     });
                 }
             }
 
             if let Some(source_value) = source.as_deref() {
-                if !["explicit", "user_confirmed", "estimated", "inferred"]
-                    .contains(&source_value)
+                if !["explicit", "user_confirmed", "estimated", "inferred"].contains(&source_value)
                 {
                     return Err(AppError::PolicyViolation {
                         code: "session_feedback_source_invalid".to_string(),
@@ -2966,16 +3229,11 @@ fn validate_session_feedback_certainty_contract(
                 }
             }
 
-            if matches!(
-                state.as_deref(),
-                Some(SESSION_FEEDBACK_CERTAINTY_CONFIRMED)
-            ) && !has_value
+            if matches!(state.as_deref(), Some(SESSION_FEEDBACK_CERTAINTY_CONFIRMED)) && !has_value
             {
                 return Err(AppError::PolicyViolation {
                     code: "session_feedback_confirmed_missing_value".to_string(),
-                    message: format!(
-                        "{field} is marked confirmed but no value was provided."
-                    ),
+                    message: format!("{field} is marked confirmed but no value was provided."),
                     field: Some(field_path.clone()),
                     received: event.data.get(field).cloned(),
                     docs_hint: Some(
@@ -2985,10 +3243,8 @@ fn validate_session_feedback_certainty_contract(
                 });
             }
 
-            if matches!(
-                state.as_deref(),
-                Some(SESSION_FEEDBACK_CERTAINTY_INFERRED)
-            ) || matches!(source.as_deref(), Some("inferred"))
+            if matches!(state.as_deref(), Some(SESSION_FEEDBACK_CERTAINTY_INFERRED))
+                || matches!(source.as_deref(), Some("inferred"))
             {
                 if !has_value {
                     return Err(AppError::PolicyViolation {
@@ -3033,8 +3289,7 @@ fn validate_session_feedback_certainty_contract(
                         field: Some(field_path.clone()),
                         received: event.data.get(field).cloned(),
                         docs_hint: Some(
-                            "Use unresolved state only when no value is persisted yet."
-                                .to_string(),
+                            "Use unresolved state only when no value is persisted yet.".to_string(),
                         ),
                     });
                 }
@@ -3338,6 +3593,161 @@ fn all_read_after_write_verified(checks: &[AgentReadAfterWriteCheck]) -> bool {
     checks.iter().all(|check| check.status == "verified")
 }
 
+fn scope_rank(scope_level: &str) -> u8 {
+    match scope_level.trim().to_lowercase().as_str() {
+        "strict" => 0,
+        "moderate" => 1,
+        "proactive" => 2,
+        _ => 0,
+    }
+}
+
+fn stricter_scope_level(current_scope: &str, tier_scope: &str) -> String {
+    if scope_rank(current_scope) <= scope_rank(tier_scope) {
+        current_scope.trim().to_lowercase()
+    } else {
+        tier_scope.trim().to_lowercase()
+    }
+}
+
+fn normalize_quality_status(raw_status: &str) -> &'static str {
+    match raw_status.trim().to_lowercase().as_str() {
+        "degraded" => "degraded",
+        "monitor" => "monitor",
+        _ => "healthy",
+    }
+}
+
+fn worst_quality_status(left: &str, right: &str) -> &'static str {
+    let left_rank = match normalize_quality_status(left) {
+        "degraded" => 2,
+        "monitor" => 1,
+        _ => 0,
+    };
+    let right_rank = match normalize_quality_status(right) {
+        "degraded" => 2,
+        "monitor" => 1,
+        _ => 0,
+    };
+
+    if left_rank >= right_rank {
+        normalize_quality_status(left)
+    } else {
+        normalize_quality_status(right)
+    }
+}
+
+fn classify_write_action_class(events: &[CreateEventRequest]) -> String {
+    let high_impact = events.iter().any(|event| {
+        let event_type = event.event_type.trim().to_lowercase();
+        is_planning_or_coaching_event_type(&event_type)
+            || event_type == WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE
+            || event_type == WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE
+    });
+
+    if high_impact {
+        "high_impact_write".to_string()
+    } else {
+        "low_impact_write".to_string()
+    }
+}
+
+fn apply_model_tier_policy(
+    mut autonomy_policy: AgentAutonomyPolicy,
+    model_identity: &str,
+    tier_policy: &ModelTierPolicy,
+    model_identity_reason_codes: &[String],
+) -> AgentAutonomyPolicy {
+    autonomy_policy.model_identity = model_identity.to_string();
+    autonomy_policy.capability_tier = tier_policy.capability_tier.to_string();
+    autonomy_policy.tier_policy_version = tier_policy.registry_version.to_string();
+    autonomy_policy.tier_confidence_floor = tier_policy.confidence_floor;
+    autonomy_policy.max_scope_level = stricter_scope_level(
+        &autonomy_policy.max_scope_level,
+        tier_policy.allowed_action_scope,
+    );
+
+    match tier_policy.repair_auto_apply_cap {
+        "disabled" | "confirm_only" => {
+            autonomy_policy.repair_auto_apply_enabled = false;
+            autonomy_policy.require_confirmation_for_repairs = true;
+        }
+        _ => {}
+    }
+
+    if !model_identity_reason_codes.is_empty() {
+        autonomy_policy.reason = format!(
+            "{} [model_identity_resolution={}]",
+            autonomy_policy.reason,
+            model_identity_reason_codes.join(",")
+        );
+    }
+
+    autonomy_policy
+}
+
+fn evaluate_autonomy_gate(
+    action_class: &str,
+    autonomy_policy: &AgentAutonomyPolicy,
+    tier_policy: &ModelTierPolicy,
+    base_reason_codes: &[String],
+) -> AgentAutonomyGate {
+    let mut reason_codes = base_reason_codes.to_vec();
+    let effective_quality_status = worst_quality_status(
+        &autonomy_policy.slo_status,
+        &autonomy_policy.calibration_status,
+    );
+    let mut decision = "allow".to_string();
+
+    if action_class == "high_impact_write" {
+        if effective_quality_status == "degraded" {
+            decision = "block".to_string();
+            if normalize_quality_status(&autonomy_policy.calibration_status) == "degraded" {
+                reason_codes.push(CALIBRATION_DEGRADED_BLOCK_REASON_CODE.to_string());
+            }
+            if normalize_quality_status(&autonomy_policy.slo_status) == "degraded" {
+                reason_codes.push(INTEGRITY_DEGRADED_BLOCK_REASON_CODE.to_string());
+            }
+            if reason_codes.is_empty() {
+                reason_codes.push(INTEGRITY_DEGRADED_BLOCK_REASON_CODE.to_string());
+            }
+        } else if tier_policy.high_impact_write_policy == "block" {
+            decision = "block".to_string();
+            reason_codes.push(MODEL_TIER_STRICT_BLOCK_REASON_CODE.to_string());
+        } else if effective_quality_status == "monitor" {
+            decision = "confirm_first".to_string();
+            if normalize_quality_status(&autonomy_policy.calibration_status) == "monitor" {
+                reason_codes.push(CALIBRATION_MONITOR_CONFIRM_REASON_CODE.to_string());
+            } else {
+                reason_codes.push(INTEGRITY_MONITOR_CONFIRM_REASON_CODE.to_string());
+            }
+        } else if tier_policy.high_impact_write_policy == "confirm_first" {
+            decision = "confirm_first".to_string();
+            reason_codes.push(MODEL_TIER_CONFIRM_REASON_CODE.to_string());
+        }
+    }
+
+    dedupe_reason_codes(&mut reason_codes);
+
+    AgentAutonomyGate {
+        decision,
+        action_class: action_class.to_string(),
+        model_tier: tier_policy.capability_tier.to_string(),
+        effective_quality_status: effective_quality_status.to_string(),
+        reason_codes,
+    }
+}
+
+fn default_autonomy_gate() -> AgentAutonomyGate {
+    AgentAutonomyGate {
+        decision: "allow".to_string(),
+        action_class: "low_impact_write".to_string(),
+        model_tier: "strict".to_string(),
+        effective_quality_status: "healthy".to_string(),
+        reason_codes: Vec::new(),
+    }
+}
+
 fn default_autonomy_policy() -> AgentAutonomyPolicy {
     let mut templates = HashMap::new();
     templates.insert(
@@ -3361,6 +3771,10 @@ fn default_autonomy_policy() -> AgentAutonomyPolicy {
         policy_version: "phase_3_integrity_slo_v1".to_string(),
         slo_status: "healthy".to_string(),
         calibration_status: "healthy".to_string(),
+        model_identity: "unknown".to_string(),
+        capability_tier: "strict".to_string(),
+        tier_policy_version: MODEL_TIER_REGISTRY_VERSION.to_string(),
+        tier_confidence_floor: 0.90,
         throttle_active: false,
         max_scope_level: "moderate".to_string(),
         require_confirmation_for_non_trivial_actions: false,
@@ -3423,6 +3837,25 @@ fn autonomy_policy_from_quality_health(
             .and_then(Value::as_str)
             .unwrap_or("healthy")
             .to_string(),
+        model_identity: policy
+            .get("model_identity")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string(),
+        capability_tier: policy
+            .get("capability_tier")
+            .and_then(Value::as_str)
+            .unwrap_or("strict")
+            .to_string(),
+        tier_policy_version: policy
+            .get("tier_policy_version")
+            .and_then(Value::as_str)
+            .unwrap_or(MODEL_TIER_REGISTRY_VERSION)
+            .to_string(),
+        tier_confidence_floor: policy
+            .get("tier_confidence_floor")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.90),
         throttle_active: policy
             .get("throttle_active")
             .and_then(Value::as_bool)
@@ -3463,6 +3896,7 @@ fn build_claim_guard(
     checks: &[AgentReadAfterWriteCheck],
     warnings: &[BatchEventWarning],
     autonomy_policy: AgentAutonomyPolicy,
+    autonomy_gate: AgentAutonomyGate,
 ) -> AgentWriteClaimGuard {
     let mut uncertainty_markers = Vec::new();
     let mut deferred_markers = Vec::new();
@@ -3486,23 +3920,28 @@ fn build_claim_guard(
         uncertainty_markers.push("plausibility_warnings_present".to_string());
     }
 
-    if autonomy_policy.throttle_active {
+    if autonomy_policy.throttle_active || autonomy_gate.decision == "confirm_first" {
         uncertainty_markers.push("autonomy_throttled_by_integrity_slo".to_string());
         deferred_markers.push("confirm_non_trivial_actions_due_to_slo_regression".to_string());
     }
+    if autonomy_gate.decision == "confirm_first" {
+        uncertainty_markers.push("autonomy_confirm_first_by_model_tier".to_string());
+        deferred_markers.push("confirm_high_impact_action_due_to_model_tier".to_string());
+    }
 
-    let next_action_confirmation_prompt = if autonomy_policy.throttle_active {
-        autonomy_policy
-            .confirmation_templates
-            .get("non_trivial_action")
-            .cloned()
-    } else {
-        None
-    };
+    let next_action_confirmation_prompt =
+        if autonomy_policy.throttle_active || autonomy_gate.decision == "confirm_first" {
+            autonomy_policy
+                .confirmation_templates
+                .get("non_trivial_action")
+                .cloned()
+        } else {
+            None
+        };
 
     let allow_saved_claim = receipts_complete && read_after_write_ok;
     let (claim_status, recommended_user_phrase) = if allow_saved_claim
-        && autonomy_policy.throttle_active
+        && (autonomy_policy.throttle_active || autonomy_gate.decision == "confirm_first")
     {
         (
             "saved_verified".to_string(),
@@ -3512,8 +3951,9 @@ fn build_claim_guard(
                 .cloned()
                 .unwrap_or_else(|| {
                     format!(
-                        "Saved and verified in the read model. Integrity status '{}' requires explicit confirmation before non-trivial follow-up actions.",
-                        autonomy_policy.slo_status
+                        "Saved and verified in the read model. Integrity/model status requires explicit confirmation before non-trivial follow-up actions (tier='{}', quality='{}').",
+                        autonomy_gate.model_tier,
+                        autonomy_gate.effective_quality_status,
                     )
                 }),
         )
@@ -3542,6 +3982,7 @@ fn build_claim_guard(
         deferred_markers,
         recommended_user_phrase,
         next_action_confirmation_prompt,
+        autonomy_gate,
         autonomy_policy,
     }
 }
@@ -3569,8 +4010,18 @@ fn build_save_claim_checked_event(
         "deferred_markers": claim_guard.deferred_markers,
         "autonomy_policy": {
             "slo_status": claim_guard.autonomy_policy.slo_status,
+            "calibration_status": claim_guard.autonomy_policy.calibration_status,
+            "model_identity": claim_guard.autonomy_policy.model_identity,
+            "capability_tier": claim_guard.autonomy_policy.capability_tier,
             "throttle_active": claim_guard.autonomy_policy.throttle_active,
             "max_scope_level": claim_guard.autonomy_policy.max_scope_level,
+        },
+        "autonomy_gate": {
+            "decision": claim_guard.autonomy_gate.decision,
+            "action_class": claim_guard.autonomy_gate.action_class,
+            "model_tier": claim_guard.autonomy_gate.model_tier,
+            "effective_quality_status": claim_guard.autonomy_gate.effective_quality_status,
+            "reason_codes": claim_guard.autonomy_gate.reason_codes,
         },
         "session_audit": {
             "status": session_audit.status,
@@ -5000,12 +5451,56 @@ pub async fn write_with_proof(
         });
     }
 
+    let quality_health = fetch_quality_health_projection(&state, user_id).await?;
+    let model_identity = resolve_model_identity(&auth);
+    let tier_policy = resolve_model_tier_policy(&model_identity.model_identity);
+    let autonomy_policy = apply_model_tier_policy(
+        autonomy_policy_from_quality_health(quality_health.as_ref()),
+        &model_identity.model_identity,
+        &tier_policy,
+        &model_identity.reason_codes,
+    );
+    let action_class = classify_write_action_class(&req.events);
+    let autonomy_gate = evaluate_autonomy_gate(
+        &action_class,
+        &autonomy_policy,
+        &tier_policy,
+        &model_identity.reason_codes,
+    );
+    if autonomy_gate.decision == "block" {
+        return Err(AppError::Validation {
+            message: "High-impact write blocked by adaptive autonomy gate.".to_string(),
+            field: Some("events".to_string()),
+            received: Some(serde_json::json!({
+                "action_class": autonomy_gate.action_class,
+                "model_tier": autonomy_gate.model_tier,
+                "effective_quality_status": autonomy_gate.effective_quality_status,
+                "reason_codes": autonomy_gate.reason_codes,
+            })),
+            docs_hint: Some(
+                "Request explicit user confirmation or reduce scope to low-impact writes before retry."
+                    .to_string(),
+            ),
+        });
+    }
+    if autonomy_gate.decision == "confirm_first" {
+        workflow_warnings.push(BatchEventWarning {
+            event_index: 0,
+            field: "autonomy.gate".to_string(),
+            message: format!(
+                "Confirm-first mode active for high-impact write (tier='{}', quality='{}', reasons={}).",
+                autonomy_gate.model_tier,
+                autonomy_gate.effective_quality_status,
+                autonomy_gate.reason_codes.join(","),
+            ),
+            severity: "warning".to_string(),
+        });
+    }
+
     let (receipts, mut warnings, write_path) =
         write_events_with_receipts(&state, user_id, &req.events, "metadata.idempotency_key")
             .await?;
     warnings.extend(workflow_warnings);
-    let quality_health = fetch_quality_health_projection(&state, user_id).await?;
-    let autonomy_policy = autonomy_policy_from_quality_health(quality_health.as_ref());
     let SessionAuditArtifacts {
         summary: session_audit_summary,
         repair_events,
@@ -5072,6 +5567,7 @@ pub async fn write_with_proof(
         &verification.checks,
         &warnings,
         autonomy_policy,
+        autonomy_gate,
     );
     let quality_signal = build_save_claim_checked_event(
         requested_event_count,
@@ -5141,7 +5637,10 @@ pub async fn get_agent_capabilities(
     auth: AuthenticatedUser,
 ) -> Result<Json<AgentCapabilitiesResponse>, AppError> {
     require_scopes(&auth, &["agent:read"], "GET /v1/agent/capabilities")?;
-    Ok(Json(build_agent_capabilities()))
+    let model_identity = resolve_model_identity(&auth);
+    let tier_policy = resolve_model_tier_policy(&model_identity.model_identity);
+    let self_model = build_agent_self_model(&model_identity, &tier_policy);
+    Ok(Json(build_agent_capabilities_with_self_model(self_model)))
 }
 
 /// Get agent context bundle in a single read call.
@@ -5166,6 +5665,9 @@ pub async fn get_agent_context(
 ) -> Result<Json<AgentContextResponse>, AppError> {
     require_scopes(&auth, &["agent:read"], "GET /v1/agent/context")?;
     let user_id = auth.user_id;
+    let model_identity = resolve_model_identity(&auth);
+    let tier_policy = resolve_model_tier_policy(&model_identity.model_identity);
+    let self_model = build_agent_self_model(&model_identity, &tier_policy);
     let exercise_limit = clamp_limit(params.exercise_limit, 5, 100);
     let strength_limit = clamp_limit(params.strength_limit, 5, 100);
     let custom_limit = clamp_limit(params.custom_limit, 10, 100);
@@ -5253,6 +5755,7 @@ pub async fn get_agent_context(
 
     Ok(Json(AgentContextResponse {
         system,
+        self_model,
         user_profile,
         training_timeline,
         session_feedback,
@@ -5293,13 +5796,13 @@ mod tests {
         build_evidence_claim_events, build_reliability_ux, build_repair_feedback,
         build_save_handshake_learning_signal_events, build_session_audit_artifacts,
         build_visualization_outputs, clamp_limit, clamp_verify_timeout_ms,
-        collect_reliability_inferred_facts, default_autonomy_policy, extract_evidence_claim_drafts,
-        extract_set_context_mentions_from_text, missing_onboarding_close_requirements,
-        normalize_read_after_write_targets, normalize_set_type, normalize_visualization_spec,
-        parse_rest_seconds_from_text, parse_rest_with_span, parse_rir_from_text,
-        parse_rir_with_span, parse_set_type_with_span, parse_tempo_from_text,
-        parse_tempo_with_span, rank_projection_list, ranking_candidate_limit,
-        recover_receipts_for_idempotent_retry, resolve_visualization,
+        collect_reliability_inferred_facts, default_autonomy_gate, default_autonomy_policy,
+        extract_evidence_claim_drafts, extract_set_context_mentions_from_text,
+        missing_onboarding_close_requirements, normalize_read_after_write_targets,
+        normalize_set_type, normalize_visualization_spec, parse_rest_seconds_from_text,
+        parse_rest_with_span, parse_rir_from_text, parse_rir_with_span, parse_set_type_with_span,
+        parse_tempo_from_text, parse_tempo_with_span, rank_projection_list,
+        ranking_candidate_limit, recover_receipts_for_idempotent_retry, resolve_visualization,
         validate_session_feedback_certainty_contract, visualization_policy_decision,
         workflow_gate_from_request,
     };
@@ -5434,7 +5937,14 @@ mod tests {
                 "agent:resolve".to_string(),
             ],
         };
-        Some((AppState { db: pool, signup_gate: crate::state::SignupGate::Open }, auth, user_id))
+        Some((
+            AppState {
+                db: pool,
+                signup_gate: crate::state::SignupGate::Open,
+            },
+            auth,
+            user_id,
+        ))
     }
 
     async fn upsert_test_projection(
@@ -6654,7 +7164,12 @@ mod tests {
 
     #[test]
     fn session_feedback_certainty_contract_matrix_fuzz() {
-        let states: [Option<&str>; 4] = [None, Some("confirmed"), Some("inferred"), Some("unresolved")];
+        let states: [Option<&str>; 4] = [
+            None,
+            Some("confirmed"),
+            Some("inferred"),
+            Some("unresolved"),
+        ];
         let sources: [Option<&str>; 5] = [
             None,
             Some("explicit"),
@@ -6797,6 +7312,7 @@ mod tests {
             &checks,
             &[],
             default_autonomy_policy(),
+            default_autonomy_gate(),
         );
 
         let feedback = build_repair_feedback(
@@ -6859,6 +7375,7 @@ mod tests {
             &checks,
             &[],
             default_autonomy_policy(),
+            default_autonomy_gate(),
         );
 
         let feedback = build_repair_feedback(
@@ -6909,7 +7426,14 @@ mod tests {
             detail: "ok".to_string(),
         }];
         let verification = make_verification("verified", checks.clone());
-        let guard = build_claim_guard(&[], 0, &checks, &[], default_autonomy_policy());
+        let guard = build_claim_guard(
+            &[],
+            0,
+            &checks,
+            &[],
+            default_autonomy_policy(),
+            default_autonomy_gate(),
+        );
 
         let feedback = build_repair_feedback(
             false,
@@ -6949,7 +7473,14 @@ mod tests {
             detail: "ok".to_string(),
         }];
 
-        let guard = build_claim_guard(&receipts, 1, &checks, &[], default_autonomy_policy());
+        let guard = build_claim_guard(
+            &receipts,
+            1,
+            &checks,
+            &[],
+            default_autonomy_policy(),
+            default_autonomy_gate(),
+        );
         assert!(guard.allow_saved_claim);
         assert_eq!(guard.claim_status, "saved_verified");
         assert!(guard.uncertainty_markers.is_empty());
@@ -6979,7 +7510,14 @@ mod tests {
             severity: "warning".to_string(),
         }];
 
-        let guard = build_claim_guard(&receipts, 1, &checks, &warnings, default_autonomy_policy());
+        let guard = build_claim_guard(
+            &receipts,
+            1,
+            &checks,
+            &warnings,
+            default_autonomy_policy(),
+            default_autonomy_gate(),
+        );
         assert!(!guard.allow_saved_claim);
         assert_eq!(guard.claim_status, "pending");
         assert!(
@@ -7025,7 +7563,7 @@ mod tests {
         policy.max_scope_level = "strict".to_string();
         policy.require_confirmation_for_non_trivial_actions = true;
 
-        let guard = build_claim_guard(&receipts, 1, &checks, &[], policy);
+        let guard = build_claim_guard(&receipts, 1, &checks, &[], policy, default_autonomy_gate());
         assert!(guard.allow_saved_claim);
         assert_eq!(guard.claim_status, "saved_verified");
         assert_eq!(guard.autonomy_policy.slo_status, "degraded");
@@ -7056,7 +7594,14 @@ mod tests {
             detail: "ok".to_string(),
         }];
 
-        let guard = build_claim_guard(&[], 1, &checks, &[], default_autonomy_policy());
+        let guard = build_claim_guard(
+            &[],
+            1,
+            &checks,
+            &[],
+            default_autonomy_policy(),
+            default_autonomy_gate(),
+        );
         assert!(!guard.allow_saved_claim);
         assert_eq!(guard.claim_status, "failed");
         assert!(
@@ -7084,7 +7629,14 @@ mod tests {
             observed_last_event_id: Some(event_id),
             detail: "ok".to_string(),
         }];
-        let guard = build_claim_guard(&receipts, 1, &checks, &[], default_autonomy_policy());
+        let guard = build_claim_guard(
+            &receipts,
+            1,
+            &checks,
+            &[],
+            default_autonomy_policy(),
+            default_autonomy_gate(),
+        );
         let summary = super::AgentSessionAuditSummary {
             status: "clean".to_string(),
             mismatch_detected: 0,
@@ -7144,7 +7696,14 @@ mod tests {
             observed_last_event_id: Some(event_id),
             detail: "ok".to_string(),
         }];
-        let guard = build_claim_guard(&receipts, 1, &checks, &[], default_autonomy_policy());
+        let guard = build_claim_guard(
+            &receipts,
+            1,
+            &checks,
+            &[],
+            default_autonomy_policy(),
+            default_autonomy_gate(),
+        );
         let summary = super::AgentSessionAuditSummary {
             status: "clean".to_string(),
             mismatch_detected: 0,
@@ -7170,7 +7729,14 @@ mod tests {
             observed_last_event_id: None,
             detail: "pending".to_string(),
         }];
-        let guard = build_claim_guard(&[], 1, &checks, &[], default_autonomy_policy());
+        let guard = build_claim_guard(
+            &[],
+            1,
+            &checks,
+            &[],
+            default_autonomy_policy(),
+            default_autonomy_gate(),
+        );
         let summary = super::AgentSessionAuditSummary {
             status: "needs_clarification".to_string(),
             mismatch_detected: 1,
@@ -7221,7 +7787,14 @@ mod tests {
             verified_checks: 1,
             checks: checks.clone(),
         };
-        let guard = build_claim_guard(&receipts, 1, &checks, &[], default_autonomy_policy());
+        let guard = build_claim_guard(
+            &receipts,
+            1,
+            &checks,
+            &[],
+            default_autonomy_policy(),
+            default_autonomy_gate(),
+        );
 
         let events = build_save_handshake_learning_signal_events(
             user_id,
@@ -7267,7 +7840,14 @@ mod tests {
             verified_checks: 0,
             checks: checks.clone(),
         };
-        let guard = build_claim_guard(&receipts, 1, &checks, &[], default_autonomy_policy());
+        let guard = build_claim_guard(
+            &receipts,
+            1,
+            &checks,
+            &[],
+            default_autonomy_policy(),
+            default_autonomy_gate(),
+        );
 
         let events = build_save_handshake_learning_signal_events(
             user_id,
@@ -7613,14 +8193,112 @@ mod tests {
     }
 
     #[test]
+    fn model_identity_resolver_prefers_client_map_over_runtime_default() {
+        let resolved = super::resolve_model_identity_with_sources(
+            Some("kura-web"),
+            Some(r#"{"kura-web":"openai:gpt-5-mini"}"#),
+            Some("openai:gpt-5"),
+        );
+        assert_eq!(resolved.model_identity, "openai:gpt-5-mini");
+        assert!(resolved.reason_codes.is_empty());
+    }
+
+    #[test]
+    fn model_identity_resolver_uses_strict_unknown_fallback_with_reason_code() {
+        let resolved = super::resolve_model_identity_with_sources(None, None, None);
+        assert_eq!(resolved.model_identity, "unknown");
+        assert!(
+            resolved
+                .reason_codes
+                .iter()
+                .any(|code| code == "model_identity_unknown_fallback_strict")
+        );
+    }
+
+    #[test]
+    fn model_tier_policy_defaults_to_strict_for_unknown_identity() {
+        let tier = super::resolve_model_tier_policy("vendor:unknown-model");
+        assert_eq!(tier.capability_tier, "strict");
+        assert_eq!(tier.high_impact_write_policy, "block");
+    }
+
+    #[test]
+    fn tier_policy_overlay_clamps_scope_and_repair_auto_apply() {
+        let mut policy = super::default_autonomy_policy();
+        policy.max_scope_level = "proactive".to_string();
+        policy.repair_auto_apply_enabled = true;
+        policy.require_confirmation_for_repairs = false;
+
+        let strict_tier = super::resolve_model_tier_policy("unknown");
+        let applied = super::apply_model_tier_policy(policy, "unknown", &strict_tier, &[]);
+        assert_eq!(applied.max_scope_level, "strict");
+        assert!(!applied.repair_auto_apply_enabled);
+        assert!(applied.require_confirmation_for_repairs);
+        assert_eq!(applied.capability_tier, "strict");
+    }
+
+    #[test]
+    fn autonomy_gate_blocks_high_impact_write_for_strict_tier() {
+        let policy = super::default_autonomy_policy();
+        let strict_tier = super::resolve_model_tier_policy("unknown");
+        let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &strict_tier, &[]);
+        assert_eq!(gate.decision, "block");
+        assert!(
+            gate.reason_codes
+                .iter()
+                .any(|code| code == "model_tier_strict_blocks_high_impact_write")
+        );
+    }
+
+    #[test]
+    fn autonomy_gate_requires_confirmation_when_calibration_is_monitor() {
+        let mut policy = super::default_autonomy_policy();
+        policy.calibration_status = "monitor".to_string();
+        let advanced_tier = super::resolve_model_tier_policy("openai:gpt-5");
+        let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &advanced_tier, &[]);
+        assert_eq!(gate.decision, "confirm_first");
+        assert!(
+            gate.reason_codes
+                .iter()
+                .any(|code| code == "calibration_monitor_requires_confirmation")
+        );
+    }
+
+    #[test]
+    fn autonomy_gate_matrix_is_deterministic_for_high_impact_writes() {
+        let scenarios = [
+            ("unknown", "healthy", "healthy", "block"),
+            ("unknown", "healthy", "monitor", "block"),
+            ("unknown", "healthy", "degraded", "block"),
+            ("openai:gpt-5-mini", "healthy", "healthy", "confirm_first"),
+            ("openai:gpt-5-mini", "healthy", "monitor", "confirm_first"),
+            ("openai:gpt-5-mini", "healthy", "degraded", "block"),
+            ("openai:gpt-5", "healthy", "healthy", "allow"),
+            ("openai:gpt-5", "healthy", "monitor", "confirm_first"),
+            ("openai:gpt-5", "healthy", "degraded", "block"),
+        ];
+
+        for (model_identity, slo_status, calibration_status, expected_decision) in scenarios {
+            let mut policy = super::default_autonomy_policy();
+            policy.slo_status = slo_status.to_string();
+            policy.calibration_status = calibration_status.to_string();
+            let tier = super::resolve_model_tier_policy(model_identity);
+            let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &tier, &[]);
+            assert_eq!(gate.decision, expected_decision);
+        }
+    }
+
+    #[test]
     fn capabilities_manifest_exposes_agent_contract_preferences() {
         let manifest = build_agent_capabilities();
-        assert_eq!(manifest.schema_version, "agent_capabilities.v1");
+        assert_eq!(manifest.schema_version, "agent_capabilities.v2.self_model");
         assert_eq!(manifest.preferred_read_endpoint, "/v1/agent/context");
         assert_eq!(
             manifest.preferred_write_endpoint,
             "/v1/agent/write-with-proof"
         );
+        assert_eq!(manifest.self_model.schema_version, "agent_self_model.v1");
+        assert_eq!(manifest.self_model.capability_tier, "strict");
         assert!(manifest.required_verification_contract.requires_receipts);
         assert!(
             manifest
@@ -7665,6 +8343,7 @@ mod tests {
                 "load_context_v1": {"event_type": "set.logged"},
                 "session_feedback_certainty_v1": {"event_type": "session.completed"},
                 "schema_capability_gate_v1": {"rules": ["capability checks"]},
+                "model_tier_registry_v1": {"tiers": {"strict": {"high_impact_write_policy": "block"}}},
                 "learning_clustering_v1": {"rules": ["internal"]},
                 "shadow_evaluation_gate_v1": {"rules": ["internal"]},
                 "unexpected_convention": {"rules": ["unknown"]}
@@ -7697,6 +8376,7 @@ mod tests {
         assert!(conventions.contains_key("load_context_v1"));
         assert!(conventions.contains_key("session_feedback_certainty_v1"));
         assert!(conventions.contains_key("schema_capability_gate_v1"));
+        assert!(conventions.contains_key("model_tier_registry_v1"));
         assert!(!conventions.contains_key("learning_clustering_v1"));
         assert!(!conventions.contains_key("shadow_evaluation_gate_v1"));
         assert!(!conventions.contains_key("unexpected_convention"));
