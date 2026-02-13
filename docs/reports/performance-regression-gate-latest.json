@@ -1,0 +1,87 @@
+{
+  "failure_reasons": [],
+  "generated_at": "2026-02-13T22:38:15.899505+00:00",
+  "inputs": {
+    "baseline_path": "/Users/jz/Projekte/Life/kura-training/docs/reports/performance-baseline-latest.json",
+    "candidate_path": "/Users/jz/Projekte/Life/kura-training/docs/reports/performance-baseline-latest.json"
+  },
+  "metrics": [
+    {
+      "absolute_threshold_ms": 250.0,
+      "allowed_regression_ms": 6.7,
+      "baseline_p95_ms": 8.499,
+      "candidate_p95_ms": 8.499,
+      "delta_ms": 0.0,
+      "delta_pct": 0.0,
+      "domain": "api",
+      "failure_reasons": [],
+      "label": "GET /v1/projections",
+      "metric_id": "api::GET /v1/projections",
+      "status": "pass"
+    },
+    {
+      "absolute_threshold_ms": 250.0,
+      "allowed_regression_ms": 5.858,
+      "baseline_p95_ms": 4.291,
+      "candidate_p95_ms": 4.291,
+      "delta_ms": 0.0,
+      "delta_pct": 0.0,
+      "domain": "api",
+      "failure_reasons": [],
+      "label": "GET /v1/projections/user_profile/me",
+      "metric_id": "api::GET /v1/projections/user_profile/me",
+      "status": "pass"
+    },
+    {
+      "absolute_threshold_ms": 250.0,
+      "allowed_regression_ms": 6.28,
+      "baseline_p95_ms": 6.402,
+      "candidate_p95_ms": 6.402,
+      "delta_ms": 0.0,
+      "delta_pct": 0.0,
+      "domain": "api",
+      "failure_reasons": [],
+      "label": "POST /v1/events",
+      "metric_id": "api::POST /v1/events",
+      "status": "pass"
+    },
+    {
+      "absolute_threshold_ms": 750.0,
+      "allowed_regression_ms": 6.394,
+      "baseline_p95_ms": 6.968,
+      "candidate_p95_ms": 6.968,
+      "delta_ms": 0.0,
+      "delta_pct": 0.0,
+      "domain": "worker",
+      "failure_reasons": [],
+      "label": "worker.update_exercise_progression",
+      "metric_id": "worker::worker.update_exercise_progression",
+      "status": "pass"
+    },
+    {
+      "absolute_threshold_ms": 750.0,
+      "allowed_regression_ms": 7.736,
+      "baseline_p95_ms": 13.681,
+      "candidate_p95_ms": 13.681,
+      "delta_ms": 0.0,
+      "delta_pct": 0.0,
+      "domain": "worker",
+      "failure_reasons": [],
+      "label": "worker.update_training_timeline",
+      "metric_id": "worker::worker.update_training_timeline",
+      "status": "pass"
+    }
+  ],
+  "policy": {
+    "api_absolute_p95_ms": 250.0,
+    "max_regression_pct": 0.2,
+    "min_regression_budget_ms": 5.0,
+    "worker_absolute_p95_ms": 750.0
+  },
+  "schema_version": "performance_regression_gate.v1",
+  "status": "pass",
+  "summary": {
+    "failed_metric_count": 0,
+    "metric_count": 5
+  }
+}

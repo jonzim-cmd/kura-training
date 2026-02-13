@@ -1,0 +1,160 @@
+{
+  "api": {
+    "base_url": "http://127.0.0.1:3400",
+    "endpoints": [
+      {
+        "label": "POST /v1/events",
+        "max_ms": 7.088,
+        "min_ms": 4.877,
+        "p50_ms": 5.336,
+        "p95_ms": 6.402,
+        "sample_count": 15,
+        "samples_ms": [
+          5.198,
+          5.283,
+          4.888,
+          5.336,
+          5.632,
+          5.041,
+          6.307,
+          6.402,
+          7.088,
+          5.819,
+          5.198,
+          4.877,
+          4.988,
+          6.095,
+          5.483
+        ]
+      },
+      {
+        "label": "GET /v1/projections",
+        "max_ms": 8.997,
+        "min_ms": 2.413,
+        "p50_ms": 4.244,
+        "p95_ms": 8.499,
+        "sample_count": 15,
+        "samples_ms": [
+          3.472,
+          2.608,
+          2.89,
+          2.745,
+          2.659,
+          4.244,
+          3.371,
+          2.413,
+          6.457,
+          5.379,
+          8.997,
+          6.534,
+          7.463,
+          6.637,
+          8.499
+        ]
+      },
+      {
+        "label": "GET /v1/projections/user_profile/me",
+        "max_ms": 4.771,
+        "min_ms": 2.344,
+        "p50_ms": 3.321,
+        "p95_ms": 4.291,
+        "sample_count": 15,
+        "samples_ms": [
+          2.715,
+          3.321,
+          3.448,
+          3.786,
+          3.19,
+          4.291,
+          2.344,
+          3.498,
+          4.771,
+          3.68,
+          3.107,
+          3.303,
+          2.904,
+          3.245,
+          4.061
+        ]
+      }
+    ]
+  },
+  "config": {
+    "api_pace_ms": 75.0,
+    "api_port": 3400,
+    "sample_runs": 15,
+    "startup_timeout_seconds": 180.0,
+    "warmup_runs": 3,
+    "worker_event_count": 500,
+    "worker_window_days": 90
+  },
+  "dataset": {
+    "profile": "synthetic_set_logged_v1",
+    "seed_event_id": "d8b595fc-ca8a-4eff-99f9-a5625cc1cfad",
+    "user_id": "019c5923-f898-7a31-9b3f-5fab5563ea0a"
+  },
+  "generated_at": "2026-02-13T22:34:20.915063+00:00",
+  "machine_context": {
+    "api_start_log": "/var/folders/pm/m9b3jq_s28z240yqwqs55j_40000gn/T/kura-api-perf-9endak9a.log",
+    "git_commit": "d4a9841",
+    "hostname": "MacBook-Pro-von-Jonas-2.local",
+    "platform": "macOS-26.2-arm64-arm-64bit-Mach-O",
+    "python_version": "3.13.11"
+  },
+  "run_command": "set -a && source .env && set +a && PYTHONPATH=workers/src uv run --project workers python scripts/performance_baseline.py",
+  "schema_version": "performance_baseline.v1",
+  "worker": {
+    "handlers": [
+      {
+        "label": "worker.update_exercise_progression",
+        "max_ms": 7.223,
+        "min_ms": 5.389,
+        "p50_ms": 6.181,
+        "p95_ms": 6.968,
+        "sample_count": 15,
+        "samples_ms": [
+          6.43,
+          6.968,
+          7.223,
+          6.572,
+          5.72,
+          6.615,
+          6.014,
+          6.181,
+          6.204,
+          6.18,
+          5.45,
+          5.389,
+          6.123,
+          5.975,
+          6.477
+        ]
+      },
+      {
+        "label": "worker.update_training_timeline",
+        "max_ms": 14.088,
+        "min_ms": 11.912,
+        "p50_ms": 13.083,
+        "p95_ms": 13.681,
+        "sample_count": 15,
+        "samples_ms": [
+          11.912,
+          13.104,
+          14.088,
+          13.506,
+          13.091,
+          12.736,
+          13.083,
+          12.893,
+          12.999,
+          13.158,
+          12.881,
+          12.784,
+          13.681,
+          13.119,
+          12.792
+        ]
+      }
+    ]
+  }
+}
