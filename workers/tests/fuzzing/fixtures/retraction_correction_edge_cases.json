@@ -1,0 +1,85 @@
+[
+  {
+    "id": "fix_retraction_valid_uuid",
+    "category": "retraction",
+    "description": "Valid retraction with all optional fields",
+    "events": [
+      {
+        "event_type": "event.retracted",
+        "data": {
+          "retracted_event_id": "01956abc-def0-7000-8000-000000000001",
+          "retracted_event_type": "bodyweight.logged",
+          "reason": "Typo: entered 150kg instead of 85kg"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["retraction", "regression"]
+  },
+  {
+    "id": "fix_retraction_missing_id",
+    "category": "retraction",
+    "description": "Retraction without event ID — must reject",
+    "events": [
+      {
+        "event_type": "event.retracted",
+        "data": {
+          "reason": "No target specified"
+        }
+      }
+    ],
+    "expected_behavior": "rejected",
+    "expected_codes": ["inv_retraction_target_required"],
+    "tags": ["retraction", "regression"]
+  },
+  {
+    "id": "fix_retraction_invalid_uuid_format",
+    "category": "retraction",
+    "description": "Retraction with malformed UUID",
+    "events": [
+      {
+        "event_type": "event.retracted",
+        "data": {
+          "retracted_event_id": "not-a-valid-uuid"
+        }
+      }
+    ],
+    "expected_behavior": "rejected",
+    "expected_codes": ["inv_retraction_target_invalid_uuid"],
+    "tags": ["retraction", "regression"]
+  },
+  {
+    "id": "fix_correction_empty_changed_fields",
+    "category": "correction",
+    "description": "Correction with empty changed_fields object — must reject",
+    "events": [
+      {
+        "event_type": "set.corrected",
+        "data": {
+          "target_event_id": "01956abc-def0-7000-8000-000000000001",
+          "changed_fields": {}
+        }
+      }
+    ],
+    "expected_behavior": "rejected",
+    "expected_codes": ["inv_set_correction_changed_fields_empty"],
+    "tags": ["correction", "regression"]
+  },
+  {
+    "id": "fix_correction_changed_fields_not_object",
+    "category": "correction",
+    "description": "Correction with changed_fields as string instead of object",
+    "events": [
+      {
+        "event_type": "set.corrected",
+        "data": {
+          "target_event_id": "01956abc-def0-7000-8000-000000000001",
+          "changed_fields": "weight_kg=100"
+        }
+      }
+    ],
+    "expected_behavior": "rejected",
+    "expected_codes": ["inv_set_correction_changed_fields_invalid"],
+    "tags": ["correction", "regression"]
+  }
+]

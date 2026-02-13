@@ -1,0 +1,76 @@
+[
+  {
+    "id": "fix_locale_comma_rpe_8_5",
+    "category": "locale",
+    "description": "RPE 8,5 in German decimal notation",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Kniebeuge",
+          "exercise_id": "barbell_back_squat",
+          "reps": 5,
+          "weight_kg": 100,
+          "rpe": "8,5"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["locale", "decimal", "regression"]
+  },
+  {
+    "id": "fix_locale_comma_rir_2_5",
+    "category": "locale",
+    "description": "RIR 2,5 in German decimal notation",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Kreuzheben",
+          "exercise_id": "barbell_deadlift",
+          "reps": 3,
+          "weight_kg": 150,
+          "rir": "2,5"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["locale", "decimal", "regression"]
+  },
+  {
+    "id": "fix_locale_thousand_dot_comma_decimal",
+    "category": "locale",
+    "description": "European thousand separator: 1.000,5 meaning 1000.5",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Deadlift",
+          "exercise_id": "barbell_deadlift",
+          "reps": 1,
+          "weight_kg": "1.000,5"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["locale", "thousand_separator", "regression"]
+  },
+  {
+    "id": "fix_locale_dot_comma_ambiguity",
+    "category": "locale",
+    "description": "Ambiguous 8.5 in RPE — could be decimal or not",
+    "events": [
+      {
+        "event_type": "set.logged",
+        "data": {
+          "exercise": "Squat",
+          "exercise_id": "barbell_back_squat",
+          "reps": 5,
+          "rpe": "8.5"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["locale", "decimal", "regression"]
+  }
+]

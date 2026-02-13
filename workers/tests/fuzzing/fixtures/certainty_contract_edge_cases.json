@@ -1,0 +1,90 @@
+[
+  {
+    "id": "fix_certainty_confirmed_all_fields",
+    "category": "certainty",
+    "description": "All three certainty fields as confirmed with values",
+    "events": [
+      {
+        "event_type": "session.completed",
+        "data": {
+          "enjoyment": 4,
+          "enjoyment_state": "confirmed",
+          "enjoyment_source": "explicit",
+          "perceived_quality": 4,
+          "perceived_quality_state": "confirmed",
+          "perceived_quality_source": "explicit",
+          "perceived_exertion": 7,
+          "perceived_exertion_state": "confirmed",
+          "perceived_exertion_source": "explicit"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["certainty", "confirmed", "regression"]
+  },
+  {
+    "id": "fix_certainty_inferred_without_evidence",
+    "category": "certainty",
+    "description": "Inferred enjoyment without evidence claim — must reject",
+    "events": [
+      {
+        "event_type": "session.completed",
+        "data": {
+          "enjoyment": 3,
+          "enjoyment_state": "inferred",
+          "enjoyment_source": "inferred"
+        }
+      }
+    ],
+    "expected_behavior": "rejected",
+    "expected_codes": [
+      "session_feedback_inferred_missing_evidence",
+      "inv_timezone_required_for_temporal_write"
+    ],
+    "tags": ["certainty", "inferred", "regression"]
+  },
+  {
+    "id": "fix_certainty_unresolved_with_value",
+    "category": "certainty",
+    "description": "Unresolved perceived_quality but with numeric value — must reject",
+    "events": [
+      {
+        "event_type": "session.completed",
+        "data": {
+          "perceived_quality": 3,
+          "perceived_quality_state": "unresolved",
+          "perceived_quality_unresolved_reason": "some reason"
+        }
+      }
+    ],
+    "expected_behavior": "rejected",
+    "expected_codes": [
+      "session_feedback_unresolved_has_value",
+      "inv_timezone_required_for_temporal_write"
+    ],
+    "tags": ["certainty", "unresolved", "regression"]
+  },
+  {
+    "id": "fix_certainty_mixed_states_complex",
+    "category": "certainty",
+    "description": "One field confirmed, one inferred with evidence, one unresolved",
+    "events": [
+      {
+        "event_type": "session.completed",
+        "data": {
+          "enjoyment": 4,
+          "enjoyment_state": "confirmed",
+          "enjoyment_source": "explicit",
+          "perceived_quality": 3,
+          "perceived_quality_state": "inferred",
+          "perceived_quality_source": "inferred",
+          "perceived_quality_evidence_claim_id": "claim_abc123def456789012345678",
+          "perceived_exertion_state": "unresolved",
+          "perceived_exertion_unresolved_reason": "User left before feedback"
+        }
+      }
+    ],
+    "expected_behavior": "accepted",
+    "tags": ["certainty", "mixed", "regression"]
+  }
+]

@@ -32,6 +32,9 @@ docker/.env
 htmlcov/
 .pytest_cache/
 
+# Fuzzing — generated artifacts (LLM-generated scenarios, not committed)
+workers/tests/fuzzing/generated/
+
 # Database
 *.db
 *.sqlite3
