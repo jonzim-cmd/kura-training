@@ -268,12 +268,12 @@ function Inside({ t }: { t: any }) {
       ))}
 
       <svg data-threads className={styles.threadsSvg} viewBox="0 0 1440 2200" preserveAspectRatio="none">
-        <line x1="173" y1="264" x2="403" y2="616" stroke="rgba(255,229,102,0.1)" strokeWidth="0.5" />
-        <line x1="403" y1="484" x2="648" y2="836" stroke="rgba(255,229,102,0.06)" strokeWidth="0.5" />
-        <line x1="648" y1="770" x2="893" y2="1144" stroke="rgba(255,229,102,0.08)" strokeWidth="0.5" />
-        <line x1="893" y1="660" x2="1123" y2="990" stroke="rgba(255,229,102,0.04)" strokeWidth="0.5" />
-        <line x1="173" y1="990" x2="648" y2="1430" stroke="rgba(255,229,102,0.06)" strokeWidth="0.5" />
-        <line x1="1123" y1="1100" x2="893" y2="1650" stroke="rgba(255,229,102,0.08)" strokeWidth="0.5" />
+        <line x1="173" y1="264" x2="403" y2="616" stroke="rgba(255,229,102,0.14)" strokeWidth="0.6" />
+        <line x1="403" y1="484" x2="648" y2="836" stroke="rgba(255,229,102,0.09)" strokeWidth="0.6" />
+        <line x1="648" y1="770" x2="893" y2="1144" stroke="rgba(255,229,102,0.12)" strokeWidth="0.6" />
+        <line x1="893" y1="660" x2="1123" y2="990" stroke="rgba(255,229,102,0.07)" strokeWidth="0.6" />
+        <line x1="173" y1="990" x2="648" y2="1430" stroke="rgba(255,229,102,0.09)" strokeWidth="0.6" />
+        <line x1="1123" y1="1100" x2="893" y2="1650" stroke="rgba(255,229,102,0.12)" strokeWidth="0.6" />
       </svg>
 
       <div className={styles.eventWrite} data-json>
@@ -376,9 +376,9 @@ function Deep({ t }: { t: any }) {
           {[173, 403, 648, 893, 1123].map((x, i) => (
             <line key={i} x1={x} y1="0" x2={x} y2="1000" stroke={`rgba(255,255,255,${0.03 + (i % 2) * 0.02})`} strokeWidth="0.5" />
           ))}
-          <line x1="173" y1="180" x2="403" y2="300" stroke="rgba(255,229,102,0.04)" strokeWidth="0.4" />
-          <line x1="648" y1="300" x2="893" y2="420" stroke="rgba(255,229,102,0.05)" strokeWidth="0.4" />
-          <line x1="893" y1="540" x2="1123" y2="680" stroke="rgba(255,229,102,0.04)" strokeWidth="0.4" />
+          <line x1="173" y1="180" x2="403" y2="300" stroke="rgba(255,229,102,0.07)" strokeWidth="0.5" />
+          <line x1="648" y1="300" x2="893" y2="420" stroke="rgba(255,229,102,0.08)" strokeWidth="0.5" />
+          <line x1="893" y1="540" x2="1123" y2="680" stroke="rgba(255,229,102,0.07)" strokeWidth="0.5" />
           <circle cx="173" cy="180" r="2" fill="rgba(255,229,102,0.25)" />
           <circle cx="403" cy="300" r="2.5" fill="rgba(255,229,102,0.3)" />
           <circle cx="648" cy="300" r="2" fill="rgba(255,229,102,0.2)" />

@@ -20,7 +20,7 @@
   letter-spacing: 0.02em;
   color: #FFE566;
   text-align: center;
-  text-shadow: 0 0 120px rgba(255, 229, 102, 0.25), 0 0 60px rgba(255, 229, 102, 0.1);
+  text-shadow: 0 0 120px rgba(255, 229, 102, 0.35), 0 0 60px rgba(255, 229, 102, 0.15);
   animation: surfaceIn 1.2s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
@@ -184,11 +184,11 @@
   transition-delay: calc(var(--idx) * 0.1s);
 }
 
-.strataLine:nth-child(1) { top: 8%; opacity: 0.06; }
-.strataLine:nth-child(2) { top: 22%; opacity: 0.08; }
-.strataLine:nth-child(3) { top: 38%; opacity: 0.10; }
-.strataLine:nth-child(4) { top: 55%; opacity: 0.12; }
-.strataLine:nth-child(5) { top: 72%; opacity: 0.15; }
+.strataLine:nth-child(1) { top: 8%; opacity: 0.09; }
+.strataLine:nth-child(2) { top: 22%; opacity: 0.12; }
+.strataLine:nth-child(3) { top: 38%; opacity: 0.15; }
+.strataLine:nth-child(4) { top: 55%; opacity: 0.18; }
+.strataLine:nth-child(5) { top: 72%; opacity: 0.22; }
 
 .strataVisible { width: 100%; }
 
@@ -408,7 +408,7 @@
 .inferenceCloud {
   position: absolute;
   border-radius: 50%;
-  background: radial-gradient(ellipse at center, rgba(255,229,102,0.06) 0%, rgba(255,229,102,0.02) 40%, transparent 70%);
+  background: radial-gradient(ellipse at center, rgba(255,229,102,0.10) 0%, rgba(255,229,102,0.04) 40%, transparent 70%);
   pointer-events: none;
   animation: pulse 6s ease-in-out infinite;
   opacity: 0;
