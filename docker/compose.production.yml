@@ -6,7 +6,8 @@
 # Usage:
 #   docker compose -f docker/compose.production.yml up -d
 #
-# Requires: .env.production in docker/ with KURA_DB_PASSWORD
+# Requires: .env.production in docker/ with KURA_DB_PASSWORD, KURA_API_KEY,
+# and KURA_AGENT_MODEL_ATTESTATION_SECRET
 
 services:
   kura-postgres:
@@ -36,6 +37,7 @@ services:
       DATABASE_URL: postgresql://kura:${KURA_DB_PASSWORD}@kura-postgres:5432/kura
       PORT: "3000"
       RUST_LOG: "kura_api=info,tower_http=info"
+      KURA_AGENT_MODEL_ATTESTATION_SECRET: ${KURA_AGENT_MODEL_ATTESTATION_SECRET}
     depends_on:
       kura-postgres:
         condition: service_healthy

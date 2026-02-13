@@ -200,6 +200,13 @@ pub struct HealthResponse {
     pub version: String,
 }
 
+fn required_non_empty_env(name: &str, docs_hint: &str) -> String {
+    match std::env::var(name) {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => panic!("{name} must be set and non-empty. {docs_hint}"),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Load .env if present (dev only)
@@ -216,6 +223,10 @@ async fn main() {
 
     // Database connection
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let _model_attestation_secret = required_non_empty_env(
+        "KURA_AGENT_MODEL_ATTESTATION_SECRET",
+        "Set the same shared secret in gateway signer and API verifier.",
+    );
 
     let pool = PgPoolOptions::new()
         .max_connections(20)

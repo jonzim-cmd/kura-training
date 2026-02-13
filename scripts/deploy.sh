@@ -4,7 +4,8 @@
 # Run from the kura-training project root on the VPS.
 #
 # Prerequisites:
-#   - docker/ .env.production exists with KURA_DB_PASSWORD set
+#   - docker/ .env.production exists with KURA_DB_PASSWORD, KURA_API_KEY,
+#     and KURA_AGENT_MODEL_ATTESTATION_SECRET set
 #   - moltbot-internal Docker network exists
 #   - DOCKER_HOST set for rootless Docker (if applicable)
 #
@@ -32,13 +33,31 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 # ── Preflight ─────────────────────────────────────────
 
 if [ ! -f "$ENV_FILE" ]; then
-    error "Missing ${ENV_FILE}. Copy from .env.production.example and set KURA_DB_PASSWORD."
+    error "Missing ${ENV_FILE}. Copy from .env.production.example and set required secrets."
 fi
 
-# Check that password is not the default
-if grep -q "CHANGE_ME" "$ENV_FILE"; then
-    error "KURA_DB_PASSWORD is still set to CHANGE_ME. Generate a real password: openssl rand -hex 24"
-fi
+set -a
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+set +a
+
+require_env() {
+    local key="$1"
+    local hint="$2"
+    local value="${!key:-}"
+    local trimmed
+    trimmed="$(printf '%s' "$value" | tr -d '[:space:]')"
+    if [ -z "$trimmed" ]; then
+        error "${key} is missing/empty in ${ENV_FILE}. ${hint}"
+    fi
+    if [ "$value" = "CHANGE_ME" ]; then
+        error "${key} is still set to CHANGE_ME in ${ENV_FILE}. ${hint}"
+    fi
+}
+
+require_env "KURA_DB_PASSWORD" "Generate with: openssl rand -hex 24"
+require_env "KURA_API_KEY" "Run scripts/setup-user.sh and copy the generated key."
+require_env "KURA_AGENT_MODEL_ATTESTATION_SECRET" "Generate with: openssl rand -hex 32"
 
 # Check moltbot-internal network exists
 if ! docker network inspect moltbot-internal >/dev/null 2>&1; then
