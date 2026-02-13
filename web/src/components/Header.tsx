@@ -34,6 +34,7 @@ export function Header({ variant = 'default' }: HeaderProps) {
         <nav className={styles.nav}>
           {isLoggedIn ? (
             <>
+              <Link href="/start" className={styles.link}>{t('home')}</Link>
               <Link href="/setup" className={styles.link}>{t('setup')}</Link>
               <Link href="/settings" className={styles.link}>{t('settings')}</Link>
               <button
