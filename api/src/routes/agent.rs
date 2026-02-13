@@ -307,6 +307,9 @@ pub struct AgentHighImpactConfirmation {
     pub confirmed: bool,
     /// Timestamp of explicit user confirmation.
     pub confirmed_at: DateTime<Utc>,
+    /// Opaque token from the prior confirm-first response, bound to the pending payload digest.
+    #[serde(default)]
+    pub confirmation_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -954,6 +957,16 @@ const CALIBRATION_DEGRADED_BLOCK_REASON_CODE: &str =
 const INTEGRITY_DEGRADED_BLOCK_REASON_CODE: &str = "integrity_degraded_blocks_high_impact_write";
 const HIGH_IMPACT_CONFIRMATION_REQUIRED_REASON_CODE: &str = "high_impact_confirmation_required";
 const HIGH_IMPACT_CONFIRMATION_INVALID_REASON_CODE: &str = "high_impact_confirmation_invalid";
+const HIGH_IMPACT_CONFIRMATION_TOKEN_MISSING_REASON_CODE: &str =
+    "high_impact_confirmation_token_missing";
+const HIGH_IMPACT_CONFIRMATION_TOKEN_INVALID_REASON_CODE: &str =
+    "high_impact_confirmation_token_invalid";
+const HIGH_IMPACT_CONFIRMATION_TOKEN_STALE_REASON_CODE: &str =
+    "high_impact_confirmation_token_stale";
+const HIGH_IMPACT_CONFIRMATION_PAYLOAD_MISMATCH_REASON_CODE: &str =
+    "high_impact_confirmation_payload_mismatch";
+const HIGH_IMPACT_CONFIRMATION_SECRET_UNCONFIGURED_REASON_CODE: &str =
+    "high_impact_confirmation_secret_unconfigured";
 const MEMORY_TIER_PRINCIPLES_STALE_CONFIRM_REASON_CODE: &str =
     "memory_principles_stale_confirm_first";
 const MEMORY_TIER_PRINCIPLES_MISSING_CONFIRM_REASON_CODE: &str =
@@ -1111,9 +1124,10 @@ fn canonical_model_attestation_issued_at(issued_at: DateTime<Utc>) -> String {
     issued_at.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
-fn build_model_attestation_request_digest(
+fn build_write_request_digest(
     req: &AgentWriteWithProofRequest,
     action_class: &str,
+    include_high_impact_confirmation: bool,
 ) -> String {
     let events = req
         .events
@@ -1143,17 +1157,54 @@ fn build_model_attestation_request_digest(
             })
         })
         .collect::<Vec<_>>();
-    let payload = serde_json::json!({
-        "events": events,
-        "read_after_write_targets": targets,
-        "verify_timeout_ms": req.verify_timeout_ms,
-        "include_repair_technical_details": req.include_repair_technical_details,
-        "intent_handshake": req.intent_handshake,
-        "high_impact_confirmation": req.high_impact_confirmation,
-        "action_class": action_class,
-    });
-    let serialized = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+    let mut payload = serde_json::Map::new();
+    payload.insert("events".to_string(), Value::Array(events));
+    payload.insert(
+        "read_after_write_targets".to_string(),
+        Value::Array(targets),
+    );
+    payload.insert(
+        "verify_timeout_ms".to_string(),
+        json!(req.verify_timeout_ms),
+    );
+    payload.insert(
+        "include_repair_technical_details".to_string(),
+        json!(req.include_repair_technical_details),
+    );
+    payload.insert("intent_handshake".to_string(), json!(req.intent_handshake));
+    payload.insert("action_class".to_string(), json!(action_class));
+    if include_high_impact_confirmation {
+        payload.insert(
+            "high_impact_confirmation".to_string(),
+            json!(req.high_impact_confirmation),
+        );
+    }
+    let serialized =
+        serde_json::to_string(&Value::Object(payload)).unwrap_or_else(|_| "{}".to_string());
     stable_hash_suffix(&serialized, 64)
+}
+
+fn build_model_attestation_request_digest(
+    req: &AgentWriteWithProofRequest,
+    action_class: &str,
+) -> String {
+    build_write_request_digest(req, action_class, true)
+}
+
+fn build_high_impact_confirmation_request_digest(
+    req: &AgentWriteWithProofRequest,
+    action_class: &str,
+) -> String {
+    build_write_request_digest(req, action_class, false)
+}
+
+fn normalize_hex_64(raw: &str) -> Option<String> {
+    let normalized = raw.trim().to_lowercase();
+    if normalized.len() == 64 && normalized.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        Some(normalized)
+    } else {
+        None
+    }
 }
 
 fn compute_model_attestation_signature(
@@ -1176,6 +1227,50 @@ fn compute_model_attestation_signature(
     );
     mac.update(payload.as_bytes());
     Some(hex::encode(mac.finalize().into_bytes()))
+}
+
+fn compute_high_impact_confirmation_token_signature(
+    secret: &str,
+    user_id: Uuid,
+    action_class: &str,
+    request_digest: &str,
+    issued_at: DateTime<Utc>,
+) -> Option<String> {
+    let digest = normalize_hex_64(request_digest)?;
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).ok()?;
+    let payload = format!(
+        "{}|{}|{}|{}|{}",
+        HIGH_IMPACT_CONFIRMATION_SCHEMA_VERSION,
+        user_id,
+        action_class.trim().to_lowercase(),
+        digest,
+        canonical_model_attestation_issued_at(issued_at),
+    );
+    mac.update(payload.as_bytes());
+    Some(hex::encode(mac.finalize().into_bytes()))
+}
+
+fn issue_high_impact_confirmation_token(
+    secret: &str,
+    user_id: Uuid,
+    action_class: &str,
+    request_digest: &str,
+    issued_at: DateTime<Utc>,
+) -> Option<String> {
+    let digest = normalize_hex_64(request_digest)?;
+    let signature = compute_high_impact_confirmation_token_signature(
+        secret,
+        user_id,
+        action_class,
+        &digest,
+        issued_at,
+    )?;
+    Some(format!(
+        "v1|{}|{}|{}",
+        canonical_model_attestation_issued_at(issued_at),
+        digest,
+        signature
+    ))
 }
 
 fn normalize_attestation_signature(signature: &str) -> Option<String> {
@@ -1342,6 +1437,86 @@ fn resolve_model_identity_for_write(
         dedupe_reason_codes(&mut fallback.reason_codes);
     }
     fallback
+}
+
+fn verify_high_impact_confirmation_token(
+    token: &str,
+    secret: &str,
+    user_id: Uuid,
+    action_class: &str,
+    expected_request_digest: &str,
+    now: DateTime<Utc>,
+) -> Result<(), Vec<String>> {
+    let mut reason_codes = Vec::new();
+    let mut parts = token.trim().split('|');
+    let Some(version) = parts.next() else {
+        reason_codes.push(HIGH_IMPACT_CONFIRMATION_TOKEN_INVALID_REASON_CODE.to_string());
+        return Err(reason_codes);
+    };
+    let Some(issued_at_raw) = parts.next() else {
+        reason_codes.push(HIGH_IMPACT_CONFIRMATION_TOKEN_INVALID_REASON_CODE.to_string());
+        return Err(reason_codes);
+    };
+    let Some(digest_raw) = parts.next() else {
+        reason_codes.push(HIGH_IMPACT_CONFIRMATION_TOKEN_INVALID_REASON_CODE.to_string());
+        return Err(reason_codes);
+    };
+    let Some(signature_raw) = parts.next() else {
+        reason_codes.push(HIGH_IMPACT_CONFIRMATION_TOKEN_INVALID_REASON_CODE.to_string());
+        return Err(reason_codes);
+    };
+    if parts.next().is_some() || version != "v1" {
+        reason_codes.push(HIGH_IMPACT_CONFIRMATION_TOKEN_INVALID_REASON_CODE.to_string());
+        return Err(reason_codes);
+    }
+
+    let issued_at =
+        match DateTime::parse_from_rfc3339(issued_at_raw).map(|value| value.with_timezone(&Utc)) {
+            Ok(value) => value,
+            Err(_) => {
+                reason_codes.push(HIGH_IMPACT_CONFIRMATION_TOKEN_INVALID_REASON_CODE.to_string());
+                return Err(reason_codes);
+            }
+        };
+    let Some(token_digest) = normalize_hex_64(digest_raw) else {
+        reason_codes.push(HIGH_IMPACT_CONFIRMATION_TOKEN_INVALID_REASON_CODE.to_string());
+        return Err(reason_codes);
+    };
+    let Some(expected_digest) = normalize_hex_64(expected_request_digest) else {
+        reason_codes.push(HIGH_IMPACT_CONFIRMATION_TOKEN_INVALID_REASON_CODE.to_string());
+        return Err(reason_codes);
+    };
+    if token_digest != expected_digest {
+        reason_codes.push(HIGH_IMPACT_CONFIRMATION_PAYLOAD_MISMATCH_REASON_CODE.to_string());
+    }
+
+    let age = now.signed_duration_since(issued_at);
+    if age > chrono::Duration::minutes(HIGH_IMPACT_CONFIRMATION_MAX_AGE_MINUTES)
+        || age < chrono::Duration::minutes(-HIGH_IMPACT_CONFIRMATION_MAX_FUTURE_SKEW_MINUTES)
+    {
+        reason_codes.push(HIGH_IMPACT_CONFIRMATION_TOKEN_STALE_REASON_CODE.to_string());
+    }
+
+    let provided_signature = normalize_attestation_signature(signature_raw);
+    let expected_signature = compute_high_impact_confirmation_token_signature(
+        secret,
+        user_id,
+        action_class,
+        &token_digest,
+        issued_at,
+    );
+    if expected_signature.is_none()
+        || provided_signature.as_deref() != expected_signature.as_deref()
+    {
+        reason_codes.push(HIGH_IMPACT_CONFIRMATION_TOKEN_INVALID_REASON_CODE.to_string());
+    }
+
+    dedupe_reason_codes(&mut reason_codes);
+    if reason_codes.is_empty() {
+        Ok(())
+    } else {
+        Err(reason_codes)
+    }
 }
 
 fn header_requests_developer_raw(mode_header: Option<&str>) -> bool {
@@ -4559,8 +4734,39 @@ fn validate_high_impact_confirmation(
     confirmation: Option<&AgentHighImpactConfirmation>,
     events: &[CreateEventRequest],
     autonomy_gate: &AgentAutonomyGate,
+    user_id: Uuid,
+    action_class: &str,
+    request_digest: &str,
+    secret: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<(), AppError> {
+    let mut reason_codes = autonomy_gate.reason_codes.clone();
+    reason_codes.push(HIGH_IMPACT_CONFIRMATION_REQUIRED_REASON_CODE.to_string());
+    dedupe_reason_codes(&mut reason_codes);
+
+    let Some(secret_value) = secret.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    }) else {
+        reason_codes.push(HIGH_IMPACT_CONFIRMATION_SECRET_UNCONFIGURED_REASON_CODE.to_string());
+        dedupe_reason_codes(&mut reason_codes);
+        return Err(AppError::Validation {
+            message: "High-impact confirmation secret is not configured.".to_string(),
+            field: Some("high_impact_confirmation.confirmation_token".to_string()),
+            received: Some(json!({
+                "reason_codes": reason_codes,
+            })),
+            docs_hint: Some(
+                "Set KURA_AGENT_MODEL_ATTESTATION_SECRET so confirmation tokens can be issued and verified."
+                    .to_string(),
+            ),
+        });
+    };
+
     let mut confirmation_reasons = autonomy_gate.reason_codes.clone();
     confirmation_reasons.push(HIGH_IMPACT_CONFIRMATION_REQUIRED_REASON_CODE.to_string());
     dedupe_reason_codes(&mut confirmation_reasons);
@@ -4575,9 +4781,16 @@ fn validate_high_impact_confirmation(
     };
 
     let docs_hint = format!(
-        "Show pending_change_set to the user, then resend with high_impact_confirmation {{ schema_version: '{HIGH_IMPACT_CONFIRMATION_SCHEMA_VERSION}', confirmed: true, confirmed_at: <current_utc_timestamp> }}."
+        "Show pending_change_set to the user, then resend with high_impact_confirmation {{ schema_version: '{HIGH_IMPACT_CONFIRMATION_SCHEMA_VERSION}', confirmed: true, confirmed_at: <current_utc_timestamp>, confirmation_token: <confirmation_token> }}."
     );
     let Some(confirmation) = confirmation else {
+        let token = issue_high_impact_confirmation_token(
+            secret_value,
+            user_id,
+            action_class,
+            request_digest,
+            now,
+        );
         return Err(AppError::Validation {
             message: "Explicit user confirmation is required for this high-impact write."
                 .to_string(),
@@ -4585,10 +4798,58 @@ fn validate_high_impact_confirmation(
             received: Some(json!({
                 "required_reason_codes": confirmation_reasons,
                 "pending_change_set": pending_change_set,
+                "confirmation_token": token,
+                "confirmation_token_ttl_minutes": HIGH_IMPACT_CONFIRMATION_MAX_AGE_MINUTES,
             })),
             docs_hint: Some(docs_hint),
         });
     };
+
+    let confirmation_token = confirmation
+        .confirmation_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty());
+    let Some(confirmation_token) = confirmation_token else {
+        let mut reason_codes = confirmation_reasons.clone();
+        reason_codes.push(HIGH_IMPACT_CONFIRMATION_TOKEN_MISSING_REASON_CODE.to_string());
+        dedupe_reason_codes(&mut reason_codes);
+        return Err(AppError::Validation {
+            message: "high_impact_confirmation.confirmation_token is required".to_string(),
+            field: Some("high_impact_confirmation.confirmation_token".to_string()),
+            received: Some(json!({
+                "reason_codes": reason_codes,
+            })),
+            docs_hint: Some(
+                "Replay the latest confirm-first request payload with the confirmation_token returned by Kura."
+                    .to_string(),
+            ),
+        });
+    };
+
+    if let Err(mut token_reason_codes) = verify_high_impact_confirmation_token(
+        confirmation_token,
+        secret_value,
+        user_id,
+        action_class,
+        request_digest,
+        now,
+    ) {
+        token_reason_codes.push(HIGH_IMPACT_CONFIRMATION_INVALID_REASON_CODE.to_string());
+        dedupe_reason_codes(&mut token_reason_codes);
+        return Err(AppError::Validation {
+            message: "high_impact_confirmation.confirmation_token is invalid".to_string(),
+            field: Some("high_impact_confirmation.confirmation_token".to_string()),
+            received: Some(json!({
+                "reason_codes": token_reason_codes,
+                "pending_change_set": pending_change_set,
+            })),
+            docs_hint: Some(
+                "Request a fresh confirm-first challenge and resend the unchanged write payload with the new token."
+                    .to_string(),
+            ),
+        });
+    }
 
     if confirmation.schema_version.trim() != HIGH_IMPACT_CONFIRMATION_SCHEMA_VERSION {
         let mut reason_codes = confirmation_reasons.clone();
@@ -6993,6 +7254,8 @@ pub async fn write_with_proof(
     let user_id = auth.user_id;
     let requested_event_count = req.events.len();
     let action_class = classify_write_action_class(&req.events);
+    let high_impact_confirmation_request_digest =
+        build_high_impact_confirmation_request_digest(&req, &action_class);
     let verify_timeout_ms = clamp_verify_timeout_ms(req.verify_timeout_ms);
     let read_after_write_targets =
         normalize_read_after_write_targets(req.read_after_write_targets.clone());
@@ -7139,10 +7402,15 @@ pub async fn write_with_proof(
         });
     }
     if autonomy_gate.decision == "confirm_first" && action_class == "high_impact_write" {
+        let confirmation_secret = std::env::var(MODEL_ATTESTATION_SECRET_ENV).ok();
         validate_high_impact_confirmation(
             req.high_impact_confirmation.as_ref(),
             &req.events,
             &autonomy_gate,
+            user_id,
+            &action_class,
+            &high_impact_confirmation_request_digest,
+            confirmation_secret.as_deref(),
             Utc::now(),
         )?;
     }
@@ -10363,9 +10631,24 @@ mod tests {
             json!({"name": "Upper/Lower"}),
             "k-confirm-1",
         )];
-
-        let err = super::validate_high_impact_confirmation(None, &events, &gate, Utc::now())
-            .expect_err("confirm_first high-impact must require explicit confirmation");
+        let req = make_write_with_proof_request(vec![make_event(
+            "training_plan.created",
+            json!({"name": "Upper/Lower"}),
+            "k-confirm-1-digest",
+        )]);
+        let digest =
+            super::build_high_impact_confirmation_request_digest(&req, "high_impact_write");
+        let err = super::validate_high_impact_confirmation(
+            None,
+            &events,
+            &gate,
+            Uuid::now_v7(),
+            "high_impact_write",
+            &digest,
+            Some("test-high-impact-secret"),
+            Utc::now(),
+        )
+        .expect_err("confirm_first high-impact must require explicit confirmation");
         match err {
             AppError::Validation { field, .. } => {
                 assert_eq!(field.as_deref(), Some("high_impact_confirmation"));
@@ -10384,16 +10667,37 @@ mod tests {
             json!({"name": "Upper/Lower"}),
             "k-confirm-2",
         )];
+        let user_id = Uuid::now_v7();
+        let action_class = "high_impact_write";
+        let req = make_write_with_proof_request(vec![make_event(
+            "training_plan.created",
+            json!({"name": "Upper/Lower"}),
+            "k-confirm-2-digest",
+        )]);
+        let digest = super::build_high_impact_confirmation_request_digest(&req, action_class);
+        let token = super::issue_high_impact_confirmation_token(
+            "test-high-impact-secret",
+            user_id,
+            action_class,
+            &digest,
+            Utc::now(),
+        )
+        .expect("confirmation token");
         let confirmation = super::AgentHighImpactConfirmation {
             schema_version: "high_impact_confirmation.v1".to_string(),
             confirmed: true,
             confirmed_at: Utc::now(),
+            confirmation_token: Some(token),
         };
 
         let result = super::validate_high_impact_confirmation(
             Some(&confirmation),
             &events,
             &gate,
+            user_id,
+            action_class,
+            &digest,
+            Some("test-high-impact-secret"),
             Utc::now(),
         );
         assert!(result.is_ok());
@@ -10409,16 +10713,37 @@ mod tests {
             json!({"name": "Upper/Lower"}),
             "k-confirm-3",
         )];
+        let user_id = Uuid::now_v7();
+        let action_class = "high_impact_write";
+        let req = make_write_with_proof_request(vec![make_event(
+            "training_plan.created",
+            json!({"name": "Upper/Lower"}),
+            "k-confirm-3-digest",
+        )]);
+        let digest = super::build_high_impact_confirmation_request_digest(&req, action_class);
+        let token = super::issue_high_impact_confirmation_token(
+            "test-high-impact-secret",
+            user_id,
+            action_class,
+            &digest,
+            Utc::now(),
+        )
+        .expect("confirmation token");
         let confirmation = super::AgentHighImpactConfirmation {
             schema_version: "high_impact_confirmation.v1".to_string(),
             confirmed: true,
             confirmed_at: Utc::now() - Duration::minutes(90),
+            confirmation_token: Some(token),
         };
 
         let err = super::validate_high_impact_confirmation(
             Some(&confirmation),
             &events,
             &gate,
+            user_id,
+            action_class,
+            &digest,
+            Some("test-high-impact-secret"),
             Utc::now(),
         )
         .expect_err("stale confirmation must fail");
@@ -10427,6 +10752,67 @@ mod tests {
                 assert_eq!(
                     field.as_deref(),
                     Some("high_impact_confirmation.confirmed_at")
+                );
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn high_impact_confirmation_rejects_payload_mismatch_token() {
+        let policy = super::default_autonomy_policy();
+        let strict_tier = super::resolve_model_tier_policy("unknown");
+        let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &strict_tier, &[]);
+        let events_b = vec![make_event(
+            "training_plan.created",
+            json!({"name": "Upper/Lower v2"}),
+            "k-confirm-b",
+        )];
+        let user_id = Uuid::now_v7();
+        let action_class = "high_impact_write";
+        let req_a = make_write_with_proof_request(vec![make_event(
+            "training_plan.created",
+            json!({"name": "Upper/Lower"}),
+            "k-confirm-a-digest",
+        )]);
+        let req_b = make_write_with_proof_request(vec![make_event(
+            "training_plan.created",
+            json!({"name": "Upper/Lower v2"}),
+            "k-confirm-b-digest",
+        )]);
+        let digest_a = super::build_high_impact_confirmation_request_digest(&req_a, action_class);
+        let digest_b = super::build_high_impact_confirmation_request_digest(&req_b, action_class);
+        let token = super::issue_high_impact_confirmation_token(
+            "test-high-impact-secret",
+            user_id,
+            action_class,
+            &digest_a,
+            Utc::now(),
+        )
+        .expect("confirmation token");
+        let confirmation = super::AgentHighImpactConfirmation {
+            schema_version: "high_impact_confirmation.v1".to_string(),
+            confirmed: true,
+            confirmed_at: Utc::now(),
+            confirmation_token: Some(token),
+        };
+
+        let err = super::validate_high_impact_confirmation(
+            Some(&confirmation),
+            &events_b,
+            &gate,
+            user_id,
+            action_class,
+            &digest_b,
+            Some("test-high-impact-secret"),
+            Utc::now(),
+        )
+        .expect_err("token bound to different payload digest must fail");
+        match err {
+            AppError::Validation { field, .. } => {
+                assert_eq!(
+                    field.as_deref(),
+                    Some("high_impact_confirmation.confirmation_token")
                 );
             }
             other => panic!("unexpected error variant: {other:?}"),
