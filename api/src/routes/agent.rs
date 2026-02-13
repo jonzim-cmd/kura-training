@@ -1020,27 +1020,6 @@ fn resolve_model_identity(auth: &AuthenticatedUser) -> ResolvedModelIdentity {
     )
 }
 
-fn scope_matches_for_optional_controls(granted: &str, required: &str) -> bool {
-    let granted = granted.trim().to_lowercase();
-    let required = required.trim().to_lowercase();
-    if granted.is_empty() || required.is_empty() {
-        return false;
-    }
-    if granted == "*" || granted == required {
-        return true;
-    }
-    if let Some(prefix) = granted.strip_suffix(":*") {
-        return required == prefix || required.starts_with(&format!("{prefix}:"));
-    }
-    false
-}
-
-fn auth_has_scope(auth: &AuthenticatedUser, required: &str) -> bool {
-    auth.scopes
-        .iter()
-        .any(|scope| scope_matches_for_optional_controls(scope, required))
-}
-
 fn auth_client_id(auth: &AuthenticatedUser) -> Option<&str> {
     match &auth.auth_method {
         AuthMethod::AccessToken { client_id, .. } => Some(client_id.as_str()),
@@ -1055,6 +1034,16 @@ fn header_requests_developer_raw(mode_header: Option<&str>) -> bool {
     matches!(
         raw.trim().to_lowercase().as_str(),
         "raw" | "developer_raw" | "developer-raw" | "off"
+    )
+}
+
+fn header_requests_user_safe(mode_header: Option<&str>) -> bool {
+    let Some(raw) = mode_header else {
+        return false;
+    };
+    matches!(
+        raw.trim().to_lowercase().as_str(),
+        "safe" | "user_safe" | "user-safe" | "on"
     )
 }
 
@@ -1077,14 +1066,13 @@ fn resolve_agent_language_mode_with_sources(
     mode_header: Option<&str>,
     allowlist: Option<&str>,
 ) -> AgentLanguageMode {
-    if !header_requests_developer_raw(mode_header) {
-        return AgentLanguageMode::UserSafe;
-    }
-    let has_debug_scope = auth_has_scope(auth, "agent:debug");
     let allowlisted_client = auth_client_id(auth)
         .map(|client_id| is_allowlisted_developer_raw_client(client_id, allowlist))
         .unwrap_or(false);
-    if has_debug_scope && allowlisted_client {
+    if allowlisted_client {
+        if header_requests_user_safe(mode_header) {
+            return AgentLanguageMode::UserSafe;
+        }
         AgentLanguageMode::DeveloperRaw
     } else {
         AgentLanguageMode::UserSafe
@@ -1097,22 +1085,19 @@ fn resolve_agent_language_mode(auth: &AuthenticatedUser, headers: &HeaderMap) ->
         .and_then(|value| value.to_str().ok());
     let allowlist = std::env::var(KURA_AGENT_DEVELOPER_RAW_CLIENT_ALLOWLIST_ENV).ok();
     let mode = resolve_agent_language_mode_with_sources(auth, mode_header, allowlist.as_deref());
-    if header_requests_developer_raw(mode_header) {
-        if mode == AgentLanguageMode::DeveloperRaw {
-            tracing::info!(
-                user_id = %auth.user_id,
-                client_id = auth_client_id(auth).unwrap_or("n/a"),
-                mode = "developer_raw",
-                "developer raw language mode enabled for write-with-proof response"
-            );
-        } else {
-            tracing::warn!(
-                user_id = %auth.user_id,
-                client_id = auth_client_id(auth).unwrap_or("n/a"),
-                has_debug_scope = auth_has_scope(auth, "agent:debug"),
-                "developer raw language mode request denied; enforcing user_safe mode"
-            );
-        }
+    if mode == AgentLanguageMode::DeveloperRaw {
+        tracing::info!(
+            user_id = %auth.user_id,
+            client_id = auth_client_id(auth).unwrap_or("n/a"),
+            mode = "developer_raw",
+            "developer raw language mode enabled for write-with-proof response"
+        );
+    } else if header_requests_developer_raw(mode_header) {
+        tracing::warn!(
+            user_id = %auth.user_id,
+            client_id = auth_client_id(auth).unwrap_or("n/a"),
+            "developer raw language mode request denied; enforcing user_safe mode"
+        );
     }
     mode
 }
@@ -9534,22 +9519,22 @@ mod tests {
     }
 
     #[test]
-    fn language_mode_defaults_to_user_safe_without_debug_header() {
+    fn language_mode_defaults_to_developer_raw_for_allowlisted_client() {
         let auth = make_access_token_auth(&["agent:write"], "kura-dev-client");
         let mode = super::resolve_agent_language_mode_with_sources(&auth, None, Some("*"));
-        assert_eq!(mode, super::AgentLanguageMode::UserSafe);
+        assert_eq!(mode, super::AgentLanguageMode::DeveloperRaw);
     }
 
     #[test]
-    fn language_mode_denies_developer_raw_without_debug_scope() {
+    fn language_mode_allows_developer_raw_without_debug_scope_when_allowlisted() {
         let auth = make_access_token_auth(&["agent:write"], "kura-dev-client");
         let mode = super::resolve_agent_language_mode_with_sources(&auth, Some("raw"), Some("*"));
-        assert_eq!(mode, super::AgentLanguageMode::UserSafe);
+        assert_eq!(mode, super::AgentLanguageMode::DeveloperRaw);
     }
 
     #[test]
     fn language_mode_denies_developer_raw_when_client_not_allowlisted() {
-        let auth = make_access_token_auth(&["agent:write", "agent:debug"], "kura-app-client");
+        let auth = make_access_token_auth(&["agent:write"], "kura-app-client");
         let mode = super::resolve_agent_language_mode_with_sources(
             &auth,
             Some("developer_raw"),
@@ -9559,14 +9544,25 @@ mod tests {
     }
 
     #[test]
-    fn language_mode_allows_developer_raw_when_scope_and_allowlist_match() {
-        let auth = make_access_token_auth(&["agent:write", "agent:debug"], "kura-dev-client");
+    fn language_mode_allows_developer_raw_when_allowlist_matches() {
+        let auth = make_access_token_auth(&["agent:write"], "kura-dev-client");
         let mode = super::resolve_agent_language_mode_with_sources(
             &auth,
             Some("developer_raw"),
             Some("kura-dev-client,kura-admin-client"),
         );
         assert_eq!(mode, super::AgentLanguageMode::DeveloperRaw);
+    }
+
+    #[test]
+    fn language_mode_can_be_forced_to_user_safe_via_header_for_allowlisted_client() {
+        let auth = make_access_token_auth(&["agent:write"], "kura-dev-client");
+        let mode = super::resolve_agent_language_mode_with_sources(
+            &auth,
+            Some("user_safe"),
+            Some("kura-dev-client"),
+        );
+        assert_eq!(mode, super::AgentLanguageMode::UserSafe);
     }
 
     #[test]
