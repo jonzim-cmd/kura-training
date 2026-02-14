@@ -8,6 +8,7 @@ from kura_workers.handlers.session_feedback import (
     _compute_load_to_enjoyment_alignment,
     _normalize_session_feedback_payload,
 )
+from kura_workers.session_block_expansion import expand_session_logged_row
 
 
 def _feedback_row(event_id: str, timestamp: str, data: dict, session_id: str | None = None) -> dict:
@@ -143,3 +144,48 @@ def test_build_projection_includes_ingestion_output_and_trends():
     assert recent[0]["session_load"]["total_sets"] == 1
     assert recent[1]["perceived_quality"] == 4.0
     assert projection["trends"]["enjoyment_trend"] == "insufficient_data"
+
+
+def test_build_projection_accepts_session_logged_expanded_rows_for_load():
+    feedback_rows = [
+        _feedback_row(
+            "fb-1",
+            "2026-02-14T10:30:00+00:00",
+            {"enjoyment": 4, "perceived_exertion": 7},
+            session_id="track-1",
+        )
+    ]
+    session_rows = expand_session_logged_row(
+        {
+            "id": "slog-1",
+            "timestamp": datetime.fromisoformat("2026-02-14T10:00:00+00:00"),
+            "metadata": {"session_id": "track-1"},
+            "data": {
+                "contract_version": "session.logged.v1",
+                "session_meta": {"session_id": "track-1"},
+                "blocks": [
+                    {
+                        "block_type": "interval_endurance",
+                        "dose": {
+                            "work": {"duration_seconds": 120},
+                            "recovery": {"duration_seconds": 60},
+                            "repeats": 8,
+                        },
+                        "intensity_anchors": [
+                            {
+                                "measurement_state": "measured",
+                                "unit": "min_per_km",
+                                "value": 4.0,
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+    )
+
+    projection = _build_session_feedback_projection(feedback_rows, session_rows)
+    recent = projection["recent_sessions"][0]
+    assert recent["session_id"] == "track-1"
+    assert recent["session_load"]["total_sets"] == 8
+    assert recent["session_load"]["total_reps"] == 0

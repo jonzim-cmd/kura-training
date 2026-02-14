@@ -15,6 +15,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..registry import projection_handler
+from ..session_block_expansion import expand_session_logged_rows
 from ..set_corrections import apply_set_correction_chain
 from ..utils import get_retracted_event_ids, merge_observed_attributes, separate_known_unknown
 
@@ -464,6 +465,7 @@ def _build_session_feedback_projection(
 @projection_handler(
     "session.completed",
     "set.logged",
+    "session.logged",
     "set.corrected",
     dimension_meta={
         "name": "session_feedback",
@@ -602,6 +604,20 @@ async def update_session_feedback(
         row for row in correction_rows if str(row["id"]) not in retracted_ids
     ]
     set_rows = apply_set_correction_chain(set_rows, correction_rows)
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT id, timestamp, data, metadata
+            FROM events
+            WHERE user_id = %s
+              AND event_type = 'session.logged'
+            ORDER BY timestamp ASC, id ASC
+            """,
+            (user_id,),
+        )
+        session_rows = await cur.fetchall()
+    session_rows = [row for row in session_rows if str(row["id"]) not in retracted_ids]
+    set_rows = set_rows + expand_session_logged_rows(session_rows)
 
     projection_data = _build_session_feedback_projection(feedback_rows, set_rows)
     last_event_id = str(payload.get("event_id") or feedback_rows[-1]["id"])

@@ -18,6 +18,7 @@ from psycopg.types.json import Json
 from .event_conventions import get_event_conventions
 from .interview_guide import get_interview_guide
 from .registry import get_dimension_metadata
+from .training_session_completeness import completeness_policy_v1
 from .training_session_contract import block_catalog_v1
 from .training_core_fields import core_field_registry
 
@@ -81,6 +82,7 @@ def _get_conventions() -> dict[str, Any]:
             ],
             "event_type": "session.logged",
             "contract": block_catalog_v1(),
+            "completeness_policy": completeness_policy_v1(),
         },
         "load_context_v1": {
             "rules": [

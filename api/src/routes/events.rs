@@ -1729,6 +1729,26 @@ fn add_standard_projection_targets(
                 );
             }
         }
+        "session.logged" => {
+            mapped = true;
+            add_projection_target(
+                candidates,
+                "training_timeline",
+                "overview",
+                "session.logged updates modality-neutral timeline load".to_string(),
+                false,
+                false,
+            );
+            add_projection_target(
+                candidates,
+                "session_feedback",
+                "overview",
+                "session.logged contributes session-load context for feedback alignment"
+                    .to_string(),
+                false,
+                false,
+            );
+        }
         "set.corrected" => {
             mapped = true;
             add_projection_target(
@@ -3830,6 +3850,31 @@ mod tests {
                 .map(|candidate| candidate.unknown_target)
                 .unwrap_or(false)
         );
+    }
+
+    #[test]
+    fn test_add_standard_projection_targets_for_session_logged() {
+        let mut candidates: HashMap<ProjectionTargetKey, ProjectionTargetCandidate> =
+            HashMap::new();
+        let mapped = add_standard_projection_targets(
+            &mut candidates,
+            "session.logged",
+            &json!({"contract_version": "session.logged.v1"}),
+        );
+
+        assert!(mapped);
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "training_timeline".to_string(),
+            key: "overview".to_string(),
+        }));
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "session_feedback".to_string(),
+            key: "overview".to_string(),
+        }));
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "user_profile".to_string(),
+            key: "me".to_string(),
+        }));
     }
 
     #[test]

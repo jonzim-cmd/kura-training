@@ -258,6 +258,12 @@ class TestConventions:
         assert contract["contract"]["contract_version"] == "session.logged.v1"
         assert "strength_set" in contract["contract"]["block_types"]
         assert contract["contract"]["intensity_policy"]["global_hr_requirement"] is False
+        assert set(contract["completeness_policy"]["levels"]) == {
+            "log_valid",
+            "analysis_basic",
+            "analysis_advanced",
+        }
+        assert contract["completeness_policy"]["global_requirements"]["heart_rate_required"] is False
 
     def test_has_load_context_v1_conventions(self):
         result = _get_conventions()

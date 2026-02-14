@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 _INVARIANT_SOURCE_EVENT_TYPES = (
     "set.logged",
+    "session.logged",
     "set.corrected",
     "exercise.alias_created",
     "preference.set",

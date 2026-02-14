@@ -1,6 +1,6 @@
 """Training Timeline dimension handler.
 
-Reacts to set.logged, set.corrected, exercise.alias_created, and
+Reacts to set.logged, session.logged, set.corrected, exercise.alias_created, and
 external.activity_imported events and computes temporal training patterns:
 - Recent training days (last 30 with activity)
 - Weekly summaries (last 26 weeks)
@@ -24,6 +24,7 @@ from ..schema_capabilities import (
     build_schema_capability_report,
     detect_relation_capabilities,
 )
+from ..session_block_expansion import expand_session_logged_rows
 from ..set_corrections import apply_set_correction_chain
 from ..utils import (
     SessionBoundaryState,
@@ -49,6 +50,8 @@ _KNOWN_FIELDS: set[str] = {
     "exercise", "exercise_id", "weight_kg", "weight", "reps",
     "rpe", "rir", "rest_seconds", "tempo", "set_type", "set_number",
     "load_context", "implements_type", "equipment_profile",
+    "block_type", "duration_seconds", "distance_meters", "contacts",
+    "capability_target", "session_block_index", "session_block_repeat",
 }
 
 
@@ -232,6 +235,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
 
 @projection_handler(
     "set.logged",
+    "session.logged",
     "set.corrected",
     "exercise.alias_created",
     "external.activity_imported",
@@ -349,9 +353,22 @@ async def update_training_timeline(
             (user_id,),
         )
         rows = await cur.fetchall()
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT id, timestamp, data, metadata
+            FROM events
+            WHERE user_id = %s
+              AND event_type = 'session.logged'
+            ORDER BY timestamp ASC
+            """,
+            (user_id,),
+        )
+        session_rows = await cur.fetchall()
 
     # Filter retracted events
     rows = [r for r in rows if str(r["id"]) not in retracted_ids]
+    session_rows = [r for r in session_rows if str(r["id"]) not in retracted_ids]
     row_ids = [str(r["id"]) for r in rows]
     correction_rows: list[dict[str, Any]] = []
     if row_ids:
@@ -372,6 +389,7 @@ async def update_training_timeline(
         row for row in correction_rows if str(row["id"]) not in retracted_ids
     ]
     rows = apply_set_correction_chain(rows, correction_rows)
+    session_expanded_rows = expand_session_logged_rows(session_rows)
 
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -415,7 +433,7 @@ async def update_training_timeline(
             user_id,
         )
 
-    if not rows and not external_rows:
+    if not rows and not session_rows and not external_rows:
         # Clean up: delete any existing projection (all events retracted)
         async with conn.cursor() as cur:
             await cur.execute(
@@ -424,7 +442,7 @@ async def update_training_timeline(
             )
         return
 
-    source_rows = rows + external_rows
+    source_rows = rows + session_rows + external_rows
     source_rows.sort(key=lambda row: (row["timestamp"], str(row["id"])))
     last_event_id = source_rows[-1]["id"]
 
@@ -558,6 +576,7 @@ async def update_training_timeline(
                     "metadata": metadata,
                     "_source_type": "external_import",
                     "_source_provider": provider,
+                    "_source_event_type": "external.activity_imported",
                 }
             )
 
@@ -574,7 +593,7 @@ async def update_training_timeline(
             if error_code in {"stale_version", "version_conflict", "partial_overlap"}:
                 external_dedup_actions["rejected"] += 1
 
-    rows_for_aggregation = rows + external_rows_for_aggregation
+    rows_for_aggregation = rows + session_expanded_rows + external_rows_for_aggregation
     rows_for_aggregation.sort(key=lambda row: (row["timestamp"], str(row["id"])))
 
     for row in rows_for_aggregation:
@@ -610,7 +629,8 @@ async def update_training_timeline(
 
         # Decision 10: track unknown fields
         _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS)
-        merge_observed_attributes(observed_attr_counts, "set.logged", unknown)
+        source_event_type = str(row.get("_source_event_type") or "set.logged")
+        merge_observed_attributes(observed_attr_counts, source_event_type, unknown)
 
         raw_key = resolve_exercise_key(data) or "unknown"
         exercise_key = resolve_through_aliases(raw_key, alias_map)
