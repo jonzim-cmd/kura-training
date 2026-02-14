@@ -145,7 +145,11 @@ export default function SetupPage() {
 
         <div className={`kura-card ${styles.accountCard}`}>
           <h2 className={styles.accountTitle}>{t('accountGate.title')}</h2>
-          <p className={styles.accountDescription}>
+          <p
+            className={styles.accountDescription}
+            data-testid="setup-account-description"
+            data-auth-state={isLoggedIn ? 'logged-in' : 'logged-out'}
+          >
             {isLoggedIn ? t('accountGate.loggedInDescription') : t('accountGate.loggedOutDescription')}
           </p>
           <div className={styles.accountActions}>{renderSetupActions()}</div>
@@ -180,8 +184,11 @@ export default function SetupPage() {
             onClick={() => setSelectedProtocol('mcp')}
           >
             {t('mcpTab')}
-            <span className="kura-badge" style={{ marginLeft: '0.5rem' }}>
-              {t('comingSoon')}
+            <span
+              className={`kura-badge ${isMcpLive ? 'kura-badge--success' : ''}`}
+              style={{ marginLeft: '0.5rem' }}
+            >
+              {isMcpLive ? t('ready') : t('comingSoon')}
             </span>
           </button>
         </div>
@@ -233,7 +240,11 @@ export default function SetupPage() {
               <p className={styles.mcpDescription}>
                 {isMcpLive ? t('mcpReady.description') : t('mcpComingSoon.description')}
               </p>
-              <p className={styles.mcpStatus}>
+              <p
+                className={styles.mcpStatus}
+                data-testid="setup-mcp-status"
+                data-mcp-live={isMcpLive ? 'true' : 'false'}
+              >
                 {isMcpLive ? t('mcpReady.status') : t('mcpComingSoon.status')}
               </p>
               <p className={styles.stepHint}>

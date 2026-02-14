@@ -53,7 +53,7 @@ export default function LoginPage() {
 
         {error && <div className={styles.errorBanner}>{error}</div>}
 
-        <form onSubmit={handleSubmit} className={styles.authForm}>
+        <form onSubmit={handleSubmit} className={styles.authForm} data-testid="login-form">
           <div className={styles.field}>
             <label htmlFor="email" className="kura-label">{t('email')}</label>
             <input
@@ -64,6 +64,7 @@ export default function LoginPage() {
               className="kura-input"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              data-testid="login-email"
             />
           </div>
 
@@ -77,6 +78,7 @@ export default function LoginPage() {
               className="kura-input"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              data-testid="login-password"
             />
           </div>
 
@@ -85,6 +87,7 @@ export default function LoginPage() {
             className="kura-btn kura-btn--primary"
             style={{ width: '100%' }}
             disabled={submitting}
+            data-testid="login-submit"
           >
             {submitting ? t('loggingIn') : t('loginButton')}
           </button>

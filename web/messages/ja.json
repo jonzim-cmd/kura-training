@@ -34,7 +34,7 @@
       "crossDimension": "クロスディメンション",
       "recommendation": "推奨エンジン"
     },
-    "agentResponse": "記録しました。スクワットの推定最大重量は3週間116\u2009kgのまま — ボリュームは十分ですが、重量が伸びていません。また、最近の睡眠時間がいつもより約1時間短くなっています。おそらく偶然ではありません。",
+    "agentResponse": "記録しました。スクワットの推定最大重量は3週間116 kgのまま — ボリュームは十分ですが、重量が伸びていません。また、最近の睡眠時間がいつもより約1時間短くなっています。おそらく偶然ではありません。",
     "agentQuestion": "ディロード週を計画しましょうか？",
     "getStarted": "始める"
   },
@@ -60,43 +60,43 @@
   "start": {
     "title": "Kuraとは？",
     "story": {
-      "p1": "\u30aa\u30ea\u30f3\u30d4\u30c3\u30af\u9078\u624b\u306e\u30b3\u30fc\u30c1\u3092\u3057\u3066\u3044\u305f\u3002\u4e00\u756a\u9762\u5012\u3060\u3063\u305f\u306e\u306f\u3001\u307b\u307c\u3044\u3064\u3082\u540c\u3058\u3053\u3068\u3060\u3063\u305f \u2014 \u30c8\u30ec\u30fc\u30cb\u30f3\u30b0\u306e\u8a18\u9332\u3002\u30b7\u30fc\u30ba\u30f3\u5f8c\u306b\u30c7\u30fc\u30bf\u3092\u5206\u6790\u3067\u304d\u308b\u5f62\u3067\u6b8b\u3059\u3068\u3044\u3046\u3053\u3068\u3002\u5b9f\u969b\u306b\u306f\u3001\u3046\u307e\u304f\u3044\u3063\u305f\u3053\u3068\u304c\u306a\u3044\u3002",
-      "p2": "\u81ea\u5206\u306e\u30c8\u30ec\u30fc\u30cb\u30f3\u30b0\u3082\u5909\u308f\u3089\u306a\u304b\u3063\u305f\u3002\u3042\u3089\u3086\u308b\u30a2\u30d7\u30ea\u3092\u8a66\u3057\u305f\u304c\u3001\u64cd\u4f5c\u304c\u591a\u3059\u304e\u3001\u878d\u901a\u304c\u5229\u304b\u306a\u3059\u304e\u3001\u9762\u5012\u3059\u304e\u3066\u3001\u3069\u308c\u3082\u9577\u7d9a\u304d\u3057\u306a\u304b\u3063\u305f\u3002\u6b32\u3057\u304b\u3063\u305f\u306e\u306f\u30b7\u30f3\u30d7\u30eb\u306a\u3082\u306e\u3067\u3001\u53cb\u9054\u306b\u30e1\u30c3\u30bb\u30fc\u30b8\u3059\u308b\u3088\u3046\u306b\u30c8\u30ec\u30fc\u30cb\u30f3\u30b0\u3092\u8a18\u9332\u3059\u308b\u3053\u3068\u3002\u3084\u3063\u305f\u3053\u3068\u3092\u4e00\u8a00\u66f8\u3051\u3070\u3001\u8ab0\u304b\uff08\u3042\u308b\u3044\u306f\u4f55\u304b\uff09\u304c\u6b8b\u308a\u3092\u6574\u7406\u3057\u3066\u304f\u308c\u308b\u3053\u3068\u3002",
-      "p3": "Kura\u306f\u307e\u3055\u306b\u305d\u3053\u304b\u3089\u751f\u307e\u308c\u305f\u3002\u4eba\u9593\u3067\u306f\u306a\u304fAI\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u304c\u300c\u4e3b\u8981\u30e6\u30fc\u30b6\u30fc\u300d\u3068\u306a\u308b\u30d0\u30c3\u30af\u30a8\u30f3\u30c9\u3092\u4f5c\u3063\u305f\u3002\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u304c\u30c8\u30ec\u30fc\u30cb\u30f3\u30b0\u306e\u8a18\u9332\u3092\u78ba\u5b9f\u306b\u7406\u89e3\u3057\u3001\u4e0d\u8db3\u304c\u3042\u308c\u3070\u8cea\u554f\u3057\u3001\u304d\u308c\u3044\u306a\u30c7\u30fc\u30bf\u3068\u3057\u3066\u4fdd\u5b58\u3059\u308b\u3088\u3046\u306b\u8a2d\u8a08\u3055\u308c\u3066\u3044\u308b\u3002"
+      "p1": "オリンピック選手のコーチをしていた。一番面倒だったのは、ほぼいつも同じことだった — トレーニングの記録。シーズン後にデータを分析できる形で残すということ。実際には、うまくいったことがない。",
+      "p2": "自分のトレーニングも変わらなかった。あらゆるアプリを試したが、操作が多すぎ、融通が利かなすぎ、面倒すぎて、どれも長続きしなかった。欲しかったのはシンプルなもので、友達にメッセージするようにトレーニングを記録すること。やったことを一言書けば、誰か（あるいは何か）が残りを整理してくれること。",
+      "p3": "Kuraはまさにそこから生まれた。人間ではなくAIエージェントが「主要ユーザー」となるバックエンドを作った。エージェントがトレーニングの記録を確実に理解し、不足があれば質問し、きれいなデータとして保存するように設計されている。"
     },
     "apps": {
-      "title": "\u30a2\u30d7\u30ea\u306f\u9055\u3046\u554f\u984c\u3092\u89e3\u3044\u3066\u3044\u308b",
-      "text": "\u30c8\u30ec\u30fc\u30cb\u30f3\u30b0\u30a2\u30d7\u30ea\u306f\u4f55\u767e\u3082\u3042\u308b\u3002\u30c7\u30fc\u30bf\u306e\u4fdd\u5b58\u306f\u5f97\u610f\u3060\u3002\u3067\u3082\u672c\u5f53\u306e\u554f\u984c\u306f\u8a18\u9332\u3059\u308b\u3053\u3068\u81ea\u4f53\u3067\u3001\u305d\u308c\u304c\u624b\u9593\u306a\u306e\u3060\u3002\u30d5\u30a9\u30fc\u30e0\u306e\u5165\u529b\u3001\u30c9\u30ed\u30c3\u30d7\u30c0\u30a6\u30f3\u3001\u30a8\u30af\u30b5\u30b5\u30a4\u30ba\u30ea\u30b9\u30c8\u306e\u30b9\u30af\u30ed\u30fc\u30eb\u3002\u30a8\u30ad\u30bb\u30f3\u30c8\u30ea\u30c3\u30af\u306a\u30c6\u30f3\u30dd\u30b9\u30af\u30ef\u30c3\u30c8\u3092\u304d\u3061\u3093\u3068\u8a18\u9332\u3057\u3066\u307f\u3066\u307b\u3057\u3044\u3002\u3042\u308b\u3044\u306f\u30c7\u30fc\u30bf\u30d9\u30fc\u30b9\u306b\u306a\u3044\u7a2e\u76ee\u3084\u3001\u8a08\u753b\u304b\u3089\u5916\u308c\u3066\u5373\u8208\u3067\u3084\u3063\u305f\u30bb\u30c3\u30b7\u30e7\u30f3\u3092\u3002",
-      "bridge1": "\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u306b\u306f\u305d\u3093\u306a\u554f\u984c\u304c\u306a\u3044\u3002\u300c\u30c6\u30f3\u30dd\u30b9\u30af\u30ef\u30c3\u30c8\u30014\u79d2\u3067\u4e0b\u308d\u3057\u3066\u3001\u30dc\u30c8\u30e0\u3067\u505c\u6b62\u300180kg\u3001\u304d\u3064\u304b\u3063\u305f\u300d\u3068\u66f8\u3051\u3070\u3001\u610f\u5473\u3092\u7406\u89e3\u3059\u308b\u3002\u8db3\u308a\u306a\u3051\u308c\u3070\u805e\u3044\u3066\u304f\u308b\u3002",
-      "bridge2": "\u554f\u984c\u306f\u3001\u3053\u308c\u3089\u306e\u60c5\u5831\u3092\u3069\u3053\u306b\u4fdd\u5b58\u3059\u308c\u3070\u9577\u671f\u7684\u306b\u4f7f\u3048\u308b\u304b\u3060\u3002"
+      "title": "アプリは違う問題を解いている",
+      "text": "トレーニングアプリは何百もある。データの保存は得意だ。でも本当の問題は記録すること自体で、それが手間なのだ。フォームの入力、ドロップダウン、エクササイズリストのスクロール。エキセントリックなテンポスクワットをきちんと記録してみてほしい。あるいはデータベースにない種目や、計画から外れて即興でやったセッションを。",
+      "bridge1": "エージェントにはそんな問題がない。「テンポスクワット、4秒で下ろして、ボトムで停止、80kg、きつかった」と書けば、意味を理解する。足りなければ聞いてくる。",
+      "bridge2": "問題は、これらの情報をどこに保存すれば長期的に使えるかだ。"
     },
     "chat": {
-      "title": "\u30c1\u30e3\u30c3\u30c8\u306f\u30c7\u30fc\u30bf\u5411\u304d\u3058\u3083\u306a\u3044",
-      "forgets": "\u30c1\u30e3\u30c3\u30c8\u306f\u5fd8\u308c\u308b\u3002",
-      "forgetsDesc": "\u30b3\u30f3\u30c6\u30ad\u30b9\u30c8\u30a6\u30a3\u30f3\u30c9\u30a6\u306b\u306f\u9650\u308a\u304c\u3042\u308a\u3001\u6570\u30f6\u6708\u5f8c\u306b\u306f\u53e4\u3044\u30e1\u30c3\u30bb\u30fc\u30b8\u304c\u305d\u306e\u307e\u307e\u6d88\u3048\u308b \u2014 \u8b66\u544a\u306a\u3057\u306b\u3002",
-      "zero": "\u30e1\u30e2\u30ea\u30fc\u306f\u3042\u308b\u7a0b\u5ea6\u52a9\u3051\u306b\u306a\u308b\u3002",
-      "zeroDesc": "AI\u306f\u30d1\u30bf\u30fc\u30f3\u3092\u899a\u3048\u3066\u3044\u308b\uff08\u300c\u706b\u66dc\u306b\u811a\u30c8\u30ec\u300d\u300c\u819d\u304c\u6642\u3005\u75db\u3080\u300d\uff09\u304c\u3001\u305d\u308c\u306f\u672c\u7269\u306e\u30c8\u30ec\u30fc\u30cb\u30f3\u30b0\u30c7\u30fc\u30bf\u306e\u4ee3\u308f\u308a\u306b\u306f\u306a\u3089\u306a\u3044\u3002\u9032\u6357\u66f2\u7dda\u3082\u30dc\u30ea\u30e5\u30fc\u30e0\u306e\u63a8\u79fb\u3082\u306a\u304f\u3001\u30d7\u30e9\u30c8\u30fc\u304c\u3044\u3064\u59cb\u307e\u3063\u305f\u306e\u304b\u3082\u898b\u3048\u306a\u3044 \u2014 \u305d\u308c\u304c\u7761\u7720\u306e\u60aa\u5316\u3068\u91cd\u306a\u3063\u3066\u3044\u305f\u3068\u3057\u3066\u3082\u3002",
-      "locked": "\u30c7\u30fc\u30bf\u3092\u53d6\u308a\u51fa\u305b\u306a\u3044\u3002",
-      "lockedDesc": "ChatGPT\u304b\u3089Claude\u3078\u3001\u5225\u306e\u30e2\u30c7\u30eb\u3084\u65b0\u3057\u3044\u30d7\u30e9\u30c3\u30c8\u30d5\u30a9\u30fc\u30e0\u306b\u79fb\u308b\u3068\u3001\u30c8\u30ec\u30fc\u30cb\u30f3\u30b0\u5c65\u6b74\u306f\u6301\u3061\u51fa\u305b\u306a\u3044\u30c1\u30e3\u30c3\u30c8\u30ed\u30b0\u306b\u6b8b\u3055\u308c\u308b\u3002",
-      "text": "\u5168\u3066\u304c\u30c6\u30ad\u30b9\u30c8\u306e\u307e\u307e\u3002",
-      "textDesc": "\u30a8\u30af\u30b9\u30dd\u30fc\u30c8\u3057\u3066\u3082\u3001\u7d50\u5c40\u306f3\u30f6\u6708\u5206\u306e\u30c8\u30ec\u30fc\u30cb\u30f3\u30b0\u30c7\u30fc\u30bf\u304c\u30e1\u30c3\u30bb\u30fc\u30b8\u306b\u6563\u3089\u3070\u3063\u3066\u3044\u308b\u3060\u3051\u3060\u3002\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u306f\u6bce\u56de\u30bc\u30ed\u304b\u3089\u69cb\u9020\u3092\u7d44\u307f\u7acb\u3066\u76f4\u3055\u306a\u3051\u308c\u3070\u306a\u3089\u305a\u3001\u5206\u6790\u306f\u9045\u304f\u3001\u8106\u304f\u3001\u5f53\u3066\u306b\u306a\u3089\u306a\u304f\u306a\u308b\u3002"
+      "title": "チャットはデータ向きじゃない",
+      "forgets": "チャットは忘れる。",
+      "forgetsDesc": "コンテキストウィンドウには限りがあり、数ヶ月後には古いメッセージがそのまま消える — 警告なしに。",
+      "zero": "メモリーはある程度助けになる。",
+      "zeroDesc": "AIはパターンを覚えている（「火曜に脚トレ」「膝が時々痛む」）が、それは本物のトレーニングデータの代わりにはならない。進捗曲線もボリュームの推移もなく、プラトーがいつ始まったのかも見えない — それが睡眠の悪化と重なっていたとしても。",
+      "locked": "データを取り出せない。",
+      "lockedDesc": "ChatGPTからClaudeへ、別のモデルや新しいプラットフォームに移ると、トレーニング履歴は持ち出せないチャットログに残される。",
+      "text": "全てがテキストのまま。",
+      "textDesc": "エクスポートしても、結局は3ヶ月分のトレーニングデータがメッセージに散らばっているだけだ。エージェントは毎回ゼロから構造を組み立て直さなければならず、分析は遅く、脆く、当てにならなくなる。"
     },
     "solution": {
-      "title": "Kura\u304c\u3084\u308b\u3053\u3068",
-      "p1": "Kura\u3067\u306f\u5165\u529b\u65b9\u6cd5\u306f\u554f\u308f\u306a\u3044\u3002\u30c1\u30e3\u30c3\u30c8\u3001\u97f3\u58f0\u3001\u77ed\u3044\u30e1\u30e2 \u2014 \u81ea\u7136\u306a\u5f62\u3067\u8a18\u9332\u3059\u308c\u3070\u3044\u3044\u3002\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u304c\u6b8b\u308a\u3092\u5f15\u304d\u53d7\u3051\u3001\u30c1\u30e3\u30c3\u30c8\u5c65\u6b74\u3067\u306f\u306a\u304f\u69cb\u9020\u5316\u3055\u308c\u305f\u30c8\u30ec\u30fc\u30cb\u30f3\u30b0\u30c7\u30fc\u30bf\u3068\u3057\u3066\u4fdd\u5b58\u3059\u308b\u3002\u578b\u4ed8\u304d\u3001\u30bf\u30a4\u30e0\u30b9\u30bf\u30f3\u30d7\u4ed8\u304d\u3001\u95a2\u9023\u4ed8\u304d\u3002",
-      "p2": "API\u30b3\u30fc\u30eb\u4e00\u3064\u3067\u3001\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u306b\u5b8c\u5168\u306a\u30b3\u30f3\u30c6\u30ad\u30b9\u30c8\u3092\u6e21\u305b\u308b\u3002\u5168\u30bb\u30c3\u30b7\u30e7\u30f3\u3001\u5168\u30d9\u30b9\u30c8\u8a18\u9332\u3001\u6642\u9593\u7d4c\u904e\u306b\u3088\u308b\u5168\u30c8\u30ec\u30f3\u30c9 \u2014 \u3069\u306eAI\u3092\u4f7f\u3063\u3066\u3044\u3066\u3082\u540c\u3058\u3060\u3002",
-      "p3": "\u30c7\u30fc\u30bf\u304c\u69cb\u9020\u5316\u3055\u308c\u3066\u3044\u308b\u304b\u3089\u3001Kura\u306f\u30c1\u30e3\u30c3\u30c8\u3067\u306f\u4fe1\u983c\u6027\u3092\u6301\u3063\u3066\u3067\u304d\u306a\u3044\u8a08\u7b97\u3092\u5f15\u304d\u53d7\u3051\u308b\u3053\u3068\u304c\u3067\u304d\u308b\u3002\u30d7\u30e9\u30c8\u30fc\u3092\u65e9\u671f\u306b\u691c\u51fa\u3059\u308b\u30d9\u30a4\u30ba\u7d71\u8a08\u3001\u7761\u7720\u3068\u30d1\u30d5\u30a9\u30fc\u30de\u30f3\u30b9\u306e\u95a2\u4fc2\u3092\u53ef\u8996\u5316\u3001\u5358\u306a\u308b\u30b3\u30e1\u30f3\u30c8\u3067\u306f\u306a\u304f\u6570\u5b57\u3092\u6587\u8108\u306b\u7f6e\u304f\u6bd4\u8f03\u3002",
-      "p4": "\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u306f\u5b8c\u6210\u3057\u305f\u5206\u6790\u3092\u8aad\u307f\u3001\u4e00\u822c\u7684\u306a\u30d5\u30a3\u30c3\u30c8\u30cd\u30b9\u77e5\u8b58\u3067\u306f\u306a\u304f\u5b9f\u969b\u306e\u30c7\u30fc\u30bf\u306b\u57fa\u3065\u3044\u305f\u30a2\u30c9\u30d0\u30a4\u30b9\u3092\u3059\u308b\u3002"
+      "title": "Kuraがやること",
+      "p1": "Kuraでは入力方法は問わない。チャット、音声、短いメモ — 自然な形で記録すればいい。エージェントが残りを引き受け、チャット履歴ではなく構造化されたトレーニングデータとして保存する。型付き、タイムスタンプ付き、関連付き。",
+      "p2": "APIコール一つで、エージェントに完全なコンテキストを渡せる。全セッション、全ベスト記録、時間経過による全トレンド — どのAIを使っていても同じだ。",
+      "p3": "データが構造化されているから、Kuraはチャットでは信頼性を持ってできない計算を引き受けることができる。プラトーを早期に検出するベイズ統計、睡眠とパフォーマンスの関係を可視化、単なるコメントではなく数字を文脈に置く比較。",
+      "p4": "エージェントは完成した分析を読み、一般的なフィットネス知識ではなく実際のデータに基づいたアドバイスをする。"
     },
     "how": {
-      "title": "\u30bb\u30c3\u30c8\u30a2\u30c3\u30d7",
-      "step1Title": "\u30a2\u30ab\u30a6\u30f3\u30c8\u4f5c\u6210",
+      "title": "セットアップ",
+      "step1Title": "アカウント作成",
       "step1Desc": "現在無料で利用できます。",
-      "step2Title": "AI\u3092\u63a5\u7d9a",
-      "step2Desc": "\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u3092\u9078\u3093\u3067\u30bb\u30c3\u30c8\u30a2\u30c3\u30d7\u30ac\u30a4\u30c9\u306b\u5f93\u3046\u3002",
-      "step2SetupLink": "\u30bb\u30c3\u30c8\u30a2\u30c3\u30d7\u30ac\u30a4\u30c9 \u2192",
-      "step3Title": "\u8a71\u3057\u59cb\u3081\u308b",
-      "step3Desc": "AI\u306e\u30c1\u30e3\u30c3\u30c8\u3092\u958b\u3044\u3066 \u2014 Claude\u3001ChatGPT\u3001\u4f55\u3067\u3082 \u2014 \u30c8\u30ec\u30fc\u30cb\u30f3\u30b0\u306b\u3064\u3044\u3066\u8a71\u3059\u3002\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u304c\u6b8b\u308a\u3092\u3084\u3063\u3066\u304f\u308c\u308b\u3002"
+      "step2Title": "AIを接続",
+      "step2Desc": "エージェントを選んでセットアップガイドに従う。",
+      "step2SetupLink": "セットアップガイド →",
+      "step3Title": "話し始める",
+      "step3Desc": "AIのチャットを開いて — Claude、ChatGPT、何でも — トレーニングについて話す。エージェントが残りをやってくれる。"
     },
     "tagline": ""
   },
@@ -156,7 +156,10 @@
     "security": {
       "title": "セキュリティ",
       "twoFactor": "二要素認証",
-      "comingSoon": "近日公開"
+      "comingSoon": "近日公開",
+      "enabled": "有効",
+      "enabledHint": "この環境では二要素認証が有効です。",
+      "unavailableHint": "この環境では二要素認証は有効化されていません。"
     },
     "support": {
       "title": "サポート",
@@ -186,28 +189,64 @@
     "claude": {
       "title": "Claude",
       "cliSteps": {
-        "install": { "title": "Kura CLIをインストール", "description": "Kuraコマンドラインツールをダウンロードしてインストールします。" },
-        "login": { "title": "認証", "description": "Kuraアカウントでログインします。" },
-        "apiKey": { "title": "APIキーを作成", "description": "設定でキーを作成します（Kuraアカウントが必要）。" },
-        "configure": { "title": "Claudeに追加", "description": "ClaudeプロジェクトにKuraをツールとして追加します。" }
+        "install": {
+          "title": "Kura CLIをインストール",
+          "description": "Kuraコマンドラインツールをダウンロードしてインストールします。"
+        },
+        "login": {
+          "title": "認証",
+          "description": "Kuraアカウントでログインします。"
+        },
+        "apiKey": {
+          "title": "APIキーを作成",
+          "description": "設定でキーを作成します（Kuraアカウントが必要）。"
+        },
+        "configure": {
+          "title": "Claudeに追加",
+          "description": "ClaudeプロジェクトにKuraをツールとして追加します。"
+        }
       }
     },
     "chatgpt": {
       "title": "ChatGPT",
       "cliSteps": {
-        "install": { "title": "Kura CLIをインストール", "description": "Kuraコマンドラインツールをダウンロードしてインストールします。" },
-        "login": { "title": "認証", "description": "Kuraアカウントでログインします。" },
-        "apiKey": { "title": "APIキーを作成", "description": "設定でキーを作成します（Kuraアカウントが必要）。" },
-        "configure": { "title": "ChatGPTに追加", "description": "ChatGPTの設定でKuraをカスタムツールとして設定します。" }
+        "install": {
+          "title": "Kura CLIをインストール",
+          "description": "Kuraコマンドラインツールをダウンロードしてインストールします。"
+        },
+        "login": {
+          "title": "認証",
+          "description": "Kuraアカウントでログインします。"
+        },
+        "apiKey": {
+          "title": "APIキーを作成",
+          "description": "設定でキーを作成します（Kuraアカウントが必要）。"
+        },
+        "configure": {
+          "title": "ChatGPTに追加",
+          "description": "ChatGPTの設定でKuraをカスタムツールとして設定します。"
+        }
       }
     },
     "gemini": {
       "title": "Gemini",
       "cliSteps": {
-        "install": { "title": "Kura CLIをインストール", "description": "Kuraコマンドラインツールをダウンロードしてインストールします。" },
-        "login": { "title": "認証", "description": "Kuraアカウントでログインします。" },
-        "apiKey": { "title": "APIキーを作成", "description": "設定でキーを作成します（Kuraアカウントが必要）。" },
-        "configure": { "title": "Geminiに追加", "description": "GeminiワークスペースでKuraをツールとして設定します。" }
+        "install": {
+          "title": "Kura CLIをインストール",
+          "description": "Kuraコマンドラインツールをダウンロードしてインストールします。"
+        },
+        "login": {
+          "title": "認証",
+          "description": "Kuraアカウントでログインします。"
+        },
+        "apiKey": {
+          "title": "APIキーを作成",
+          "description": "設定でキーを作成します（Kuraアカウントが必要）。"
+        },
+        "configure": {
+          "title": "Geminiに追加",
+          "description": "GeminiワークスペースでKuraをツールとして設定します。"
+        }
       }
     },
     "accountGate": {
@@ -232,71 +271,71 @@
     }
   },
   "footer": {
-    "impressum": "\u7279\u5b9a\u5546\u53d6\u5f15\u6cd5\u306b\u57fa\u3065\u304f\u8868\u8a18",
-    "datenschutz": "\u30d7\u30e9\u30a4\u30d0\u30b7\u30fc",
-    "nutzungsbedingungen": "\u5229\u7528\u898f\u7d04",
-    "copyright": "\u00a9 2026 Kura",
-    "privacy": "\u30d7\u30e9\u30a4\u30d0\u30b7\u30fc",
-    "terms": "\u5229\u7528\u898f\u7d04",
+    "impressum": "特定商取引法に基づく表記",
+    "datenschutz": "プライバシー",
+    "nutzungsbedingungen": "利用規約",
+    "copyright": "© 2026 Kura",
+    "privacy": "プライバシー",
+    "terms": "利用規約",
     "github": "GitHub",
-    "tagline": "\u5927\u5207\u306a\u3082\u306e\u3092\u3001\u8a18\u61b6\u3059\u308b\u305f\u3081\u306b\u3002"
+    "tagline": "大切なものを、記憶するために。"
   },
   "impressum": {
-    "title": "\u7279\u5b9a\u5546\u53d6\u5f15\u6cd5\u306b\u57fa\u3065\u304f\u8868\u8a18",
-    "tmg": "TMG\u7b2c5\u6761\u306b\u57fa\u3065\u304f\u60c5\u5831",
-    "name": "\u540d\u524d",
-    "namePlaceholder": "\u8ffd\u8a18\u4e88\u5b9a",
-    "address": "\u4f4f\u6240",
-    "addressPlaceholder": "\u8ffd\u8a18\u4e88\u5b9a",
-    "contact": "\u9023\u7d61\u5148",
-    "contactPlaceholder": "\u8ffd\u8a18\u4e88\u5b9a",
-    "responsible": "\u30b3\u30f3\u30c6\u30f3\u30c4\u8cac\u4efb\u8005",
-    "responsiblePlaceholder": "\u8ffd\u8a18\u4e88\u5b9a",
-    "note": "\u5185\u5bb9\u306f\u8ffd\u8a18\u3055\u308c\u307e\u3059\u3002"
+    "title": "特定商取引法に基づく表記",
+    "tmg": "TMG第5条に基づく情報",
+    "name": "名前",
+    "namePlaceholder": "追記予定",
+    "address": "住所",
+    "addressPlaceholder": "追記予定",
+    "contact": "連絡先",
+    "contactPlaceholder": "追記予定",
+    "responsible": "コンテンツ責任者",
+    "responsiblePlaceholder": "追記予定",
+    "note": "内容は追記されます。"
   },
   "datenschutz": {
-    "title": "\u30d7\u30e9\u30a4\u30d0\u30b7\u30fc\u30dd\u30ea\u30b7\u30fc",
+    "title": "プライバシーポリシー",
     "controller": {
-      "title": "\u7ba1\u7406\u8005",
-      "text": "GDPR\u306b\u304a\u3051\u308b\u7ba1\u7406\u8005\u306f\u3053\u3053\u306b\u8a18\u8f09\u3055\u308c\u307e\u3059\u3002\u8a73\u7d30\u306f\u5f8c\u65e5\u8ffd\u8a18\u3002"
+      "title": "管理者",
+      "text": "GDPRにおける管理者はここに記載されます。詳細は後日追記。"
     },
     "dataCollected": {
-      "title": "\u53ce\u96c6\u3059\u308b\u30c7\u30fc\u30bf",
-      "text": "\u53ce\u96c6\u3059\u308b\u500b\u4eba\u30c7\u30fc\u30bf\u306b\u3064\u3044\u3066\u306e\u60c5\u5831\u306f\u3053\u3053\u306b\u8a18\u8f09\u3055\u308c\u307e\u3059\u3002\u8a73\u7d30\u306f\u5f8c\u65e5\u8ffd\u8a18\u3002"
+      "title": "収集するデータ",
+      "text": "収集する個人データについての情報はここに記載されます。詳細は後日追記。"
     },
     "purpose": {
-      "title": "\u51e6\u7406\u306e\u76ee\u7684",
-      "text": "\u500b\u4eba\u30c7\u30fc\u30bf\u304c\u51e6\u7406\u3055\u308c\u308b\u76ee\u7684\u306f\u3053\u3053\u3067\u8aac\u660e\u3055\u308c\u307e\u3059\u3002\u8a73\u7d30\u306f\u5f8c\u65e5\u8ffd\u8a18\u3002"
+      "title": "処理の目的",
+      "text": "個人データが処理される目的はここで説明されます。詳細は後日追記。"
     },
     "rights": {
-      "title": "\u30c7\u30fc\u30bf\u4e3b\u4f53\u306e\u6a29\u5229",
-      "text": "GDPR\u306b\u57fa\u3065\u304f\u6a29\u5229\uff08\u30a2\u30af\u30bb\u30b9\u3001\u4fee\u6b63\u3001\u524a\u9664\u3001\u5236\u9650\u3001\u30c7\u30fc\u30bf\u30dd\u30fc\u30bf\u30d3\u30ea\u30c6\u30a3\u3001\u7570\u8b70\u7533\u7acb\uff09\u306b\u3064\u3044\u3066\u306e\u60c5\u5831\u306f\u3053\u3053\u306b\u8a18\u8f09\u3055\u308c\u307e\u3059\u3002\u8a73\u7d30\u306f\u5f8c\u65e5\u8ffd\u8a18\u3002"
+      "title": "データ主体の権利",
+      "text": "GDPRに基づく権利（アクセス、修正、削除、制限、データポータビリティ、異議申立）についての情報はここに記載されます。詳細は後日追記。"
     },
     "contactSection": {
-      "title": "\u304a\u554f\u3044\u5408\u308f\u305b",
-      "text": "\u30d7\u30e9\u30a4\u30d0\u30b7\u30fc\u306b\u95a2\u3059\u308b\u304a\u554f\u3044\u5408\u308f\u305b\u5148\u306f\u3053\u3053\u306b\u8a18\u8f09\u3055\u308c\u307e\u3059\u3002\u8a73\u7d30\u306f\u5f8c\u65e5\u8ffd\u8a18\u3002"
+      "title": "お問い合わせ",
+      "text": "プライバシーに関するお問い合わせ先はここに記載されます。詳細は後日追記。"
     },
-    "note": "\u5b8c\u5168\u306a\u30d7\u30e9\u30a4\u30d0\u30b7\u30fc\u30dd\u30ea\u30b7\u30fc\u306f\u8ffd\u8a18\u3055\u308c\u307e\u3059\u3002"
+    "note": "完全なプライバシーポリシーは追記されます。"
   },
   "nutzungsbedingungen": {
-    "title": "\u5229\u7528\u898f\u7d04",
+    "title": "利用規約",
     "earlyAccess": {
-      "title": "\u30a2\u30fc\u30ea\u30fc\u30a2\u30af\u30bb\u30b9\u6761\u4ef6",
-      "text": "Kura\u306f\u30a2\u30fc\u30ea\u30fc\u30a2\u30af\u30bb\u30b9\u4e2d\u3067\u3059\u3002\u30b5\u30fc\u30d3\u30b9\u306f\u53ef\u7528\u6027\u3084\u5b8c\u5168\u6027\u306e\u4fdd\u8a3c\u306a\u304f\u63d0\u4f9b\u3055\u308c\u307e\u3059\u3002\u6a5f\u80fd\u306f\u3044\u3064\u3067\u3082\u5909\u66f4\u3055\u308c\u308b\u53ef\u80fd\u6027\u304c\u3042\u308a\u307e\u3059\u3002\u8a73\u7d30\u306f\u5f8c\u65e5\u8ffd\u8a18\u3002"
+      "title": "アーリーアクセス条件",
+      "text": "Kuraはアーリーアクセス中です。サービスは可用性や完全性の保証なく提供されます。機能はいつでも変更される可能性があります。詳細は後日追記。"
     },
     "dataConsent": {
-      "title": "\u533f\u540d\u5316\u30c7\u30fc\u30bf\u5206\u6790\u3078\u306e\u540c\u610f",
-      "text": "Kura\u3092\u5229\u7528\u3059\u308b\u3053\u3068\u3067\u3001\u533f\u540d\u5316\u3055\u308c\u305f\u30c8\u30ec\u30fc\u30cb\u30f3\u30b0\u30c7\u30fc\u30bf\u304c\u96c6\u56e3\u30ec\u30d9\u30eb\u306e\u7d71\u8a08\u306e\u6539\u5584\u306b\u4f7f\u7528\u3055\u308c\u308b\u3053\u3068\u306b\u540c\u610f\u3057\u305f\u3082\u306e\u3068\u307f\u306a\u3055\u308c\u307e\u3059\u3002\u8a73\u7d30\u306f\u5f8c\u65e5\u8ffd\u8a18\u3002"
+      "title": "匿名化データ分析への同意",
+      "text": "Kuraを利用することで、匿名化されたトレーニングデータが集団レベルの統計の改善に使用されることに同意したものとみなされます。詳細は後日追記。"
     },
     "liability": {
-      "title": "\u514d\u8cac\u4e8b\u9805\uff08\u30d9\u30fc\u30bf\uff09",
-      "text": "Kura\u306f\u30d9\u30fc\u30bf\u88fd\u54c1\u3067\u3059\u3002\u63a8\u5968\u3084\u5206\u6790\u306f\u5c02\u9580\u7684\u306a\u533b\u7642\u307e\u305f\u306f\u30b9\u30dd\u30fc\u30c4\u306e\u30a2\u30c9\u30d0\u30a4\u30b9\u306b\u4ee3\u308f\u308b\u3082\u306e\u3067\u306f\u3042\u308a\u307e\u305b\u3093\u3002\u81ea\u5df1\u8cac\u4efb\u3067\u3054\u5229\u7528\u304f\u3060\u3055\u3044\u3002\u8a73\u7d30\u306f\u5f8c\u65e5\u8ffd\u8a18\u3002"
+      "title": "免責事項（ベータ）",
+      "text": "Kuraはベータ製品です。推奨や分析は専門的な医療またはスポーツのアドバイスに代わるものではありません。自己責任でご利用ください。詳細は後日追記。"
     },
     "changes": {
-      "title": "\u5909\u66f4",
-      "text": "\u5f53\u793e\u306f\u3053\u306e\u5229\u7528\u898f\u7d04\u3092\u3044\u3064\u3067\u3082\u5909\u66f4\u3059\u308b\u6a29\u5229\u3092\u7559\u4fdd\u3057\u307e\u3059\u3002\u5909\u66f4\u306f\u30d7\u30e9\u30c3\u30c8\u30d5\u30a9\u30fc\u30e0\u3092\u901a\u3058\u3066\u304a\u77e5\u3089\u305b\u3057\u307e\u3059\u3002\u8a73\u7d30\u306f\u5f8c\u65e5\u8ffd\u8a18\u3002"
+      "title": "変更",
+      "text": "当社はこの利用規約をいつでも変更する権利を留保します。変更はプラットフォームを通じてお知らせします。詳細は後日追記。"
     },
-    "note": "\u5b8c\u5168\u306a\u5229\u7528\u898f\u7d04\u306f\u8ffd\u8a18\u3055\u308c\u307e\u3059\u3002"
+    "note": "完全な利用規約は追記されます。"
   },
   "common": {
     "back": "戻る",

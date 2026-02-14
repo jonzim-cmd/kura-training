@@ -44,6 +44,7 @@ const AuthContext = createContext<AuthContextType | null>(null);
 const REFRESH_TOKEN_KEY = 'kura_rt';
 const CLIENT_ID = 'kura-web';
 const MOCK_AUTH = process.env.NEXT_PUBLIC_MOCK_AUTH === 'true';
+const MOCK_AUTH_MODE_KEY = 'kura_mock_auth_mode';
 
 const MOCK_USER: User = {
   user_id: 'mock-00000000-0000-0000-0000-000000000000',
@@ -127,6 +128,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Bootstrap: try refresh token on mount (or mock in dev)
   useEffect(() => {
     if (MOCK_AUTH) {
+      if (localStorage.getItem(MOCK_AUTH_MODE_KEY) === 'logged_out') {
+        setUser(null);
+        setAccessToken(null);
+        setLoading(false);
+        return;
+      }
       setUser(MOCK_USER);
       setAccessToken('mock-token');
       setLoading(false);

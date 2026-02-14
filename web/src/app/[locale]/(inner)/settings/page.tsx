@@ -19,6 +19,7 @@ interface ApiKeyInfo {
 
 const SECTIONS = ['account', 'apiKeys', 'privacy', 'security', 'support', 'danger'] as const;
 type SectionId = typeof SECTIONS[number];
+const SECURITY_2FA_ENABLED = process.env.NEXT_PUBLIC_KURA_SECURITY_2FA_ENABLED === 'true';
 
 export default function SettingsPage() {
   const t = useTranslations('settings');
@@ -150,6 +151,7 @@ export default function SettingsPage() {
                 key={id}
                 className={`${styles.sidebarLink} ${activeSection === id ? styles.sidebarLinkActive : ''}`}
                 onClick={() => setActiveSection(id)}
+                data-testid={`settings-nav-${id}`}
               >
                 {sidebarLabels[id]}
               </button>
@@ -324,8 +326,17 @@ export default function SettingsPage() {
                 <div className={styles.settingRow}>
                   <div className={styles.settingInfo}>
                     <span className={styles.settingName}>{t('security.twoFactor')}</span>
+                    <p className={styles.settingHint}>
+                      {SECURITY_2FA_ENABLED ? t('security.enabledHint') : t('security.unavailableHint')}
+                    </p>
                   </div>
-                  <span className="kura-badge">{t('security.comingSoon')}</span>
+                  <span
+                    className={`kura-badge ${SECURITY_2FA_ENABLED ? 'kura-badge--success' : ''}`}
+                    data-testid="settings-security-state"
+                    data-security-state={SECURITY_2FA_ENABLED ? 'enabled' : 'unavailable'}
+                  >
+                    {SECURITY_2FA_ENABLED ? t('security.enabled') : t('security.comingSoon')}
+                  </span>
                 </div>
               </section>
             )}
