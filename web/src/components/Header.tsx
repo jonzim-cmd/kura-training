@@ -2,6 +2,7 @@
 
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/routing';
+import { useState, useEffect, useRef } from 'react';
 import styles from './Header.module.css';
 
 type HeaderProps = {
@@ -24,38 +25,72 @@ export function Header({ variant = 'default' }: HeaderProps) {
   const t = useTranslations('nav');
   const auth = useOptionalAuth();
   const isLoggedIn = auth?.user != null;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLElement>(null);
+
+  // Close menu on outside click
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('click', handler);
+    return () => document.removeEventListener('click', handler);
+  }, [menuOpen]);
+
+  // Close menu on route change (link click)
+  const closeMenu = () => setMenuOpen(false);
+
+  const navLinks = isLoggedIn ? (
+    <>
+      <Link href="/start" className={styles.link} onClick={closeMenu}>{t('home')}</Link>
+      <Link href="/setup" className={styles.link} onClick={closeMenu}>{t('setup')}</Link>
+      <Link href="/settings" className={styles.link} onClick={closeMenu}>{t('settings')}</Link>
+      <button
+        onClick={() => { auth?.logout(); closeMenu(); }}
+        className={styles.link}
+        style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+      >
+        {t('logout')}
+      </button>
+    </>
+  ) : (
+    <>
+      {variant !== 'landing' && (
+        <Link href="/start" className={styles.link} onClick={closeMenu}>{t('home')}</Link>
+      )}
+      <Link href="/login" className={styles.link} onClick={closeMenu}>{t('login')}</Link>
+      <Link href="/request-access" className={styles.link} onClick={closeMenu}>{t('requestAccess')}</Link>
+    </>
+  );
 
   return (
-    <header className={`${styles.header} ${variant === 'landing' ? styles.landing : ''}`}>
+    <header className={`${styles.header} ${variant === 'landing' ? styles.landing : ''}`} ref={menuRef}>
       <div className={`${styles.inner} ${variant === 'landing' ? styles.innerLanding : ''}`}>
         {variant !== 'landing' && (
           <Link href="/" className={styles.logo}>KU<span style={{letterSpacing: '0.06em'}}>R</span>A</Link>
         )}
         <nav className={styles.nav}>
-          {isLoggedIn ? (
-            <>
-              <Link href="/start" className={styles.link}>{t('home')}</Link>
-              <Link href="/setup" className={styles.link}>{t('setup')}</Link>
-              <Link href="/settings" className={styles.link}>{t('settings')}</Link>
-              <button
-                onClick={() => auth?.logout()}
-                className={styles.link}
-                style={{ background: 'none', border: 'none', cursor: 'pointer' }}
-              >
-                {t('logout')}
-              </button>
-            </>
-          ) : (
-            <>
-              {variant !== 'landing' && (
-                <Link href="/start" className={styles.link}>{t('home')}</Link>
-              )}
-              <Link href="/login" className={styles.link}>{t('login')}</Link>
-              <Link href="/request-access" className={styles.link}>{t('requestAccess')}</Link>
-            </>
-          )}
+          {navLinks}
         </nav>
+        <button
+          className={styles.burger}
+          onClick={() => setMenuOpen((v) => !v)}
+          aria-label="Menu"
+          aria-expanded={menuOpen}
+        >
+          <span className={`${styles.burgerLine} ${menuOpen ? styles.burgerOpen : ''}`} />
+          <span className={`${styles.burgerLine} ${menuOpen ? styles.burgerOpen : ''}`} />
+          <span className={`${styles.burgerLine} ${menuOpen ? styles.burgerOpen : ''}`} />
+        </button>
       </div>
+      {menuOpen && (
+        <div className={styles.dropdown}>
+          {navLinks}
+        </div>
+      )}
     </header>
   );
 }
