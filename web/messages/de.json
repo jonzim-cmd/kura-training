@@ -81,13 +81,13 @@
   "start": {
     "title": "Warum Kura?",
     "story": {
-      "p1": "Ich habe Olympia-Athleten trainiert. Der nervigste Teil war dabei fast immer dasselbe: Training zu loggen – und zwar so, dass man die Daten nach der Saison auch wirklich auswerten kann. In der Praxis hat das nie richtig funktioniert.",
+      "p1": "Ich habe olympische Mittelstreckenläufer:innen trainiert. Der nervigste Teil war dabei fast immer dasselbe: Training zu loggen – und zwar so, dass man die Daten nach der Saison auch wirklich auswerten kann. In der Praxis hat das nie richtig funktioniert.",
       "p2": "Bei meinem eigenen Training war es nicht anders. Ich habe so ziemlich jede App ausprobiert, die es gibt: zu umständlich, zu starr, zu nervig. Keine hat lange überlebt. Was ich eigentlich wollte, war etwas Simples: Training festhalten, so wie ich einem Freund schreiben würde. Ein Satz darüber, was ich gemacht habe – und jemand (oder etwas) kümmert sich um den Rest.",
       "p3": "Genau daraus ist Kura entstanden. Ich habe ein Backend gebaut, in dem nicht der Mensch der „primäre Nutzer“ ist, sondern der KI-Agent. Alles ist darauf ausgelegt, dass der Agent Trainingseinträge zuverlässig versteht, nachfragt, wenn etwas fehlt, und sie als saubere Daten ablegt."
     },
     "apps": {
       "title": "Apps lösen das falsche Problem",
-      "text": "Es gibt hunderte Training-Apps. Die sind gut darin, Dinge zu speichern. Das eigentliche Problem ist aber das Loggen – und das ist Arbeit. Formulare ausfüllen, Dropdowns, durch Übungslisten scrollen. Versuch mal, exzentrische Tempo-Squats sauber einzutragen. Oder eine Übung, die nicht in der Datenbank ist. Oder ein Training, das vom Plan abweicht und unterwegs improvisiert wurde.",
+      "text": "Es gibt hunderte Training-Apps. Die sind gut darin, Dinge zu speichern. Das eigentliche Problem ist aber das Loggen – und das ist Arbeit. Formulare ausfüllen, Dropdowns, durch Übungslisten scrollen. Versuch mal, exzentrische Tempo-Squats sauber einzutragen. Oder eine Sprint-Plyo-Ausdauer-Kombi. Oder eine Übung, die nicht in der Datenbank ist. Viel Spaß, das strukturiert zu halten.",
       "bridge1": "Einem Agenten ist das egal. Du schreibst: „Tempo-Squats heute, 4 Sekunden runter, Pause unten, 80 kg, war brutal“ – und er versteht, was gemeint ist. Und wenn etwas fehlt, fragt er nach.",
       "bridge2": "Der Knackpunkt ist nur: Wohin mit diesen Informationen, damit sie langfristig nutzbar bleiben?"
     },

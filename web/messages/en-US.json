@@ -81,13 +81,13 @@
   "start": {
     "title": "Why Kura?",
     "story": {
-      "p1": "I trained Olympic athletes. The most annoying part was almost always the same: logging the training — specifically in a way that actually lets you analyze the data after the season. In practice, it never really worked.",
+      "p1": "I trained Olympic middle-distance runners. The most annoying part was almost always the same: logging the training — specifically in a way that actually lets you analyze the data after the season. In practice, it never really worked.",
       "p2": "It was no different with my own training. I tried pretty much every app out there: too clunky, too rigid, too annoying. None lasted long. What I actually wanted was something simple: record my training the way I'd text a friend. A sentence about what I did — and someone (or something) takes care of the rest.",
       "p3": "That's exactly where Kura came from. I built a backend where the AI agent is the primary user, not the human. Everything is designed so the agent reliably understands training entries, asks when something is missing, and stores them as clean data."
     },
     "apps": {
       "title": "Apps solve the wrong problem",
-      "text": "There are hundreds of training apps. They're good at storing things. But the actual problem is the logging — and that's work. Filling out forms, dropdowns, scrolling through exercise lists. Try logging eccentric tempo squats cleanly, or an exercise that isn't in the database, or a session that deviated from the plan and was improvised along the way.",
+      "text": "There are hundreds of training apps. They’re good at storing things. But the actual problem is the logging — and that’s work. Filling out forms, dropdowns, scrolling through exercise lists. Try logging eccentric tempo squats cleanly. Or a sprint-plyo-endurance combo session. Or an exercise that isn’t in the database. Good luck keeping that structured.",
       "bridge1": "An agent doesn't care about any of that. You write: \"tempo squats today, 4 seconds down, pause at the bottom, 175lbs, felt brutal\" — and it understands what you mean. If something's missing, it asks.",
       "bridge2": "The real question is: where do these entries go so they remain useful long-term?"
     },
