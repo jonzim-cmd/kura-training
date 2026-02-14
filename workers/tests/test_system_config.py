@@ -517,6 +517,15 @@ class TestConventions:
         }
         assert brief["max_items_per_block"] == 3
         assert brief["source_priority"][0] == "quality_health/overview"
+        assert (
+            brief["chat_context_template"]["template_id"]
+            == "decision_brief.chat.context.v1"
+        )
+        assert (
+            brief["chat_context_template"]["section_order"][0]
+            == "Was ist wahrscheinlich wahr?"
+        )
+        assert brief["chat_context_template"]["must_include_hypothesis_rule"] is True
         assert brief["safety"]["must_not_claim_false_certainty"] is True
 
     def test_has_proof_in_production_v1_conventions(self):

@@ -631,6 +631,7 @@ def _get_conventions() -> dict[str, Any]:
                 "Always include five blocks: likely_true, unclear, high_impact_decisions, recent_person_failures, person_tradeoffs.",
                 "Each block must stay short and bounded to preserve chat UX readability.",
                 "Specificity must remain evidence-anchored and avoid false precision.",
+                "Provide a chat_context_block that mirrors the five blocks in a deterministic section order.",
             ],
             "schema_version": "decision_brief.v1",
             "required_blocks": [
@@ -646,6 +647,17 @@ def _get_conventions() -> dict[str, Any]:
                 "consistency_inbox/overview",
                 "user_profile/me",
             ],
+            "chat_context_template": {
+                "template_id": "decision_brief.chat.context.v1",
+                "section_order": [
+                    "Was ist wahrscheinlich wahr?",
+                    "Was ist unklar?",
+                    "Welche Entscheidungen sind high-impact?",
+                    "Welche Fehler sind mir bei dieser Person zuletzt passiert?",
+                    "Welche Trade-offs sind fuer diese Person wichtig?",
+                ],
+                "must_include_hypothesis_rule": True,
+            },
             "safety": {
                 "must_expose_uncertainty_when_signals_are_thin": True,
                 "must_not_claim_false_certainty": True,

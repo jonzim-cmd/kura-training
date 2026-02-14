@@ -147,6 +147,8 @@ pub struct AgentContextMeta {
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AgentDecisionBrief {
     pub schema_version: String,
+    pub chat_template_id: String,
+    pub chat_context_block: String,
     pub likely_true: Vec<String>,
     pub unclear: Vec<String>,
     pub high_impact_decisions: Vec<String>,
@@ -2039,6 +2041,7 @@ fn normalize_sample_confidence(value: Option<&Value>) -> String {
 }
 
 const DECISION_BRIEF_MAX_ITEMS_PER_BLOCK: usize = 3;
+const DECISION_BRIEF_CHAT_TEMPLATE_ID: &str = "decision_brief.chat.context.v1";
 
 fn read_value_string(value: Option<&Value>) -> Option<String> {
     value
@@ -2075,6 +2078,54 @@ fn push_decision_brief_entry(block: &mut Vec<String>, text: impl Into<String>) {
         return;
     }
     block.push(normalized);
+}
+
+fn append_decision_brief_chat_section(block: &mut String, heading: &str, items: &[String]) {
+    block.push_str(heading);
+    block.push('\n');
+    for item in items {
+        block.push_str("- ");
+        block.push_str(item);
+        block.push('\n');
+    }
+    block.push('\n');
+}
+
+fn build_decision_brief_chat_context_block(
+    likely_true: &[String],
+    unclear: &[String],
+    high_impact_decisions: &[String],
+    recent_person_failures: &[String],
+    person_tradeoffs: &[String],
+) -> String {
+    let mut block = String::from(
+        "Decision Brief fuer die naechste Antwort. Bleibe evidenzbasiert, nenne Unsicherheit explizit und vermeide Scheingenauigkeit.\n\n",
+    );
+    append_decision_brief_chat_section(
+        &mut block,
+        "Was ist wahrscheinlich wahr?",
+        likely_true,
+    );
+    append_decision_brief_chat_section(&mut block, "Was ist unklar?", unclear);
+    append_decision_brief_chat_section(
+        &mut block,
+        "Welche Entscheidungen sind high-impact?",
+        high_impact_decisions,
+    );
+    append_decision_brief_chat_section(
+        &mut block,
+        "Welche Fehler sind mir bei dieser Person zuletzt passiert?",
+        recent_person_failures,
+    );
+    append_decision_brief_chat_section(
+        &mut block,
+        "Welche Trade-offs sind fuer diese Person wichtig?",
+        person_tradeoffs,
+    );
+    block.push_str(
+        "Regel: Wenn Unklarheit dominiert, antworte als Hypothese und benenne die fehlende Evidenz.",
+    );
+    block.trim().to_string()
 }
 
 fn build_decision_brief(
@@ -2365,8 +2416,18 @@ fn build_decision_brief(
         );
     }
 
+    let chat_context_block = build_decision_brief_chat_context_block(
+        &likely_true,
+        &unclear,
+        &high_impact_decisions,
+        &recent_person_failures,
+        &person_tradeoffs,
+    );
+
     AgentDecisionBrief {
         schema_version: DECISION_BRIEF_SCHEMA_VERSION.to_string(),
+        chat_template_id: DECISION_BRIEF_CHAT_TEMPLATE_ID.to_string(),
+        chat_context_block,
         likely_true,
         unclear,
         high_impact_decisions,
@@ -10898,6 +10959,27 @@ mod tests {
             Some(&inbox),
         );
         assert_eq!(brief.schema_version, super::DECISION_BRIEF_SCHEMA_VERSION);
+        assert_eq!(
+            brief.chat_template_id,
+            super::DECISION_BRIEF_CHAT_TEMPLATE_ID
+        );
+        assert!(brief.chat_context_block.contains("Was ist wahrscheinlich wahr?"));
+        assert!(brief.chat_context_block.contains("Was ist unklar?"));
+        assert!(
+            brief
+                .chat_context_block
+                .contains("Welche Entscheidungen sind high-impact?")
+        );
+        assert!(
+            brief
+                .chat_context_block
+                .contains("Welche Fehler sind mir bei dieser Person zuletzt passiert?")
+        );
+        assert!(
+            brief
+                .chat_context_block
+                .contains("Welche Trade-offs sind fuer diese Person wichtig?")
+        );
         assert!(!brief.likely_true.is_empty());
         assert!(!brief.unclear.is_empty());
         assert!(!brief.high_impact_decisions.is_empty());
@@ -11023,6 +11105,92 @@ mod tests {
                 .person_tradeoffs
                 .iter()
                 .any(|item| item.contains("Confirmation always"))
+        );
+    }
+
+    #[test]
+    fn decision_brief_contract_renders_chat_context_block_with_all_entries() {
+        let user_profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "autonomy_scope": "strict",
+                        "verbosity": "concise",
+                        "confirmation_strictness": "always"
+                    },
+                    "baseline_profile": {
+                        "status": "needs_input",
+                        "required_missing": ["timezone"]
+                    },
+                    "data_quality": {
+                        "events_without_exercise_id": 2,
+                        "actionable": [{"code": "missing_exercise_id"}]
+                    }
+                }
+            }),
+        );
+        let quality_health = make_projection_response(
+            "quality_health",
+            "overview",
+            Utc::now(),
+            json!({
+                "status": "monitor",
+                "integrity_slo_status": "degraded",
+                "autonomy_policy": {
+                    "calibration_status": "monitor"
+                },
+                "metrics": {
+                    "response_mode_outcomes": {
+                        "response_mode_selected_total": 3,
+                        "sample_ok": false,
+                        "sample_confidence": "low",
+                        "user_challenge_rate_pct": 41.0,
+                        "retrieval_regret_exceeded_pct": 52.0
+                    }
+                }
+            }),
+        );
+        let inbox = make_inbox_projection(json!({
+            "schema_version": 1,
+            "pending_items_total": 1,
+            "highest_severity": "warning",
+            "requires_human_decision": true,
+            "items": [{
+                "item_id": "ci-warning-1",
+                "severity": "warning",
+                "summary": "Recent load values may be inconsistent.",
+                "recommended_action": "Review and confirm."
+            }]
+        }));
+
+        let brief = super::build_decision_brief(
+            &user_profile,
+            Some(&quality_health),
+            Some(&inbox),
+        );
+
+        for entry in &brief.likely_true {
+            assert!(brief.chat_context_block.contains(entry));
+        }
+        for entry in &brief.unclear {
+            assert!(brief.chat_context_block.contains(entry));
+        }
+        for entry in &brief.high_impact_decisions {
+            assert!(brief.chat_context_block.contains(entry));
+        }
+        for entry in &brief.recent_person_failures {
+            assert!(brief.chat_context_block.contains(entry));
+        }
+        for entry in &brief.person_tradeoffs {
+            assert!(brief.chat_context_block.contains(entry));
+        }
+        assert!(
+            brief
+                .chat_context_block
+                .contains("Regel: Wenn Unklarheit dominiert")
         );
     }
 }
