@@ -26,10 +26,11 @@ RUN cargo build --release -p kura-api -p kura-cli 2>/dev/null || true
 COPY api/src api/src
 COPY cli/src cli/src
 COPY core/src core/src
+COPY mcp-runtime/src mcp-runtime/src
 COPY migrations migrations
 
 # Touch source files to invalidate the dummy build
-RUN touch api/src/main.rs cli/src/main.rs core/src/lib.rs
+RUN touch api/src/main.rs cli/src/main.rs core/src/lib.rs mcp-runtime/src/lib.rs
 
 # Build real binaries
 RUN cargo build --release -p kura-api -p kura-cli
