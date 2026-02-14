@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) const AGENT_CAPABILITIES_SCHEMA_VERSION: &str = "agent_capabilities.v2.self_model";
 pub(super) const AGENT_CONTEXT_CONTRACT_VERSION: &str =
-    "agent_context.v4.self_model.challenge_memory";
+    "agent_context.v5.self_model.challenge_memory.decision_brief";
 pub(super) const AGENT_CONTEXT_SYSTEM_CONTRACT_VERSION: &str = "agent_context.system.v1";
 pub(super) const AGENT_CONTEXT_SYSTEM_PROFILE: &str = "redacted_v1";
 pub(super) const AGENT_CHALLENGE_MODE_SCHEMA_VERSION: &str = "challenge_mode.v1";
@@ -22,6 +22,7 @@ pub(super) const RETRIEVAL_REGRET_SCHEMA_VERSION: &str = "retrieval_regret.v1";
 pub(super) const LAAJ_SIDECAR_SCHEMA_VERSION: &str = "laaj_sidecar.v1";
 pub(super) const COUNTERFACTUAL_RECOMMENDATION_SCHEMA_VERSION: &str =
     "counterfactual_recommendation.v1";
+pub(super) const DECISION_BRIEF_SCHEMA_VERSION: &str = "decision_brief.v1";
 pub(super) const RESPONSE_MODE_POLICY_ROLE_NUDGE_ONLY: &str = "nudge_only";
 pub(super) const SIDECAR_POLICY_ROLE_ADVISORY_ONLY: &str = "advisory_only";
 pub(super) const RESPONSE_MODE_INVARIANT_ID: &str = "INV-010";

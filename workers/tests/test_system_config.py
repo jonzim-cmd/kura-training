@@ -503,6 +503,22 @@ class TestConventions:
         assert sidecar["retrieval_regret_signal_type"] == "retrieval_regret_observed"
         assert sidecar["laaj_signal_type"] == "laaj_sidecar_assessed"
 
+    def test_has_decision_brief_v1_conventions(self):
+        result = _get_conventions()
+        assert "decision_brief_v1" in result
+        brief = result["decision_brief_v1"]
+        assert brief["schema_version"] == "decision_brief.v1"
+        assert set(brief["required_blocks"]) == {
+            "likely_true",
+            "unclear",
+            "high_impact_decisions",
+            "recent_person_failures",
+            "person_tradeoffs",
+        }
+        assert brief["max_items_per_block"] == 3
+        assert brief["source_priority"][0] == "quality_health/overview"
+        assert brief["safety"]["must_not_claim_false_certainty"] is True
+
     def test_has_proof_in_production_v1_conventions(self):
         result = _get_conventions()
         assert "proof_in_production_v1" in result

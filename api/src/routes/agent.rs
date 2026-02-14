@@ -144,6 +144,16 @@ pub struct AgentContextMeta {
     pub memory_tier_contract: AgentMemoryTierContract,
 }
 
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentDecisionBrief {
+    pub schema_version: String,
+    pub likely_true: Vec<String>,
+    pub unclear: Vec<String>,
+    pub high_impact_decisions: Vec<String>,
+    pub recent_person_failures: Vec<String>,
+    pub person_tradeoffs: Vec<String>,
+}
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct AgentContextResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -172,6 +182,7 @@ pub struct AgentContextResponse {
     pub quality_health: Option<ProjectionResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub consistency_inbox: Option<ProjectionResponse>,
+    pub decision_brief: AgentDecisionBrief,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub exercise_progression: Vec<ProjectionResponse>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -2024,6 +2035,343 @@ fn normalize_sample_confidence(value: Option<&Value>) -> String {
     match normalized.as_str() {
         "low" | "medium" | "high" => normalized,
         _ => "low".to_string(),
+    }
+}
+
+const DECISION_BRIEF_MAX_ITEMS_PER_BLOCK: usize = 3;
+
+fn read_value_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+        .map(ToString::to_string)
+}
+
+fn read_value_string_list(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::trim)
+                .filter(|raw| !raw.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn push_decision_brief_entry(block: &mut Vec<String>, text: impl Into<String>) {
+    if block.len() >= DECISION_BRIEF_MAX_ITEMS_PER_BLOCK {
+        return;
+    }
+    let normalized = text.into().trim().to_string();
+    if normalized.is_empty() {
+        return;
+    }
+    if block.iter().any(|entry| entry == &normalized) {
+        return;
+    }
+    block.push(normalized);
+}
+
+fn build_decision_brief(
+    user_profile: &ProjectionResponse,
+    quality_health: Option<&ProjectionResponse>,
+    consistency_inbox: Option<&ProjectionResponse>,
+) -> AgentDecisionBrief {
+    let mut likely_true: Vec<String> = Vec::new();
+    let mut unclear: Vec<String> = Vec::new();
+    let mut high_impact_decisions: Vec<String> = Vec::new();
+    let mut recent_person_failures: Vec<String> = Vec::new();
+    let mut person_tradeoffs: Vec<String> = Vec::new();
+
+    let quality = extract_runtime_quality_signals(quality_health);
+    if quality.integrity_slo_status == "healthy" && quality.calibration_status == "healthy" {
+        push_decision_brief_entry(
+            &mut likely_true,
+            "Integritaet und Kalibrierung wirken aktuell stabil.",
+        );
+    } else {
+        push_decision_brief_entry(
+            &mut unclear,
+            format!(
+                "Qualitaetszustand ist nicht voll stabil (integrity={}, calibration={}).",
+                quality.integrity_slo_status, quality.calibration_status
+            ),
+        );
+    }
+
+    if quality.outcome_signal_sample_ok {
+        push_decision_brief_entry(
+            &mut likely_true,
+            format!(
+                "Outcome-Signalbasis ist belastbar (confidence={}).",
+                quality.outcome_signal_sample_confidence
+            ),
+        );
+    } else {
+        push_decision_brief_entry(
+            &mut unclear,
+            format!(
+                "Outcome-Signalbasis ist duenn (samples={}, confidence={}).",
+                quality.outcome_signal_sample_size, quality.outcome_signal_sample_confidence
+            ),
+        );
+    }
+
+    if quality.historical_regret_exceeded_rate_pct >= 20.0 {
+        push_decision_brief_entry(
+            &mut recent_person_failures,
+            format!(
+                "Erhoehte Retrieval-Regret-Quote ({:.1}%).",
+                quality.historical_regret_exceeded_rate_pct
+            ),
+        );
+    }
+    if quality.historical_challenge_rate_pct >= 25.0 {
+        push_decision_brief_entry(
+            &mut recent_person_failures,
+            format!(
+                "Hohe Challenge-Rate ({:.1}%) bei Empfehlungen.",
+                quality.historical_challenge_rate_pct
+            ),
+        );
+    }
+    if quality.unresolved_set_logged_pct >= 10.0 {
+        push_decision_brief_entry(
+            &mut recent_person_failures,
+            format!(
+                "Viele unresolved Set-Logs ({:.1}%).",
+                quality.unresolved_set_logged_pct
+            ),
+        );
+    }
+    if quality.integrity_slo_status == "degraded" || quality.calibration_status == "degraded" {
+        push_decision_brief_entry(
+            &mut high_impact_decisions,
+            "Autonomieumfang und Schreibverhalten konservativ halten, bis Qualität stabilisiert ist.",
+        );
+    }
+
+    let user_data = user_profile.projection.data.get("user");
+    let preferences = user_data
+        .and_then(|value| value.get("preferences"))
+        .and_then(Value::as_object);
+    let baseline_profile = user_data.and_then(|value| value.get("baseline_profile"));
+    let data_quality = user_data.and_then(|value| value.get("data_quality"));
+
+    if let Some(status) =
+        baseline_profile.and_then(|value| read_value_string(value.get("status")))
+    {
+        match status.as_str() {
+            "complete" => push_decision_brief_entry(
+                &mut likely_true,
+                "Baseline-Profil ist fuer Kernfelder komplett.",
+            ),
+            "deferred" => {
+                let deferred = read_value_string_list(
+                    baseline_profile.and_then(|value| value.get("required_deferred")),
+                );
+                let details = if deferred.is_empty() {
+                    "einige Felder".to_string()
+                } else {
+                    deferred.join(", ")
+                };
+                push_decision_brief_entry(
+                    &mut unclear,
+                    format!("Baseline-Felder sind bewusst deferred ({details})."),
+                );
+            }
+            "needs_input" => {
+                let missing = read_value_string_list(
+                    baseline_profile.and_then(|value| value.get("required_missing")),
+                );
+                let details = if missing.is_empty() {
+                    "einige Kernfelder".to_string()
+                } else {
+                    missing.join(", ")
+                };
+                push_decision_brief_entry(
+                    &mut unclear,
+                    format!("Baseline-Profil braucht noch Input ({details})."),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(missing_exercise_ids) =
+        read_value_usize(data_quality.and_then(|value| value.get("events_without_exercise_id")))
+    {
+        if missing_exercise_ids > 0 {
+            push_decision_brief_entry(
+                &mut recent_person_failures,
+                format!(
+                    "Events ohne exercise_id zuletzt: {}.",
+                    missing_exercise_ids
+                ),
+            );
+        }
+    }
+
+    if let Some(actionable) = data_quality
+        .and_then(|value| value.get("actionable"))
+        .and_then(Value::as_array)
+    {
+        if !actionable.is_empty() {
+            push_decision_brief_entry(
+                &mut recent_person_failures,
+                format!("Offene Data-Quality-Items im Profil: {}.", actionable.len()),
+            );
+        }
+    }
+
+    if let Some(inbox) = consistency_inbox {
+        let inbox_data = &inbox.projection.data;
+        let pending_items_total = read_value_usize(inbox_data.get("pending_items_total")).unwrap_or(0);
+        let requires_human_decision =
+            read_value_bool(inbox_data.get("requires_human_decision")).unwrap_or(false);
+        let highest_severity = read_value_string(inbox_data.get("highest_severity"))
+            .unwrap_or_else(|| "none".to_string());
+
+        if pending_items_total == 0 {
+            push_decision_brief_entry(
+                &mut likely_true,
+                "Keine offenen Konsistenzfunde mit Entscheidungsbedarf.",
+            );
+        } else {
+            push_decision_brief_entry(
+                &mut unclear,
+                format!(
+                    "Es gibt {} offene Konsistenzfunde (highest_severity={}).",
+                    pending_items_total, highest_severity
+                ),
+            );
+        }
+
+        let mut highlighted_items = 0usize;
+        for item in inbox_data
+            .get("items")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if highlighted_items >= DECISION_BRIEF_MAX_ITEMS_PER_BLOCK {
+                break;
+            }
+            let severity =
+                read_value_string(item.get("severity")).unwrap_or_else(|| "info".to_string());
+            let summary = read_value_string(item.get("summary"))
+                .unwrap_or_else(|| "Offener Konsistenzfund".to_string());
+            push_decision_brief_entry(
+                &mut recent_person_failures,
+                format!("{}: {}", severity.to_uppercase(), summary),
+            );
+            if requires_human_decision && matches!(severity.as_str(), "critical" | "warning") {
+                push_decision_brief_entry(
+                    &mut high_impact_decisions,
+                    format!("{}: {}", severity.to_uppercase(), summary),
+                );
+            }
+            highlighted_items += 1;
+        }
+
+        if requires_human_decision && high_impact_decisions.is_empty() {
+            push_decision_brief_entry(
+                &mut high_impact_decisions,
+                "Explizite Entscheidung zu offenen Konsistenzfunden erforderlich (approve|decline|snooze).",
+            );
+        }
+    }
+
+    if let Some(prefs) = preferences {
+        if let Some(scope) = read_value_string(prefs.get("autonomy_scope")) {
+            match scope.as_str() {
+                "strict" => push_decision_brief_entry(
+                    &mut person_tradeoffs,
+                    "Autonomy strict: weniger Fehlrisiko, aber weniger proaktive Hebel.",
+                ),
+                "proactive" => push_decision_brief_entry(
+                    &mut person_tradeoffs,
+                    "Autonomy proactive: mehr Fortschrittshebel, aber engeres Fehlerfenster.",
+                ),
+                _ => push_decision_brief_entry(
+                    &mut person_tradeoffs,
+                    "Autonomy moderate: balanciert zwischen Fortschritt und Sicherheit.",
+                ),
+            }
+        }
+
+        if let Some(verbosity) = read_value_string(prefs.get("verbosity")) {
+            match verbosity.as_str() {
+                "concise" => push_decision_brief_entry(
+                    &mut person_tradeoffs,
+                    "Praeferenz concise: schnellere Antworten, aber weniger Begruendungsdetail.",
+                ),
+                "detailed" => push_decision_brief_entry(
+                    &mut person_tradeoffs,
+                    "Praeferenz detailed: mehr Nachvollziehbarkeit, aber hoehere kognitive Last.",
+                ),
+                _ => {}
+            }
+        }
+
+        if let Some(strictness) = read_value_string(prefs.get("confirmation_strictness")) {
+            match strictness.as_str() {
+                "always" => push_decision_brief_entry(
+                    &mut person_tradeoffs,
+                    "Confirmation always: maximale Kontrolle, aber mehr Interaktionsschritte.",
+                ),
+                "never" => push_decision_brief_entry(
+                    &mut person_tradeoffs,
+                    "Confirmation never: weniger Reibung, aber Risiko fuer vorschnelle Aktionen.",
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    if likely_true.is_empty() {
+        push_decision_brief_entry(
+            &mut likely_true,
+            "Stabile Grundsignale sind vorhanden, aber noch begrenzt.",
+        );
+    }
+    if unclear.is_empty() {
+        push_decision_brief_entry(
+            &mut unclear,
+            "Keine dominanten Unklarheiten aus den aktuellen Signalen.",
+        );
+    }
+    if high_impact_decisions.is_empty() {
+        push_decision_brief_entry(
+            &mut high_impact_decisions,
+            "Aktuell keine akute High-Impact-Entscheidung aus den vorhandenen Signalen.",
+        );
+    }
+    if recent_person_failures.is_empty() {
+        push_decision_brief_entry(
+            &mut recent_person_failures,
+            "Zuletzt keine klaren wiederkehrenden personenspezifischen Fehlmuster.",
+        );
+    }
+    if person_tradeoffs.is_empty() {
+        push_decision_brief_entry(
+            &mut person_tradeoffs,
+            "Mehr Spezifitaet braucht mehr belastbare Evidenz; mehr Sicherheit kostet Tempo.",
+        );
+    }
+
+    AgentDecisionBrief {
+        schema_version: DECISION_BRIEF_SCHEMA_VERSION.to_string(),
+        likely_true,
+        unclear,
+        high_impact_decisions,
+        recent_person_failures,
+        person_tradeoffs,
     }
 }
 
@@ -5032,6 +5380,8 @@ pub async fn get_agent_context(
         semantic_memory.as_ref(),
         generated_at,
     );
+    let decision_brief =
+        build_decision_brief(&user_profile, quality_health.as_ref(), consistency_inbox.as_ref());
 
     Ok(Json(AgentContextResponse {
         system,
@@ -5048,6 +5398,7 @@ pub async fn get_agent_context(
         causal_inference,
         quality_health,
         consistency_inbox,
+        decision_brief,
         exercise_progression,
         strength_inference,
         custom,
@@ -9970,6 +10321,7 @@ mod tests {
                 "model_tier_registry_v1": {"tiers": {"strict": {"high_impact_write_policy": "block"}}},
                 "counterfactual_recommendation_v1": {"schema_version": "counterfactual_recommendation.v1"},
                 "synthetic_adversarial_corpus_v1": {"schema_version": "synthetic_adversarial_corpus.v1"},
+                "decision_brief_v1": {"schema_version": "decision_brief.v1"},
                 "learning_clustering_v1": {"rules": ["internal"]},
                 "shadow_evaluation_gate_v1": {"rules": ["internal"]},
                 "unexpected_convention": {"rules": ["unknown"]}
@@ -10006,6 +10358,7 @@ mod tests {
         assert!(conventions.contains_key("model_tier_registry_v1"));
         assert!(conventions.contains_key("counterfactual_recommendation_v1"));
         assert!(conventions.contains_key("synthetic_adversarial_corpus_v1"));
+        assert!(conventions.contains_key("decision_brief_v1"));
         assert!(!conventions.contains_key("learning_clustering_v1"));
         assert!(!conventions.contains_key("shadow_evaluation_gate_v1"));
         assert!(!conventions.contains_key("unexpected_convention"));
@@ -10481,6 +10834,195 @@ mod tests {
         assert_eq!(
             pc["snooze_until"], "2026-02-17T12:00:00Z",
             "snooze_until must be preserved"
+        );
+    }
+
+    #[test]
+    fn decision_brief_contract_exposes_required_blocks() {
+        let user_profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "autonomy_scope": "moderate",
+                        "verbosity": "balanced",
+                        "confirmation_strictness": "auto"
+                    },
+                    "baseline_profile": {
+                        "status": "complete",
+                        "required_missing": []
+                    },
+                    "data_quality": {
+                        "events_without_exercise_id": 0,
+                        "actionable": []
+                    }
+                },
+                "agenda": []
+            }),
+        );
+        let quality_health = make_projection_response(
+            "quality_health",
+            "overview",
+            Utc::now(),
+            json!({
+                "status": "healthy",
+                "integrity_slo_status": "healthy",
+                "autonomy_policy": {
+                    "calibration_status": "healthy"
+                },
+                "metrics": {
+                    "response_mode_outcomes": {
+                        "response_mode_selected_total": 18,
+                        "sample_ok": true,
+                        "sample_confidence": "medium",
+                        "post_task_follow_through_rate_pct": 82.0,
+                        "user_challenge_rate_pct": 6.0,
+                        "retrieval_regret_exceeded_pct": 7.0
+                    }
+                }
+            }),
+        );
+        let inbox = make_inbox_projection(json!({
+            "schema_version": 1,
+            "pending_items_total": 0,
+            "highest_severity": "none",
+            "requires_human_decision": false,
+            "items": []
+        }));
+
+        let brief = super::build_decision_brief(
+            &user_profile,
+            Some(&quality_health),
+            Some(&inbox),
+        );
+        assert_eq!(brief.schema_version, super::DECISION_BRIEF_SCHEMA_VERSION);
+        assert!(!brief.likely_true.is_empty());
+        assert!(!brief.unclear.is_empty());
+        assert!(!brief.high_impact_decisions.is_empty());
+        assert!(!brief.recent_person_failures.is_empty());
+        assert!(!brief.person_tradeoffs.is_empty());
+        assert!(brief.likely_true.len() <= 3);
+        assert!(brief.unclear.len() <= 3);
+        assert!(brief.high_impact_decisions.len() <= 3);
+        assert!(brief.recent_person_failures.len() <= 3);
+        assert!(brief.person_tradeoffs.len() <= 3);
+    }
+
+    #[test]
+    fn decision_brief_contract_highlights_high_impact_decisions_from_consistency_inbox() {
+        let user_profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {},
+                    "baseline_profile": {
+                        "status": "needs_input",
+                        "required_missing": ["age_or_date_of_birth"]
+                    }
+                }
+            }),
+        );
+        let quality_health = make_projection_response(
+            "quality_health",
+            "overview",
+            Utc::now(),
+            json!({
+                "status": "monitor",
+                "integrity_slo_status": "monitor",
+                "autonomy_policy": {
+                    "calibration_status": "healthy"
+                },
+                "metrics": {
+                    "response_mode_outcomes": {
+                        "response_mode_selected_total": 4,
+                        "sample_ok": false,
+                        "sample_confidence": "low",
+                        "user_challenge_rate_pct": 31.0,
+                        "retrieval_regret_exceeded_pct": 45.0
+                    }
+                }
+            }),
+        );
+        let inbox = make_inbox_projection(json!({
+            "schema_version": 1,
+            "pending_items_total": 1,
+            "highest_severity": "critical",
+            "requires_human_decision": true,
+            "items": [{
+                "item_id": "ci-critical-1",
+                "severity": "critical",
+                "summary": "Recent values may not match intended set data.",
+                "recommended_action": "Review and confirm the values."
+            }]
+        }));
+
+        let brief = super::build_decision_brief(
+            &user_profile,
+            Some(&quality_health),
+            Some(&inbox),
+        );
+        assert!(
+            brief
+                .high_impact_decisions
+                .iter()
+                .any(|item| item.contains("CRITICAL"))
+        );
+        assert!(
+            brief
+                .recent_person_failures
+                .iter()
+                .any(|item| item.contains("Recent values may not match"))
+        );
+    }
+
+    #[test]
+    fn decision_brief_contract_uses_person_tradeoffs_from_preferences() {
+        let user_profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "autonomy_scope": "strict",
+                        "verbosity": "concise",
+                        "confirmation_strictness": "always"
+                    },
+                    "baseline_profile": {
+                        "status": "complete",
+                        "required_missing": []
+                    },
+                    "data_quality": {
+                        "events_without_exercise_id": 0,
+                        "actionable": []
+                    }
+                },
+                "agenda": []
+            }),
+        );
+
+        let brief = super::build_decision_brief(&user_profile, None, None);
+        assert!(
+            brief
+                .person_tradeoffs
+                .iter()
+                .any(|item| item.contains("Autonomy strict"))
+        );
+        assert!(
+            brief
+                .person_tradeoffs
+                .iter()
+                .any(|item| item.contains("concise"))
+        );
+        assert!(
+            brief
+                .person_tradeoffs
+                .iter()
+                .any(|item| item.contains("Confirmation always"))
         );
     }
 }

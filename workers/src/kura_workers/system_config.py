@@ -625,6 +625,33 @@ def _get_conventions() -> dict[str, Any]:
             },
             "report_section": "adversarial_corpus",
         },
+        "decision_brief_v1": {
+            "rules": [
+                "Return a compact, structured decision image for agent reasoning (not raw telemetry dumps).",
+                "Always include five blocks: likely_true, unclear, high_impact_decisions, recent_person_failures, person_tradeoffs.",
+                "Each block must stay short and bounded to preserve chat UX readability.",
+                "Specificity must remain evidence-anchored and avoid false precision.",
+            ],
+            "schema_version": "decision_brief.v1",
+            "required_blocks": [
+                "likely_true",
+                "unclear",
+                "high_impact_decisions",
+                "recent_person_failures",
+                "person_tradeoffs",
+            ],
+            "max_items_per_block": 3,
+            "source_priority": [
+                "quality_health/overview",
+                "consistency_inbox/overview",
+                "user_profile/me",
+            ],
+            "safety": {
+                "must_expose_uncertainty_when_signals_are_thin": True,
+                "must_not_claim_false_certainty": True,
+                "must_not_expand_into_long_raw_data_dumps": True,
+            },
+        },
         "learning_backlog_bridge_v1": {
             "rules": [
                 "Generate machine-readable issue candidates from weekly learning_issue_clusters and extraction underperformance reports.",
