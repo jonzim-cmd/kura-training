@@ -1038,8 +1038,9 @@ def _get_agent_behavior() -> dict[str, Any]:
                     "save_echo_required": "bool — always true when contract applies",
                     "save_echo_present": "bool — whether echo was detected in agent response",
                     "save_echo_completeness": (
-                        "'complete' | 'partial' | 'missing' — "
-                        "completeness assessment of value coverage"
+                        "'complete' | 'partial' | 'missing' | 'not_assessed' — "
+                        "completeness assessment of value coverage (not_assessed is allowed "
+                        "at write time before response-level echo analysis)"
                     ),
                 },
                 "interaction_with_intent_handshake": (

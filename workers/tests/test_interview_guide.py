@@ -181,6 +181,7 @@ class TestEventConventions:
             "external.activity_imported",
             "observation.logged",
             "evidence.claim.logged",
+            "quality.consistency.review.decided",
         }
         assert set(conventions.keys()) == expected
 

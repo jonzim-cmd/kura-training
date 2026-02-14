@@ -1258,7 +1258,11 @@ def _severity_weight_from_event(data: dict[str, Any]) -> tuple[str, float]:
     severity = data.get("mismatch_severity")
     weight = data.get("mismatch_weight")
     if severity is not None and weight is not None:
-        return str(severity), float(weight)
+        try:
+            parsed_weight = float(weight)
+        except (TypeError, ValueError):
+            parsed_weight = 0.0
+        return str(severity), max(0.0, min(1.0, parsed_weight))
     # Legacy fallback: binary mismatch → critical or none
     mismatch_detected = data.get("mismatch_detected")
     if mismatch_detected is None:
@@ -1319,6 +1323,7 @@ def _compute_save_claim_slo(
         "target": {"healthy_max": 0.0, "monitor_max": 1.0},
         "sample_count": total_checks,
         "mismatch_count": binary_mismatches,
+        "binary_mismatch_rate_pct": binary_mismatch_pct,
         "weighted_mismatch_sum": round(weighted_sum, 2),
         "weighted_mismatch_rate_pct": weighted_mismatch_pct,
         "severity_breakdown": severity_breakdown,

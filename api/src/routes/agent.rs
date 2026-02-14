@@ -8200,7 +8200,16 @@ mod tests {
 
         let data = &event.data;
         assert_eq!(data["save_echo_required"], true, "save_echo must be required at moderate tier");
-        assert_eq!(data["save_echo_completeness"], "missing", "default completeness is missing until assessed");
+        assert_eq!(
+            data["save_echo_completeness"],
+            "not_assessed",
+            "default completeness must remain neutral until echo assessment is available"
+        );
+        assert_eq!(
+            data["mismatch_severity"],
+            "none",
+            "successful writes must not be marked critical before echo assessment"
+        );
     }
 
     #[test]
@@ -8261,7 +8270,16 @@ mod tests {
 
         let data = &event.data;
         assert_eq!(data["save_echo_required"], true, "save_echo must be required at advanced tier");
-        assert_eq!(data["save_echo_completeness"], "missing", "default completeness is missing until assessed");
+        assert_eq!(
+            data["save_echo_completeness"],
+            "not_assessed",
+            "default completeness must remain neutral until echo assessment is available"
+        );
+        assert_eq!(
+            data["mismatch_severity"],
+            "none",
+            "successful writes must not be marked critical before echo assessment"
+        );
     }
 
     // ── Mismatch Severity Contract (save_claim_mismatch_severity) ────
@@ -8303,6 +8321,15 @@ mod tests {
     fn save_claim_mismatch_severity_contract_none_when_all_good() {
         let (severity, reason_codes) =
             super::classify_mismatch_severity(false, true, "complete");
+        assert_eq!(severity.severity, "none");
+        assert_eq!(severity.weight, 0.0);
+        assert!(reason_codes.is_empty());
+    }
+
+    #[test]
+    fn save_claim_mismatch_severity_contract_none_when_echo_not_assessed_and_no_mismatch() {
+        let (severity, reason_codes) =
+            super::classify_mismatch_severity(false, true, "not_assessed");
         assert_eq!(severity.severity, "none");
         assert_eq!(severity.weight, 0.0);
         assert!(reason_codes.is_empty());

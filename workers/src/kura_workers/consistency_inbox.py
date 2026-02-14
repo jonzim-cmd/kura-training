@@ -1,10 +1,10 @@
 """Consistency Inbox — aggregates per-user data quality findings for chat surfacing.
 
 This module builds the ``consistency_inbox/overview`` projection from
-quality signals (``quality.save_claim.checked``, ``learning.signal.logged``,
-``quality_health/overview``).  The projection is read by the agent context
-endpoint so that the agent can proactively surface findings and request
-explicit user decisions before applying fixes.
+``quality.save_claim.checked`` signals plus prior
+``quality.consistency.review.decided`` decisions. The projection is read by
+the agent context endpoint so that the agent can proactively surface findings
+and request explicit user decisions before applying fixes.
 
 **Safety invariant**: No fix is executed without a prior ``approve`` decision
 recorded via ``quality.consistency.review.decided``.
@@ -16,6 +16,12 @@ import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+import psycopg
+from psycopg.rows import dict_row
+from psycopg.types.json import Json
+
+from .utils import get_retracted_event_ids
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +38,8 @@ _SEVERITY_ORDER = {"critical": 3, "warning": 2, "info": 1, "none": 0}
 # Cooldown durations (applied server-side via prompt_control).
 _COOLDOWN_AFTER_DECLINE_DAYS = 7
 _DEFAULT_SNOOZE_HOURS = 72
+
+_QUALITY_EVENT_TYPES = ("quality.save_claim.checked",)
 
 
 def _stable_item_id(user_id: str, signal_type: str, detail: str) -> str:
@@ -51,6 +59,27 @@ def _highest_severity(items: list[dict[str, Any]]) -> str:
     )
 
 
+def _as_utc_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        if raw.endswith("Z"):
+            raw = f"{raw[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    return None
+
+
 def build_consistency_inbox(
     quality_events: list[dict[str, Any]],
     user_id: str,
@@ -62,8 +91,8 @@ def build_consistency_inbox(
     Parameters
     ----------
     quality_events:
-        Rows from events table matching quality.save_claim.checked or
-        learning.signal.logged within the scan window.
+        Rows from events table matching quality.save_claim.checked within the
+        scan window.
     user_id:
         The user for whom the inbox is being built.
     decisions:
@@ -88,32 +117,35 @@ def build_consistency_inbox(
         data = dec_event.get("data") or {}
         decision = data.get("decision", "")
         item_ids = data.get("item_ids") or []
-        ts = dec_event.get("timestamp")
-        if not isinstance(ts, datetime):
+        ts = _as_utc_datetime(dec_event.get("timestamp"))
+        if ts is None:
             continue
         for item_id in item_ids:
+            item_id_text = str(item_id).strip()
+            if not item_id_text:
+                continue
             if decision == "decline":
-                cooldown_map[item_id] = ts + timedelta(days=_COOLDOWN_AFTER_DECLINE_DAYS)
+                cooldown_map[item_id_text] = ts + timedelta(days=_COOLDOWN_AFTER_DECLINE_DAYS)
             elif decision == "snooze":
                 snooze_str = data.get("snooze_until")
                 if snooze_str:
-                    try:
-                        cooldown_map[item_id] = datetime.fromisoformat(snooze_str)
-                    except (ValueError, TypeError):
-                        cooldown_map[item_id] = ts + timedelta(hours=_DEFAULT_SNOOZE_HOURS)
+                    parsed_snooze = _as_utc_datetime(snooze_str)
+                    if parsed_snooze is None:
+                        parsed_snooze = ts + timedelta(hours=_DEFAULT_SNOOZE_HOURS)
+                    cooldown_map[item_id_text] = parsed_snooze
                 else:
-                    cooldown_map[item_id] = ts + timedelta(hours=_DEFAULT_SNOOZE_HOURS)
+                    cooldown_map[item_id_text] = ts + timedelta(hours=_DEFAULT_SNOOZE_HOURS)
             elif decision == "approve":
                 # Approved items are removed from cooldown (fix was applied).
-                cooldown_map.pop(item_id, None)
+                cooldown_map.pop(item_id_text, None)
 
     # Aggregate findings from save_claim mismatches.
     items: list[dict[str, Any]] = []
     seen_item_ids: set[str] = set()
 
     for row in quality_events:
-        ts = row.get("timestamp")
-        if not isinstance(ts, datetime) or ts < window_start:
+        ts = _as_utc_datetime(row.get("timestamp"))
+        if ts is None or ts < window_start:
             continue
         data = row.get("data") or {}
         event_type = row.get("event_type", "")
@@ -154,20 +186,28 @@ def build_consistency_inbox(
     )
 
     # Determine prompt_control.
-    last_prompted_at = None
-    cooldown_active = False
-    snooze_until = None
-    for dec_event in sorted(decisions, key=lambda d: d.get("timestamp", now)):
+    last_prompted_at: str | None = None
+    cooldown_active = any(until > now for until in cooldown_map.values())
+    snooze_until_dt: datetime | None = None
+    sorted_decisions = sorted(
+        decisions,
+        key=lambda event: _as_utc_datetime(event.get("timestamp"))
+        or datetime.min.replace(tzinfo=timezone.utc),
+    )
+    for dec_event in sorted_decisions:
+        dec_ts = _as_utc_datetime(dec_event.get("timestamp"))
+        if dec_ts is not None:
+            last_prompted_at = dec_ts.isoformat()
         dec_data = dec_event.get("data") or {}
         if dec_data.get("decision") == "snooze":
-            snooze_str = dec_data.get("snooze_until")
-            if snooze_str:
-                try:
-                    snooze_until = datetime.fromisoformat(snooze_str).isoformat()
-                    if datetime.fromisoformat(snooze_str) > now:
-                        cooldown_active = True
-                except (ValueError, TypeError):
-                    pass
+            snooze_dt = _as_utc_datetime(dec_data.get("snooze_until"))
+            if snooze_dt is None and dec_ts is not None:
+                snooze_dt = dec_ts + timedelta(hours=_DEFAULT_SNOOZE_HOURS)
+            if snooze_dt is not None and (snooze_until_dt is None or snooze_dt > snooze_until_dt):
+                snooze_until_dt = snooze_dt
+
+    if snooze_until_dt is not None and snooze_until_dt > now:
+        cooldown_active = True
 
     return {
         "schema_version": CONSISTENCY_INBOX_SCHEMA_VERSION,
@@ -178,7 +218,7 @@ def build_consistency_inbox(
         "items": items,
         "prompt_control": {
             "last_prompted_at": last_prompted_at,
-            "snooze_until": snooze_until,
+            "snooze_until": snooze_until_dt.isoformat() if snooze_until_dt else None,
             "cooldown_active": cooldown_active,
         },
     }
@@ -207,3 +247,173 @@ def _build_mismatch_summary(severity: str, reason_codes: list[str]) -> str:
             "The stored data should be reviewed."
         )
     return f"A data quality issue was detected (severity: {severity})."
+
+
+async def _load_quality_events(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+) -> list[dict[str, Any]]:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT id, event_type, timestamp, data
+            FROM events
+            WHERE user_id = %s
+              AND event_type = ANY(%s)
+              AND timestamp >= NOW() - INTERVAL '30 days'
+            ORDER BY timestamp DESC, id DESC
+            """,
+            (user_id, list(_QUALITY_EVENT_TYPES)),
+        )
+        rows = await cur.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def _load_decision_events(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+) -> list[dict[str, Any]]:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT id, event_type, timestamp, data
+            FROM events
+            WHERE user_id = %s
+              AND event_type = 'quality.consistency.review.decided'
+            ORDER BY timestamp DESC, id DESC
+            """,
+            (user_id,),
+        )
+        rows = await cur.fetchall()
+    return [dict(row) for row in rows]
+
+
+def _non_retracted(
+    rows: list[dict[str, Any]],
+    retracted_ids: set[str],
+) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        row_id = row.get("id")
+        if row_id is None:
+            filtered.append(row)
+            continue
+        if str(row_id) in retracted_ids:
+            continue
+        filtered.append(row)
+    return filtered
+
+
+async def refresh_consistency_inbox_for_user(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+    *,
+    anchor_event_id: str | None = None,
+) -> dict[str, Any]:
+    retracted_ids = await get_retracted_event_ids(conn, user_id)
+    quality_rows = _non_retracted(await _load_quality_events(conn, user_id), retracted_ids)
+    decision_rows = _non_retracted(await _load_decision_events(conn, user_id), retracted_ids)
+
+    if not quality_rows and not decision_rows:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                DELETE FROM projections
+                WHERE user_id = %s
+                  AND projection_type = %s
+                  AND key = %s
+                """,
+                (user_id, CONSISTENCY_INBOX_PROJECTION_TYPE, CONSISTENCY_INBOX_KEY),
+            )
+        return {
+            "status": "deleted",
+            "pending_items_total": 0,
+            "requires_human_decision": False,
+        }
+
+    now = datetime.now(tz=timezone.utc)
+    projection_data = build_consistency_inbox(
+        quality_rows,
+        user_id,
+        decisions=decision_rows,
+        now=now,
+    )
+    latest_seen_id: Any = None
+    if anchor_event_id:
+        latest_seen_id = anchor_event_id
+    elif quality_rows:
+        latest_seen_id = quality_rows[0].get("id")
+    elif decision_rows:
+        latest_seen_id = decision_rows[0].get("id")
+
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            INSERT INTO projections (user_id, projection_type, key, data, version, last_event_id, updated_at)
+            VALUES (%s, %s, %s, %s, 1, %s, NOW())
+            ON CONFLICT (user_id, projection_type, key) DO UPDATE SET
+                data = EXCLUDED.data,
+                version = projections.version + 1,
+                last_event_id = EXCLUDED.last_event_id,
+                updated_at = NOW()
+            """,
+            (
+                user_id,
+                CONSISTENCY_INBOX_PROJECTION_TYPE,
+                CONSISTENCY_INBOX_KEY,
+                Json(projection_data),
+                str(latest_seen_id) if latest_seen_id else None,
+            ),
+        )
+
+    return {
+        "status": "updated",
+        "pending_items_total": int(projection_data.get("pending_items_total", 0)),
+        "requires_human_decision": bool(
+            projection_data.get("requires_human_decision", False)
+        ),
+        "highest_severity": str(projection_data.get("highest_severity", "none")),
+    }
+
+
+async def refresh_all_consistency_inboxes(
+    conn: psycopg.AsyncConnection[Any],
+) -> dict[str, Any]:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT DISTINCT user_id
+            FROM events
+            WHERE event_type = ANY(%s)
+            ORDER BY user_id
+            """,
+            (
+                list(_QUALITY_EVENT_TYPES)
+                + ["quality.consistency.review.decided"],
+            ),
+        )
+        user_rows = await cur.fetchall()
+
+    users = [str(row["user_id"]) for row in user_rows]
+    updated = 0
+    decisions_required = 0
+    for user_id in users:
+        result = await refresh_consistency_inbox_for_user(conn, user_id)
+        if result["status"] == "updated":
+            updated += 1
+            if result["requires_human_decision"]:
+                decisions_required += 1
+
+    summary = {
+        "status": "ok",
+        "users_scanned": len(users),
+        "projections_updated": updated,
+        "users_requiring_decision": decisions_required,
+    }
+    logger.info(
+        "Refreshed consistency_inbox projections: users=%d updated=%d requiring_decision=%d",
+        summary["users_scanned"],
+        summary["projections_updated"],
+        summary["users_requiring_decision"],
+    )
+    return summary

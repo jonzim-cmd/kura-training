@@ -872,14 +872,15 @@ pub(super) fn build_save_claim_checked_event(
     let mismatch_detected = !claim_guard.allow_saved_claim;
     // Save-Echo is a tier-independent data-integrity contract (save_echo_policy_v1).
     // It is always required when claim_status indicates persisted data.
-    // Completeness defaults to "missing" here — the caller (agent response layer)
-    // is responsible for upgrading to "partial"/"complete" once echo content is assessed.
+    // Completeness defaults to "not_assessed" at write time — the caller (agent
+    // response layer) may later upgrade to "partial"/"complete"/"missing" once
+    // user-facing echo content is actually evaluated.
     let save_echo_required = matches!(
         claim_guard.claim_status.as_str(),
         "saved_verified" | "inferred"
     );
     let save_echo_completeness = if save_echo_required {
-        "missing"
+        "not_assessed"
     } else {
         "not_applicable"
     };
@@ -953,7 +954,7 @@ pub(super) fn build_save_claim_checked_event(
 // ── Mismatch Severity Classification (save_claim_mismatch_severity contract) ──
 //
 // Severity reflects data-integrity risk, not protocol aesthetics:
-// - critical: No value echo → plausible mistranslations go undetected (accumulating drift)
+// - critical: No value echo or proof failure without echo assessment
 // - warning:  Partial echo → some values visible, incomplete coverage
 // - info:     Protocol detail missing (e.g. event-ID) but values correctly mirrored
 // - none:     No mismatch or claim not applicable
@@ -1029,9 +1030,17 @@ pub(super) fn classify_mismatch_severity(
     }
 
     // Proof-verification mismatch, echo not yet assessed (legacy/default path)
+    if save_echo_required && save_echo_completeness == "not_assessed" {
+        if mismatch_detected {
+            reason_codes.push("proof_verification_failed_echo_not_assessed".to_string());
+            return (MISMATCH_SEVERITY_CRITICAL, reason_codes);
+        }
+        // No mismatch and no echo assessment yet: keep neutral severity.
+        return (MISMATCH_SEVERITY_NONE, reason_codes);
+    }
+
     if mismatch_detected {
         reason_codes.push("proof_verification_failed".to_string());
-        // Default to critical when echo state is unknown — conservative fallback
         return (MISMATCH_SEVERITY_CRITICAL, reason_codes);
     }
 
@@ -1182,7 +1191,7 @@ pub(super) fn build_save_handshake_learning_signal_events(
         "saved_verified" | "inferred"
     );
     let save_echo_completeness = if save_echo_required {
-        "missing"
+        "not_assessed"
     } else {
         "not_applicable"
     };

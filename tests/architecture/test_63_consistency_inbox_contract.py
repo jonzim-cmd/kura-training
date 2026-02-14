@@ -58,6 +58,23 @@ def test_event_convention_declares_review_decided() -> None:
     assert "decision_source" in required
 
 
+def test_consistency_inbox_projection_handler_is_registered() -> None:
+    import kura_workers.handlers  # noqa: F401
+    from kura_workers.registry import get_projection_handlers
+
+    quality_handlers = {
+        handler.__name__
+        for handler in get_projection_handlers("quality.save_claim.checked")
+    }
+    decision_handlers = {
+        handler.__name__
+        for handler in get_projection_handlers("quality.consistency.review.decided")
+    }
+
+    assert "update_consistency_inbox" in quality_handlers
+    assert "update_consistency_inbox" in decision_handlers
+
+
 def test_build_consistency_inbox_produces_required_schema_fields() -> None:
     """build_consistency_inbox must return all fields from the projection schema."""
     from kura_workers.consistency_inbox import build_consistency_inbox

@@ -110,7 +110,7 @@ pub(super) struct VerifiedModelAttestation {
 #[derive(sqlx::FromRow)]
 pub(super) struct ModelTierTelemetryRow {
     sample_count: i64,
-    mismatch_count: i64,
+    mismatch_weighted_sum: f64,
 }
 
 pub(super) type HmacSha256 = Hmac<Sha256>;
@@ -787,28 +787,24 @@ pub(super) async fn resolve_auto_tier_policy(
             COALESCE(
                 SUM(
                     CASE
-                        -- Severity-aware path: only count mismatches with weight >= 0.5
-                        -- (critical=1.0, warning=0.5). Info-level (0.1) mismatches
-                        -- are protocol-pedantry and must NOT trigger tier degradation.
-                        -- The Python worker has the precise weighted breakdown for dashboards.
-                        -- Legacy fallback: binary mismatch_detected → weight 1.0.
-                        -- Excludes infrastructure-level uncertainty (receipt/readback incomplete).
-                        WHEN (data->>'mismatch_weight') IS NOT NULL
-                             AND (data->>'mismatch_weight')::NUMERIC >= 0.5
-                            THEN 1
-                        WHEN (data->>'mismatch_weight') IS NOT NULL
-                            THEN 0
+                        -- Exclude infrastructure-level uncertainty from mismatch accounting.
+                        WHEN COALESCE(data->'uncertainty_markers', '[]'::jsonb) ? 'write_receipt_incomplete'
+                             OR COALESCE(data->'uncertainty_markers', '[]'::jsonb) ? 'read_after_write_unverified'
+                            THEN 0.0
+                        -- Severity-aware path: use explicit mismatch_weight when present.
+                        WHEN (data->>'mismatch_weight') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                            THEN GREATEST(
+                                0.0,
+                                LEAST(1.0, (data->>'mismatch_weight')::DOUBLE PRECISION)
+                            )
+                        -- Legacy fallback: binary mismatch_detected -> weight 1.0 / 0.0.
                         WHEN LOWER(COALESCE(data->>'mismatch_detected', 'false')) = 'true'
-                             AND NOT (
-                                 COALESCE(data->'uncertainty_markers', '[]'::jsonb) ? 'write_receipt_incomplete'
-                                 OR COALESCE(data->'uncertainty_markers', '[]'::jsonb) ? 'read_after_write_unverified'
-                             )
-                        THEN 1
-                        ELSE 0
+                            THEN 1.0
+                        ELSE 0.0
                     END
                 ),
-                0
-            )::BIGINT AS mismatch_count
+                0.0
+            )::DOUBLE PRECISION AS mismatch_weighted_sum
         FROM events
         WHERE user_id = $1
           AND event_type = 'quality.save_claim.checked'
@@ -852,9 +848,13 @@ pub(super) async fn resolve_auto_tier_policy(
     tx.commit().await?;
 
     let sample_count = metrics.sample_count.max(0);
-    let mismatch_count = metrics.mismatch_count.max(0);
+    let mismatch_weighted_sum = if metrics.mismatch_weighted_sum.is_finite() {
+        metrics.mismatch_weighted_sum.max(0.0)
+    } else {
+        0.0
+    };
     let mismatch_rate_pct = if sample_count > 0 {
-        (mismatch_count as f64 / sample_count as f64) * 100.0
+        (mismatch_weighted_sum / sample_count as f64) * 100.0
     } else {
         0.0
     };

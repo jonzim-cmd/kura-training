@@ -9,6 +9,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from ..consistency_inbox import refresh_all_consistency_inboxes
 from ..extraction_calibration import refresh_extraction_calibration
 from ..issue_clustering import refresh_issue_clusters
 from ..learning_backlog_bridge import refresh_learning_backlog_candidates
@@ -152,6 +153,12 @@ async def handle_inference_nightly_refit(
     except Exception as exc:
         logger.warning("Learning backlog refresh skipped due to error: %s", exc)
 
+    consistency_inbox_summary: dict[str, Any] | None = None
+    try:
+        consistency_inbox_summary = await refresh_all_consistency_inboxes(conn)
+    except Exception as exc:
+        logger.warning("Consistency inbox refresh skipped due to error: %s", exc)
+
     if scheduler_key:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -170,7 +177,7 @@ async def handle_inference_nightly_refit(
             )
 
     logger.info(
-        "Nightly refit enqueued %d projection.update jobs across %d users (interval_h=%d, missed_runs=%d, population_priors=%s, issue_clusters=%s, extraction_calibration=%s, unknown_dimensions=%s, learning_backlog=%s)",
+        "Nightly refit enqueued %d projection.update jobs across %d users (interval_h=%d, missed_runs=%d, population_priors=%s, issue_clusters=%s, extraction_calibration=%s, unknown_dimensions=%s, learning_backlog=%s, consistency_inbox=%s)",
         enqueued,
         len(user_ids),
         interval_h,
@@ -180,4 +187,5 @@ async def handle_inference_nightly_refit(
         extraction_calibration_summary or {"status": "failed"},
         unknown_dimension_summary or {"status": "failed"},
         learning_backlog_summary or {"status": "failed"},
+        consistency_inbox_summary or {"status": "failed"},
     )
