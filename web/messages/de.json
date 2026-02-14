@@ -4,7 +4,7 @@
     "description": "Eine KI, die mit dir wächst — lernt dein Training, deine Ernährung und deine Erholung, um gemeinsam bessere Entscheidungen zu treffen."
   },
   "nav": {
-    "home": "Warum Kura?",
+    "home": "Warum KURA?",
     "setup": "Einrichtung",
     "login": "Anmelden",
     "signup": "Konto erstellen",
@@ -90,11 +90,11 @@
     "alreadyHaveAccess": "Bereits Zugang?"
   },
   "start": {
-    "title": "Warum Kura?",
+    "title": "Warum KURA?",
     "story": {
       "p1": "Ich habe olympische Mittelstreckenläuferinnen trainiert. Der nervigste Teil war dabei fast immer dasselbe: Training zu loggen – und zwar so, dass man die Daten nach der Saison auch wirklich auswerten kann. In der Praxis hat das nie richtig funktioniert.",
       "p2": "Bei meinem eigenen Training war es nicht anders. Ich habe so ziemlich jede App ausprobiert, die es gibt: zu umständlich, zu starr, zu nervig. Keine hat lange überlebt. Was ich eigentlich wollte, war etwas Simples: Training festhalten, so wie ich einem Freund schreiben würde. Ein Satz darüber, was ich gemacht habe – und jemand (oder etwas) kümmert sich um den Rest.",
-      "p3": "Genau daraus ist Kura entstanden. Ich habe ein Backend gebaut, in dem nicht der Mensch der „primäre Nutzer“ ist, sondern der KI-Agent. Alles ist darauf ausgelegt, dass der Agent Trainingseinträge zuverlässig versteht, nachfragt, wenn etwas fehlt, und sie als saubere Daten ablegt."
+      "p3": "Genau daraus ist KURA entstanden. Ich habe ein Backend gebaut, in dem nicht der Mensch der „primäre Nutzer“ ist, sondern der KI-Agent. Alles ist darauf ausgelegt, dass der Agent Trainingseinträge zuverlässig versteht, nachfragt, wenn etwas fehlt, und sie als saubere Daten ablegt."
     },
     "apps": {
       "title": "Apps lösen das falsche Problem",
@@ -114,10 +114,10 @@
       "textDesc": "Selbst wenn du exportierst: drei Monate Trainingsdaten, verteilt über Nachrichten. Der Agent muss sich jedes Mal aufs Neue eine Struktur daraus zusammenbauen. Analysen werden langsam, fragil und unzuverlässig."
     },
     "solution": {
-      "title": "Was Kura macht",
-      "p1": "Mit Kura ist der Input egal: Chat, Sprache, kurze Notizen – du formulierst so, wie es für dich natürlich ist. Der Agent übernimmt den Rest und speichert alles nicht als Chatverlauf, sondern als strukturierte Trainingsdaten: typisiert, mit Zeitstempel, verknüpft.",
+      "title": "Was KURA macht",
+      "p1": "Mit KURA ist der Input egal: Chat, Sprache, kurze Notizen – du formulierst so, wie es für dich natürlich ist. Der Agent übernimmt den Rest und speichert alles nicht als Chatverlauf, sondern als strukturierte Trainingsdaten: typisiert, mit Zeitstempel, verknüpft.",
       "p2": "Ein API-Call reicht, um dem Agenten den kompletten Kontext zu geben: jedes Training, jede Bestleistung, jede Entwicklung über Zeit – unabhängig davon, welche KI gerade genutzt wird.",
-      "p3": "Und weil die Daten strukturiert sind, kann Kura die Mathematik übernehmen, die im Chatfenster schlicht nicht zuverlässig funktioniert: bayessche Verfahren, die Plateaus früh erkennen, Zusammenhänge zwischen Schlaf und Leistung sichtbar machen, Vergleiche, die deine Werte einordnen statt nur zu kommentieren.",
+      "p3": "Und weil die Daten strukturiert sind, kann KURA die Mathematik übernehmen, die im Chatfenster schlicht nicht zuverlässig funktioniert: bayessche Verfahren, die Plateaus früh erkennen, Zusammenhänge zwischen Schlaf und Leistung sichtbar machen, Vergleiche, die deine Werte einordnen statt nur zu kommentieren.",
       "p4": "Der Agent liest am Ende die fertige Analyse und gibt Ratschläge, die auf deinen Daten basieren – nicht auf generischem Fitnesswissen."
     },
     "how": {

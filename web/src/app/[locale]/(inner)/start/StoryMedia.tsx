@@ -25,30 +25,32 @@ export default function StoryMedia() {
 
   return (
     <div
-      className={styles.storyMedia}
+      className={styles.storyMediaWrapper}
       onClick={toggle}
       onTouchStart={onTouchStart}
       onTouchEnd={onTouchEnd}
       role="group"
       aria-label="Photo and video carousel"
     >
-      <Image
-        src="/images/founder.jpg"
-        alt=""
-        width={480}
-        height={600}
-        className={`${styles.photo} ${styles.mediaLayer} ${active === 0 ? styles.mediaVisible : ''}`}
-      />
-      <video
-        autoPlay
-        loop
-        muted
-        playsInline
-        preload="metadata"
-        className={`${styles.mediaLayer} ${active === 1 ? styles.mediaVisible : ''}`}
-      >
-        <source src="/videos/kura-demo.mp4" type="video/mp4" />
-      </video>
+      <div className={styles.storyMedia}>
+        <Image
+          src="/images/founder.jpg"
+          alt=""
+          width={480}
+          height={600}
+          className={`${styles.photo} ${styles.mediaLayer} ${active === 0 ? styles.mediaVisible : ''}`}
+        />
+        <video
+          autoPlay
+          loop
+          muted
+          playsInline
+          preload="metadata"
+          className={`${styles.mediaLayer} ${active === 1 ? styles.mediaVisible : ''}`}
+        >
+          <source src="/videos/kura-demo.mp4" type="video/mp4" />
+        </video>
+      </div>
       <div className={styles.dots}>
         <button
           className={`${styles.dot} ${active === 0 ? styles.dotActive : ''}`}

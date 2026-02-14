@@ -4,7 +4,7 @@
     "description": "An AI that grows with you — learning your training, nutrition, and recovery to make better decisions together."
   },
   "nav": {
-    "home": "Why Kura?",
+    "home": "Why KURA?",
     "setup": "Setup",
     "login": "Log in",
     "signup": "Create account",
@@ -90,11 +90,11 @@
     "alreadyHaveAccess": "Already have access?"
   },
   "start": {
-    "title": "Why Kura?",
+    "title": "Why KURA?",
     "story": {
       "p1": "I trained Olympic middle-distance runners. The most annoying part was almost always the same: logging the training — specifically in a way that actually lets you analyze the data after the season. In practice, it never really worked.",
       "p2": "It was no different with my own training. I tried pretty much every app out there: too clunky, too rigid, too annoying. None lasted long. What I actually wanted was something simple: record my training the way I'd text a friend. A sentence about what I did — and someone (or something) takes care of the rest.",
-      "p3": "That's exactly where Kura came from. I built a backend where the AI agent is the primary user, not the human. Everything is designed so the agent reliably understands training entries, asks when something is missing, and stores them as clean data."
+      "p3": "That's exactly where KURA came from. I built a backend where the AI agent is the primary user, not the human. Everything is designed so the agent reliably understands training entries, asks when something is missing, and stores them as clean data."
     },
     "apps": {
       "title": "Apps solve the wrong problem",
@@ -114,10 +114,10 @@
       "textDesc": "Even if you export: three months of training data spread across messages. The agent has to piece together a structure from scratch every time. Analyses get slow, fragile, and unreliable."
     },
     "solution": {
-      "title": "What Kura does",
-      "p1": "With Kura, the input doesn't matter: chat, voice, quick notes — you phrase things however feels natural. The agent takes care of the rest and stores everything not as chat history but as structured training data: typed, timestamped, connected.",
+      "title": "What KURA does",
+      "p1": "With KURA, the input doesn't matter: chat, voice, quick notes — you phrase things however feels natural. The agent takes care of the rest and stores everything not as chat history but as structured training data: typed, timestamped, connected.",
       "p2": "One API call is enough to give the agent the full picture: every session, every PR, every trend over time — regardless of which AI is being used.",
-      "p3": "And because the data is structured, Kura can handle the math that simply doesn't work reliably in a chat window: Bayesian methods that catch plateaus early, connections between sleep and performance made visible, comparisons that contextualize your numbers instead of just commenting on them.",
+      "p3": "And because the data is structured, KURA can handle the math that simply doesn't work reliably in a chat window: Bayesian methods that catch plateaus early, connections between sleep and performance made visible, comparisons that contextualize your numbers instead of just commenting on them.",
       "p4": "The agent reads the finished analysis and gives advice based on your actual data — not generic fitness knowledge."
     },
     "how": {

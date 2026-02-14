@@ -25,14 +25,17 @@
   margin-bottom: var(--space-xl);
 }
 
+.storyMediaWrapper {
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .storyMedia {
   position: relative;
   aspect-ratio: 480 / 600;
   border-radius: 6px;
   overflow: hidden;
-  cursor: pointer;
-  -webkit-user-select: none;
-  user-select: none;
 }
 
 .mediaLayer {
@@ -57,13 +60,10 @@
 }
 
 .dots {
-  position: absolute;
-  bottom: var(--space-sm);
-  left: 50%;
-  transform: translateX(-50%);
   display: flex;
+  justify-content: center;
   gap: var(--space-sm);
-  z-index: 2;
+  margin-top: var(--space-sm);
 }
 
 .dot {
