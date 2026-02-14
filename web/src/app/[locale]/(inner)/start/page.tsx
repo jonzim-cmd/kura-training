@@ -1,7 +1,7 @@
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/routing';
-import Image from 'next/image';
 import styles from './start.module.css';
+import StoryMedia from './StoryMedia';
 
 export default function StartPage() {
   const t = useTranslations('start');
@@ -13,15 +13,7 @@ export default function StartPage() {
       <section className={styles.storyWrapper}>
         <h1 className={styles.pageTitle}>{t('title')}</h1>
         <div className={styles.story}>
-          <div className={styles.storyPhoto}>
-            <Image
-              src="/images/founder.jpg"
-              alt=""
-              width={480}
-              height={600}
-              className={styles.photo}
-            />
-          </div>
+          <StoryMedia />
           <div className={styles.storyText}>
             <p className={styles.storyP}>{t('story.p1')}</p>
             <p className={styles.storyP}>{t('story.p2')}</p>
