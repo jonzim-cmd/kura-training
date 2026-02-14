@@ -2,13 +2,17 @@
 
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/routing';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import styles from './page.module.css';
 import { Header } from '@/components/Header';
+
+const SPORTS = ['strength', 'running', 'cycling'] as const;
+type Sport = (typeof SPORTS)[number];
 
 export default function LandingPage() {
   const t = useTranslations('landing');
   const tn = useTranslations('nav');
+  const [activeSport, setActiveSport] = useState<Sport>('strength');
 
   return (
     <div className={styles.descent}>
@@ -20,7 +24,7 @@ export default function LandingPage() {
       </section>
 
       {/* PHONE — User message */}
-      <PhoneScene t={t} />
+      <PhoneScene t={t} activeSport={activeSport} onSportClick={setActiveSport} />
 
       {/* Bridge — dots descending */}
       <Bridge t={t} />
@@ -35,7 +39,7 @@ export default function LandingPage() {
       <Deep t={t} />
 
       {/* CORE — Agent response */}
-      <Core t={t} />
+      <Core t={t} activeSport={activeSport} />
 
       {/* CTA */}
       <section className={styles.cta}>
@@ -59,7 +63,7 @@ export default function LandingPage() {
 }
 
 /* === PHONE SCENE === */
-function PhoneScene({ t }: { t: any }) {
+function PhoneScene({ t, activeSport, onSportClick }: { t: any; activeSport: Sport; onSportClick: (s: Sport) => void }) {
   const ref = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -85,11 +89,24 @@ function PhoneScene({ t }: { t: any }) {
 
   return (
     <section className={styles.phoneScene} ref={ref}>
+      <div className={styles.sportTabs}>
+        {SPORTS.map((sport) => (
+          <button
+            key={sport}
+            className={`${styles.sportTab} ${activeSport === sport ? styles.sportTabActive : ''}`}
+            onClick={() => onSportClick(sport)}
+          >
+            {t(`sportTabs.${sport}`)}
+          </button>
+        ))}
+      </div>
       <div className={styles.phone}>
         <div className={styles.phoneNotch} />
         <div className={styles.chat}>
           <div className={`${styles.msg} ${styles.msgUser}`} data-msg>
-            {t('userMessage')}
+            <span key={activeSport} className={styles.msgFade}>
+              {t(`sports.${activeSport}.userMessage`)}
+            </span>
           </div>
           <div className={styles.typing} data-typing>
             <span className={styles.typingDot} />
@@ -432,7 +449,7 @@ function Deep({ t }: { t: any }) {
 }
 
 /* === CORE — Agent Response === */
-function Core({ t }: { t: any }) {
+function Core({ t, activeSport }: { t: any; activeSport: Sport }) {
   const ref = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -459,15 +476,20 @@ function Core({ t }: { t: any }) {
       <div className={styles.phoneDark}>
         <div className={styles.phoneNotchDark} />
         <div className={styles.chatDark}>
-          <div className={styles.msgUserEcho}>{t('userMessageShort')}</div>
+          <div className={styles.msgUserEcho}>
+            <span key={`echo-${activeSport}`} className={styles.msgFade}>
+              {t(`sports.${activeSport}.userMessageShort`)}
+            </span>
+          </div>
           <div className={styles.msgAgent} data-amsg>
-            {t('agentResponse')}
-            <br /><br />
-            <strong>{t('agentQuestion')}</strong>
+            <span key={`agent-${activeSport}`} className={styles.msgFade}>
+              {t(`sports.${activeSport}.agentResponse`)}
+              <br /><br />
+              <strong>{t(`sports.${activeSport}.agentQuestion`)}</strong>
+            </span>
           </div>
         </div>
       </div>
     </section>
   );
 }
-

@@ -13,8 +13,31 @@
     "logout": "Log out"
   },
   "landing": {
-    "userMessage": "Did squats today, 5×5 at 100kg. Felt heavy, had to grind the last two reps. Also some light stretching after.",
-    "userMessageShort": "Did squats today, 5×5 at 100kg. Felt heavy…",
+    "sportTabs": {
+      "strength": "Strength",
+      "running": "Running",
+      "cycling": "Cycling"
+    },
+    "sports": {
+      "strength": {
+        "userMessage": "Did squats today, 5×5 at 100kg. Felt heavy, had to grind the last two reps. Also some light stretching after.",
+        "userMessageShort": "Did squats today, 5×5 at 100kg. Felt heavy…",
+        "agentResponse": "Logged. Your squat has been at 116 kg estimated max for three weeks now — volume is there, but the weight isn't moving. You've also been sleeping about an hour less than usual. That's probably not a coincidence.",
+        "agentQuestion": "Want me to program a deload week?"
+      },
+      "running": {
+        "userMessage": "Did 10×2min intervals at 4:00/km today. RPE 8, legs were heavier than usual. Easy cooldown jog after.",
+        "userMessageShort": "10×2min at 4:00/km today. RPE 8, heavier than usual…",
+        "agentResponse": "Logged. Your interval pace has come down from 4:12 to 4:00/km over the past month — that's real progress. But RPE is trending up while your sleep has been shorter than usual. Could be accumulated fatigue.",
+        "agentQuestion": "Want me to add a recovery day before your next speed session?"
+      },
+      "cycling": {
+        "userMessage": "Rode 3×10min at 300 watts today. Harder than expected, slept badly last night. Easy spinning to cool down.",
+        "userMessageShort": "3×10min at 300W today. Harder than expected…",
+        "agentResponse": "Logged. Your 10-minute power has been stable around 295 W — today's 300 W is right at your threshold. Combined with last night's poor sleep, that explains the higher perceived effort.",
+        "agentQuestion": "Should I flag sessions where sleep might affect performance?"
+      }
+    },
     "bridgeLabel": "what happens inside those three dots",
     "receiving": "receiving",
     "field": {
@@ -34,8 +57,6 @@
       "crossDimension": "cross-dimension",
       "recommendation": "recommendation engine"
     },
-    "agentResponse": "Logged. Your squat has been at 116 kg estimated max for three weeks now — volume is there, but the weight isn't moving. You've also been sleeping about an hour less than usual. That's probably not a coincidence.",
-    "agentQuestion": "Want me to program a deload week?",
     "getStarted": "Request access"
   },
   "requestAccess": {

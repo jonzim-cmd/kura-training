@@ -13,8 +13,31 @@
     "logout": "Abmelden"
   },
   "landing": {
-    "userMessage": "Heute Kniebeugen gemacht, 5×5 mit 100kg. War schwer, die letzten beiden Wiederholungen musste ich rauswürgen. Danach noch leichtes Dehnen.",
-    "userMessageShort": "Heute Kniebeugen gemacht, 5×5 mit 100kg. War schwer…",
+    "sportTabs": {
+      "strength": "Kraft",
+      "running": "Laufen",
+      "cycling": "Rad"
+    },
+    "sports": {
+      "strength": {
+        "userMessage": "Heute Kniebeugen gemacht, 5×5 mit 100kg. War schwer, die letzten beiden Wiederholungen musste ich rauswürgen. Danach noch leichtes Dehnen.",
+        "userMessageShort": "Heute Kniebeugen, 5×5 mit 100kg. War schwer…",
+        "agentResponse": "Geloggt. Dein Kniebeuge-Maximum steht seit drei Wochen bei 116 kg — das Volumen stimmt, aber das Gewicht bewegt sich nicht. Außerdem schläfst du etwa eine Stunde weniger als gewöhnlich. Das ist wahrscheinlich kein Zufall.",
+        "agentQuestion": "Soll ich eine Deload-Woche planen?"
+      },
+      "running": {
+        "userMessage": "Heute 10×2min Intervalle auf 4:00/km. RPE 8, Beine waren schwerer als sonst. Danach lockeres Auslaufen.",
+        "userMessageShort": "10×2min auf 4:00/km heute. RPE 8, schwerer als sonst…",
+        "agentResponse": "Geloggt. Dein Intervall-Tempo ist im letzten Monat von 4:12 auf 4:00/km gefallen — echte Verbesserung. Aber dein RPE steigt, und du schläfst weniger als üblich. Könnte akkumulierte Müdigkeit sein.",
+        "agentQuestion": "Soll ich vor der nächsten Speed-Einheit einen Ruhetag einplanen?"
+      },
+      "cycling": {
+        "userMessage": "Heute 3×10min bei 300 Watt gefahren. Härter als erwartet, letzte Nacht schlecht geschlafen. Danach locker ausgerollt.",
+        "userMessageShort": "3×10min bei 300W heute. Härter als erwartet…",
+        "agentResponse": "Geloggt. Deine 10-Minuten-Leistung liegt stabil bei etwa 295 W — die 300 W heute sind genau an deiner Schwelle. Zusammen mit dem schlechten Schlaf letzte Nacht erklärt das die höhere gefühlte Belastung.",
+        "agentQuestion": "Soll ich markieren, wenn Schlafqualität die Leistung beeinflussen könnte?"
+      }
+    },
     "bridgeLabel": "was in diesen drei Punkten passiert",
     "receiving": "empfange",
     "field": {
@@ -34,8 +57,6 @@
       "crossDimension": "dimensionsübergreifend",
       "recommendation": "Empfehlungsmaschine"
     },
-    "agentResponse": "Geloggt. Dein Kniebeuge-Maximum steht seit drei Wochen bei 116 kg — das Volumen stimmt, aber das Gewicht bewegt sich nicht. Außerdem schläfst du etwa eine Stunde weniger als gewöhnlich. Das ist wahrscheinlich kein Zufall.",
-    "agentQuestion": "Soll ich eine Deload-Woche planen?",
     "getStarted": "Zugang anfragen"
   },
   "requestAccess": {
