@@ -24,9 +24,37 @@ _CORE_FIELD_REGISTRY: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
-_REST_WORD = r"(?:rest|pause|break|satzpause)"
-_UNIT_SECONDS = r"(?:s|sec|secs|second|seconds)"
-_UNIT_MINUTES = r"(?:m|min|mins|minute|minutes)"
+_REST_WORD = (
+    r"(?:"
+    r"rest|pause|break|satzpause"              # EN / DE
+    r"|repos|r[eé]cup(?:[eé]ration)?"          # FR
+    r"|descanso|pausa"                          # ES / PT / IT
+    r"|riposo"                                  # IT
+    r"|отдых|пауза"                            # RU
+    r"|pauze|rust"                              # NL
+    r"|przerwa"                                 # PL
+    r"|vila|paus"                               # SV / NO / DA
+    r"|dinlenme|ara"                            # TR
+    r")"
+)
+_UNIT_SECONDS = (
+    r"(?:"
+    r"seconds?|secondes?|secondi|secondo|seconden"  # EN / FR / IT / NL
+    r"|secs?|sek(?:und[eny]?)?"                     # EN abbrev / DE / PL
+    r"|seg(?:undos?)?"                               # ES / PT
+    r"|секунд[аы]?|сек"                             # RU
+    r"|saniye|sn"                                    # TR
+    r"|s"                                            # universal (last — \b prevents substring matches)
+    r")"
+)
+_UNIT_MINUTES = (
+    r"(?:"
+    r"minutes?|minuten|minutos?|minuti|minuut|minut[ey]?"  # EN / DE / ES / PT / IT / NL / PL
+    r"|mins?|мин(?:ут[аы]?)?"                               # EN abbrev / RU
+    r"|dakika|dk"                                            # TR
+    r"|m"                                                    # universal (last — \b prevents substring matches)
+    r")"
+)
 _TEMPO_RE = re.compile(r"\btempo\s*[:=]?\s*(\d-[\dx]-[\dx]-[\dx])\b", re.IGNORECASE)
 _TEMPO_BARE_RE = re.compile(r"\b(\d-[\dx]-[\dx]-[\dx])\b", re.IGNORECASE)
 _RIR_RE = re.compile(
@@ -100,9 +128,45 @@ def _normalize_set_type(value: Any) -> str | None:
     return None
 
 
+_CJK_REST_KEYWORDS = ("休憩", "レスト", "레스트", "휴식", "休息")
+_CJK_SECONDS_RE = re.compile(r"(\d+)\s*[秒초]")
+_CJK_MINUTES_RE = re.compile(r"(\d+)\s*[分분]")
+_COMBINED_PRIME_RE = re.compile(r"(\d{1,2})'(\d{2})(?:''|\")")
+_DOUBLE_PRIME_RE = re.compile(r"(\d{1,3})(?:''|\")")
+_SINGLE_PRIME_RE = re.compile(r"(\d{1,2})'(?!\d)")
+
+
+def _preprocess_time_text(text: str) -> str:
+    """Normalize prime notation, CJK units, and international rest keywords."""
+    # Unicode single-prime-like → ASCII apostrophe
+    for ch in "\u2032\u02B9\u2018\u2019\u02BC\u00B4`":
+        text = text.replace(ch, "'")
+    # Unicode double-prime-like → ASCII double quote
+    for ch in "\u2033\u201C\u201D":
+        text = text.replace(ch, '"')
+
+    # CJK rest keywords → "rest"
+    for kw in _CJK_REST_KEYWORDS:
+        text = text.replace(kw, "rest")
+
+    # CJK time units → ASCII equivalents
+    text = _CJK_SECONDS_RE.sub(r"\1 sec", text)
+    text = _CJK_MINUTES_RE.sub(r"\1 min", text)
+
+    # Combined prime: 1'30'' or 1'30" → 1:30 (must be before individual handling)
+    text = _COMBINED_PRIME_RE.sub(r"\1:\2", text)
+    # Double prime = seconds: 90'' or 90" → 90 sec
+    text = _DOUBLE_PRIME_RE.sub(r"\1 sec", text)
+    # Single prime = minutes: 2' → 2 min (lookahead prevents matching before digits)
+    text = _SINGLE_PRIME_RE.sub(r"\1 min", text)
+
+    return text
+
+
 def _extract_rest_seconds(text: str) -> float | None:
     if not text:
         return None
+    text = _preprocess_time_text(text)
     if match := _REST_MMSS_RE.search(text):
         minutes = int(match.group(1))
         seconds = int(match.group(2))

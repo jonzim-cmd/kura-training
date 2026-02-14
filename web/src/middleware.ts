@@ -5,5 +5,5 @@ export default createMiddleware(routing);
 
 export const config = {
   // Match all paths except Next.js internals, static files, and API routes
-  matcher: ['/((?!api|_next|_vercel|.*\\..*).*)', '/', '/(de|en|ja)/:path*'],
+  matcher: ['/((?!api|_next|_vercel|.*\\..*).*)', '/', '/(de|en|en-US|ja)/:path*'],
 };
