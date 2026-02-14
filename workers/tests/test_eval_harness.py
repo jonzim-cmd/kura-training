@@ -8,6 +8,7 @@ from kura_workers.eval_harness import (
     build_semantic_labels_from_event_rows,
     build_shadow_evaluation_report,
     build_shadow_mode_rollout_checks,
+    evaluate_synthetic_adversarial_corpus,
     evaluate_causal_projection,
     evaluate_semantic_event_store_labels,
     evaluate_semantic_memory_projection_labels,
@@ -37,6 +38,21 @@ def _readiness_daily(values):
         d = base + timedelta(days=idx)
         out.append({"date": d.isoformat(), "score": value})
     return out
+
+
+def _adversarial_rows(mode: str, *, total: int, triggered: int, regret_band: str, laaj_verdict: str):
+    rows = []
+    for idx in range(total):
+        rows.append(
+            {
+                "scenario_id": f"{mode}-{idx + 1}",
+                "failure_mode": mode,
+                "triggered_failure": idx < triggered,
+                "retrieval_regret_band": regret_band,
+                "laaj_verdict": laaj_verdict,
+            }
+        )
+    return rows
 
 
 def test_evaluate_strength_history_with_labels(monkeypatch):
@@ -752,6 +768,113 @@ def test_build_shadow_evaluation_report_blocks_rollout_on_weakest_tier_regressio
     assert moderate_entry["release_gate"]["status"] == "pass"
     assert report["release_gate"]["status"] == "fail"
     assert any(reason.startswith("weakest_tier_gate_status=strict:") for reason in report["release_gate"]["reasons"])
+
+
+def test_evaluate_synthetic_adversarial_corpus_detects_failure_regression_and_sidecar_misalignment():
+    baseline_eval = {
+        "adversarial_corpus": {
+            "scenarios": _adversarial_rows(
+                "retrieval_miss",
+                total=10,
+                triggered=2,
+                regret_band="high",
+                laaj_verdict="review",
+            )
+        }
+    }
+    candidate_eval = {
+        "adversarial_corpus": {
+            "scenarios": _adversarial_rows(
+                "retrieval_miss",
+                total=10,
+                triggered=6,
+                regret_band="low",
+                laaj_verdict="pass",
+            )
+        }
+    }
+
+    report = evaluate_synthetic_adversarial_corpus(
+        baseline_eval=baseline_eval,
+        candidate_eval=candidate_eval,
+    )
+
+    assert report["schema_version"] == "synthetic_adversarial_corpus.v1"
+    assert report["status"] == "fail"
+    assert report["failed_modes"] == ["retrieval_miss"]
+    retrieval_entry = next(
+        item for item in report["mode_reports"] if item["failure_mode"] == "retrieval_miss"
+    )
+    assert retrieval_entry["regression_passed"] is False
+    assert retrieval_entry["sidecar_alignment"]["passed"] is False
+    assert "failure_rate_delta_exceeded" in retrieval_entry["failed_reasons"]
+    assert "sidecar_alignment_below_threshold" in retrieval_entry["failed_reasons"]
+
+
+def test_build_shadow_evaluation_report_blocks_rollout_on_adversarial_failure_mode_regression():
+    baseline_eval = {
+        "projection_types": ["strength_inference"],
+        "source": "event_store",
+        "strength_engine": "closed_form",
+        "eval_status": "ok",
+        "summary": {},
+        "summary_by_source": {},
+        "shadow_mode": {"status": "pass", "checks": []},
+        "results": [
+            {
+                "projection_type": "strength_inference",
+                "status": "ok",
+                "metrics": {"coverage_ci95": 0.90, "mae": 6.0},
+            }
+        ],
+        "adversarial_corpus": {
+            "scenarios": _adversarial_rows(
+                "hallucination",
+                total=10,
+                triggered=1,
+                regret_band="medium",
+                laaj_verdict="review",
+            )
+        },
+    }
+    candidate_eval = {
+        "projection_types": ["strength_inference"],
+        "source": "event_store",
+        "strength_engine": "closed_form",
+        "eval_status": "ok",
+        "summary": {},
+        "summary_by_source": {},
+        "shadow_mode": {"status": "pass", "checks": []},
+        "results": [
+            {
+                "projection_type": "strength_inference",
+                "status": "ok",
+                "metrics": {"coverage_ci95": 0.90, "mae": 6.0},
+            }
+        ],
+        "adversarial_corpus": {
+            "scenarios": _adversarial_rows(
+                "hallucination",
+                total=10,
+                triggered=6,
+                regret_band="low",
+                laaj_verdict="pass",
+            )
+        },
+    }
+
+    report = build_shadow_evaluation_report(
+        baseline_eval=baseline_eval,
+        candidate_eval=candidate_eval,
+    )
+
+    assert report["adversarial_corpus"]["status"] == "fail"
+    assert report["release_gate"]["status"] == "fail"
+    assert "adversarial_corpus:hallucination" in report["release_gate"]["failed_metrics"]
+    assert any(
+        reason.startswith("adversarial_failure_mode_regression:")
+        for reason in report["release_gate"]["reasons"]
+    )
 
 
 def test_build_proof_in_production_artifact_contains_required_sections():

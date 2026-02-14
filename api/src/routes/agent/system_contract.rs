@@ -41,7 +41,8 @@ pub(super) fn classify_system_convention_field(key: &str) -> SystemConventionFie
         | "response_mode_policy_v1"
         | "personal_failure_profile_v1"
         | "sidecar_retrieval_regret_v1"
-        | "counterfactual_recommendation_v1" => SystemConventionFieldClass::PublicContract,
+        | "counterfactual_recommendation_v1"
+        | "synthetic_adversarial_corpus_v1" => SystemConventionFieldClass::PublicContract,
         "learning_clustering_v1"
         | "extraction_calibration_v1"
         | "learning_backlog_bridge_v1"

@@ -1990,6 +1990,28 @@ _MODEL_TIER_ORDER = {
 }
 _DEFAULT_SHADOW_MODEL_TIERS = ("strict", "moderate", "advanced")
 _PROOF_IN_PRODUCTION_SCHEMA_VERSION = "proof_in_production_decision_artifact.v1"
+_SYNTHETIC_ADVERSARIAL_CORPUS_SCHEMA_VERSION = "synthetic_adversarial_corpus.v1"
+_ADVERSARIAL_FAILURE_MODES = (
+    "hallucination",
+    "overconfidence",
+    "retrieval_miss",
+    "data_integrity_drift",
+)
+_ADVERSARIAL_FAILURE_RATE_DELTA_LIMITS = {
+    "hallucination": 0.04,
+    "overconfidence": 0.04,
+    "retrieval_miss": 0.03,
+    "data_integrity_drift": 0.03,
+}
+_ADVERSARIAL_EXPECTED_REGRET_FLOOR = {
+    "hallucination": "medium",
+    "overconfidence": "medium",
+    "retrieval_miss": "high",
+    "data_integrity_drift": "medium",
+}
+_ADVERSARIAL_EXPECTED_LAAJ_VERDICT = "review"
+_ADVERSARIAL_MIN_SIDECAR_ALIGNMENT_RATE = 0.70
+_REGRET_BAND_ORDER = {"low": 0, "medium": 1, "high": 2}
 
 
 def _aggregate_metric_mean(
@@ -2135,6 +2157,241 @@ def _resolve_shadow_release_gate(
     if failed_metrics or candidate_shadow_status != "pass":
         return "fail", reasons
     return "pass", reasons
+
+
+def _as_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y"}:
+            return True
+        if normalized in {"false", "0", "no", "n"}:
+            return False
+    return None
+
+
+def _normalize_adversarial_failure_mode(value: Any) -> str | None:
+    mode = str(value or "").strip().lower()
+    if mode in _ADVERSARIAL_FAILURE_MODES:
+        return mode
+    return None
+
+
+def _normalize_regret_band(value: Any) -> str:
+    band = str(value or "").strip().lower()
+    if band in _REGRET_BAND_ORDER:
+        return band
+    return "unknown"
+
+
+def _normalize_laaj_verdict(value: Any) -> str:
+    verdict = str(value or "").strip().lower()
+    if verdict in {"pass", "review"}:
+        return verdict
+    return "unknown"
+
+
+def _adversarial_rows_from_eval(eval_output: dict[str, Any]) -> list[dict[str, Any]]:
+    payload = eval_output.get("adversarial_corpus")
+    if not isinstance(payload, dict):
+        return []
+
+    raw_rows = payload.get("scenarios")
+    if not isinstance(raw_rows, list):
+        raw_rows = payload.get("rows")
+    if not isinstance(raw_rows, list):
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for idx, row in enumerate(raw_rows):
+        if not isinstance(row, dict):
+            continue
+        mode = _normalize_adversarial_failure_mode(row.get("failure_mode"))
+        if mode is None:
+            continue
+        triggered = _as_bool(row.get("triggered_failure"))
+        if triggered is None:
+            triggered = _as_bool(row.get("triggered"))
+        if triggered is None:
+            continue
+        rows.append(
+            {
+                "scenario_id": str(row.get("scenario_id") or f"{mode}_{idx + 1}"),
+                "failure_mode": mode,
+                "triggered_failure": triggered,
+                "retrieval_regret_band": _normalize_regret_band(
+                    row.get("retrieval_regret_band")
+                ),
+                "laaj_verdict": _normalize_laaj_verdict(row.get("laaj_verdict")),
+            }
+        )
+    return rows
+
+
+def _rate_from_rows(rows: list[dict[str, Any]]) -> float | None:
+    if not rows:
+        return None
+    triggered = sum(1 for row in rows if bool(row.get("triggered_failure")))
+    return triggered / len(rows)
+
+
+def _regret_band_at_least(actual_band: str, minimum_band: str) -> bool:
+    actual_rank = _REGRET_BAND_ORDER.get(actual_band, -1)
+    minimum_rank = _REGRET_BAND_ORDER.get(minimum_band, -1)
+    return actual_rank >= minimum_rank >= 0
+
+
+def evaluate_synthetic_adversarial_corpus(
+    *,
+    baseline_eval: dict[str, Any],
+    candidate_eval: dict[str, Any],
+) -> dict[str, Any]:
+    baseline_rows = _adversarial_rows_from_eval(baseline_eval)
+    candidate_rows = _adversarial_rows_from_eval(candidate_eval)
+    if not baseline_rows and not candidate_rows:
+        return {
+            "schema_version": _SYNTHETIC_ADVERSARIAL_CORPUS_SCHEMA_VERSION,
+            "policy_role": "advisory_regression_gate",
+            "status": "not_available",
+            "required_failure_modes": list(_ADVERSARIAL_FAILURE_MODES),
+            "evaluated_modes": [],
+            "missing_modes": list(_ADVERSARIAL_FAILURE_MODES),
+            "partial_modes": [],
+            "failed_modes": [],
+            "baseline_rows": 0,
+            "candidate_rows": 0,
+            "mode_reports": [],
+            "sidecar_alignment": {
+                "min_alignment_rate": _ADVERSARIAL_MIN_SIDECAR_ALIGNMENT_RATE,
+                "retrieval_regret_signal_type": "retrieval_regret_observed",
+                "laaj_signal_type": "laaj_sidecar_assessed",
+                "expected_laaj_verdict_when_triggered": _ADVERSARIAL_EXPECTED_LAAJ_VERDICT,
+            },
+        }
+
+    mode_reports: list[dict[str, Any]] = []
+    evaluated_modes: list[str] = []
+    missing_modes: list[str] = []
+    partial_modes: list[str] = []
+    failed_modes: list[str] = []
+    for mode in _ADVERSARIAL_FAILURE_MODES:
+        baseline_mode_rows = [row for row in baseline_rows if row["failure_mode"] == mode]
+        candidate_mode_rows = [row for row in candidate_rows if row["failure_mode"] == mode]
+        baseline_failure_rate = _rate_from_rows(baseline_mode_rows)
+        candidate_failure_rate = _rate_from_rows(candidate_mode_rows)
+        failure_rate_delta = None
+        if baseline_failure_rate is not None and candidate_failure_rate is not None:
+            failure_rate_delta = candidate_failure_rate - baseline_failure_rate
+
+        max_delta = _ADVERSARIAL_FAILURE_RATE_DELTA_LIMITS[mode]
+        regression_passed = (
+            failure_rate_delta <= max_delta if failure_rate_delta is not None else None
+        )
+
+        candidate_triggered_rows = [
+            row for row in candidate_mode_rows if bool(row.get("triggered_failure"))
+        ]
+        regret_alignment_rate = None
+        laaj_alignment_rate = None
+        if candidate_triggered_rows:
+            expected_regret_floor = _ADVERSARIAL_EXPECTED_REGRET_FLOOR[mode]
+            regret_alignment_hits = sum(
+                1
+                for row in candidate_triggered_rows
+                if _regret_band_at_least(row["retrieval_regret_band"], expected_regret_floor)
+            )
+            laaj_alignment_hits = sum(
+                1
+                for row in candidate_triggered_rows
+                if row["laaj_verdict"] == _ADVERSARIAL_EXPECTED_LAAJ_VERDICT
+            )
+            regret_alignment_rate = regret_alignment_hits / len(candidate_triggered_rows)
+            laaj_alignment_rate = laaj_alignment_hits / len(candidate_triggered_rows)
+
+        sidecar_alignment_passed = True
+        if regret_alignment_rate is not None and (
+            regret_alignment_rate < _ADVERSARIAL_MIN_SIDECAR_ALIGNMENT_RATE
+        ):
+            sidecar_alignment_passed = False
+        if laaj_alignment_rate is not None and (
+            laaj_alignment_rate < _ADVERSARIAL_MIN_SIDECAR_ALIGNMENT_RATE
+        ):
+            sidecar_alignment_passed = False
+
+        mode_status = "pass"
+        failed_reasons: list[str] = []
+        if not baseline_mode_rows and not candidate_mode_rows:
+            mode_status = "not_covered"
+            missing_modes.append(mode)
+        else:
+            evaluated_modes.append(mode)
+            if regression_passed is False:
+                mode_status = "fail"
+                failed_reasons.append("failure_rate_delta_exceeded")
+            elif regression_passed is None:
+                mode_status = "partial"
+                partial_modes.append(mode)
+                failed_reasons.append("missing_baseline_or_candidate_rows")
+            if not sidecar_alignment_passed:
+                mode_status = "fail"
+                failed_reasons.append("sidecar_alignment_below_threshold")
+            if mode_status == "fail":
+                failed_modes.append(mode)
+
+        mode_reports.append(
+            {
+                "failure_mode": mode,
+                "status": mode_status,
+                "baseline_total": len(baseline_mode_rows),
+                "candidate_total": len(candidate_mode_rows),
+                "baseline_failure_rate": _round_or_none(baseline_failure_rate, 6),
+                "candidate_failure_rate": _round_or_none(candidate_failure_rate, 6),
+                "failure_rate_delta": _round_or_none(failure_rate_delta, 6),
+                "max_failure_rate_delta": max_delta,
+                "regression_passed": regression_passed,
+                "candidate_triggered_total": len(candidate_triggered_rows),
+                "sidecar_alignment": {
+                    "min_alignment_rate": _ADVERSARIAL_MIN_SIDECAR_ALIGNMENT_RATE,
+                    "expected_regret_floor": _ADVERSARIAL_EXPECTED_REGRET_FLOOR[mode],
+                    "expected_laaj_verdict": _ADVERSARIAL_EXPECTED_LAAJ_VERDICT,
+                    "regret_alignment_rate": _round_or_none(regret_alignment_rate, 6),
+                    "laaj_alignment_rate": _round_or_none(laaj_alignment_rate, 6),
+                    "passed": sidecar_alignment_passed,
+                },
+                "failed_reasons": failed_reasons,
+            }
+        )
+
+    status = "pass"
+    if failed_modes:
+        status = "fail"
+    elif not evaluated_modes:
+        status = "not_available"
+    elif partial_modes:
+        status = "partial"
+
+    return {
+        "schema_version": _SYNTHETIC_ADVERSARIAL_CORPUS_SCHEMA_VERSION,
+        "policy_role": "advisory_regression_gate",
+        "status": status,
+        "required_failure_modes": list(_ADVERSARIAL_FAILURE_MODES),
+        "evaluated_modes": sorted(evaluated_modes),
+        "missing_modes": sorted(missing_modes),
+        "partial_modes": sorted(set(partial_modes)),
+        "failed_modes": sorted(set(failed_modes)),
+        "baseline_rows": len(baseline_rows),
+        "candidate_rows": len(candidate_rows),
+        "mode_reports": mode_reports,
+        "sidecar_alignment": {
+            "min_alignment_rate": _ADVERSARIAL_MIN_SIDECAR_ALIGNMENT_RATE,
+            "retrieval_regret_signal_type": "retrieval_regret_observed",
+            "laaj_signal_type": "laaj_sidecar_assessed",
+            "expected_laaj_verdict_when_triggered": _ADVERSARIAL_EXPECTED_LAAJ_VERDICT,
+        },
+    }
 
 
 def _normalize_tier_eval_map(
@@ -2332,6 +2589,26 @@ def build_shadow_evaluation_report(
             elif gate_status != "insufficient_data":
                 gate_status = "fail"
 
+    adversarial_corpus = evaluate_synthetic_adversarial_corpus(
+        baseline_eval=baseline_eval,
+        candidate_eval=candidate_eval,
+    )
+    release_failed_metrics = sorted(set(failed_metrics))
+    if adversarial_corpus["status"] == "fail":
+        failed_modes = [
+            str(mode) for mode in adversarial_corpus.get("failed_modes") or []
+        ]
+        if failed_modes:
+            reason = "adversarial_failure_mode_regression: " + ", ".join(failed_modes)
+            if reason not in reasons:
+                reasons.append(reason)
+            release_failed_metrics.extend(
+                [f"adversarial_corpus:{mode}" for mode in failed_modes]
+            )
+        if gate_status != "insufficient_data":
+            gate_status = "fail"
+    release_failed_metrics = sorted(set(release_failed_metrics))
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "change_context": change_context or {},
@@ -2359,6 +2636,7 @@ def build_shadow_evaluation_report(
             "baseline": _failure_class_summary(baseline_eval),
             "candidate": _failure_class_summary(candidate_eval),
         },
+        "adversarial_corpus": adversarial_corpus,
         "release_gate": {
             "policy_version": _SHADOW_RELEASE_POLICY_VERSION,
             "tier_matrix_policy_version": _SHADOW_TIER_MATRIX_POLICY_VERSION,
@@ -2366,7 +2644,7 @@ def build_shadow_evaluation_report(
             "tier_matrix_status": tier_matrix.get("status"),
             "status": gate_status,
             "allow_rollout": gate_status == "pass",
-            "failed_metrics": sorted(failed_metrics),
+            "failed_metrics": release_failed_metrics,
             "missing_metrics": sorted(missing_metrics),
             "reasons": reasons,
         },
@@ -2426,6 +2704,10 @@ def _proof_recommended_next_steps(
             steps.append(f"Resolve weakest-tier regressions first ({payload}).")
         elif reason.startswith("metric_delta_failures:"):
             steps.append("Fix regressed protected metrics and rerun gate.")
+        elif reason.startswith("adversarial_failure_mode_regression:"):
+            steps.append(
+                "Reduce adversarial failure-mode regressions and improve sidecar alignment before promotion."
+            )
         elif reason.startswith("candidate_shadow_mode_status="):
             steps.append("Investigate candidate shadow-mode check failures.")
 

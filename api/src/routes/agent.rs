@@ -9969,6 +9969,7 @@ mod tests {
                 "schema_capability_gate_v1": {"rules": ["capability checks"]},
                 "model_tier_registry_v1": {"tiers": {"strict": {"high_impact_write_policy": "block"}}},
                 "counterfactual_recommendation_v1": {"schema_version": "counterfactual_recommendation.v1"},
+                "synthetic_adversarial_corpus_v1": {"schema_version": "synthetic_adversarial_corpus.v1"},
                 "learning_clustering_v1": {"rules": ["internal"]},
                 "shadow_evaluation_gate_v1": {"rules": ["internal"]},
                 "unexpected_convention": {"rules": ["unknown"]}
@@ -10004,6 +10005,7 @@ mod tests {
         assert!(conventions.contains_key("schema_capability_gate_v1"));
         assert!(conventions.contains_key("model_tier_registry_v1"));
         assert!(conventions.contains_key("counterfactual_recommendation_v1"));
+        assert!(conventions.contains_key("synthetic_adversarial_corpus_v1"));
         assert!(!conventions.contains_key("learning_clustering_v1"));
         assert!(!conventions.contains_key("shadow_evaluation_gate_v1"));
         assert!(!conventions.contains_key("unexpected_convention"));

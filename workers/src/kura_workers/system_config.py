@@ -576,6 +576,55 @@ def _get_conventions() -> dict[str, Any]:
                 "signal_type": "counterfactual_recommendation_prepared",
             },
         },
+        "synthetic_adversarial_corpus_v1": {
+            "rules": [
+                "Evaluate synthetic adversarial scenarios as advisory regression checks for agent failure modes.",
+                "Cover hallucination, overconfidence, retrieval_miss, and data_integrity_drift as required failure modes.",
+                "Assess sidecar alignment for triggered failures via retrieval_regret banding and LaaJ verdicts.",
+                "Keep this gate non-bureaucratic: absent corpus data must not force hard rollout blocking.",
+            ],
+            "schema_version": "synthetic_adversarial_corpus.v1",
+            "policy_role": "advisory_regression_gate",
+            "required_failure_modes": [
+                "hallucination",
+                "overconfidence",
+                "retrieval_miss",
+                "data_integrity_drift",
+            ],
+            "entrypoint": "eval_harness.evaluate_synthetic_adversarial_corpus",
+            "scenario_contract": {
+                "required_fields": [
+                    "scenario_id",
+                    "failure_mode",
+                    "triggered_failure",
+                ],
+                "optional_sidecar_fields": [
+                    "retrieval_regret_band",
+                    "laaj_verdict",
+                ],
+            },
+            "regression_policy": {
+                "max_failure_rate_delta": {
+                    "hallucination": 0.04,
+                    "overconfidence": 0.04,
+                    "retrieval_miss": 0.03,
+                    "data_integrity_drift": 0.03,
+                },
+                "min_sidecar_alignment_rate": 0.70,
+            },
+            "sidecar_alignment": {
+                "retrieval_regret_signal_type": "retrieval_regret_observed",
+                "laaj_signal_type": "laaj_sidecar_assessed",
+                "expected_regret_floor_by_mode": {
+                    "hallucination": "medium",
+                    "overconfidence": "medium",
+                    "retrieval_miss": "high",
+                    "data_integrity_drift": "medium",
+                },
+                "expected_laaj_verdict_when_triggered": "review",
+            },
+            "report_section": "adversarial_corpus",
+        },
         "learning_backlog_bridge_v1": {
             "rules": [
                 "Generate machine-readable issue candidates from weekly learning_issue_clusters and extraction underperformance reports.",
@@ -683,6 +732,7 @@ def _get_conventions() -> dict[str, Any]:
                 "Run baseline and candidate replay side-by-side on representative corpus users before rollout.",
                 "Compute metric deltas per projection and classify failure classes for both variants.",
                 "Stratify shadow replay by model tier (strict, moderate, advanced) and publish pass/fail per tier.",
+                "Evaluate synthetic adversarial failure modes and sidecar alignment when corpus rows are provided.",
                 "Promotion requires the weakest supported tier to pass (no regression on protected metrics).",
                 "Enforce release gate policy on selected metrics with explicit tolerance thresholds.",
                 "Do not allow rollout when gate status is fail or insufficient_data.",
@@ -740,6 +790,7 @@ def _get_conventions() -> dict[str, Any]:
                 "metric_deltas",
                 "tier_matrix",
                 "failure_classes",
+                "adversarial_corpus",
                 "release_gate",
             ],
         },

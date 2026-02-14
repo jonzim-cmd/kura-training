@@ -481,8 +481,27 @@ class TestConventions:
         assert "model_tiers" in gate["inputs"]["candidate_config"]
         assert "metric_deltas" in gate["report_sections"]
         assert "tier_matrix" in gate["report_sections"]
+        assert "adversarial_corpus" in gate["report_sections"]
         assert "release_gate" in gate["report_sections"]
         assert len(gate["delta_rules"]) >= 2
+
+    def test_has_synthetic_adversarial_corpus_v1_conventions(self):
+        result = _get_conventions()
+        assert "synthetic_adversarial_corpus_v1" in result
+        corpus = result["synthetic_adversarial_corpus_v1"]
+        assert corpus["schema_version"] == "synthetic_adversarial_corpus.v1"
+        assert corpus["policy_role"] == "advisory_regression_gate"
+        assert set(corpus["required_failure_modes"]) == {
+            "hallucination",
+            "overconfidence",
+            "retrieval_miss",
+            "data_integrity_drift",
+        }
+        assert corpus["entrypoint"] == "eval_harness.evaluate_synthetic_adversarial_corpus"
+        assert corpus["regression_policy"]["min_sidecar_alignment_rate"] == 0.70
+        sidecar = corpus["sidecar_alignment"]
+        assert sidecar["retrieval_regret_signal_type"] == "retrieval_regret_observed"
+        assert sidecar["laaj_signal_type"] == "laaj_sidecar_assessed"
 
     def test_has_proof_in_production_v1_conventions(self):
         result = _get_conventions()
