@@ -1,5 +1,6 @@
 pub mod account;
 pub mod agent;
+pub mod agent_telemetry;
 pub mod auth;
 pub mod events;
 pub mod health;

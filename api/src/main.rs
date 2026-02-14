@@ -75,6 +75,9 @@ mod state;
         routes::security::record_rollout_decision,
         routes::security::list_rollout_decisions,
         routes::security::get_security_guardrail_dashboard,
+        routes::agent_telemetry::get_agent_telemetry_overview,
+        routes::agent_telemetry::get_agent_telemetry_anomalies,
+        routes::agent_telemetry::list_agent_telemetry_signals,
     ),
     components(schemas(
         HealthResponse,
@@ -175,6 +178,15 @@ mod state;
         routes::security::RolloutDecisionRecord,
         routes::security::SecurityGuardrailProfileMetrics,
         routes::security::SecurityGuardrailDashboardResponse,
+        routes::agent_telemetry::AdminAgentTelemetryOverviewResponse,
+        routes::agent_telemetry::AdminAgentLearningSignalSummary,
+        routes::agent_telemetry::AdminAgentRequestSummary,
+        routes::agent_telemetry::AdminAgentQualityHealthSummary,
+        routes::agent_telemetry::AdminAgentPlanUpdateSummary,
+        routes::agent_telemetry::AdminAgentTelemetryAnomaliesResponse,
+        routes::agent_telemetry::AdminAgentTelemetryAnomaly,
+        routes::agent_telemetry::AdminAgentTelemetrySignalsResponse,
+        routes::agent_telemetry::AdminAgentTelemetrySignalItem,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -305,6 +317,7 @@ async fn main() {
         .merge(routes::account::admin_router())
         .merge(routes::invite::admin_router())
         .merge(routes::security::admin_router())
+        .merge(routes::agent_telemetry::admin_router())
         .layer(middleware::access_log::AccessLogLayer::new(
             app_state.db.clone(),
         ))

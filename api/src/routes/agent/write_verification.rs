@@ -183,7 +183,9 @@ fn training_plan_update_is_high_impact(data: &Value) -> bool {
         .map(|raw| raw.trim().to_lowercase());
     if matches!(
         scope.as_deref(),
-        Some("full_rewrite" | "structural" | "major_adjustment" | "mesocycle_reset" | "phase_shift")
+        Some(
+            "full_rewrite" | "structural" | "major_adjustment" | "mesocycle_reset" | "phase_shift"
+        )
     ) {
         return true;
     }
@@ -219,7 +221,12 @@ fn training_plan_update_is_high_impact(data: &Value) -> bool {
 
     let intensity_delta = read_plan_delta_abs(
         data,
-        &["intensity_delta_pct", "rir_delta", "rpe_delta", "effort_delta_pct"],
+        &[
+            "intensity_delta_pct",
+            "rir_delta",
+            "rpe_delta",
+            "effort_delta_pct",
+        ],
     )
     .unwrap_or(0.0);
     if intensity_delta >= PLAN_UPDATE_INTENSITY_DELTA_HIGH_IMPACT_ABS_GTE {
@@ -235,9 +242,11 @@ fn training_plan_update_is_high_impact(data: &Value) -> bool {
         return true;
     }
 
-    let duration_delta =
-        read_plan_delta_abs(data, &["cycle_length_weeks_delta", "plan_duration_weeks_delta"])
-            .unwrap_or(0.0);
+    let duration_delta = read_plan_delta_abs(
+        data,
+        &["cycle_length_weeks_delta", "plan_duration_weeks_delta"],
+    )
+    .unwrap_or(0.0);
     duration_delta >= PLAN_UPDATE_DURATION_DELTA_WEEKS_HIGH_IMPACT_ABS_GTE
 }
 

@@ -2151,11 +2151,7 @@ fn build_decision_brief_chat_context_block(
     let mut block = String::from(
         "Decision Brief fuer die naechste Antwort. Bleibe evidenzbasiert, nenne Unsicherheit explizit und vermeide Scheingenauigkeit.\n\n",
     );
-    append_decision_brief_chat_section(
-        &mut block,
-        "Was ist wahrscheinlich wahr?",
-        likely_true,
-    );
+    append_decision_brief_chat_section(&mut block, "Was ist wahrscheinlich wahr?", likely_true);
     append_decision_brief_chat_section(&mut block, "Was ist unklar?", unclear);
     append_decision_brief_chat_section(
         &mut block,
@@ -2266,8 +2262,7 @@ fn build_decision_brief(
     let baseline_profile = user_data.and_then(|value| value.get("baseline_profile"));
     let data_quality = user_data.and_then(|value| value.get("data_quality"));
 
-    if let Some(status) =
-        baseline_profile.and_then(|value| read_value_string(value.get("status")))
+    if let Some(status) = baseline_profile.and_then(|value| read_value_string(value.get("status")))
     {
         match status.as_str() {
             "complete" => push_decision_brief_entry(
@@ -2312,10 +2307,7 @@ fn build_decision_brief(
         if missing_exercise_ids > 0 {
             push_decision_brief_entry(
                 &mut recent_person_failures,
-                format!(
-                    "Events ohne exercise_id zuletzt: {}.",
-                    missing_exercise_ids
-                ),
+                format!("Events ohne exercise_id zuletzt: {}.", missing_exercise_ids),
             );
         }
     }
@@ -2334,7 +2326,8 @@ fn build_decision_brief(
 
     if let Some(inbox) = consistency_inbox {
         let inbox_data = &inbox.projection.data;
-        let pending_items_total = read_value_usize(inbox_data.get("pending_items_total")).unwrap_or(0);
+        let pending_items_total =
+            read_value_usize(inbox_data.get("pending_items_total")).unwrap_or(0);
         let requires_human_decision =
             read_value_bool(inbox_data.get("requires_human_decision")).unwrap_or(false);
         let highest_severity = read_value_string(inbox_data.get("highest_severity"))
@@ -11018,12 +11011,8 @@ mod tests {
             "items": []
         }));
 
-        let brief = super::build_decision_brief(
-            &user_profile,
-            Some(&quality_health),
-            Some(&inbox),
-            None,
-        );
+        let brief =
+            super::build_decision_brief(&user_profile, Some(&quality_health), Some(&inbox), None);
         assert_eq!(brief.schema_version, super::DECISION_BRIEF_SCHEMA_VERSION);
         assert_eq!(
             brief.chat_template_id,
@@ -11033,7 +11022,11 @@ mod tests {
             brief.item_cap_per_block,
             super::DECISION_BRIEF_BALANCED_ITEMS_PER_BLOCK
         );
-        assert!(brief.chat_context_block.contains("Was ist wahrscheinlich wahr?"));
+        assert!(
+            brief
+                .chat_context_block
+                .contains("Was ist wahrscheinlich wahr?")
+        );
         assert!(brief.chat_context_block.contains("Was ist unklar?"));
         assert!(
             brief
@@ -11112,12 +11105,8 @@ mod tests {
             }]
         }));
 
-        let brief = super::build_decision_brief(
-            &user_profile,
-            Some(&quality_health),
-            Some(&inbox),
-            None,
-        );
+        let brief =
+            super::build_decision_brief(&user_profile, Some(&quality_health), Some(&inbox), None);
         assert!(
             brief
                 .high_impact_decisions
@@ -11241,12 +11230,8 @@ mod tests {
             }]
         }));
 
-        let brief = super::build_decision_brief(
-            &user_profile,
-            Some(&quality_health),
-            Some(&inbox),
-            None,
-        );
+        let brief =
+            super::build_decision_brief(&user_profile, Some(&quality_health), Some(&inbox), None);
 
         for entry in &brief.likely_true {
             assert!(brief.chat_context_block.contains(entry));
@@ -11348,7 +11333,10 @@ mod tests {
             detailed_brief.item_cap_per_block,
             super::DECISION_BRIEF_MAX_ITEMS_PER_BLOCK
         );
-        assert!(detailed_brief.recent_person_failures.len() >= default_brief.recent_person_failures.len());
+        assert!(
+            detailed_brief.recent_person_failures.len()
+                >= default_brief.recent_person_failures.len()
+        );
     }
 
     #[test]
