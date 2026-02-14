@@ -69,7 +69,7 @@ def test_quality_health_uses_weighted_mismatch_sum() -> None:
 
 
 def test_quality_health_legacy_fallback_for_events_without_severity() -> None:
-    """Events without mismatch_severity fields fall back to binary: true→1.0, false→0.0."""
+    """Legacy fallback treats pending readback as protocol friction, not integrity break."""
     from datetime import datetime, timedelta, timezone
 
     from kura_workers.handlers.quality_health import _compute_save_claim_slo
@@ -84,6 +84,9 @@ def test_quality_health_legacy_fallback_for_events_without_severity() -> None:
             "data": {
                 "mismatch_detected": True,
                 "allow_saved_claim": False,
+                "verification_status": "pending",
+                "claim_status": "pending",
+                "uncertainty_markers": ["read_after_write_unverified"],
                 # No mismatch_severity or mismatch_weight fields
             },
         },
@@ -97,10 +100,11 @@ def test_quality_health_legacy_fallback_for_events_without_severity() -> None:
     ]
 
     result = _compute_save_claim_slo(rows, window_start)
-    # Legacy: true → critical/1.0, false → none/0.0
-    assert result["weighted_mismatch_sum"] == 1.0
-    assert result["severity_breakdown"]["critical"] == 1
+    assert result["weighted_mismatch_sum"] == 0.1
+    assert result["severity_breakdown"]["info"] == 1
     assert result["severity_breakdown"]["none"] == 1
+    assert result["value"] == 0.0
+    assert result["protocol_friction_rate_pct"] == 5.0
     assert result["mismatch_count"] == 1
 
 

@@ -9,6 +9,8 @@ Every proposal is passed through a simulate bridge (contract-compatible with
 import hashlib
 import json
 import logging
+import math
+import os
 import re
 import statistics
 import uuid
@@ -115,8 +117,16 @@ _DETERMINISTIC_PROPOSAL_SOURCES = {
 _SLO_LOOKBACK_DAYS = 7
 _SLO_UNRESOLVED_SET_PCT_HEALTHY_MAX = 2.0
 _SLO_UNRESOLVED_SET_PCT_MONITOR_MAX = 5.0
-_SLO_SAVE_CLAIM_MISMATCH_PCT_HEALTHY_MAX = 0.0
-_SLO_SAVE_CLAIM_MISMATCH_PCT_MONITOR_MAX = 1.0
+_SLO_SAVE_CLAIM_MISMATCH_PCT_HEALTHY_MAX = 8.0
+_SLO_SAVE_CLAIM_MISMATCH_PCT_MONITOR_MAX = 15.0
+_SLO_SAVE_CLAIM_POSTERIOR_PRIOR_ALPHA = 0.5
+_SLO_SAVE_CLAIM_POSTERIOR_PRIOR_BETA = 9.5
+_SLO_SAVE_CLAIM_MONITOR_RATE_THRESHOLD = 0.08
+_SLO_SAVE_CLAIM_DEGRADED_RATE_THRESHOLD = 0.15
+_SLO_SAVE_CLAIM_MONITOR_PROB_MIN = 0.7
+_SLO_SAVE_CLAIM_DEGRADED_PROB_MIN = 0.9
+_QUALITY_ISSUE_DETECTION_COOLDOWN_HOURS = 24
+_INV004_ENFORCEMENT_CUTOFF_DEFAULT = "2026-02-14T00:00:00+00:00"
 _SLO_REPAIR_LATENCY_HOURS_HEALTHY_MAX = 24.0
 _SLO_REPAIR_LATENCY_HOURS_MONITOR_MAX = 48.0
 _STATUS_ORDER = {"healthy": 0, "monitor": 1, "degraded": 2}
@@ -809,12 +819,24 @@ def _build_detection_learning_signal_events(
     proposals: list[dict[str, Any]],
     evaluated_at: str,
     source_anchor: str,
+    quality_issue_history_by_issue: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
+    history_by_issue = quality_issue_history_by_issue or {}
+    evaluated_dt = _coerce_datetime_utc(evaluated_at) or datetime.now(timezone.utc)
+    cooldown_seconds = max(1, _QUALITY_ISSUE_DETECTION_COOLDOWN_HOURS * 3600)
+    cooldown_bucket = int(evaluated_dt.timestamp() // cooldown_seconds)
     for issue in issues:
         issue_id = str(issue["issue_id"])
         invariant_id = str(issue.get("invariant_id") or "none")
         issue_type = str(issue.get("type") or "none")
+        should_emit, dedupe_reason = _should_emit_quality_issue_detected(
+            issue,
+            history_by_issue=history_by_issue,
+            evaluated_at=evaluated_dt,
+        )
+        if not should_emit:
+            continue
         events.append(
             build_learning_signal_event(
                 user_id=str(user_id),
@@ -829,10 +851,15 @@ def _build_detection_learning_signal_events(
                 attributes={
                     "issue_id": issue_id,
                     "severity": issue.get("severity"),
+                    "dedupe_cooldown_hours": _QUALITY_ISSUE_DETECTION_COOLDOWN_HOURS,
+                    "cooldown_active": False,
+                    "dedupe_reason": dedupe_reason,
                 },
                 session_id=f"quality:{issue_id}",
                 timestamp=evaluated_at,
-                idempotency_seed=f"{source_anchor}:{issue_id}:quality_issue_detected",
+                idempotency_seed=(
+                    f"quality_issue_detected:{issue_id}:{issue.get('severity')}:{cooldown_bucket}"
+                ),
                 agent_version="worker_quality_health_v1",
             )
         )
@@ -1229,6 +1256,29 @@ async def _load_external_import_job_rows(
         return await cur.fetchall()
 
 
+async def _load_latest_quality_issue_signals(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+) -> list[dict[str, Any]]:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT DISTINCT ON (data->'attributes'->>'issue_id')
+                data->'attributes'->>'issue_id' AS issue_id,
+                data->'attributes'->>'severity' AS severity,
+                timestamp
+            FROM events
+            WHERE user_id = %s
+              AND event_type = 'learning.signal.logged'
+              AND data->>'signal_type' = 'quality_issue_detected'
+              AND COALESCE(data->'attributes'->>'issue_id', '') <> ''
+            ORDER BY data->'attributes'->>'issue_id', timestamp DESC, id DESC
+            """,
+            (user_id,),
+        )
+        return await cur.fetchall()
+
+
 def _metric_status(
     value: float,
     healthy_max: float,
@@ -1248,12 +1298,64 @@ def _worst_status(*statuses: str) -> str:
     return max(valid, key=lambda status: _STATUS_ORDER[status])
 
 
-def _severity_weight_from_event(data: dict[str, Any]) -> tuple[str, float]:
-    """Extract mismatch severity and weight from a quality.save_claim.checked event.
+def _coerce_datetime_utc(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = f"{raw[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
-    Legacy events (without mismatch_severity/mismatch_weight) fall back to
-    binary classification: mismatch_detected=true → critical/1.0,
-    mismatch_detected=false → none/0.0.
+
+def _resolve_inv004_policy_cutoff() -> datetime:
+    configured = os.getenv(
+        "KURA_INV004_ENFORCEMENT_CUTOFF",
+        _INV004_ENFORCEMENT_CUTOFF_DEFAULT,
+    )
+    parsed = _coerce_datetime_utc(configured)
+    if parsed is None:
+        parsed = _coerce_datetime_utc(_INV004_ENFORCEMENT_CUTOFF_DEFAULT)
+    assert parsed is not None
+    return parsed
+
+
+def _approx_beta_posterior_prob_gt(
+    alpha: float,
+    beta: float,
+    threshold: float,
+) -> float:
+    if alpha <= 0 or beta <= 0:
+        return 0.0
+    t = max(0.0, min(1.0, threshold))
+    mean = alpha / (alpha + beta)
+    variance = (alpha * beta) / (((alpha + beta) ** 2) * (alpha + beta + 1.0))
+    if variance <= 0:
+        return 1.0 if mean > t else 0.0
+    std = math.sqrt(variance)
+    z = (t - mean) / std
+    cdf = 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+    return max(0.0, min(1.0, 1.0 - cdf))
+
+
+def _mismatch_profile_from_event(
+    data: dict[str, Any],
+) -> tuple[str, float, str, list[str], str]:
+    """Classify save-claim mismatch into severity + domain.
+
+    Returns:
+      severity, weight, domain, reason_codes, source ("explicit"|"legacy")
     """
     severity = data.get("mismatch_severity")
     weight = data.get("mismatch_weight")
@@ -1262,14 +1364,136 @@ def _severity_weight_from_event(data: dict[str, Any]) -> tuple[str, float]:
             parsed_weight = float(weight)
         except (TypeError, ValueError):
             parsed_weight = 0.0
-        return str(severity), max(0.0, min(1.0, parsed_weight))
-    # Legacy fallback: binary mismatch → critical or none
+        domain = str(data.get("mismatch_domain") or "none").strip().lower() or "none"
+        reason_codes_raw = data.get("mismatch_reason_codes")
+        if isinstance(reason_codes_raw, list):
+            reason_codes = [str(item).strip() for item in reason_codes_raw if str(item).strip()]
+        else:
+            reason_codes = []
+        return (
+            str(severity),
+            max(0.0, min(1.0, parsed_weight)),
+            domain,
+            reason_codes,
+            "explicit",
+        )
+
     mismatch_detected = data.get("mismatch_detected")
     if mismatch_detected is None:
         mismatch_detected = not bool(data.get("allow_saved_claim", False))
-    if bool(mismatch_detected):
-        return "critical", 1.0
-    return "none", 0.0
+    if not bool(mismatch_detected):
+        return ("none", 0.0, "none", ["legacy_no_mismatch"], "legacy")
+
+    uncertainty_markers = data.get("uncertainty_markers")
+    normalized_markers = {
+        _normalize(marker)
+        for marker in (uncertainty_markers or [])
+        if isinstance(uncertainty_markers, list)
+    }
+    verification_status = _normalize(data.get("verification_status"))
+    claim_status = _normalize(data.get("claim_status"))
+    save_echo_required = bool(data.get("save_echo_required", False))
+    save_echo_completeness = _normalize(data.get("save_echo_completeness"))
+
+    if (
+        "read_after_write_unverified" in normalized_markers
+        or verification_status == "pending"
+        or claim_status == "pending"
+    ):
+        return (
+            "info",
+            0.1,
+            "protocol",
+            ["legacy_readback_pending"],
+            "legacy",
+        )
+
+    if save_echo_required and save_echo_completeness == "partial":
+        return (
+            "warning",
+            0.5,
+            "save_echo",
+            ["legacy_save_echo_partial"],
+            "legacy",
+        )
+    if save_echo_required and save_echo_completeness == "missing":
+        return (
+            "critical",
+            1.0,
+            "save_echo",
+            ["legacy_save_echo_missing"],
+            "legacy",
+        )
+    if save_echo_required and save_echo_completeness == "complete":
+        return (
+            "info",
+            0.1,
+            "protocol",
+            ["legacy_proof_failed_but_echo_complete"],
+            "legacy",
+        )
+
+    return (
+        "critical",
+        1.0,
+        "save_echo",
+        ["legacy_unclassified_mismatch"],
+        "legacy",
+    )
+
+
+def _severity_weight_from_event(data: dict[str, Any]) -> tuple[str, float]:
+    """Backward-compatible helper retained for architecture contracts."""
+    severity, weight, _domain, _reason_codes, _source = _mismatch_profile_from_event(data)
+    return severity, weight
+
+
+def _quality_issue_detected_history_by_issue(
+    rows: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    history: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        issue_id = str(row.get("issue_id") or "").strip()
+        if not issue_id:
+            continue
+        ts = row.get("timestamp")
+        normalized_ts = _coerce_datetime_utc(ts)
+        if normalized_ts is None:
+            continue
+        current = history.get(issue_id)
+        if current is None or normalized_ts > current["timestamp"]:
+            history[issue_id] = {
+                "timestamp": normalized_ts,
+                "severity": str(row.get("severity") or "").strip().lower(),
+            }
+    return history
+
+
+def _should_emit_quality_issue_detected(
+    issue: dict[str, Any],
+    *,
+    history_by_issue: dict[str, dict[str, Any]],
+    evaluated_at: datetime,
+) -> tuple[bool, str | None]:
+    issue_id = str(issue.get("issue_id") or "").strip()
+    if not issue_id:
+        return True, None
+    previous = history_by_issue.get(issue_id)
+    if not previous:
+        return True, None
+
+    current_severity = str(issue.get("severity") or "").strip().lower()
+    previous_severity = str(previous.get("severity") or "").strip().lower()
+    if current_severity and previous_severity and current_severity != previous_severity:
+        return True, None
+
+    last_detected = previous.get("timestamp")
+    if not isinstance(last_detected, datetime):
+        return True, None
+    cooldown_delta = timedelta(hours=_QUALITY_ISSUE_DETECTION_COOLDOWN_HOURS)
+    if evaluated_at - last_detected >= cooldown_delta:
+        return True, None
+    return False, "cooldown_active"
 
 
 def _compute_save_claim_slo(
@@ -1285,6 +1509,8 @@ def _compute_save_claim_slo(
     ]
     total_checks = len(sampled)
     weighted_sum = 0.0
+    integrity_weighted_sum = 0.0
+    protocol_weighted_sum = 0.0
     binary_mismatches = 0
     severity_breakdown: dict[str, int] = {
         "critical": 0,
@@ -1292,41 +1518,126 @@ def _compute_save_claim_slo(
         "info": 0,
         "none": 0,
     }
+    domain_breakdown: dict[str, int] = {
+        "save_echo": 0,
+        "protocol": 0,
+        "none": 0,
+        "other": 0,
+    }
+    source_breakdown: dict[str, int] = {"explicit": 0, "legacy": 0}
+    reason_code_counts: Counter[str] = Counter()
     for row in sampled:
         data = row.get("data") or {}
-        severity, weight = _severity_weight_from_event(data)
+        severity, weight, domain, reason_codes, source = _mismatch_profile_from_event(
+            data
+        )
         weighted_sum += weight
-        if severity in severity_breakdown:
-            severity_breakdown[severity] += 1
+        if domain == "protocol":
+            protocol_weighted_sum += weight
+        elif weight > 0:
+            integrity_weighted_sum += weight
+
+        if severity not in severity_breakdown:
+            severity_breakdown[severity] = 0
+        severity_breakdown[severity] += 1
+
+        normalized_domain = (
+            domain if domain in {"save_echo", "protocol", "none"} else "other"
+        )
+        domain_breakdown[normalized_domain] += 1
+        if source not in source_breakdown:
+            source_breakdown[source] = 0
+        source_breakdown[source] += 1
+
+        for reason_code in reason_codes:
+            normalized_reason = str(reason_code).strip()
+            if normalized_reason:
+                reason_code_counts[normalized_reason] += 1
+
         if weight > 0:
             binary_mismatches += 1
 
     weighted_mismatch_pct = (
         round((weighted_sum / total_checks) * 100, 2) if total_checks else 0.0
     )
+    integrity_weighted_pct = (
+        round((integrity_weighted_sum / total_checks) * 100, 2) if total_checks else 0.0
+    )
+    protocol_weighted_pct = (
+        round((protocol_weighted_sum / total_checks) * 100, 2) if total_checks else 0.0
+    )
     # Legacy binary rate kept for backward compatibility
     binary_mismatch_pct = (
         round((binary_mismatches / total_checks) * 100, 2) if total_checks else 0.0
     )
-    status = _metric_status(
-        weighted_mismatch_pct,
-        _SLO_SAVE_CLAIM_MISMATCH_PCT_HEALTHY_MAX,
-        _SLO_SAVE_CLAIM_MISMATCH_PCT_MONITOR_MAX,
+    posterior_alpha = _SLO_SAVE_CLAIM_POSTERIOR_PRIOR_ALPHA + integrity_weighted_sum
+    posterior_beta = _SLO_SAVE_CLAIM_POSTERIOR_PRIOR_BETA + max(
+        0.0, total_checks - integrity_weighted_sum
     )
+    posterior_prob_gt_monitor = (
+        _approx_beta_posterior_prob_gt(
+            posterior_alpha,
+            posterior_beta,
+            _SLO_SAVE_CLAIM_MONITOR_RATE_THRESHOLD,
+        )
+        if total_checks
+        else 0.0
+    )
+    posterior_prob_gt_degraded = (
+        _approx_beta_posterior_prob_gt(
+            posterior_alpha,
+            posterior_beta,
+            _SLO_SAVE_CLAIM_DEGRADED_RATE_THRESHOLD,
+        )
+        if total_checks
+        else 0.0
+    )
+
+    status = "healthy"
+    if total_checks:
+        if posterior_prob_gt_degraded >= _SLO_SAVE_CLAIM_DEGRADED_PROB_MIN:
+            status = "degraded"
+        elif posterior_prob_gt_monitor >= _SLO_SAVE_CLAIM_MONITOR_PROB_MIN:
+            status = "monitor"
 
     return {
         "metric": "save_claim_mismatch_rate_pct",
-        "value": weighted_mismatch_pct,
+        "value": integrity_weighted_pct,
         "unit": "percent",
         "status": status,
         "window_days": _SLO_LOOKBACK_DAYS,
-        "target": {"healthy_max": 0.0, "monitor_max": 1.0},
+        "decision_mode": "posterior_risk_beta_approx",
+        "target": {
+            "healthy_max": _SLO_SAVE_CLAIM_MISMATCH_PCT_HEALTHY_MAX,
+            "monitor_max": _SLO_SAVE_CLAIM_MISMATCH_PCT_MONITOR_MAX,
+            "monitor_rate_threshold": _SLO_SAVE_CLAIM_MONITOR_RATE_THRESHOLD,
+            "degraded_rate_threshold": _SLO_SAVE_CLAIM_DEGRADED_RATE_THRESHOLD,
+            "monitor_prob_min": _SLO_SAVE_CLAIM_MONITOR_PROB_MIN,
+            "degraded_prob_min": _SLO_SAVE_CLAIM_DEGRADED_PROB_MIN,
+        },
         "sample_count": total_checks,
         "mismatch_count": binary_mismatches,
         "binary_mismatch_rate_pct": binary_mismatch_pct,
         "weighted_mismatch_sum": round(weighted_sum, 2),
         "weighted_mismatch_rate_pct": weighted_mismatch_pct,
+        "integrity_weighted_sum": round(integrity_weighted_sum, 2),
+        "integrity_weighted_rate_pct": integrity_weighted_pct,
+        "protocol_friction_weighted_sum": round(protocol_weighted_sum, 2),
+        "protocol_friction_rate_pct": protocol_weighted_pct,
+        "posterior_alpha": round(posterior_alpha, 4),
+        "posterior_beta": round(posterior_beta, 4),
+        "posterior_prob_gt_monitor": round(posterior_prob_gt_monitor, 6),
+        "posterior_prob_gt_degraded": round(posterior_prob_gt_degraded, 6),
+        "posterior_mean": round(
+            (posterior_alpha / (posterior_alpha + posterior_beta)) * 100.0,
+            3,
+        )
+        if total_checks
+        else 0.0,
         "severity_breakdown": severity_breakdown,
+        "domain_breakdown": domain_breakdown,
+        "source_breakdown": source_breakdown,
+        "reason_code_counts": dict(reason_code_counts),
     }
 
 
@@ -1650,6 +1961,15 @@ def _evaluate_read_only_invariants(
     planning_rows = [
         row for row in event_rows if row.get("event_type") in planning_event_types
     ]
+    inv004_cutoff = _resolve_inv004_policy_cutoff()
+    inv004_legacy_rows: list[dict[str, Any]] = []
+    inv004_enforced_rows: list[dict[str, Any]] = []
+    for row in planning_rows:
+        ts = _coerce_datetime_utc(row.get("timestamp"))
+        if ts is not None and ts < inv004_cutoff:
+            inv004_legacy_rows.append(row)
+            continue
+        inv004_enforced_rows.append(row)
     onboarding_closed = any(
         row.get("event_type") == "workflow.onboarding.closed" for row in event_rows
     )
@@ -1657,9 +1977,13 @@ def _evaluate_read_only_invariants(
         row.get("event_type") == "workflow.onboarding.override_granted"
         for row in event_rows
     )
-    if planning_rows and not onboarding_closed and not onboarding_override:
+    if inv004_enforced_rows and not onboarding_closed and not onboarding_override:
         sample_types = sorted(
-            {str(row.get("event_type") or "") for row in planning_rows if row.get("event_type")}
+            {
+                str(row.get("event_type") or "")
+                for row in inv004_enforced_rows
+                if row.get("event_type")
+            }
         )
         issues.append(
             _issue(
@@ -1668,7 +1992,14 @@ def _evaluate_read_only_invariants(
                 "medium",
                 "Planning/coaching events were recorded before onboarding close without explicit override.",
                 metrics={
-                    "planning_event_count": len(planning_rows),
+                    "planning_event_count": len(inv004_enforced_rows),
+                    "planning_event_total": len(planning_rows),
+                    "legacy_grandfathered_count": len(inv004_legacy_rows),
+                    "legacy_policy_applied": bool(inv004_legacy_rows),
+                    "legacy_policy_reason": (
+                        "planning events before INV-004 policy cutoff were grandfathered"
+                    ),
+                    "legacy_policy_cutoff": inv004_cutoff.isoformat(),
                     "sample_planning_event_types": sample_types,
                     "onboarding_closed": onboarding_closed,
                     "override_present": onboarding_override,
@@ -2000,6 +2331,15 @@ def _evaluate_read_only_invariants(
         "onboarding_closed": onboarding_closed,
         "onboarding_override_present": onboarding_override,
         "planning_event_total": len(planning_rows),
+        "planning_event_enforced_total": len(inv004_enforced_rows),
+        "planning_event_legacy_total": len(inv004_legacy_rows),
+        "inv004_legacy_policy_applied": bool(inv004_legacy_rows),
+        "inv004_legacy_policy_reason": (
+            "planning events before INV-004 policy cutoff were grandfathered"
+        )
+        if inv004_legacy_rows
+        else None,
+        "inv004_policy_cutoff": inv004_cutoff.isoformat(),
         "mention_field_missing_total": len(mention_missing_rows),
         "session_logged_total": session_logged_total,
         "session_logged_invalid_total": session_logged_invalid_total,
@@ -2166,9 +2506,12 @@ def _build_quality_projection_data(
         ),
         "invariants_evaluated": [
             "INV-001",
+            "INV-004",
             "INV-003",
             "INV-005",
             "INV-006",
+            "INV-009",
+            "INV-010",
             "INV-008",
         ],
         "metrics": metrics,
@@ -2459,6 +2802,13 @@ async def update_quality_health(
         alias_map,
         import_job_rows=import_job_rows,
     )
+    latest_quality_issue_signal_rows = await _load_latest_quality_issue_signals(
+        conn,
+        user_id,
+    )
+    quality_issue_history_by_issue = _quality_issue_detected_history_by_issue(
+        latest_quality_issue_signal_rows
+    )
     now_iso = datetime.now(timezone.utc).isoformat()
     simulated_proposals = _build_simulated_repair_proposals(issues, now_iso)
     detection_telemetry_events = _build_detection_learning_signal_events(
@@ -2467,6 +2817,7 @@ async def update_quality_health(
         simulated_proposals,
         now_iso,
         source_anchor=str(rows[-1]["id"]),
+        quality_issue_history_by_issue=quality_issue_history_by_issue,
     )
     await _insert_events_with_idempotency_guard(
         conn,

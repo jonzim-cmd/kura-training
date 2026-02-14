@@ -2128,6 +2128,7 @@ fn build_post_task_reflection_learning_signal_event(
     model_identity: &ResolvedModelIdentity,
 ) -> CreateEventRequest {
     let signal_type = post_task_reflection_signal_type(certainty_state);
+    let mismatch_reason_codes: Vec<String> = Vec::new();
     build_learning_signal_event(
         user_id,
         signal_type,
@@ -2138,6 +2139,7 @@ fn build_post_task_reflection_learning_signal_event(
         receipts.len(),
         model_identity,
         MISMATCH_SEVERITY_NONE,
+        &mismatch_reason_codes,
     )
 }
 
@@ -8337,13 +8339,16 @@ mod tests {
 
     #[test]
     fn save_claim_mismatch_severity_contract_backcompat_defaults_for_legacy_payload() {
-        // Legacy: mismatch_detected=true, no echo fields → conservative fallback to critical
+        // Legacy pending/protocol mismatch without save-echo requirement stays info-level.
         let (severity, reason_codes) =
             super::classify_mismatch_severity(true, false, "not_applicable");
-        // When save_echo is not required AND no mismatch, it's none. But here mismatch IS detected.
-        assert_eq!(severity.severity, "critical");
-        assert_eq!(severity.weight, 1.0);
-        assert!(reason_codes.contains(&"proof_verification_failed".to_string()));
+        assert_eq!(severity.severity, "info");
+        assert_eq!(severity.weight, 0.1);
+        assert_eq!(severity.domain, "protocol");
+        assert!(
+            reason_codes
+                .contains(&"proof_verification_pending_without_save_echo_requirement".to_string())
+        );
     }
 
     #[test]

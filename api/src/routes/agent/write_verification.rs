@@ -1012,6 +1012,13 @@ pub(super) fn classify_mismatch_severity(
 
     let mut reason_codes = Vec::new();
 
+    // No save-echo contract applies (e.g. claim pending/failed). Mismatch here is
+    // protocol friction, not a data-integrity break.
+    if mismatch_detected && !save_echo_required {
+        reason_codes.push("proof_verification_pending_without_save_echo_requirement".to_string());
+        return (MISMATCH_SEVERITY_INFO, reason_codes);
+    }
+
     // Echo-based severity (data integrity risk)
     if save_echo_required && save_echo_completeness == "missing" {
         reason_codes.push("save_echo_missing".to_string());
@@ -1111,6 +1118,7 @@ pub(super) fn build_learning_signal_event(
     receipt_count: usize,
     model_identity: &ResolvedModelIdentity,
     signal_severity: MismatchSeverity,
+    mismatch_reason_codes: &[String],
 ) -> CreateEventRequest {
     let captured_at = Utc::now();
     let confidence_band = save_claim_confidence_band(claim_guard);
@@ -1157,6 +1165,7 @@ pub(super) fn build_learning_signal_event(
             "mismatch_severity": signal_severity.severity,
             "mismatch_weight": signal_severity.weight,
             "mismatch_domain": signal_severity.domain,
+            "mismatch_reason_codes": mismatch_reason_codes,
             "runtime_model_identity": model_identity.model_identity,
             "model_identity_source": model_identity.source,
             "model_attestation_request_id": model_identity.attestation_request_id,
@@ -1196,7 +1205,7 @@ pub(super) fn build_save_handshake_learning_signal_events(
         "not_applicable"
     };
     let mismatch_detected = !claim_guard.allow_saved_claim;
-    let (severity, _reason_codes) =
+    let (severity, reason_codes) =
         classify_mismatch_severity(mismatch_detected, save_echo_required, save_echo_completeness);
 
     if claim_guard.allow_saved_claim {
@@ -1210,6 +1219,7 @@ pub(super) fn build_save_handshake_learning_signal_events(
             receipts.len(),
             model_identity,
             severity,
+            &reason_codes,
         )];
     }
 
@@ -1224,6 +1234,7 @@ pub(super) fn build_save_handshake_learning_signal_events(
             receipts.len(),
             model_identity,
             severity,
+            &reason_codes,
         ),
         build_learning_signal_event(
             user_id,
@@ -1235,6 +1246,7 @@ pub(super) fn build_save_handshake_learning_signal_events(
             receipts.len(),
             model_identity,
             severity,
+            &reason_codes,
         ),
     ]
 }

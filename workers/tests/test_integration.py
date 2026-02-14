@@ -2160,12 +2160,15 @@ class TestQualityHealthIntegration:
         await insert_event(db, test_user_id, "profile.updated", {
             "age_deferred": True, "bodyweight_deferred": True,
         }, "TIMESTAMP '2026-02-11 09:10:00+00'")
-        await insert_event(db, test_user_id, "quality.save_claim.checked", {
-            "mismatch_detected": True, "allow_saved_claim": False,
-        }, "TIMESTAMP '2026-02-11 09:15:00+00'")
-        await insert_event(db, test_user_id, "quality.save_claim.checked", {
-            "mismatch_detected": False, "allow_saved_claim": True,
-        }, "TIMESTAMP '2026-02-11 09:20:00+00'")
+        for idx in range(20):
+            mismatch = idx < 8
+            await insert_event(db, test_user_id, "quality.save_claim.checked", {
+                "mismatch_detected": mismatch,
+                "allow_saved_claim": (not mismatch),
+                "mismatch_severity": "critical" if mismatch else "none",
+                "mismatch_weight": 1.0 if mismatch else 0.0,
+                "mismatch_domain": "save_echo" if mismatch else "none",
+            }, f"TIMESTAMP '2026-02-11 09:{15 + idx:02d}:00+00'")
 
         await db.execute("SET ROLE app_worker")
         await update_quality_health(db, {
@@ -2177,9 +2180,9 @@ class TestQualityHealthIntegration:
         assert proj is not None
         data = proj["data"]
         mismatch = data["integrity_slos"]["metrics"]["save_claim_mismatch_rate_pct"]
-        assert mismatch["sample_count"] == 2
-        assert mismatch["mismatch_count"] == 1
-        assert mismatch["value"] == 50.0
+        assert mismatch["sample_count"] == 20
+        assert mismatch["mismatch_count"] == 8
+        assert mismatch["value"] == 40.0
         assert data["integrity_slo_status"] == "degraded"
         assert data["autonomy_policy"]["throttle_active"] is True
 
@@ -3115,7 +3118,7 @@ class TestWorkflowGateIntegration:
     - user_profile projection reflects workflow_state from events
     - quality_health INV-004 detects planning drift before close
     - Explicit close/override clears INV-004 and updates workflow_state
-    - Legacy path (planning without close) is detected correctly
+    - Legacy planning before policy cutoff is grandfathered
     """
 
     async def test_planning_drift_detected_before_close(self, db, test_user_id):
@@ -3123,17 +3126,17 @@ class TestWorkflowGateIntegration:
         await create_test_user(db, test_user_id)
         await insert_event(db, test_user_id, "set.logged", {
             "exercise_id": "bench_press", "weight_kg": 80, "reps": 5,
-        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+        }, "TIMESTAMP '2026-02-20 10:00:00+01'")
         await insert_event(db, test_user_id, "preference.set", {
             "key": "timezone", "value": "Europe/Berlin",
-        }, "TIMESTAMP '2026-02-01 11:00:00+01'")
+        }, "TIMESTAMP '2026-02-20 11:00:00+01'")
         await insert_event(db, test_user_id, "profile.updated", {
             "age_deferred": True, "bodyweight_deferred": True,
-        }, "TIMESTAMP '2026-02-01 12:00:00+01'")
+        }, "TIMESTAMP '2026-02-20 12:00:00+01'")
         # Planning event WITHOUT prior onboarding close
         await insert_event(db, test_user_id, "training_plan.created", {
             "name": "PPL Split", "sessions": [],
-        }, "TIMESTAMP '2026-02-01 13:00:00+01'")
+        }, "TIMESTAMP '2026-02-20 13:00:00+01'")
 
         await db.execute("SET ROLE app_worker")
         await update_quality_health(db, {
@@ -3157,20 +3160,20 @@ class TestWorkflowGateIntegration:
         await create_test_user(db, test_user_id)
         await insert_event(db, test_user_id, "set.logged", {
             "exercise_id": "bench_press", "weight_kg": 80, "reps": 5,
-        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+        }, "TIMESTAMP '2026-02-20 10:00:00+01'")
         await insert_event(db, test_user_id, "preference.set", {
             "key": "timezone", "value": "Europe/Berlin",
-        }, "TIMESTAMP '2026-02-01 11:00:00+01'")
+        }, "TIMESTAMP '2026-02-20 11:00:00+01'")
         await insert_event(db, test_user_id, "profile.updated", {
             "age_deferred": True, "bodyweight_deferred": True,
-        }, "TIMESTAMP '2026-02-01 12:00:00+01'")
+        }, "TIMESTAMP '2026-02-20 12:00:00+01'")
         await insert_event(db, test_user_id, "training_plan.created", {
             "name": "PPL Split", "sessions": [],
-        }, "TIMESTAMP '2026-02-01 13:00:00+01'")
+        }, "TIMESTAMP '2026-02-20 13:00:00+01'")
         # Explicit close
         await insert_event(db, test_user_id, "workflow.onboarding.closed", {
             "reason": "user_confirmed",
-        }, "TIMESTAMP '2026-02-01 14:00:00+01'")
+        }, "TIMESTAMP '2026-02-20 14:00:00+01'")
 
         await db.execute("SET ROLE app_worker")
         # Run both handlers
@@ -3201,20 +3204,20 @@ class TestWorkflowGateIntegration:
         await create_test_user(db, test_user_id)
         await insert_event(db, test_user_id, "set.logged", {
             "exercise_id": "bench_press", "weight_kg": 80, "reps": 5,
-        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+        }, "TIMESTAMP '2026-02-20 10:00:00+01'")
         await insert_event(db, test_user_id, "preference.set", {
             "key": "timezone", "value": "Europe/Berlin",
-        }, "TIMESTAMP '2026-02-01 11:00:00+01'")
+        }, "TIMESTAMP '2026-02-20 11:00:00+01'")
         await insert_event(db, test_user_id, "profile.updated", {
             "age_deferred": True, "bodyweight_deferred": True,
-        }, "TIMESTAMP '2026-02-01 12:00:00+01'")
+        }, "TIMESTAMP '2026-02-20 12:00:00+01'")
         await insert_event(db, test_user_id, "training_plan.created", {
             "name": "PPL Split", "sessions": [],
-        }, "TIMESTAMP '2026-02-01 13:00:00+01'")
+        }, "TIMESTAMP '2026-02-20 13:00:00+01'")
         # Override (without close)
         await insert_event(db, test_user_id, "workflow.onboarding.override_granted", {
             "reason": "user_requested_planning_early",
-        }, "TIMESTAMP '2026-02-01 14:00:00+01'")
+        }, "TIMESTAMP '2026-02-20 14:00:00+01'")
 
         await db.execute("SET ROLE app_worker")
         await update_user_profile(db, {
@@ -3240,8 +3243,8 @@ class TestWorkflowGateIntegration:
         inv004_issues = [i for i in qh["data"]["issues"] if i["invariant_id"] == "INV-004"]
         assert len(inv004_issues) == 0
 
-    async def test_legacy_planning_without_close_detected(self, db, test_user_id):
-        """Legacy user with planning history but no close event triggers INV-004."""
+    async def test_legacy_planning_without_close_is_grandfathered(self, db, test_user_id):
+        """Legacy planning history before policy cutoff does not trigger INV-004."""
         await create_test_user(db, test_user_id)
         # Simulate legacy user: lots of data, planning events, but no workflow events
         for i in range(3):
@@ -3277,13 +3280,11 @@ class TestWorkflowGateIntegration:
         assert ws["phase"] == "onboarding"
         assert ws["onboarding_closed"] is False
 
-        # quality_health should detect INV-004 with planning event details
+        # quality_health should grandfather the legacy planning history
         qh = await get_projection(db, test_user_id, "quality_health")
-        inv004 = next(
-            (i for i in qh["data"]["issues"] if i["invariant_id"] == "INV-004"),
-            None,
-        )
-        assert inv004 is not None
-        assert inv004["metrics"]["planning_event_count"] == 2  # weight_target + training_plan
-        assert "training_plan.created" in inv004["metrics"]["sample_planning_event_types"]
-        assert "weight_target.set" in inv004["metrics"]["sample_planning_event_types"]
+        inv004 = next((i for i in qh["data"]["issues"] if i["invariant_id"] == "INV-004"), None)
+        assert inv004 is None
+        assert qh["data"]["metrics"]["planning_event_total"] == 2
+        assert qh["data"]["metrics"]["planning_event_enforced_total"] == 0
+        assert qh["data"]["metrics"]["planning_event_legacy_total"] == 2
+        assert qh["data"]["metrics"]["inv004_legacy_policy_applied"] is True

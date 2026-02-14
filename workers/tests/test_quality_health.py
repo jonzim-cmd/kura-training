@@ -1,6 +1,6 @@
 """Tests for quality_health read-only invariant evaluation (Decision 13 Phase 0)."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from kura_workers.handlers.quality_health import (
     _autonomy_policy_from_slos,
@@ -81,6 +81,59 @@ class TestEvaluateReadOnlyInvariants:
         assert metrics["planning_event_total"] == 1
         assert metrics["onboarding_closed"] is False
         assert metrics["onboarding_override_present"] is False
+
+    def test_onboarding_phase_violation_grandfathers_legacy_planning_events(self):
+        rows = [
+            _event_row(
+                "training_plan.created",
+                {"name": "Legacy plan"},
+                "2026-02-11T13:00:00+00:00",
+            ),
+            _event_row(
+                "preference.set",
+                {"key": "timezone", "value": "Europe/Berlin"},
+                "2026-02-11T13:05:00+00:00",
+            ),
+            _event_row(
+                "profile.updated",
+                {"age_deferred": True, "bodyweight_deferred": True},
+                "2026-02-11T13:10:00+00:00",
+            ),
+        ]
+        issues, metrics = _evaluate_read_only_invariants(rows, alias_map={})
+
+        assert all(item["invariant_id"] != "INV-004" for item in issues)
+        assert metrics["planning_event_total"] == 1
+        assert metrics["planning_event_enforced_total"] == 0
+        assert metrics["planning_event_legacy_total"] == 1
+        assert metrics["inv004_legacy_policy_applied"] is True
+        assert metrics["inv004_policy_cutoff"] == "2026-02-14T00:00:00+00:00"
+
+    def test_onboarding_phase_violation_still_enforced_after_cutoff(self):
+        rows = [
+            _event_row(
+                "training_plan.created",
+                {"name": "Current plan"},
+                "2026-02-15T09:00:00+00:00",
+            ),
+            _event_row(
+                "preference.set",
+                {"key": "timezone", "value": "Europe/Berlin"},
+                "2026-02-15T09:05:00+00:00",
+            ),
+            _event_row(
+                "profile.updated",
+                {"age_deferred": True, "bodyweight_deferred": True},
+                "2026-02-15T09:10:00+00:00",
+            ),
+        ]
+        issues, metrics = _evaluate_read_only_invariants(rows, alias_map={})
+        issue = next((item for item in issues if item["invariant_id"] == "INV-004"), None)
+        assert issue is not None
+        assert issue["metrics"]["planning_event_count"] == 1
+        assert issue["metrics"]["legacy_grandfathered_count"] == 0
+        assert metrics["planning_event_enforced_total"] == 1
+        assert metrics["inv004_legacy_policy_applied"] is False
 
     def test_onboarding_phase_violation_clears_when_onboarding_closed(self):
         rows = [
@@ -471,6 +524,77 @@ class TestRepairProposals:
         assert "repair_simulated_safe" in signal_types
         assert "repair_simulated_risky" in signal_types
 
+    def test_detection_telemetry_dedupes_quality_issue_within_cooldown(self):
+        issues = [
+            {
+                "issue_id": "INV-004:onboarding_phase_violation",
+                "invariant_id": "INV-004",
+                "type": "onboarding_phase_violation",
+                "severity": "medium",
+                "detail": "planning drift",
+                "metrics": {},
+            }
+        ]
+        proposals = _build_simulated_repair_proposals(
+            issues,
+            evaluated_at="2026-02-14T13:39:24+00:00",
+        )
+        history = {
+            "INV-004:onboarding_phase_violation": {
+                "timestamp": datetime(2026, 2, 14, 13, 0, 0, tzinfo=timezone.utc),
+                "severity": "medium",
+            }
+        }
+        events = _build_detection_learning_signal_events(
+            user_id="user-1",
+            issues=issues,
+            proposals=proposals,
+            evaluated_at="2026-02-14T13:39:24+00:00",
+            source_anchor="anchor-1",
+            quality_issue_history_by_issue=history,
+        )
+        signal_types = [event["data"]["signal_type"] for event in events]
+        assert "quality_issue_detected" not in signal_types
+
+    def test_detection_telemetry_re_emits_after_cooldown_or_severity_change(self):
+        issues = [
+            {
+                "issue_id": "INV-004:onboarding_phase_violation",
+                "invariant_id": "INV-004",
+                "type": "onboarding_phase_violation",
+                "severity": "high",
+                "detail": "planning drift",
+                "metrics": {},
+            }
+        ]
+        proposals = _build_simulated_repair_proposals(
+            issues,
+            evaluated_at="2026-02-15T14:05:00+00:00",
+        )
+        history = {
+            "INV-004:onboarding_phase_violation": {
+                "timestamp": datetime(2026, 2, 14, 13, 0, 0, tzinfo=timezone.utc),
+                "severity": "medium",
+            }
+        }
+        events = _build_detection_learning_signal_events(
+            user_id="user-1",
+            issues=issues,
+            proposals=proposals,
+            evaluated_at="2026-02-15T14:05:00+00:00",
+            source_anchor="anchor-1",
+            quality_issue_history_by_issue=history,
+        )
+        detected_events = [
+            event
+            for event in events
+            if event["data"]["signal_type"] == "quality_issue_detected"
+        ]
+        assert len(detected_events) == 1
+        attrs = detected_events[0]["data"]["attributes"]
+        assert attrs["issue_id"] == "INV-004:onboarding_phase_violation"
+        assert attrs["severity"] == "high"
+
 
 class TestAutoApplyPolicy:
     def test_tier_a_simulated_safe_is_auto_apply_eligible(self):
@@ -632,6 +756,72 @@ class TestIntegritySlos:
         assert (
             slos["metrics"]["save_claim_mismatch_rate_pct"]["value"] == 50.0
         )
+
+    def test_protocol_friction_mismatch_does_not_degrade_integrity_slo(self):
+        rows = [
+            _event_row(
+                "quality.save_claim.checked",
+                {
+                    "mismatch_detected": True,
+                    "allow_saved_claim": False,
+                    "verification_status": "pending",
+                    "claim_status": "pending",
+                    "uncertainty_markers": ["read_after_write_unverified"],
+                },
+                "2026-02-11T09:00:00+00:00",
+            ),
+            _event_row(
+                "quality.save_claim.checked",
+                {
+                    "mismatch_detected": True,
+                    "allow_saved_claim": False,
+                    "verification_status": "pending",
+                    "claim_status": "pending",
+                },
+                "2026-02-11T09:05:00+00:00",
+            ),
+        ]
+        slos = _compute_integrity_slos(
+            rows,
+            metrics={"set_logged_unresolved_pct": 0.0, "set_logged_total": 10},
+            evaluated_at="2026-02-11T10:00:00+00:00",
+        )
+        mismatch = slos["metrics"]["save_claim_mismatch_rate_pct"]
+        assert mismatch["value"] == 0.0
+        assert mismatch["protocol_friction_rate_pct"] > 0.0
+        assert mismatch["status"] == "healthy"
+        assert slos["status"] == "healthy"
+
+    def test_posterior_risk_degrades_when_critical_mismatch_is_persistent(self):
+        rows = []
+        for idx in range(20):
+            mismatch = idx < 8
+            rows.append(
+                _event_row(
+                    "quality.save_claim.checked",
+                    {
+                        "mismatch_detected": mismatch,
+                        "allow_saved_claim": not mismatch,
+                        "mismatch_severity": "critical" if mismatch else "none",
+                        "mismatch_weight": 1.0 if mismatch else 0.0,
+                        "mismatch_domain": "save_echo" if mismatch else "none",
+                    },
+                    f"2026-02-11T09:{idx:02d}:00+00:00",
+                )
+            )
+
+        slos = _compute_integrity_slos(
+            rows,
+            metrics={"set_logged_unresolved_pct": 0.0, "set_logged_total": 20},
+            evaluated_at="2026-02-11T11:00:00+00:00",
+        )
+        mismatch = slos["metrics"]["save_claim_mismatch_rate_pct"]
+        assert mismatch["sample_count"] == 20
+        assert mismatch["mismatch_count"] == 8
+        assert mismatch["value"] == 40.0
+        assert mismatch["posterior_prob_gt_degraded"] >= 0.9
+        assert mismatch["status"] == "degraded"
+        assert slos["status"] == "degraded"
 
     def test_autonomy_policy_throttles_on_degraded_slos(self):
         policy = _autonomy_policy_from_slos({"status": "degraded"})
