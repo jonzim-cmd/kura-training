@@ -31,6 +31,8 @@ from ..schema_capabilities import (
 from ..semantic_catalog import EXERCISE_CATALOG
 from ..set_corrections import apply_set_correction_chain
 from ..training_core_fields import evaluate_set_context_rows
+from ..training_rollout_v1 import confidence_band
+from ..training_session_completeness import evaluate_session_completeness
 from ..utils import get_alias_map, get_retracted_event_ids
 
 logger = logging.getLogger(__name__)
@@ -1511,6 +1513,7 @@ def _evaluate_read_only_invariants(
     - INV-005 (goal trackability path)
     - INV-006 (baseline profile explicitness)
     - INV-009 (external import quality + dedup integrity)
+    - INV-010 (session block logging completeness drift)
     """
     issues: list[dict[str, Any]] = []
     raw_set_rows = [r for r in event_rows if r["event_type"] == "set.logged"]
@@ -1710,6 +1713,51 @@ def _evaluate_read_only_invariants(
             )
         )
 
+    session_rows = [r for r in event_rows if r.get("event_type") == "session.logged"]
+    session_logged_total = len(session_rows)
+    session_logged_invalid_total = 0
+    session_missing_anchor_total = 0
+    session_confidence_distribution = {"low": 0, "medium": 0, "high": 0}
+    for row in session_rows:
+        payload = row.get("effective_data") or row.get("data") or {}
+        if not isinstance(payload, dict):
+            session_logged_invalid_total += 1
+            session_confidence_distribution["low"] += 1
+            continue
+        completeness = evaluate_session_completeness(payload)
+        confidence_value = float(completeness.get("confidence", 0.0) or 0.0)
+        session_confidence_distribution[confidence_band(confidence_value)] += 1
+        if not bool(completeness.get("log_valid")):
+            session_logged_invalid_total += 1
+            errors = " ".join(
+                str(entry).lower() for entry in (completeness.get("errors") or [])
+            )
+            if "intensity anchor" in errors or "intensity_anchors_status" in errors:
+                session_missing_anchor_total += 1
+
+    session_missing_anchor_rate_pct = (
+        round((session_missing_anchor_total / session_logged_total) * 100, 2)
+        if session_logged_total
+        else 0.0
+    )
+    if session_missing_anchor_total > 0:
+        issues.append(
+            _issue(
+                "INV-010",
+                "session_missing_anchor_rate",
+                "medium",
+                (
+                    f"{session_missing_anchor_total}/{session_logged_total} session.logged events "
+                    "failed anchor policy validation."
+                ),
+                metrics={
+                    "session_logged_total": session_logged_total,
+                    "session_missing_anchor_total": session_missing_anchor_total,
+                    "session_missing_anchor_rate_pct": session_missing_anchor_rate_pct,
+                },
+            )
+        )
+
     external_rows = [
         row for row in event_rows if row.get("event_type") == "external.activity_imported"
     ]
@@ -1762,8 +1810,21 @@ def _evaluate_read_only_invariants(
                     external_unit_conversion_fields += 1
 
     import_rows = import_job_rows or []
+    external_import_job_total = len(import_rows)
     external_import_failed_total = sum(
         1 for row in import_rows if str(row.get("status") or "") == "failed"
+    )
+    external_import_parse_fail_total = sum(
+        1
+        for row in import_rows
+        if str(row.get("status") or "") == "failed"
+        and str(row.get("error_code") or "").strip().lower()
+        in {"parse_error", "validation_error", "mapping_error", "unsupported_format"}
+    )
+    external_import_parse_fail_rate_pct = (
+        round((external_import_parse_fail_total / external_import_job_total) * 100, 2)
+        if external_import_job_total
+        else 0.0
     )
     external_dedup_skipped_total = 0
     external_dedup_rejected_total = 0
@@ -1846,6 +1907,23 @@ def _evaluate_read_only_invariants(
                 },
             )
         )
+    if external_import_parse_fail_total > 0:
+        issues.append(
+            _issue(
+                "INV-009",
+                "external_parse_fail_rate",
+                "medium",
+                (
+                    f"{external_import_parse_fail_total}/{external_import_job_total} import jobs "
+                    "failed in parse/validation/mapping stage."
+                ),
+                metrics={
+                    "external_import_job_total": external_import_job_total,
+                    "external_import_parse_fail_total": external_import_parse_fail_total,
+                    "external_import_parse_fail_rate_pct": external_import_parse_fail_rate_pct,
+                },
+            )
+        )
 
     metrics = {
         "total_events": len(event_rows),
@@ -1859,8 +1937,16 @@ def _evaluate_read_only_invariants(
         "onboarding_override_present": onboarding_override,
         "planning_event_total": len(planning_rows),
         "mention_field_missing_total": len(mention_missing_rows),
+        "session_logged_total": session_logged_total,
+        "session_logged_invalid_total": session_logged_invalid_total,
+        "session_missing_anchor_total": session_missing_anchor_total,
+        "session_missing_anchor_rate_pct": session_missing_anchor_rate_pct,
+        "session_confidence_distribution": session_confidence_distribution,
         "external_imported_total": external_imported_total,
+        "external_import_job_total": external_import_job_total,
         "external_import_failed_total": external_import_failed_total,
+        "external_import_parse_fail_total": external_import_parse_fail_total,
+        "external_import_parse_fail_rate_pct": external_import_parse_fail_rate_pct,
         "external_dedup_skipped_total": external_dedup_skipped_total,
         "external_dedup_rejected_total": external_dedup_rejected_total,
         "external_low_confidence_fields": external_low_confidence_fields,

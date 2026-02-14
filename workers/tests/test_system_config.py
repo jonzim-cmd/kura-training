@@ -274,6 +274,37 @@ class TestConventions:
         assert load_context["event_type"] == "set.logged"
         assert "load_context.comparability_group" in load_context["required_fields_when_present"]
 
+    def test_has_training_load_projection_v2_conventions(self):
+        result = _get_conventions()
+        assert "training_load_projection_v2" in result
+        projection = result["training_load_projection_v2"]
+        assert projection["projection_type"] == "training_timeline"
+        assert projection["contract"]["schema_version"] == "training_load.v2"
+        assert "strength" in projection["contract"]["modalities"]
+
+    def test_has_session_legacy_compatibility_v1_conventions(self):
+        result = _get_conventions()
+        assert "session_legacy_compatibility_v1" in result
+        contract = result["session_legacy_compatibility_v1"]["contract"]
+        assert contract["migration_strategy"]["replay_safe"] is True
+        assert contract["coexistence_policy"]["allow_parallel_event_types"] is True
+
+    def test_has_training_rollout_guard_v1_conventions(self):
+        result = _get_conventions()
+        assert "training_rollout_guard_v1" in result
+        contract = result["training_rollout_guard_v1"]["contract"]
+        assert "strength_manual_only" in contract["qa_matrix"]
+        assert "training_load_v2" in contract["feature_flags"]
+        assert "external_import_parse_fail_rate_pct" in contract["monitoring"]["metrics"]
+
+    def test_has_external_import_mapping_v2_conventions(self):
+        result = _get_conventions()
+        assert "external_import_mapping_v2" in result
+        contract = result["external_import_mapping_v2"]["contract"]
+        assert contract["schema_version"] == "external_import_mapping.v2"
+        assert "garmin" in contract["provider_field_matrix"]
+        assert "fit" in contract["format_field_matrix"]
+
     def test_has_session_feedback_certainty_v1_conventions(self):
         result = _get_conventions()
         assert "session_feedback_certainty_v1" in result

@@ -1,0 +1,93 @@
+from __future__ import annotations
+
+from kura_workers.training_load_v2 import (
+    accumulate_row_load_v2,
+    finalize_session_load_v2,
+    infer_row_modality,
+    init_session_load_v2,
+    load_projection_contract_v2,
+    summarize_timeline_load_v2,
+)
+
+
+def test_infer_row_modality_prefers_block_type_mapping() -> None:
+    assert infer_row_modality({"block_type": "strength_set"}) == "strength"
+    assert infer_row_modality({"block_type": "interval_endurance"}) == "endurance"
+    assert infer_row_modality({"block_type": "sprint_accel_maxv"}) == "sprint"
+    assert infer_row_modality({"block_type": "plyometric_reactive"}) == "plyometric"
+
+
+def test_manual_strength_row_has_valid_load_and_confidence_without_hr() -> None:
+    session = init_session_load_v2()
+    accumulate_row_load_v2(
+        session,
+        data={"exercise_id": "barbell_back_squat", "weight_kg": 100, "reps": 5},
+        source_type="manual",
+    )
+    finalized = finalize_session_load_v2(session)
+
+    assert finalized["global"]["load_score"] > 0
+    assert finalized["global"]["confidence"] >= 0.6
+    assert finalized["global"]["analysis_tier"] in {
+        "log_valid",
+        "analysis_basic",
+        "analysis_advanced",
+    }
+    assert finalized["modalities"]["strength"]["rows"] == 1
+
+
+def test_endurance_row_without_sensor_streams_still_analysis_basic() -> None:
+    session = init_session_load_v2()
+    accumulate_row_load_v2(
+        session,
+        data={"block_type": "interval_endurance", "duration_seconds": 1200, "distance_meters": 4000},
+        source_type="session_logged",
+        session_confidence_hint=0.7,
+    )
+    finalized = finalize_session_load_v2(session)
+
+    assert finalized["modalities"]["endurance"]["rows"] == 1
+    assert finalized["global"]["load_score"] > 0
+    assert finalized["global"]["confidence"] >= 0.6
+    assert finalized["global"]["confidence_band"] in {"medium", "high"}
+
+
+def test_timeline_summary_aggregates_modalities_and_global_confidence() -> None:
+    session_a = init_session_load_v2()
+    accumulate_row_load_v2(
+        session_a,
+        data={"weight_kg": 100, "reps": 5},
+        source_type="manual",
+    )
+    session_a = finalize_session_load_v2(session_a)
+
+    session_b = init_session_load_v2()
+    accumulate_row_load_v2(
+        session_b,
+        data={"duration_seconds": 1800, "distance_meters": 5000},
+        source_type="external_import",
+    )
+    session_b = finalize_session_load_v2(session_b)
+
+    summary = summarize_timeline_load_v2(
+        {
+            "s1": {"load_v2": session_a},
+            "s2": {"load_v2": session_b},
+        }
+    )
+
+    assert summary["sessions_total"] == 2
+    assert summary["modalities"]["strength"]["rows"] == 1
+    assert summary["modalities"]["endurance"]["rows"] == 1
+    assert summary["global"]["load_score"] > 0
+    assert summary["global"]["confidence"] > 0
+
+
+def test_load_projection_contract_declares_sparse_data_policy() -> None:
+    contract = load_projection_contract_v2()
+    assert contract["schema_version"] == "training_load.v2"
+    assert {"strength", "sprint", "endurance", "plyometric", "mixed"} <= set(
+        contract["modalities"]
+    )
+    rules_text = " ".join(contract["rules"]).lower()
+    assert "no global hr requirement" in rules_text

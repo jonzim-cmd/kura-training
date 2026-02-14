@@ -26,6 +26,15 @@ from ..schema_capabilities import (
 )
 from ..session_block_expansion import expand_session_logged_rows
 from ..set_corrections import apply_set_correction_chain
+from ..training_legacy_compat import extract_backfilled_set_event_ids
+from ..training_load_v2 import (
+    accumulate_row_load_v2,
+    finalize_session_load_v2,
+    init_session_load_v2,
+    summarize_timeline_load_v2,
+)
+from ..training_rollout_v1 import is_training_load_v2_enabled
+from ..training_session_completeness import evaluate_session_completeness
 from ..utils import (
     SessionBoundaryState,
     epley_1rm,
@@ -124,6 +133,8 @@ def _compute_recent_sessions(
             session_entry["source_provider"] = entry["source_provider"]
         if entry.get("source_type") is not None:
             session_entry["source_type"] = entry["source_type"]
+        if isinstance(entry.get("load_v2"), dict):
+            session_entry["load_v2"] = entry["load_v2"]
         if entry.get("top_sets"):
             session_entry["top_sets"] = entry["top_sets"]
         result.append(session_entry)
@@ -233,6 +244,22 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     }
 
 
+def _disabled_load_v2_overview() -> dict[str, Any]:
+    return {
+        "schema_version": "training_load.v2",
+        "enabled": False,
+        "status": "disabled_by_feature_flag",
+        "sessions_total": 0,
+        "modalities": {},
+        "global": {
+            "load_score": 0.0,
+            "confidence": 0.0,
+            "confidence_band": "low",
+            "analysis_tier": "log_valid",
+        },
+    }
+
+
 @projection_handler(
     "set.logged",
     "session.logged",
@@ -278,7 +305,20 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "source_provider": "string (optional, for externally imported sessions)",
             "source_type": "string (optional: manual|external_import)",
             "top_sets": {"<exercise_id>": {"weight_kg": "number", "reps": "integer", "estimated_1rm": "number"}},
+            "load_v2": {
+                "schema_version": "string",
+                "modalities": "object (strength/sprint/endurance/plyometric/mixed)",
+                "global": "object (load_score + confidence + analysis_tier)",
+            },
         }],
+        "load_v2_overview": {
+            "schema_version": "string",
+            "enabled": "boolean (feature-flag state)",
+            "status": "string (optional, disabled_by_feature_flag when rollout is off)",
+            "sessions_total": "integer",
+            "modalities": "object (aggregated modality-specific load and confidence)",
+            "global": "object (aggregated load_score + confidence + confidence_band + analysis_tier)",
+        },
         "weekly_summary": [{
             "week": "ISO 8601 week (e.g. 2026-W06)",
             "training_days": "integer",
@@ -323,6 +363,10 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                     }
                 },
             },
+            "feature_flags": {
+                "training_load_v2": "boolean",
+            },
+            "legacy_backfill_deduped_set_rows": "integer",
         },
     },
     "manifest_contribution": _manifest_contribution,
@@ -369,6 +413,25 @@ async def update_training_timeline(
     # Filter retracted events
     rows = [r for r in rows if str(r["id"]) not in retracted_ids]
     session_rows = [r for r in session_rows if str(r["id"]) not in retracted_ids]
+    legacy_backfill_source_ids = extract_backfilled_set_event_ids(session_rows)
+    if legacy_backfill_source_ids:
+        rows = [
+            row
+            for row in rows
+            if str(row["id"]) not in legacy_backfill_source_ids
+        ]
+    load_v2_enabled = is_training_load_v2_enabled()
+    session_completeness_by_event_id: dict[str, dict[str, Any]] = {}
+    for session_row in session_rows:
+        payload = session_row.get("effective_data") or session_row.get("data") or {}
+        if not isinstance(payload, dict):
+            continue
+        completeness = evaluate_session_completeness(payload)
+        session_completeness_by_event_id[str(session_row["id"])] = {
+            "tier": completeness.get("tier"),
+            "confidence": completeness.get("confidence"),
+            "log_valid": bool(completeness.get("log_valid")),
+        }
     row_ids = [str(r["id"]) for r in rows]
     correction_rows: list[dict[str, Any]] = []
     if row_ids:
@@ -390,6 +453,12 @@ async def update_training_timeline(
     ]
     rows = apply_set_correction_chain(rows, correction_rows)
     session_expanded_rows = expand_session_logged_rows(session_rows)
+    for expanded in session_expanded_rows:
+        hint = session_completeness_by_event_id.get(str(expanded.get("id")))
+        if hint:
+            expanded["_session_completeness_tier"] = hint.get("tier")
+            expanded["_session_completeness_confidence"] = hint.get("confidence")
+            expanded["_session_log_valid"] = hint.get("log_valid")
 
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -465,6 +534,7 @@ async def update_training_timeline(
             "total_volume_kg": 0.0,
             "total_reps": 0,
             "top_sets": {},
+            "load_v2": init_session_load_v2() if load_v2_enabled else None,
         }
     )
     observed_attr_counts: dict[str, dict[str, int]] = {}
@@ -679,12 +749,31 @@ async def update_training_timeline(
         session_data[session_key]["total_volume_kg"] += volume
         session_data[session_key]["total_reps"] += reps
 
+        load_v2_bucket = session_data[session_key].get("load_v2")
+        if load_v2_enabled and isinstance(load_v2_bucket, dict):
+            accumulate_row_load_v2(
+                load_v2_bucket,
+                data=data if isinstance(data, dict) else {},
+                source_type=str(row.get("_source_type") or "manual"),
+                session_confidence_hint=(
+                    float(row.get("_session_completeness_confidence"))
+                    if isinstance(row.get("_session_completeness_confidence"), (int, float))
+                    else None
+                ),
+            )
+
         # Top set per exercise per session
         s_top = session_data[session_key]["top_sets"].get(exercise_key)
         if s_top is None or e1rm > s_top["estimated_1rm"]:
             session_data[session_key]["top_sets"][exercise_key] = {
                 "weight_kg": weight, "reps": reps, "estimated_1rm": round(e1rm, 1),
             }
+
+    if load_v2_enabled:
+        for session_entry in session_data.values():
+            load_v2 = session_entry.get("load_v2")
+            if isinstance(load_v2, dict):
+                session_entry["load_v2"] = finalize_session_load_v2(load_v2)
 
     # Finalize week_data: convert training_days sets to counts
     for w_entry in week_data.values():
@@ -697,6 +786,14 @@ async def update_training_timeline(
         "timezone_context": timezone_context,
         "recent_days": _compute_recent_days(day_data),
         "recent_sessions": _compute_recent_sessions(session_data),
+        "load_v2_overview": (
+            {
+                **summarize_timeline_load_v2(session_data),
+                "enabled": True,
+            }
+            if load_v2_enabled
+            else _disabled_load_v2_overview()
+        ),
         "weekly_summary": _compute_weekly_summary(week_data),
         "current_frequency": _compute_frequency(training_dates, reference_date),
         "last_training": reference_date.isoformat(),
@@ -714,6 +811,10 @@ async def update_training_timeline(
             "external_temporal_uncertainty_hints": external_temporal_uncertainty_hints,
             "external_dedup_actions": external_dedup_actions,
             "schema_capabilities": schema_capabilities,
+            "feature_flags": {
+                "training_load_v2": load_v2_enabled,
+            },
+            "legacy_backfill_deduped_set_rows": len(legacy_backfill_source_ids),
         },
     }
 

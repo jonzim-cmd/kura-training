@@ -175,6 +175,61 @@ class TestEvaluateReadOnlyInvariants:
         issues, _ = _evaluate_read_only_invariants(rows, alias_map={})
         assert all(issue["type"] != "mention_field_missing" for issue in issues)
 
+    def test_session_missing_anchor_rate_and_confidence_distribution_metrics(self):
+        rows = [
+            _row(
+                "session.logged",
+                {
+                    "contract_version": "session.logged.v1",
+                    "session_meta": {"sport": "running"},
+                    "blocks": [
+                        {
+                            "block_type": "interval_endurance",
+                            "dose": {
+                                "work": {"duration_seconds": 120},
+                                "recovery": {"duration_seconds": 60},
+                                "repeats": 6,
+                            },
+                        }
+                    ],
+                    "provenance": {"source_type": "manual"},
+                },
+            ),
+            _row(
+                "session.logged",
+                {
+                    "contract_version": "session.logged.v1",
+                    "session_meta": {"sport": "strength"},
+                    "blocks": [
+                        {
+                            "block_type": "strength_set",
+                            "dose": {"work": {"reps": 5}, "repeats": 1},
+                            "intensity_anchors": [
+                                {
+                                    "measurement_state": "measured",
+                                    "unit": "rpe",
+                                    "value": 8,
+                                }
+                            ],
+                        }
+                    ],
+                    "provenance": {"source_type": "manual"},
+                },
+            ),
+            _row("preference.set", {"key": "timezone", "value": "Europe/Berlin"}),
+            _row("profile.updated", {"age_deferred": True, "bodyweight_deferred": True}),
+        ]
+        issues, metrics = _evaluate_read_only_invariants(rows, alias_map={})
+
+        issue_types = {issue["type"] for issue in issues}
+        assert "session_missing_anchor_rate" in issue_types
+        assert metrics["session_logged_total"] == 2
+        assert metrics["session_missing_anchor_total"] == 1
+        assert metrics["session_missing_anchor_rate_pct"] == 50.0
+        distribution = metrics["session_confidence_distribution"]
+        assert set(distribution.keys()) == {"low", "medium", "high"}
+        assert sum(distribution.values()) == 2
+
     def test_external_import_quality_signals_include_uncertainty_and_unsupported(self):
         rows = [
             _row(
@@ -223,6 +278,28 @@ class TestEvaluateReadOnlyInvariants:
         assert metrics["external_imported_total"] == 1
         assert metrics["external_dedup_skipped_total"] == 1
         assert metrics["external_dedup_rejected_total"] == 1
+
+    def test_external_import_parse_fail_rate_metric_is_reported(self):
+        rows = [
+            _row("preference.set", {"key": "timezone", "value": "Europe/Berlin"}),
+            _row("profile.updated", {"age_deferred": True, "bodyweight_deferred": True}),
+        ]
+        import_jobs = [
+            {"status": "failed", "error_code": "parse_error", "receipt": {}},
+            {"status": "failed", "error_code": "validation_error", "receipt": {}},
+            {"status": "completed", "error_code": None, "receipt": {}},
+        ]
+        issues, metrics = _evaluate_read_only_invariants(
+            rows,
+            alias_map={},
+            import_job_rows=import_jobs,
+        )
+
+        assert metrics["external_import_job_total"] == 3
+        assert metrics["external_import_parse_fail_total"] == 2
+        assert metrics["external_import_parse_fail_rate_pct"] == 66.67
+        issue_types = {issue["type"] for issue in issues}
+        assert "external_parse_fail_rate" in issue_types
 
 
 class TestQualityProjectionData:

@@ -16,8 +16,12 @@ import psycopg
 from psycopg.types.json import Json
 
 from .event_conventions import get_event_conventions
+from .external_import_mapping_v2 import import_mapping_contract_v2
 from .interview_guide import get_interview_guide
 from .registry import get_dimension_metadata
+from .training_legacy_compat import legacy_compat_contract_v1
+from .training_load_v2 import load_projection_contract_v2
+from .training_rollout_v1 import rollout_contract_v1
 from .training_session_completeness import completeness_policy_v1
 from .training_session_contract import block_catalog_v1
 from .training_core_fields import core_field_registry
@@ -84,6 +88,41 @@ def _get_conventions() -> dict[str, Any]:
             "event_type": "session.logged",
             "contract": block_catalog_v1(),
             "completeness_policy": completeness_policy_v1(),
+        },
+        "training_load_projection_v2": {
+            "rules": [
+                "Projection v2 aggregates modality-specific load and global load in one contract.",
+                "Manual-only logging remains valid for analytics; confidence degrades when sparse.",
+                "Sensor enrichment improves confidence and analysis tier without schema migrations.",
+                "Feature-flag rollback must keep legacy timeline summaries available.",
+            ],
+            "projection_type": "training_timeline",
+            "contract": load_projection_contract_v2(),
+        },
+        "session_legacy_compatibility_v1": {
+            "rules": [
+                "Legacy set.logged and session.logged v1 must coexist without double counting.",
+                "Backfill from set.logged to session.logged must be append-only and idempotent.",
+                "Compatibility adapter must remain deterministic for replay safety.",
+            ],
+            "contract": legacy_compat_contract_v1(),
+        },
+        "training_rollout_guard_v1": {
+            "rules": [
+                "Rollout uses QA matrix cohorts (strength, sprint, endurance, hybrid, low-data).",
+                "Shadow-mode comparison is required before promotion.",
+                "Feature flags must provide rollback path without data loss.",
+                "Monitoring must expose parse-fail-rate, missing-anchor-rate, and confidence distribution.",
+            ],
+            "contract": rollout_contract_v1(),
+        },
+        "external_import_mapping_v2": {
+            "rules": [
+                "Provider/format matrix declares supported|partial|not_available by canonical field.",
+                "Imports map into the same session.logged block taxonomy as manual logging.",
+                "No provider-specific field may become a global hard requirement.",
+            ],
+            "contract": import_mapping_contract_v2(),
         },
         "load_context_v1": {
             "rules": [

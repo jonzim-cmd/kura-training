@@ -461,6 +461,32 @@ class TestComputeRecentSessions:
         assert result[0]["source_provider"] == "garmin"
         assert result[0]["source_type"] == "external_import"
 
+    def test_session_load_v2_is_preserved_when_present(self):
+        session_data = {
+            "session-1": {
+                "date": "2026-02-08",
+                "session_id": "session-1",
+                "exercises": {"interval_endurance"},
+                "total_sets": 1,
+                "total_volume_kg": 0.0,
+                "total_reps": 0,
+                "load_v2": {
+                    "schema_version": "training_load.v2",
+                    "modalities": {"endurance": {"rows": 1, "load_score": 9.5}},
+                    "global": {
+                        "load_score": 9.5,
+                        "confidence": 0.7,
+                        "confidence_band": "medium",
+                        "analysis_tier": "analysis_basic",
+                    },
+                },
+            }
+        }
+
+        result = _compute_recent_sessions(session_data)
+        assert "load_v2" in result[0]
+        assert result[0]["load_v2"]["global"]["analysis_tier"] == "analysis_basic"
+
 
 class TestManifestContribution:
     def test_extracts_summary(self):
