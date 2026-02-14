@@ -117,6 +117,13 @@ def get_interview_guide() -> dict[str, Any]:
             "wrap_up": {
                 "goal": "Summarize what was learned. Confirm key items. Show what Kura can now do.",
                 "rules": "Review coverage. Highlight dimensions that are now active. Mention what improves with more data.",
+                "open_close": (
+                    "Before wrapping up, always ask an open question: "
+                    "'Gibt es sonst noch etwas, das du mir mitteilen möchtest?' "
+                    "This catches context the structured areas missed — "
+                    "medical conditions, personal constraints, past experiences, or anything "
+                    "the user considers important but wasn't asked about."
+                ),
                 "when": "Most areas covered or user signals they're done.",
             },
         },
@@ -132,15 +139,16 @@ def get_interview_guide() -> dict[str, Any]:
                 "area": "baseline_profile",
                 "description": (
                     "Baseline profile completeness with tri-state semantics for "
-                    "age/date_of_birth and bodyweight (known/unknown/deferred). "
-                    "Optional sex/body-composition context can be captured or deferred."
+                    "age/date_of_birth, bodyweight, and sex (known/unknown/deferred). "
+                    "Always ask — user can decline, which is recorded as deferred."
                 ),
                 "approach": "categorical_then_narrative",
                 "produces": ["profile.updated", "bodyweight.logged"],
                 "examples": [
                     "Alter oder Geburtsdatum bekannt? Wenn nicht: explizit als deferred markieren.",
                     "Aktuelles Körpergewicht direkt als bodyweight.logged oder bodyweight_kg in profile.updated speichern.",
-                    "Optional: Geschlecht/Körperzusammensetzung nur erfassen, wenn relevant oder gewünscht.",
+                    "Geschlecht immer fragen — relevant für Referenzwerte und Normierung. "
+                    "Wenn der User nicht antworten möchte: als deferred markieren, nicht überspringen.",
                 ],
             },
             {
