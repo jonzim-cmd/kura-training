@@ -1,5 +1,5 @@
 [workspace]
-members = ["api", "cli", "core", "mcp"]
+members = ["api", "cli", "core", "mcp", "mcp-runtime"]
 resolver = "2"
 
 [workspace.package]
@@ -70,3 +70,4 @@ dirs = "6"
 
 # Shared crate
 kura-core = { path = "core" }
+kura-mcp-runtime = { path = "mcp-runtime" }

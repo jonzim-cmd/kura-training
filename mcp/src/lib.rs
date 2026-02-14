@@ -1,6 +1,1 @@
-mod util;
-
-#[path = "../../cli/src/commands/mcp.rs"]
-mod runtime;
-
-pub use runtime::{McpCommands, run};
+pub use kura_mcp_runtime::{McpCommands, McpServeArgs, run};

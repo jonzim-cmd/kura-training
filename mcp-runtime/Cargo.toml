@@ -1,18 +1,12 @@
 [package]
-name = "kura-mcp"
+name = "kura-mcp-runtime"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[[bin]]
-name = "kura-mcp"
-path = "src/main.rs"
-
 [dependencies]
-kura-mcp-runtime = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
-dotenvy = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
