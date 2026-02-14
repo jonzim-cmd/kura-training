@@ -1,0 +1,32 @@
+{
+  "decision": {
+    "allow_rollout": true,
+    "gate_status": "pass",
+    "status": "approve_rollout",
+    "tier_matrix_status": "pass",
+    "weakest_tier": "strict"
+  },
+  "gate": {
+    "failed_metrics": [],
+    "missing_metrics": [],
+    "policy_version": "shadow_eval_gate_v1",
+    "primary_reasons": [],
+    "tier_matrix_policy_version": "shadow_eval_tier_matrix_v1"
+  },
+  "generated_at": "2026-02-14T18:00:00+00:00",
+  "missing_data": [],
+  "recommended_next_steps": [
+    "Proceed with controlled rollout ramp and monitor tier_matrix + release_gate status."
+  ],
+  "schema_version": "proof_in_production_decision_artifact.v1",
+  "stakeholder_summary": {
+    "decision_status": "approve_rollout",
+    "gate_status": "pass",
+    "headline": "Rollout decision: approve_rollout (gate=pass, weakest_tier=strict)",
+    "missing_data": [],
+    "primary_reasons": [],
+    "recommended_next_steps": [
+      "Proceed with controlled rollout ramp and monitor tier_matrix + release_gate status."
+    ]
+  }
+}

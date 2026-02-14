@@ -1989,6 +1989,7 @@ _MODEL_TIER_ORDER = {
     "advanced": 2,
 }
 _DEFAULT_SHADOW_MODEL_TIERS = ("strict", "moderate", "advanced")
+_PROOF_IN_PRODUCTION_SCHEMA_VERSION = "proof_in_production_decision_artifact.v1"
 
 
 def _aggregate_metric_mean(
@@ -2372,6 +2373,168 @@ def build_shadow_evaluation_report(
     }
 
 
+def _proof_decision_status(gate_status: str) -> str:
+    if gate_status == "pass":
+        return "approve_rollout"
+    if gate_status == "insufficient_data":
+        return "needs_data"
+    return "hold"
+
+
+def _proof_missing_data(
+    release_gate: dict[str, Any],
+    tier_matrix: dict[str, Any],
+) -> list[str]:
+    missing_data: list[str] = []
+    for item in release_gate.get("missing_metrics") or []:
+        missing_data.append(str(item))
+
+    for tier in tier_matrix.get("tiers") or []:
+        if not isinstance(tier, dict):
+            continue
+        tier_name = str(tier.get("model_tier") or "unknown")
+        tier_gate = tier.get("release_gate") or {}
+        for item in tier_gate.get("missing_metrics") or []:
+            missing_data.append(f"{tier_name}:{item}")
+
+    return sorted(set(missing_data))
+
+
+def _proof_recommended_next_steps(
+    *,
+    gate_status: str,
+    reasons: list[str],
+    missing_data: list[str],
+) -> list[str]:
+    steps: list[str] = []
+    if gate_status == "pass":
+        steps.append(
+            "Proceed with controlled rollout ramp and monitor tier_matrix + release_gate status."
+        )
+    else:
+        steps.append(
+            "Block rollout, address gate findings, and rerun shadow evaluation before promotion."
+        )
+
+    if missing_data:
+        steps.append(
+            "Backfill missing replay coverage for: " + ", ".join(sorted(missing_data)[:5])
+        )
+    for reason in reasons:
+        if reason.startswith("weakest_tier_gate_status="):
+            payload = reason.split("=", 1)[1]
+            steps.append(f"Resolve weakest-tier regressions first ({payload}).")
+        elif reason.startswith("metric_delta_failures:"):
+            steps.append("Fix regressed protected metrics and rerun gate.")
+        elif reason.startswith("candidate_shadow_mode_status="):
+            steps.append("Investigate candidate shadow-mode check failures.")
+
+    # Stable dedupe while preserving intent ordering.
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for step in steps:
+        if step in seen:
+            continue
+        seen.add(step)
+        deduped.append(step)
+    return deduped
+
+
+def build_proof_in_production_artifact(shadow_report: dict[str, Any]) -> dict[str, Any]:
+    release_gate = shadow_report.get("release_gate") or {}
+    tier_matrix = shadow_report.get("tier_matrix") or {}
+
+    gate_status = str(release_gate.get("status") or "unknown")
+    decision_status = _proof_decision_status(gate_status)
+    reasons = [str(item) for item in (release_gate.get("reasons") or [])]
+    missing_data = _proof_missing_data(release_gate, tier_matrix)
+    recommended_next_steps = _proof_recommended_next_steps(
+        gate_status=gate_status,
+        reasons=reasons,
+        missing_data=missing_data,
+    )
+
+    weakest_tier = str(
+        release_gate.get("weakest_tier") or tier_matrix.get("weakest_tier") or "unknown"
+    )
+    headline = (
+        f"Rollout decision: {decision_status} "
+        f"(gate={gate_status}, weakest_tier={weakest_tier})"
+    )
+
+    return {
+        "schema_version": _PROOF_IN_PRODUCTION_SCHEMA_VERSION,
+        "generated_at": shadow_report.get("generated_at") or datetime.now(timezone.utc).isoformat(),
+        "decision": {
+            "status": decision_status,
+            "allow_rollout": bool(release_gate.get("allow_rollout")),
+            "gate_status": gate_status,
+            "weakest_tier": weakest_tier,
+            "tier_matrix_status": str(release_gate.get("tier_matrix_status") or "unknown"),
+        },
+        "gate": {
+            "policy_version": str(release_gate.get("policy_version") or ""),
+            "tier_matrix_policy_version": str(
+                release_gate.get("tier_matrix_policy_version") or ""
+            ),
+            "failed_metrics": sorted(str(item) for item in (release_gate.get("failed_metrics") or [])),
+            "missing_metrics": sorted(
+                str(item) for item in (release_gate.get("missing_metrics") or [])
+            ),
+            "primary_reasons": reasons,
+        },
+        "missing_data": missing_data,
+        "recommended_next_steps": recommended_next_steps,
+        "stakeholder_summary": {
+            "headline": headline,
+            "decision_status": decision_status,
+            "gate_status": gate_status,
+            "primary_reasons": reasons[:3],
+            "missing_data": missing_data[:5],
+            "recommended_next_steps": recommended_next_steps[:5],
+        },
+    }
+
+
+def render_proof_in_production_markdown(artifact: dict[str, Any]) -> str:
+    decision = artifact.get("decision") or {}
+    summary = artifact.get("stakeholder_summary") or {}
+    lines = [
+        "# Proof In Production Decision Artifact",
+        "",
+        f"- Decision: `{decision.get('status', 'unknown')}`",
+        f"- Gate status: `{decision.get('gate_status', 'unknown')}`",
+        f"- Weakest tier: `{decision.get('weakest_tier', 'unknown')}`",
+        "",
+        "## Headline",
+        str(summary.get("headline") or ""),
+        "",
+        "## Primary Reasons",
+    ]
+    reasons = list(summary.get("primary_reasons") or [])
+    if reasons:
+        lines.extend([f"- {reason}" for reason in reasons])
+    else:
+        lines.append("- none")
+
+    lines.extend(["", "## Missing Data"])
+    missing_data = list(summary.get("missing_data") or [])
+    if missing_data:
+        lines.extend([f"- {item}" for item in missing_data])
+    else:
+        lines.append("- none")
+
+    lines.extend(["", "## Recommended Next Steps"])
+    next_steps = list(summary.get("recommended_next_steps") or [])
+    if next_steps:
+        lines.extend([f"- {step}" for step in next_steps])
+    else:
+        lines.append("- none")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _shadow_config(
     config: dict[str, Any] | None,
     *,
@@ -2596,6 +2759,7 @@ async def run_shadow_evaluation(
     }
     report["baseline"]["projection_rows"] = int(baseline_focus.get("projection_rows") or 0)
     report["candidate"]["projection_rows"] = int(candidate_focus.get("projection_rows") or 0)
+    report["proof_in_production"] = build_proof_in_production_artifact(report)
     return report
 
 

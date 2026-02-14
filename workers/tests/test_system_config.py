@@ -397,6 +397,16 @@ class TestConventions:
         assert "release_gate" in gate["report_sections"]
         assert len(gate["delta_rules"]) >= 2
 
+    def test_has_proof_in_production_v1_conventions(self):
+        result = _get_conventions()
+        assert "proof_in_production_v1" in result
+        proof = result["proof_in_production_v1"]
+        assert proof["entrypoint"] == "eval_harness.build_proof_in_production_artifact"
+        assert proof["script_entrypoint"] == "scripts/build_proof_in_production_artifact.py"
+        assert proof["schema_version"] == "proof_in_production_decision_artifact.v1"
+        assert "recommended_next_steps" in proof["required_sections"]
+        assert "headline" in proof["stakeholder_summary_sections"]
+
     def test_has_visualization_policy_conventions(self):
         result = _get_conventions()
         assert "visualization_policy" in result

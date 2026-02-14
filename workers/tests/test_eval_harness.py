@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from kura_workers.eval_harness import (
     _shadow_tier_variants,
+    build_proof_in_production_artifact,
     build_semantic_labels_from_event_rows,
     build_shadow_evaluation_report,
     build_shadow_mode_rollout_checks,
@@ -14,6 +15,7 @@ from kura_workers.eval_harness import (
     evaluate_readiness_daily_scores,
     evaluate_strength_history,
     filter_retracted_event_rows,
+    render_proof_in_production_markdown,
     summarize_projection_results,
     summarize_projection_results_by_source,
 )
@@ -750,3 +752,66 @@ def test_build_shadow_evaluation_report_blocks_rollout_on_weakest_tier_regressio
     assert moderate_entry["release_gate"]["status"] == "pass"
     assert report["release_gate"]["status"] == "fail"
     assert any(reason.startswith("weakest_tier_gate_status=strict:") for reason in report["release_gate"]["reasons"])
+
+
+def test_build_proof_in_production_artifact_contains_required_sections():
+    shadow_report = {
+        "generated_at": "2026-02-14T18:00:00+00:00",
+        "release_gate": {
+            "policy_version": "shadow_eval_gate_v1",
+            "tier_matrix_policy_version": "shadow_eval_tier_matrix_v1",
+            "status": "fail",
+            "allow_rollout": False,
+            "weakest_tier": "strict",
+            "tier_matrix_status": "fail",
+            "failed_metrics": ["strength_inference:coverage_ci95"],
+            "missing_metrics": ["readiness_inference:mae_nowcast"],
+            "reasons": [
+                "metric_delta_failures: strength_inference:coverage_ci95",
+                "weakest_tier_gate_status=strict:fail",
+            ],
+        },
+        "tier_matrix": {
+            "weakest_tier": "strict",
+            "tiers": [
+                {
+                    "model_tier": "strict",
+                    "release_gate": {
+                        "status": "fail",
+                        "missing_metrics": [],
+                    },
+                }
+            ],
+        },
+    }
+
+    artifact = build_proof_in_production_artifact(shadow_report)
+    assert artifact["schema_version"] == "proof_in_production_decision_artifact.v1"
+    assert artifact["decision"]["status"] == "hold"
+    assert artifact["decision"]["gate_status"] == "fail"
+    assert artifact["gate"]["primary_reasons"]
+    assert artifact["missing_data"]
+    assert artifact["recommended_next_steps"]
+    assert artifact["stakeholder_summary"]["headline"]
+
+
+def test_render_proof_in_production_markdown_includes_stakeholder_sections():
+    artifact = {
+        "decision": {
+            "status": "needs_data",
+            "gate_status": "insufficient_data",
+            "weakest_tier": "strict",
+        },
+        "stakeholder_summary": {
+            "headline": "Rollout decision: needs_data",
+            "primary_reasons": ["insufficient_metric_coverage: readiness_inference:mae_nowcast"],
+            "missing_data": ["readiness_inference:mae_nowcast"],
+            "recommended_next_steps": ["Backfill missing replay coverage."],
+        },
+    }
+
+    markdown = render_proof_in_production_markdown(artifact)
+    assert "# Proof In Production Decision Artifact" in markdown
+    assert "## Primary Reasons" in markdown
+    assert "## Missing Data" in markdown
+    assert "## Recommended Next Steps" in markdown

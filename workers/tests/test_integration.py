@@ -1074,6 +1074,8 @@ class TestInferenceIntegration:
         assert {"strict", "moderate", "advanced"}.issubset(
             {item["model_tier"] for item in report["tier_matrix"]["tiers"]}
         )
+        assert report["proof_in_production"]["schema_version"] == "proof_in_production_decision_artifact.v1"
+        assert report["proof_in_production"]["stakeholder_summary"]["headline"]
         assert report["corpus"]["user_count"] == 1
         assert report["change_context"]["change_id"] == "shadow-eval-integration-demo"
         assert report["baseline"]["projection_rows"] >= 1

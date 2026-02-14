@@ -505,6 +505,26 @@ def _get_conventions() -> dict[str, Any]:
                 "release_gate",
             ],
         },
+        "proof_in_production_v1": {
+            "entrypoint": "eval_harness.build_proof_in_production_artifact",
+            "script_entrypoint": "scripts/build_proof_in_production_artifact.py",
+            "schema_version": "proof_in_production_decision_artifact.v1",
+            "required_sections": [
+                "decision.status",
+                "decision.gate_status",
+                "gate.primary_reasons",
+                "missing_data",
+                "recommended_next_steps",
+                "stakeholder_summary",
+            ],
+            "stakeholder_summary_sections": [
+                "headline",
+                "decision_status",
+                "primary_reasons",
+                "missing_data",
+                "recommended_next_steps",
+            ],
+        },
         "visualization_policy": {
             "rules": [
                 "Only visualize when policy triggers are present or the user explicitly asks.",
