@@ -196,6 +196,124 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 ),
             },
         },
+        "session.logged": {
+            "description": (
+                "Unified modality-neutral session event with block-based structure. "
+                "Supports strength, endurance, sprint, plyometrics, and hybrid sessions."
+            ),
+            "schema_version": "session.logged.v1",
+            "fields": {
+                "contract_version": "string (required, must be 'session.logged.v1')",
+                "session_meta": {
+                    "sport": "string (optional, e.g. strength|running|cycling|hybrid)",
+                    "started_at": "string (optional, ISO timestamp)",
+                    "ended_at": "string (optional, ISO timestamp, >= started_at)",
+                    "timezone": "string (optional, IANA timezone)",
+                    "session_id": "string (optional, stable session grouping key)",
+                    "notes": "string (optional)",
+                },
+                "blocks": [
+                    {
+                        "block_type": (
+                            "string (required: strength_set|explosive_power|plyometric_reactive|"
+                            "sprint_accel_maxv|speed_endurance|interval_endurance|"
+                            "continuous_endurance|tempo_threshold|circuit_hybrid|"
+                            "technique_coordination|recovery_session)"
+                        ),
+                        "capability_target": "string (optional, e.g. max_strength|vo2max|max_velocity)",
+                        "dose": {
+                            "work": (
+                                "object (required; at least one of duration_seconds|distance_meters|reps|contacts)"
+                            ),
+                            "recovery": (
+                                "object (optional; same shape as work when rest/recovery is defined)"
+                            ),
+                            "repeats": "number (optional, >=1)",
+                        },
+                        "intensity_anchors_status": (
+                            "string (optional: provided|not_applicable). "
+                            "For performance blocks, provide at least one intensity anchor "
+                            "or set not_applicable explicitly."
+                        ),
+                        "intensity_anchors": [
+                            {
+                                "measurement_state": (
+                                    "string (required: measured|estimated|inferred|"
+                                    "not_measured|not_applicable)"
+                                ),
+                                "value": "any (optional, required when state is measured|estimated|inferred unless reference is set)",
+                                "unit": "string (optional, e.g. min_per_km|watt|bpm|rpe|borg_cr10|pct_reference)",
+                                "reference": "string (optional, anchor reference context)",
+                            }
+                        ],
+                        "metrics": (
+                            "object (optional map). Each metric entry requires measurement_state and "
+                            "can carry value/unit/reference."
+                        ),
+                        "subjective_response": (
+                            "object (optional map). Same measurement contract for perception signals."
+                        ),
+                        "provenance": {
+                            "source_type": "string (optional: manual|imported|inferred|corrected)",
+                            "source_ref": "string (optional)",
+                            "confidence": "number (optional, 0..1)",
+                        },
+                    }
+                ],
+                "subjective_response": (
+                    "object (optional map at session level). "
+                    "Use this for session-level RPE/Borg, pain, freshness, etc."
+                ),
+                "provenance": {
+                    "source_type": "string (optional: manual|imported|inferred|corrected)",
+                    "source_ref": "string (optional)",
+                    "confidence": "number (optional, 0..1)",
+                },
+            },
+            "example": {
+                "contract_version": "session.logged.v1",
+                "session_meta": {
+                    "sport": "running",
+                    "timezone": "Europe/Berlin",
+                    "session_id": "2026-02-14-track-1",
+                },
+                "blocks": [
+                    {
+                        "block_type": "interval_endurance",
+                        "dose": {
+                            "work": {"duration_seconds": 120},
+                            "recovery": {"duration_seconds": 60},
+                            "repeats": 8,
+                        },
+                        "intensity_anchors": [
+                            {
+                                "measurement_state": "measured",
+                                "unit": "min_per_km",
+                                "value": 4.0,
+                            },
+                            {
+                                "measurement_state": "measured",
+                                "unit": "borg_cr10",
+                                "value": 7,
+                            },
+                        ],
+                        "metrics": {
+                            "heart_rate_avg": {
+                                "measurement_state": "not_measured",
+                            }
+                        },
+                        "provenance": {"source_type": "manual"},
+                    }
+                ],
+                "provenance": {"source_type": "manual"},
+            },
+            "completeness_policy": (
+                "No global HR/Power/GPS requirement. "
+                "Completeness is block-specific: log_valid requires reconstructable dose and "
+                "anchor policy per block; missing optional sensor data must be explicit as "
+                "measurement_state=not_measured or not_applicable."
+            ),
+        },
         "exercise.alias_created": {
             "description": "Maps user term to canonical exercise ID",
             "fields": {

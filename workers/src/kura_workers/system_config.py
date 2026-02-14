@@ -18,6 +18,7 @@ from psycopg.types.json import Json
 from .event_conventions import get_event_conventions
 from .interview_guide import get_interview_guide
 from .registry import get_dimension_metadata
+from .training_session_contract import block_catalog_v1
 from .training_core_fields import core_field_registry
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,16 @@ def _get_conventions() -> dict[str, Any]:
             "note": (
                 "Quality checks flag mention-present/field-missing mismatches with remediation hints."
             ),
+        },
+        "training_session_block_model_v1": {
+            "rules": [
+                "Use session.logged for modality-neutral block-based sessions.",
+                "Apply block-specific completeness rules instead of global sensor requirements.",
+                "No global HR requirement: missing sensor values must be explicit via measurement_state.",
+                "Performance blocks require intensity anchors unless explicitly marked not_applicable.",
+            ],
+            "event_type": "session.logged",
+            "contract": block_catalog_v1(),
         },
         "load_context_v1": {
             "rules": [

@@ -166,6 +166,7 @@ class TestEventConventions:
         conventions = get_event_conventions()
         expected = {
             "set.logged", "set.corrected", "exercise.alias_created",
+            "session.logged",
             "bodyweight.logged", "measurement.logged",
             "sleep.logged", "soreness.logged", "energy.logged",
             "meal.logged",

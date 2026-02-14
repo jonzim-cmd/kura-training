@@ -111,6 +111,7 @@ fn validate_critical_invariants(req: &CreateEventRequest) -> Result<(), AppError
         "event.retracted" => validate_retraction_invariants(&req.data),
         "set.corrected" => validate_set_correction_invariants(&req.data),
         "set.logged" => validate_set_logged_intensity_invariants(&req.data),
+        "session.logged" => validate_session_logged_invariants(&req.data),
         "training_plan.created" | "training_plan.updated" => {
             validate_training_plan_intensity_invariants(&req.data)
         }
@@ -322,6 +323,442 @@ fn validate_training_plan_intensity_invariants(data: &Value) -> Result<(), AppEr
                     ));
                 };
                 ensure_numeric_range(parsed, &field_path, range_code, min_v, max_v, docs_hint)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+const SESSION_LOGGED_CONTRACT_VERSION_V1: &str = "session.logged.v1";
+const SESSION_BLOCK_TYPES: [&str; 11] = [
+    "strength_set",
+    "explosive_power",
+    "plyometric_reactive",
+    "sprint_accel_maxv",
+    "speed_endurance",
+    "interval_endurance",
+    "continuous_endurance",
+    "tempo_threshold",
+    "circuit_hybrid",
+    "technique_coordination",
+    "recovery_session",
+];
+const SESSION_MEASUREMENT_STATES: [&str; 5] = [
+    "measured",
+    "estimated",
+    "inferred",
+    "not_measured",
+    "not_applicable",
+];
+
+fn is_performance_block_type(block_type: &str) -> bool {
+    block_type != "recovery_session"
+}
+
+fn validate_measurement_object(
+    payload: &Value,
+    field_path: &str,
+    missing_state_code: &str,
+    invalid_state_code: &str,
+    missing_value_code: &str,
+) -> Result<(), AppError> {
+    let Some(obj) = payload.as_object() else {
+        return Err(policy_violation(
+            invalid_state_code,
+            format!("{field_path} must be an object"),
+            Some(field_path),
+            Some(payload.clone()),
+            Some("Use {measurement_state, value?, unit?, reference?}."),
+        ));
+    };
+
+    let raw_state = obj
+        .get("measurement_state")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            policy_violation(
+                missing_state_code,
+                format!("{field_path}.measurement_state is required"),
+                Some(field_path),
+                Some(payload.clone()),
+                Some("Use one of: measured, estimated, inferred, not_measured, not_applicable."),
+            )
+        })?;
+
+    let normalized_state = raw_state.to_lowercase();
+    if !SESSION_MEASUREMENT_STATES.contains(&normalized_state.as_str()) {
+        return Err(policy_violation(
+            invalid_state_code,
+            format!(
+                "{field_path}.measurement_state '{}' is invalid",
+                normalized_state
+            ),
+            Some(field_path),
+            Some(Value::String(normalized_state)),
+            Some("Use one of: measured, estimated, inferred, not_measured, not_applicable."),
+        ));
+    }
+
+    if matches!(
+        normalized_state.as_str(),
+        "measured" | "estimated" | "inferred"
+    ) {
+        let has_value = obj.get("value").is_some_and(|value| !value.is_null());
+        let has_reference = obj.get("reference").is_some_and(|value| !value.is_null());
+        if !has_value && !has_reference {
+            return Err(policy_violation(
+                missing_value_code,
+                format!(
+                    "{field_path} requires value or reference when measurement_state is {}",
+                    normalized_state
+                ),
+                Some(field_path),
+                Some(payload.clone()),
+                Some("Provide value (or reference) for measured/estimated/inferred measurements."),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_dose_slice(payload: &Value, field_path: &str) -> Result<(), AppError> {
+    let Some(obj) = payload.as_object() else {
+        return Err(policy_violation(
+            "inv_session_block_dose_invalid",
+            format!("{field_path} must be an object"),
+            Some(field_path),
+            Some(payload.clone()),
+            Some(
+                "Use a dose object with duration_seconds, distance_meters, reps, and/or contacts.",
+            ),
+        ));
+    };
+
+    let mut has_dimension = false;
+    for key in ["duration_seconds", "distance_meters", "reps", "contacts"] {
+        let Some(raw) = obj.get(key) else {
+            continue;
+        };
+        if raw.is_null() {
+            continue;
+        }
+        let Some(parsed) = parse_flexible_float(raw) else {
+            let full_field = format!("{field_path}.{key}");
+            return Err(policy_violation(
+                "inv_session_block_dose_dimension_invalid",
+                format!("{full_field} must be numeric when provided"),
+                Some(full_field.as_str()),
+                Some(raw.clone()),
+                Some(
+                    "Provide dose dimensions as numbers (locale decimals like '2,5' are accepted).",
+                ),
+            ));
+        };
+        if parsed < 0.0 {
+            let full_field = format!("{field_path}.{key}");
+            return Err(policy_violation(
+                "inv_session_block_dose_dimension_negative",
+                format!("{full_field} must be >= 0"),
+                Some(full_field.as_str()),
+                Some(raw.clone()),
+                Some("Dose dimensions cannot be negative."),
+            ));
+        }
+        has_dimension = true;
+    }
+
+    if !has_dimension {
+        return Err(policy_violation(
+            "inv_session_block_work_dimension_required",
+            format!("{field_path} requires at least one work dimension"),
+            Some(field_path),
+            Some(payload.clone()),
+            Some("Provide at least one of duration_seconds, distance_meters, reps, contacts."),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_session_logged_invariants(data: &Value) -> Result<(), AppError> {
+    let contract_version = non_empty_string_field(data, "contract_version").ok_or_else(|| {
+        policy_violation(
+            "inv_session_contract_version_required",
+            "session.logged requires data.contract_version",
+            Some("data.contract_version"),
+            data.get("contract_version").cloned(),
+            Some("Set contract_version to 'session.logged.v1'."),
+        )
+    })?;
+
+    if contract_version != SESSION_LOGGED_CONTRACT_VERSION_V1 {
+        return Err(policy_violation(
+            "inv_session_contract_version_unsupported",
+            format!(
+                "session.logged supports contract_version='{}' only",
+                SESSION_LOGGED_CONTRACT_VERSION_V1
+            ),
+            Some("data.contract_version"),
+            Some(Value::String(contract_version)),
+            Some("Use contract_version='session.logged.v1'."),
+        ));
+    }
+
+    let session_meta = data
+        .get("session_meta")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            policy_violation(
+                "inv_session_meta_required",
+                "session.logged requires data.session_meta object",
+                Some("data.session_meta"),
+                data.get("session_meta").cloned(),
+                Some("Provide session_meta with sport/timezone/session context."),
+            )
+        })?;
+
+    if let (Some(started_raw), Some(ended_raw)) = (
+        session_meta.get("started_at").and_then(Value::as_str),
+        session_meta.get("ended_at").and_then(Value::as_str),
+    ) {
+        let started = DateTime::parse_from_rfc3339(started_raw).map_err(|_| {
+            policy_violation(
+                "inv_session_meta_started_at_invalid",
+                "session_meta.started_at must be ISO-8601 timestamp",
+                Some("data.session_meta.started_at"),
+                Some(Value::String(started_raw.to_string())),
+                Some("Example: 2026-02-14T10:30:00+01:00"),
+            )
+        })?;
+        let ended = DateTime::parse_from_rfc3339(ended_raw).map_err(|_| {
+            policy_violation(
+                "inv_session_meta_ended_at_invalid",
+                "session_meta.ended_at must be ISO-8601 timestamp",
+                Some("data.session_meta.ended_at"),
+                Some(Value::String(ended_raw.to_string())),
+                Some("Example: 2026-02-14T11:45:00+01:00"),
+            )
+        })?;
+        if ended < started {
+            return Err(policy_violation(
+                "inv_session_meta_temporal_order",
+                "session_meta.ended_at must be >= session_meta.started_at",
+                Some("data.session_meta.ended_at"),
+                Some(Value::String(ended_raw.to_string())),
+                Some("Ensure session end timestamp is not earlier than start timestamp."),
+            ));
+        }
+    }
+
+    let blocks = data
+        .get("blocks")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            policy_violation(
+                "inv_session_blocks_required",
+                "session.logged requires data.blocks as a non-empty array",
+                Some("data.blocks"),
+                data.get("blocks").cloned(),
+                Some("Provide one or more block objects."),
+            )
+        })?;
+
+    if blocks.is_empty() {
+        return Err(policy_violation(
+            "inv_session_blocks_empty",
+            "session.logged requires at least one block",
+            Some("data.blocks"),
+            Some(Value::Array(vec![])),
+            Some("Provide at least one block in data.blocks."),
+        ));
+    }
+
+    for (index, block) in blocks.iter().enumerate() {
+        let block_path = format!("data.blocks[{index}]");
+        let Some(block_obj) = block.as_object() else {
+            return Err(policy_violation(
+                "inv_session_block_invalid",
+                format!("{block_path} must be an object"),
+                Some(block_path.as_str()),
+                Some(block.clone()),
+                Some("Provide block as {block_type, dose, intensity_anchors?, metrics?}."),
+            ));
+        };
+
+        let block_type = block_obj
+            .get("block_type")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| {
+                policy_violation(
+                    "inv_session_block_type_required",
+                    format!("{block_path}.block_type is required"),
+                    Some(block_path.as_str()),
+                    Some(block.clone()),
+                    Some("Use a supported block_type (e.g. strength_set, interval_endurance)."),
+                )
+            })?
+            .to_lowercase();
+
+        if !SESSION_BLOCK_TYPES.contains(&block_type.as_str()) {
+            let field = format!("{block_path}.block_type");
+            return Err(policy_violation(
+                "inv_session_block_type_unknown",
+                format!("{field} '{}' is not supported", block_type),
+                Some(field.as_str()),
+                Some(Value::String(block_type)),
+                Some("Use one of the published session.logged block types."),
+            ));
+        }
+
+        let dose = block_obj.get("dose").ok_or_else(|| {
+            policy_violation(
+                "inv_session_block_dose_required",
+                format!("{block_path}.dose is required"),
+                Some(block_path.as_str()),
+                Some(block.clone()),
+                Some("Provide dose.work and optional dose.recovery/dose.repeats."),
+            )
+        })?;
+        let dose_obj = dose.as_object().ok_or_else(|| {
+            policy_violation(
+                "inv_session_block_dose_invalid",
+                format!("{block_path}.dose must be an object"),
+                Some(block_path.as_str()),
+                Some(dose.clone()),
+                Some("Provide dose as object."),
+            )
+        })?;
+
+        let work = dose_obj.get("work").ok_or_else(|| {
+            policy_violation(
+                "inv_session_block_work_required",
+                format!("{block_path}.dose.work is required"),
+                Some(block_path.as_str()),
+                Some(dose.clone()),
+                Some("Provide dose.work with at least one work dimension."),
+            )
+        })?;
+        validate_dose_slice(work, format!("{block_path}.dose.work").as_str())?;
+
+        if let Some(recovery) = dose_obj.get("recovery") {
+            validate_dose_slice(recovery, format!("{block_path}.dose.recovery").as_str())?;
+        }
+
+        if let Some(repeats_value) = dose_obj.get("repeats") {
+            let Some(repeats) = parse_flexible_float(repeats_value) else {
+                let field = format!("{block_path}.dose.repeats");
+                return Err(policy_violation(
+                    "inv_session_block_repeats_invalid",
+                    format!("{field} must be numeric"),
+                    Some(field.as_str()),
+                    Some(repeats_value.clone()),
+                    Some("Use repeats >= 1."),
+                ));
+            };
+            if repeats < 1.0 {
+                let field = format!("{block_path}.dose.repeats");
+                return Err(policy_violation(
+                    "inv_session_block_repeats_out_of_range",
+                    format!("{field} must be >= 1"),
+                    Some(field.as_str()),
+                    Some(repeats_value.clone()),
+                    Some("Use repeats >= 1."),
+                ));
+            }
+        }
+
+        let intensity_status = block_obj
+            .get("intensity_anchors_status")
+            .and_then(Value::as_str)
+            .map(|v| v.trim().to_lowercase());
+        if let Some(status) = intensity_status.as_deref() {
+            if status != "provided" && status != "not_applicable" {
+                let field = format!("{block_path}.intensity_anchors_status");
+                return Err(policy_violation(
+                    "inv_session_block_anchor_status_invalid",
+                    format!("{field} must be 'provided' or 'not_applicable'"),
+                    Some(field.as_str()),
+                    block_obj.get("intensity_anchors_status").cloned(),
+                    Some("Use provided or not_applicable."),
+                ));
+            }
+        }
+
+        let anchors = block_obj
+            .get("intensity_anchors")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for (anchor_idx, anchor) in anchors.iter().enumerate() {
+            let anchor_path = format!("{block_path}.intensity_anchors[{anchor_idx}]");
+            validate_measurement_object(
+                anchor,
+                anchor_path.as_str(),
+                "inv_session_block_anchor_measurement_state_required",
+                "inv_session_block_anchor_invalid",
+                "inv_session_block_anchor_value_required",
+            )?;
+        }
+
+        if intensity_status.as_deref() == Some("not_applicable") && !anchors.is_empty() {
+            let field = format!("{block_path}.intensity_anchors");
+            return Err(policy_violation(
+                "inv_session_block_anchor_not_applicable_conflict",
+                format!("{field} must be empty when intensity_anchors_status=not_applicable"),
+                Some(field.as_str()),
+                Some(Value::Array(anchors)),
+                Some("Set intensity_anchors_status='provided' if anchors are present."),
+            ));
+        }
+
+        if is_performance_block_type(block_type.as_str()) {
+            let has_anchors = block_obj
+                .get("intensity_anchors")
+                .and_then(Value::as_array)
+                .is_some_and(|entries| !entries.is_empty());
+            let explicitly_not_applicable = intensity_status.as_deref() == Some("not_applicable");
+            if !has_anchors && !explicitly_not_applicable {
+                let field = format!("{block_path}.intensity_anchors");
+                return Err(policy_violation(
+                    "inv_session_block_anchor_required",
+                    format!(
+                        "{field} requires at least one anchor for performance blocks, or set intensity_anchors_status=not_applicable"
+                    ),
+                    Some(field.as_str()),
+                    block_obj.get("intensity_anchors").cloned(),
+                    Some(
+                        "Provide at least one anchor (pace/power/HR/RPE/%reference) or explicit not_applicable.",
+                    ),
+                ));
+            }
+        }
+
+        if let Some(metrics) = block_obj.get("metrics") {
+            let Some(metrics_obj) = metrics.as_object() else {
+                let field = format!("{block_path}.metrics");
+                return Err(policy_violation(
+                    "inv_session_block_metrics_invalid",
+                    format!("{field} must be an object when provided"),
+                    Some(field.as_str()),
+                    Some(metrics.clone()),
+                    Some("Use metrics as a key/value object."),
+                ));
+            };
+            for (metric_name, metric_value) in metrics_obj {
+                let metric_path = format!("{block_path}.metrics.{metric_name}");
+                validate_measurement_object(
+                    metric_value,
+                    metric_path.as_str(),
+                    "inv_session_block_metric_measurement_state_required",
+                    "inv_session_block_metric_invalid",
+                    "inv_session_block_metric_value_required",
+                )?;
             }
         }
     }
@@ -571,8 +1008,9 @@ const LEGACY_PLAN_EVENT_TYPES: [&str; 3] = [
     "training_plan.updated",
     "training_plan.archived",
 ];
-const LEGACY_TIMEZONE_REQUIRED_EVENT_TYPES: [&str; 10] = [
+const LEGACY_TIMEZONE_REQUIRED_EVENT_TYPES: [&str; 11] = [
     "set.logged",
+    "session.logged",
     "session.completed",
     "bodyweight.logged",
     "measurement.logged",
@@ -610,6 +1048,18 @@ fn event_carries_timezone_context(event: &CreateEventRequest) -> bool {
             .unwrap_or_default();
         if !value.is_empty() {
             return true;
+        }
+    }
+    if let Some(session_meta) = event.data.get("session_meta").and_then(Value::as_object) {
+        for key in ["timezone", "time_zone"] {
+            let value = session_meta
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default();
+            if !value.is_empty() {
+                return true;
+            }
         }
     }
     false
@@ -1153,6 +1603,7 @@ fn user_profile_handles_event(event_type: &str) -> bool {
     matches!(
         event_type,
         "set.logged"
+            | "session.logged"
             | "set.corrected"
             | "exercise.alias_created"
             | "preference.set"
@@ -2729,6 +3180,193 @@ mod tests {
         );
         let err = validate_event(&req).expect_err("expected policy violation");
         assert_policy_violation(err, "inv_set_rir_out_of_range", "data.rir");
+    }
+
+    #[test]
+    fn session_logged_contract_accepts_strength_without_hr() {
+        let req = make_request(
+            "session.logged",
+            json!({
+                "contract_version": "session.logged.v1",
+                "session_meta": {
+                    "sport": "strength",
+                    "timezone": "Europe/Berlin"
+                },
+                "blocks": [
+                    {
+                        "block_type": "strength_set",
+                        "dose": {
+                            "work": {"reps": 5},
+                            "recovery": {"duration_seconds": 120},
+                            "repeats": 5
+                        },
+                        "intensity_anchors": [
+                            {
+                                "measurement_state": "measured",
+                                "unit": "rpe",
+                                "value": 8
+                            }
+                        ]
+                    }
+                ]
+            }),
+        );
+        assert!(validate_event(&req).is_ok());
+    }
+
+    #[test]
+    fn session_logged_contract_rejects_missing_intensity_anchors_for_performance_block() {
+        let req = make_request(
+            "session.logged",
+            json!({
+                "contract_version": "session.logged.v1",
+                "session_meta": {
+                    "sport": "running",
+                    "timezone": "Europe/Berlin"
+                },
+                "blocks": [
+                    {
+                        "block_type": "interval_endurance",
+                        "dose": {
+                            "work": {"duration_seconds": 120},
+                            "recovery": {"duration_seconds": 60},
+                            "repeats": 8
+                        }
+                    }
+                ]
+            }),
+        );
+        let err = validate_event(&req).expect_err("expected policy violation");
+        assert_policy_violation(
+            err,
+            "inv_session_block_anchor_required",
+            "data.blocks[0].intensity_anchors",
+        );
+    }
+
+    #[test]
+    fn session_logged_contract_accepts_not_applicable_anchor_status() {
+        let req = make_request(
+            "session.logged",
+            json!({
+                "contract_version": "session.logged.v1",
+                "session_meta": {
+                    "sport": "running",
+                    "timezone": "Europe/Berlin"
+                },
+                "blocks": [
+                    {
+                        "block_type": "interval_endurance",
+                        "dose": {
+                            "work": {"duration_seconds": 120},
+                            "recovery": {"duration_seconds": 60},
+                            "repeats": 8
+                        },
+                        "intensity_anchors_status": "not_applicable"
+                    }
+                ]
+            }),
+        );
+        assert!(validate_event(&req).is_ok());
+    }
+
+    #[test]
+    fn session_logged_contract_rejects_metric_without_measurement_state() {
+        let req = make_request(
+            "session.logged",
+            json!({
+                "contract_version": "session.logged.v1",
+                "session_meta": {
+                    "sport": "running",
+                    "timezone": "Europe/Berlin"
+                },
+                "blocks": [
+                    {
+                        "block_type": "interval_endurance",
+                        "dose": {
+                            "work": {"duration_seconds": 120},
+                            "recovery": {"duration_seconds": 60},
+                            "repeats": 8
+                        },
+                        "intensity_anchors": [
+                            {
+                                "measurement_state": "measured",
+                                "unit": "min_per_km",
+                                "value": 4.0
+                            }
+                        ],
+                        "metrics": {
+                            "heart_rate_avg": {"unit": "bpm", "value": 160}
+                        }
+                    }
+                ]
+            }),
+        );
+        let err = validate_event(&req).expect_err("expected policy violation");
+        assert_policy_violation(
+            err,
+            "inv_session_block_metric_measurement_state_required",
+            "data.blocks[0].metrics.heart_rate_avg",
+        );
+    }
+
+    #[test]
+    fn session_logged_contract_accepts_hybrid_mixed_blocks() {
+        let req = make_request(
+            "session.logged",
+            json!({
+                "contract_version": "session.logged.v1",
+                "session_meta": {
+                    "sport": "hybrid",
+                    "timezone": "Europe/Berlin",
+                    "session_id": "2026-02-14-hybrid-1"
+                },
+                "blocks": [
+                    {
+                        "block_type": "strength_set",
+                        "dose": {
+                            "work": {"reps": 5},
+                            "recovery": {"duration_seconds": 120},
+                            "repeats": 5
+                        },
+                        "intensity_anchors": [
+                            {
+                                "measurement_state": "measured",
+                                "unit": "rpe",
+                                "value": 8
+                            }
+                        ]
+                    },
+                    {
+                        "block_type": "interval_endurance",
+                        "dose": {
+                            "work": {"duration_seconds": 120},
+                            "recovery": {"duration_seconds": 60},
+                            "repeats": 8
+                        },
+                        "intensity_anchors": [
+                            {
+                                "measurement_state": "measured",
+                                "unit": "min_per_km",
+                                "value": 4.0
+                            },
+                            {
+                                "measurement_state": "measured",
+                                "unit": "borg_cr10",
+                                "value": 7
+                            }
+                        ],
+                        "metrics": {
+                            "heart_rate_avg": {"measurement_state": "not_measured"}
+                        }
+                    }
+                ],
+                "provenance": {
+                    "source_type": "manual"
+                }
+            }),
+        );
+        assert!(validate_event(&req).is_ok());
     }
 
     #[test]

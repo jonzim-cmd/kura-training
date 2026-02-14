@@ -30,6 +30,7 @@ pub(super) fn classify_system_convention_field(key: &str) -> SystemConventionFie
     match key {
         "exercise_normalization"
         | "training_core_fields_v1"
+        | "training_session_block_model_v1"
         | "evidence_layer_v1"
         | "open_observation_v1"
         | "ingestion_locale_v1"

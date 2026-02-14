@@ -250,6 +250,15 @@ class TestConventions:
         assert "mention_bound" in registry["strength"]
         assert "rest_seconds" in registry["strength"]["mention_bound"]
 
+    def test_has_training_session_block_model_v1(self):
+        result = _get_conventions()
+        assert "training_session_block_model_v1" in result
+        contract = result["training_session_block_model_v1"]
+        assert contract["event_type"] == "session.logged"
+        assert contract["contract"]["contract_version"] == "session.logged.v1"
+        assert "strength_set" in contract["contract"]["block_types"]
+        assert contract["contract"]["intensity_policy"]["global_hr_requirement"] is False
+
     def test_has_load_context_v1_conventions(self):
         result = _get_conventions()
         assert "load_context_v1" in result

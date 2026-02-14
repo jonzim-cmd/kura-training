@@ -42,6 +42,13 @@ _BODY_COMPOSITION_PROFILE_KEYS = (
     "body_composition_note",
     "body_composition_notes",
 )
+_SESSION_STRENGTH_BLOCK_TYPES = {"strength_set", "explosive_power"}
+_SESSION_ENDURANCE_BLOCK_TYPES = {
+    "continuous_endurance",
+    "interval_endurance",
+    "tempo_threshold",
+    "speed_endurance",
+}
 
 
 # --- Pure functions (testable without DB) ---
@@ -75,6 +82,24 @@ def _slot_summary(
     if deferred_markers:
         slot["deferred_markers"] = deferred_markers
     return slot
+
+
+def _infer_modality_from_session_blocks(blocks: list[dict[str, Any]]) -> str | None:
+    has_strength = False
+    has_endurance = False
+    for block in blocks:
+        block_type = str(block.get("block_type") or "").strip().lower()
+        if block_type in _SESSION_STRENGTH_BLOCK_TYPES:
+            has_strength = True
+        if block_type in _SESSION_ENDURANCE_BLOCK_TYPES:
+            has_endurance = True
+    if has_strength and has_endurance:
+        return "hybrid"
+    if has_strength:
+        return "strength"
+    if has_endurance:
+        return "endurance"
+    return None
 
 
 def _compute_baseline_profile_summary(
@@ -752,6 +777,7 @@ def _build_agenda(
 
 @projection_handler(
     "set.logged",
+    "session.logged",
     "set.corrected",
     "exercise.alias_created",
     "preference.set",
@@ -790,7 +816,7 @@ async def update_user_profile(
             FROM events
             WHERE user_id = %s
               AND event_type IN (
-                  'set.logged', 'set.corrected', 'exercise.alias_created', 'preference.set',
+                  'set.logged', 'session.logged', 'set.corrected', 'exercise.alias_created', 'preference.set',
                   'goal.set', 'profile.updated', 'program.started', 'injury.reported',
                   'bodyweight.logged', 'session.completed',
                   'workflow.onboarding.closed', 'workflow.onboarding.override_granted'
@@ -859,6 +885,34 @@ async def update_user_profile(
                 if key:
                     raw_exercises_without_id.add(key)
                     exercise_occurrences[key] += 1
+
+        elif event_type == "session.logged":
+            data_blocks = data.get("blocks")
+            blocks: list[dict[str, Any]] = []
+            if isinstance(data_blocks, list):
+                for block in data_blocks:
+                    if isinstance(block, dict):
+                        blocks.append(block)
+
+            total_set_logged += len(blocks) if blocks else 1
+            ts_date = row["timestamp"].date().isoformat()
+            if first_set_logged_date is None:
+                first_set_logged_date = ts_date
+            last_set_logged_date = ts_date
+
+            for block in blocks:
+                block_exercise_id = str(block.get("exercise_id") or "").strip().lower()
+                block_exercise = str(block.get("exercise") or "").strip().lower()
+                block_type = str(block.get("block_type") or "").strip().lower()
+                key = block_exercise_id or block_exercise or block_type
+                if key:
+                    exercises_logged.add(key)
+
+            inferred_modality = _infer_modality_from_session_blocks(blocks)
+            if inferred_modality and not _has_meaningful_value(
+                profile_data.get("training_modality")
+            ):
+                profile_data["training_modality"] = inferred_modality
 
         elif event_type == "exercise.alias_created":
             alias = data.get("alias", "").strip()

@@ -7851,6 +7851,7 @@ mod tests {
             "conventions": {
                 "exercise_normalization": {"rules": ["rule"]},
                 "training_core_fields_v1": {"rules": ["rule"]},
+                "training_session_block_model_v1": {"event_type": "session.logged"},
                 "evidence_layer_v1": {"event_type": "evidence.claim.logged"},
                 "open_observation_v1": {"event_type": "observation.logged"},
                 "ingestion_locale_v1": {"rules": ["normalize decimals"]},
@@ -7884,6 +7885,7 @@ mod tests {
             .expect("conventions should remain an object");
         assert!(conventions.contains_key("exercise_normalization"));
         assert!(conventions.contains_key("training_core_fields_v1"));
+        assert!(conventions.contains_key("training_session_block_model_v1"));
         assert!(conventions.contains_key("evidence_layer_v1"));
         assert!(conventions.contains_key("open_observation_v1"));
         assert!(conventions.contains_key("ingestion_locale_v1"));
