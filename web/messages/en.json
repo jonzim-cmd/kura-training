@@ -46,10 +46,21 @@
       "weight_kg": "weight_kg",
       "rpe": "rpe",
       "notes": "notes",
-      "also": "also"
+      "also": "also",
+      "intervals": "intervals",
+      "pace_per_km": "pace_per_km",
+      "power_watts": "power_watts"
     },
-    "decompNotes": "last two reps ground out",
-    "decompAlso": "stretching · logged separately",
+    "decompNotes": {
+      "strength": "last two reps ground out",
+      "running": "legs heavier than usual",
+      "cycling": "harder than expected, slept badly"
+    },
+    "decompAlso": {
+      "strength": "stretching · logged separately",
+      "running": "easy cooldown jog · logged separately",
+      "cycling": "easy cool-down spin · logged separately"
+    },
     "persistingEvent": "persisting event",
     "belowTarget": "below target 7.5h",
     "inference": {

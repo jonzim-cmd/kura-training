@@ -21,10 +21,21 @@
       "weight_kg": "weight_kg",
       "rpe": "rpe",
       "notes": "メモ",
-      "also": "その他"
+      "also": "その他",
+      "intervals": "インターバル",
+      "pace_per_km": "pace_per_km",
+      "power_watts": "power_watts"
     },
-    "decompNotes": "最後の2レップは踏ん張った",
-    "decompAlso": "ストレッチ · 別途記録",
+    "decompNotes": {
+      "strength": "最後の2レップは踏ん張った",
+      "running": "脚がいつもより重かった",
+      "cycling": "予想より辛かった、睡眠不良"
+    },
+    "decompAlso": {
+      "strength": "ストレッチ · 別途記録",
+      "running": "軽いジョグでクールダウン · 別途記録",
+      "cycling": "軽く流してクールダウン · 別途記録"
+    },
     "persistingEvent": "イベントを永続化",
     "belowTarget": "目標7.5時間未満",
     "inference": {

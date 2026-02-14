@@ -46,10 +46,21 @@
       "weight_kg": "weight_kg",
       "rpe": "rpe",
       "notes": "Notizen",
-      "also": "außerdem"
+      "also": "außerdem",
+      "intervals": "Intervalle",
+      "pace_per_km": "pace_per_km",
+      "power_watts": "power_watts"
     },
-    "decompNotes": "letzte zwei Wiederholungen rausgekämpft",
-    "decompAlso": "Dehnen · separat geloggt",
+    "decompNotes": {
+      "strength": "letzte zwei Wiederholungen rausgekämpft",
+      "running": "Beine schwerer als sonst",
+      "cycling": "härter als erwartet, schlechter Schlaf"
+    },
+    "decompAlso": {
+      "strength": "Dehnen · separat geloggt",
+      "running": "lockeres Auslaufen · separat geloggt",
+      "cycling": "lockeres Ausrollen · separat geloggt"
+    },
     "persistingEvent": "Event persistieren",
     "belowTarget": "unter Ziel 7,5h",
     "inference": {

@@ -30,13 +30,13 @@ export default function LandingPage() {
       <Bridge t={t} />
 
       {/* THRESHOLD — Decomposition */}
-      <Threshold t={t} />
+      <Threshold t={t} activeSport={activeSport} />
 
       {/* INSIDE — Event + Projections */}
-      <Inside t={t} />
+      <Inside t={t} activeSport={activeSport} />
 
       {/* DEEP — Inference */}
-      <Deep t={t} />
+      <Deep t={t} activeSport={activeSport} />
 
       {/* CORE — Agent response */}
       <Core t={t} activeSport={activeSport} />
@@ -138,7 +138,7 @@ function Bridge({ t }: { t: any }) {
 }
 
 /* === THRESHOLD === */
-function Threshold({ t }: { t: any }) {
+function Threshold({ t, activeSport }: { t: any; activeSport: Sport }) {
   const ref = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -163,14 +163,33 @@ function Threshold({ t }: { t: any }) {
     return () => obs.disconnect();
   }, []);
 
-  const fields = [
-    { key: 'exercise_id', val: 'barbell_back_squat', mono: true },
-    { key: 'sets_reps', val: '5 × 5', mono: false },
-    { key: 'weight_kg', val: '100', mono: false },
-    { key: 'rpe', val: '9 — 9.5', mono: false },
-    { key: 'notes', val: t('decompNotes'), mono: true },
-    { key: 'also', val: t('decompAlso'), mono: true },
-  ];
+  const fieldsBySport: Record<Sport, Array<{ key: string; val: string; mono: boolean }>> = {
+    strength: [
+      { key: 'exercise_id', val: 'barbell_back_squat', mono: true },
+      { key: 'sets_reps', val: '5 × 5', mono: false },
+      { key: 'weight_kg', val: '100', mono: false },
+      { key: 'rpe', val: '9 — 9.5', mono: false },
+      { key: 'notes', val: t('decompNotes.strength'), mono: true },
+      { key: 'also', val: t('decompAlso.strength'), mono: true },
+    ],
+    running: [
+      { key: 'exercise_id', val: 'interval_run', mono: true },
+      { key: 'intervals', val: '10 × 2min', mono: false },
+      { key: 'pace_per_km', val: '4:00', mono: false },
+      { key: 'rpe', val: '8', mono: false },
+      { key: 'notes', val: t('decompNotes.running'), mono: true },
+      { key: 'also', val: t('decompAlso.running'), mono: true },
+    ],
+    cycling: [
+      { key: 'exercise_id', val: 'threshold_intervals', mono: true },
+      { key: 'intervals', val: '3 × 10min', mono: false },
+      { key: 'power_watts', val: '300', mono: false },
+      { key: 'rpe', val: '~8.5', mono: false },
+      { key: 'notes', val: t('decompNotes.cycling'), mono: true },
+      { key: 'also', val: t('decompAlso.cycling'), mono: true },
+    ],
+  };
+  const fields = fieldsBySport[activeSport];
 
   return (
     <section className={styles.threshold} ref={ref}>
@@ -195,7 +214,7 @@ function Threshold({ t }: { t: any }) {
 }
 
 /* === INSIDE === */
-function Inside({ t }: { t: any }) {
+function Inside({ t, activeSport }: { t: any; activeSport: Sport }) {
   const ref = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -297,7 +316,7 @@ function Inside({ t }: { t: any }) {
       <div className={styles.eventWrite} data-json>
         <div className={styles.eventLabel} data-elabel>{t('persistingEvent')}</div>
         <div className={styles.eventJson}>
-          {[
+          {(activeSport === 'strength' ? [
             '{',
             <>&nbsp;&nbsp;<span className={styles.hl}>event_type</span>: <span className={styles.val}>&quot;set.logged&quot;</span>,</>,
             <>&nbsp;&nbsp;<span className={styles.hl}>data</span>: {'{'}</>,
@@ -312,51 +331,141 @@ function Inside({ t }: { t: any }) {
             <>&nbsp;&nbsp;&nbsp;&nbsp;source: <span className={styles.val}>&quot;agent&quot;</span></>,
             <>&nbsp;&nbsp;{'}'}</>,
             '}',
-          ].map((line, i) => (
+          ] : activeSport === 'running' ? [
+            '{',
+            <>&nbsp;&nbsp;<span className={styles.hl}>event_type</span>: <span className={styles.val}>&quot;run.logged&quot;</span>,</>,
+            <>&nbsp;&nbsp;<span className={styles.hl}>data</span>: {'{'}</>,
+            <>&nbsp;&nbsp;&nbsp;&nbsp;exercise_id: <span className={styles.val}>&quot;interval_run&quot;</span>,</>,
+            <>&nbsp;&nbsp;&nbsp;&nbsp;intervals: <span className={styles.val}>10</span>,</>,
+            <>&nbsp;&nbsp;&nbsp;&nbsp;duration_sec: <span className={styles.val}>120</span>,</>,
+            <>&nbsp;&nbsp;&nbsp;&nbsp;pace_per_km: <span className={styles.val}>&quot;4:00&quot;</span>,</>,
+            <>&nbsp;&nbsp;&nbsp;&nbsp;rpe: <span className={styles.val}>8</span></>,
+            <>&nbsp;&nbsp;{'}'},</>,
+            <>&nbsp;&nbsp;<span className={styles.hl}>metadata</span>: {'{'}</>,
+            <>&nbsp;&nbsp;&nbsp;&nbsp;session_id: <span className={styles.val}>&quot;019503a1-...&quot;</span>,</>,
+            <>&nbsp;&nbsp;&nbsp;&nbsp;source: <span className={styles.val}>&quot;agent&quot;</span></>,
+            <>&nbsp;&nbsp;{'}'}</>,
+            '}',
+          ] : [
+            '{',
+            <>&nbsp;&nbsp;<span className={styles.hl}>event_type</span>: <span className={styles.val}>&quot;ride.logged&quot;</span>,</>,
+            <>&nbsp;&nbsp;<span className={styles.hl}>data</span>: {'{'}</>,
+            <>&nbsp;&nbsp;&nbsp;&nbsp;exercise_id: <span className={styles.val}>&quot;threshold_intervals&quot;</span>,</>,
+            <>&nbsp;&nbsp;&nbsp;&nbsp;intervals: <span className={styles.val}>3</span>,</>,
+            <>&nbsp;&nbsp;&nbsp;&nbsp;duration_min: <span className={styles.val}>10</span>,</>,
+            <>&nbsp;&nbsp;&nbsp;&nbsp;power_watts: <span className={styles.val}>300</span>,</>,
+            <>&nbsp;&nbsp;&nbsp;&nbsp;rpe: <span className={styles.val}>8.5</span></>,
+            <>&nbsp;&nbsp;{'}'},</>,
+            <>&nbsp;&nbsp;<span className={styles.hl}>metadata</span>: {'{'}</>,
+            <>&nbsp;&nbsp;&nbsp;&nbsp;session_id: <span className={styles.val}>&quot;019503a1-...&quot;</span>,</>,
+            <>&nbsp;&nbsp;&nbsp;&nbsp;source: <span className={styles.val}>&quot;agent&quot;</span></>,
+            <>&nbsp;&nbsp;{'}'}</>,
+            '}',
+          ]).map((line, i) => (
             <div key={i} className={styles.jline} data-jline>{line}</div>
           ))}
         </div>
       </div>
 
       <div className={styles.projCompute}>
-        <div className={styles.projBlock} data-proj>
-          <span className={styles.projLabel}>exercise_progression / barbell_back_squat</span>
-          <div className={styles.projData}>
-            estimated_1rm: <span className={styles.val}>116.7 kg</span> &nbsp;← <span className={styles.hl}>Epley</span><br />
-            previous_1rm: <span className={styles.val}>116.7 kg</span><br />
-            pr: <span className={styles.val}>false</span><br />
-            trend: <span className={styles.alert}>plateau · 3 weeks</span><br />
-            total_volume: <span className={styles.val}>2500 kg</span><br />
-            session_count: <span className={styles.val}>14</span>
+        {activeSport === 'strength' ? (<>
+          <div className={styles.projBlock} data-proj>
+            <span className={styles.projLabel}>exercise_progression / barbell_back_squat</span>
+            <div className={styles.projData}>
+              estimated_1rm: <span className={styles.val}>116.7 kg</span> &nbsp;← <span className={styles.hl}>Epley</span><br />
+              previous_1rm: <span className={styles.val}>116.7 kg</span><br />
+              pr: <span className={styles.val}>false</span><br />
+              trend: <span className={styles.alert}>plateau · 3 weeks</span><br />
+              total_volume: <span className={styles.val}>2500 kg</span><br />
+              session_count: <span className={styles.val}>14</span>
+            </div>
           </div>
-        </div>
-
-        <div className={styles.projBlock} data-proj>
-          <span className={styles.projLabel}>training_timeline / overview</span>
-          <div className={styles.projData}>
-            week: <span className={styles.val}>2026-W07</span><br />
-            sessions_this_week: <span className={styles.val}>3</span><br />
-            frequency: <span className={styles.val}>3.2 /wk</span> (26w avg)<br />
-            streak: <span className={styles.val}>12 days</span><br />
-            top_set: <span className={styles.val}>barbell_back_squat 100kg × 5 → 116.7 e1rm</span>
+          <div className={styles.projBlock} data-proj>
+            <span className={styles.projLabel}>training_timeline / overview</span>
+            <div className={styles.projData}>
+              week: <span className={styles.val}>2026-W07</span><br />
+              sessions_this_week: <span className={styles.val}>3</span><br />
+              frequency: <span className={styles.val}>3.2 /wk</span> (26w avg)<br />
+              streak: <span className={styles.val}>12 days</span><br />
+              top_set: <span className={styles.val}>barbell_back_squat 100kg × 5 → 116.7 e1rm</span>
+            </div>
           </div>
-        </div>
-
-        <div className={styles.projBlock} data-proj>
-          <span className={styles.projLabel}>recovery / overview</span>
-          <div className={styles.projData}>
-            last_sleep: <span className={styles.val}>6.5h</span> &nbsp;(<span className={styles.alert}>{t('belowTarget')}</span>)<br />
-            soreness: <span className={styles.val}>lower_back · 3/10</span><br />
-            energy_trend: <span className={styles.alert}>declining · 5d</span>
+          <div className={styles.projBlock} data-proj>
+            <span className={styles.projLabel}>recovery / overview</span>
+            <div className={styles.projData}>
+              last_sleep: <span className={styles.val}>6.5h</span> &nbsp;(<span className={styles.alert}>{t('belowTarget')}</span>)<br />
+              soreness: <span className={styles.val}>lower_back · 3/10</span><br />
+              energy_trend: <span className={styles.alert}>declining · 5d</span>
+            </div>
           </div>
-        </div>
+        </>) : activeSport === 'running' ? (<>
+          <div className={styles.projBlock} data-proj>
+            <span className={styles.projLabel}>exercise_progression / interval_run</span>
+            <div className={styles.projData}>
+              interval_pace: <span className={styles.val}>4:00/km</span> &nbsp;← <span className={styles.hl}>current</span><br />
+              previous_pace: <span className={styles.val}>4:12/km</span><br />
+              pr: <span className={styles.val}>true</span> (pace)<br />
+              trend: <span className={styles.val}>improving · 4 weeks</span><br />
+              total_sessions: <span className={styles.val}>18</span><br />
+              total_distance_km: <span className={styles.val}>142</span>
+            </div>
+          </div>
+          <div className={styles.projBlock} data-proj>
+            <span className={styles.projLabel}>training_timeline / overview</span>
+            <div className={styles.projData}>
+              week: <span className={styles.val}>2026-W07</span><br />
+              sessions_this_week: <span className={styles.val}>4</span><br />
+              frequency: <span className={styles.val}>3.8 /wk</span> (26w avg)<br />
+              streak: <span className={styles.val}>9 days</span><br />
+              top_set: <span className={styles.val}>interval_run 4:00/km × 2min</span>
+            </div>
+          </div>
+          <div className={styles.projBlock} data-proj>
+            <span className={styles.projLabel}>recovery / overview</span>
+            <div className={styles.projData}>
+              last_sleep: <span className={styles.val}>6.5h</span> &nbsp;(<span className={styles.alert}>{t('belowTarget')}</span>)<br />
+              soreness: <span className={styles.val}>calves · 2/10</span><br />
+              energy_trend: <span className={styles.alert}>declining · 5d</span>
+            </div>
+          </div>
+        </>) : (<>
+          <div className={styles.projBlock} data-proj>
+            <span className={styles.projLabel}>exercise_progression / threshold_intervals</span>
+            <div className={styles.projData}>
+              avg_power: <span className={styles.val}>300 W</span> &nbsp;← <span className={styles.hl}>current</span><br />
+              previous_avg: <span className={styles.val}>295 W</span><br />
+              pr: <span className={styles.val}>true</span> (power)<br />
+              trend: <span className={styles.val}>progressing · 2 weeks</span><br />
+              ftp_estimate: <span className={styles.val}>295 W</span><br />
+              session_count: <span className={styles.val}>12</span>
+            </div>
+          </div>
+          <div className={styles.projBlock} data-proj>
+            <span className={styles.projLabel}>training_timeline / overview</span>
+            <div className={styles.projData}>
+              week: <span className={styles.val}>2026-W07</span><br />
+              sessions_this_week: <span className={styles.val}>3</span><br />
+              frequency: <span className={styles.val}>3.0 /wk</span> (26w avg)<br />
+              streak: <span className={styles.val}>8 days</span><br />
+              top_set: <span className={styles.val}>threshold_intervals 300W × 10min</span>
+            </div>
+          </div>
+          <div className={styles.projBlock} data-proj>
+            <span className={styles.projLabel}>recovery / overview</span>
+            <div className={styles.projData}>
+              last_sleep: <span className={styles.val}>5.5h</span> &nbsp;(<span className={styles.alert}>{t('belowTarget')}</span>)<br />
+              soreness: <span className={styles.val}>quads · 2/10</span><br />
+              energy_trend: <span className={styles.alert}>declining · 3d</span>
+            </div>
+          </div>
+        </>)}
       </div>
     </section>
   );
 }
 
 /* === DEEP === */
-function Deep({ t }: { t: any }) {
+function Deep({ t, activeSport }: { t: any; activeSport: Sport }) {
   const ref = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -418,31 +527,85 @@ function Deep({ t }: { t: any }) {
       ))}
 
       <div className={styles.inferenceText}>
-        <div className={styles.inferenceStep} data-reveal>
-          <div className={styles.inferenceStepLabel}>{t('inference.signalDynamics')}</div>
-          <div className={styles.inferenceStepContent}>
-            squat_1rm.<span className={styles.hl}>velocity</span> = <span className={styles.val}>+0.0 kg/week</span><br />
-            squat_1rm.<span className={styles.hl}>acceleration</span> = <span className={styles.val}>−2.1 kg/week²</span><br />
-            squat_1rm.<span className={styles.hl}>trajectory</span> = <span className={styles.alert}>stagnating</span>
+        {activeSport === 'strength' ? (<>
+          <div className={styles.inferenceStep} data-reveal>
+            <div className={styles.inferenceStepLabel}>{t('inference.signalDynamics')}</div>
+            <div className={styles.inferenceStepContent}>
+              squat_1rm.<span className={styles.hl}>velocity</span> = <span className={styles.val}>+0.0 kg/week</span><br />
+              squat_1rm.<span className={styles.hl}>acceleration</span> = <span className={styles.val}>−2.1 kg/week²</span><br />
+              squat_1rm.<span className={styles.hl}>trajectory</span> = <span className={styles.alert}>stagnating</span>
+            </div>
           </div>
-        </div>
-        <div className={styles.inferenceStep} data-reveal style={{ marginLeft: '15%' }}>
-          <div className={styles.inferenceStepLabel}>{t('inference.crossDimension')}</div>
-          <div className={styles.inferenceStepContent}>
-            sleep.<span className={styles.hl}>deficit</span> = <span className={styles.alert}>−1h avg over 5d</span><br />
-            energy.<span className={styles.hl}>trend</span> = <span className={styles.alert}>declining</span><br />
-            volume.<span className={styles.hl}>load</span> = <span className={styles.val}>stable</span><br />
-            <span className={styles.hl}>correlation</span>: recovery ↔ stagnation = <span className={styles.val}>0.72</span>
+          <div className={styles.inferenceStep} data-reveal style={{ marginLeft: '15%' }}>
+            <div className={styles.inferenceStepLabel}>{t('inference.crossDimension')}</div>
+            <div className={styles.inferenceStepContent}>
+              sleep.<span className={styles.hl}>deficit</span> = <span className={styles.alert}>−1h avg over 5d</span><br />
+              energy.<span className={styles.hl}>trend</span> = <span className={styles.alert}>declining</span><br />
+              volume.<span className={styles.hl}>load</span> = <span className={styles.val}>stable</span><br />
+              <span className={styles.hl}>correlation</span>: recovery ↔ stagnation = <span className={styles.val}>0.72</span>
+            </div>
           </div>
-        </div>
-        <div className={styles.inferenceStep} data-reveal style={{ marginLeft: '8%' }}>
-          <div className={styles.inferenceStepLabel}>{t('inference.recommendation')}</div>
-          <div className={styles.inferenceStepContent}>
-            <span className={styles.hl}>hypothesis</span>: accumulated fatigue → performance ceiling<br />
-            <span className={styles.hl}>confidence</span>: <span className={styles.val}>0.78</span><br />
-            <span className={styles.hl}>suggested</span>: deload_week | sleep_priority | volume_reduction
+          <div className={styles.inferenceStep} data-reveal style={{ marginLeft: '8%' }}>
+            <div className={styles.inferenceStepLabel}>{t('inference.recommendation')}</div>
+            <div className={styles.inferenceStepContent}>
+              <span className={styles.hl}>hypothesis</span>: accumulated fatigue → performance ceiling<br />
+              <span className={styles.hl}>confidence</span>: <span className={styles.val}>0.78</span><br />
+              <span className={styles.hl}>suggested</span>: deload_week | sleep_priority | volume_reduction
+            </div>
           </div>
-        </div>
+        </>) : activeSport === 'running' ? (<>
+          <div className={styles.inferenceStep} data-reveal>
+            <div className={styles.inferenceStepLabel}>{t('inference.signalDynamics')}</div>
+            <div className={styles.inferenceStepContent}>
+              interval_pace.<span className={styles.hl}>velocity</span> = <span className={styles.val}>−3 sec/km/week</span><br />
+              interval_pace.<span className={styles.hl}>acceleration</span> = <span className={styles.val}>+1 sec/km/week²</span><br />
+              interval_pace.<span className={styles.hl}>trajectory</span> = <span className={styles.val}>improving</span>
+            </div>
+          </div>
+          <div className={styles.inferenceStep} data-reveal style={{ marginLeft: '15%' }}>
+            <div className={styles.inferenceStepLabel}>{t('inference.crossDimension')}</div>
+            <div className={styles.inferenceStepContent}>
+              sleep.<span className={styles.hl}>deficit</span> = <span className={styles.alert}>−0.5h avg over 5d</span><br />
+              rpe.<span className={styles.hl}>trend</span> = <span className={styles.alert}>rising</span><br />
+              mileage.<span className={styles.hl}>load</span> = <span className={styles.val}>stable</span><br />
+              <span className={styles.hl}>correlation</span>: sleep ↔ rpe_drift = <span className={styles.val}>0.68</span>
+            </div>
+          </div>
+          <div className={styles.inferenceStep} data-reveal style={{ marginLeft: '8%' }}>
+            <div className={styles.inferenceStepLabel}>{t('inference.recommendation')}</div>
+            <div className={styles.inferenceStepContent}>
+              <span className={styles.hl}>hypothesis</span>: fatigue accumulation → rpe drift<br />
+              <span className={styles.hl}>confidence</span>: <span className={styles.val}>0.71</span><br />
+              <span className={styles.hl}>suggested</span>: recovery_day | sleep_priority | reduce_intensity
+            </div>
+          </div>
+        </>) : (<>
+          <div className={styles.inferenceStep} data-reveal>
+            <div className={styles.inferenceStepLabel}>{t('inference.signalDynamics')}</div>
+            <div className={styles.inferenceStepContent}>
+              threshold_power.<span className={styles.hl}>velocity</span> = <span className={styles.val}>+1.2 W/week</span><br />
+              threshold_power.<span className={styles.hl}>acceleration</span> = <span className={styles.val}>−0.5 W/week²</span><br />
+              threshold_power.<span className={styles.hl}>trajectory</span> = <span className={styles.val}>progressing</span>
+            </div>
+          </div>
+          <div className={styles.inferenceStep} data-reveal style={{ marginLeft: '15%' }}>
+            <div className={styles.inferenceStepLabel}>{t('inference.crossDimension')}</div>
+            <div className={styles.inferenceStepContent}>
+              sleep.<span className={styles.hl}>deficit</span> = <span className={styles.alert}>−1.5h last night</span><br />
+              perceived_effort.<span className={styles.hl}>trend</span> = <span className={styles.alert}>elevated</span><br />
+              training_load.<span className={styles.hl}>level</span> = <span className={styles.val}>stable</span><br />
+              <span className={styles.hl}>correlation</span>: sleep ↔ perceived_effort = <span className={styles.val}>0.74</span>
+            </div>
+          </div>
+          <div className={styles.inferenceStep} data-reveal style={{ marginLeft: '8%' }}>
+            <div className={styles.inferenceStepLabel}>{t('inference.recommendation')}</div>
+            <div className={styles.inferenceStepContent}>
+              <span className={styles.hl}>hypothesis</span>: acute sleep impact → elevated RPE<br />
+              <span className={styles.hl}>confidence</span>: <span className={styles.val}>0.82</span><br />
+              <span className={styles.hl}>suggested</span>: sleep_priority | keep_plan | monitor_next
+            </div>
+          </div>
+        </>)}
       </div>
     </section>
   );
