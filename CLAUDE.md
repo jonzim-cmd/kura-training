@@ -107,6 +107,48 @@ Not every dimension needs all levels. But the question must be asked.
 
 Neue Architektur-Entscheidungen werden nicht als Design Docs (Markdown) festgehalten, sondern als ausführbare Tests in `tests/architecture/`. Das "Warum" bleibt kurz in Beads oder hier. Das "Was muss gelten" wird Code, den CI dauerhaft erzwingt. Vollständiger Workflow in `AGENTS.md`.
 
+## VPS Deployment & Fred
+
+**Server:** `moltbot@100.65.100.2` (Tailscale)
+**Docker:** Rootless — `export DOCKER_HOST=unix:///run/user/1000/docker.sock`
+**Source:** `~/kura-training/` (git clone)
+
+### Deploy
+
+```bash
+ssh moltbot@100.65.100.2
+export DOCKER_HOST=unix:///run/user/1000/docker.sock
+cd ~/kura-training
+git pull origin main
+docker compose -f docker/compose.production.yml --env-file docker/.env.production build
+docker compose -f docker/compose.production.yml --env-file docker/.env.production up -d
+```
+
+**WICHTIG:** IMMER `--env-file docker/.env.production` — ohne das ist KURA_DB_PASSWORD leer → API panic.
+
+### CLI für Fred updaten
+
+```bash
+docker build --target cli -t kura-cli:latest .
+docker create --name kura-cli-extract kura-cli:latest
+docker cp kura-cli-extract:/usr/local/bin/kura ~/moltbot/workspace/bin/kura
+docker rm kura-cli-extract
+```
+
+### Wie Fred auf Kura zugreift
+
+Fred (moltbot-gateway Container) nutzt die CLI:
+- **Binary:** `/workspace/bin/kura` (im Gateway-Container PATH)
+- **API URL:** `KURA_API_URL=http://kura-proxy:8320` (internes Docker-Netzwerk)
+- **Auth:** `KURA_NO_AUTH=true` (Gateway ist trusted, kein Token nötig)
+- **Netzwerk:** `moltbot_moltbot-internal` (shared zwischen Kura-Stack und Gateway)
+
+### Verify
+
+```bash
+docker exec -e KURA_API_URL=http://kura-proxy:8320 -e KURA_NO_AUTH=true moltbot-gateway /workspace/bin/kura health
+```
+
 ## Technische Konfiguration
 
 ### Volta/Node Pfade
