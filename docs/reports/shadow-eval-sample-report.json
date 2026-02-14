@@ -1,56 +1,51 @@
 {
-  "generated_at": "2026-02-12T19:00:00+00:00",
+  "generated_at": "2026-02-14T18:00:00+00:00",
   "change_context": {
-    "change_id": "sample-shadow-gate-v1",
-    "description": "Example report for rollout gate documentation"
+    "change_id": "sample-shadow-tier-matrix-v1",
+    "description": "Example report with per-tier gate output"
   },
   "corpus": {
     "user_count": 2,
     "user_refs": [
       "shadow_u_0a12b34c56d7",
       "shadow_u_8e90f12a34bc"
+    ],
+    "model_tiers": [
+      "strict",
+      "moderate",
+      "advanced"
     ]
   },
   "baseline": {
+    "model_tier": "strict",
     "source": "event_store",
     "strength_engine": "closed_form",
     "eval_status": "ok",
     "shadow_mode_status": "pass",
-    "projection_rows": 8,
+    "projection_rows": 2,
     "summary": {
       "strength_inference": {
         "projection_rows": 2,
         "ok_rows": 2,
         "replay_windows": 18,
         "labeled_windows": 14
-      },
-      "readiness_inference": {
-        "projection_rows": 2,
-        "ok_rows": 2,
-        "replay_windows": 22,
-        "labeled_windows": 22
       }
     },
     "summary_by_source": {}
   },
   "candidate": {
+    "model_tier": "strict",
     "source": "event_store",
     "strength_engine": "pymc",
     "eval_status": "ok",
     "shadow_mode_status": "pass",
-    "projection_rows": 8,
+    "projection_rows": 2,
     "summary": {
       "strength_inference": {
         "projection_rows": 2,
         "ok_rows": 2,
         "replay_windows": 18,
         "labeled_windows": 14
-      },
-      "readiness_inference": {
-        "projection_rows": 2,
-        "ok_rows": 2,
-        "replay_windows": 22,
-        "labeled_windows": 22
       }
     },
     "summary_by_source": {}
@@ -83,36 +78,144 @@
       "candidate_samples": 2,
       "value_available": true,
       "passed": true
-    },
-    {
-      "projection_type": "readiness_inference",
-      "metric": "coverage_ci95_nowcast",
-      "direction": "higher_is_better",
-      "max_delta": -0.03,
-      "baseline_mean": 0.89,
-      "candidate_mean": 0.88,
-      "delta_abs": -0.01,
-      "delta_pct": -0.011236,
-      "baseline_samples": 2,
-      "candidate_samples": 2,
-      "value_available": true,
-      "passed": true
-    },
-    {
-      "projection_type": "readiness_inference",
-      "metric": "mae_nowcast",
-      "direction": "lower_is_better",
-      "max_delta": 0.03,
-      "baseline_mean": 0.11,
-      "candidate_mean": 0.12,
-      "delta_abs": 0.01,
-      "delta_pct": 0.090909,
-      "baseline_samples": 2,
-      "candidate_samples": 2,
-      "value_available": true,
-      "passed": true
     }
   ],
+  "tier_matrix": {
+    "policy_version": "shadow_eval_tier_matrix_v1",
+    "status": "pass",
+    "weakest_tier": "strict",
+    "tiers": [
+      {
+        "model_tier": "strict",
+        "metric_deltas": [
+          {
+            "projection_type": "strength_inference",
+            "metric": "coverage_ci95",
+            "direction": "higher_is_better",
+            "max_delta": -0.03,
+            "baseline_mean": 0.83,
+            "candidate_mean": 0.82,
+            "delta_abs": -0.01,
+            "delta_pct": -0.012048,
+            "baseline_samples": 2,
+            "candidate_samples": 2,
+            "value_available": true,
+            "passed": true
+          },
+          {
+            "projection_type": "strength_inference",
+            "metric": "mae",
+            "direction": "lower_is_better",
+            "max_delta": 1.0,
+            "baseline_mean": 8.1,
+            "candidate_mean": 8.6,
+            "delta_abs": 0.5,
+            "delta_pct": 0.061728,
+            "baseline_samples": 2,
+            "candidate_samples": 2,
+            "value_available": true,
+            "passed": true
+          }
+        ],
+        "release_gate": {
+          "policy_version": "shadow_eval_gate_v1",
+          "status": "pass",
+          "allow_rollout": true,
+          "missing_metrics": [],
+          "failed_metrics": [],
+          "candidate_shadow_mode_status": "pass",
+          "reasons": []
+        },
+        "is_weakest": true
+      },
+      {
+        "model_tier": "moderate",
+        "metric_deltas": [
+          {
+            "projection_type": "strength_inference",
+            "metric": "coverage_ci95",
+            "direction": "higher_is_better",
+            "max_delta": -0.03,
+            "baseline_mean": 0.84,
+            "candidate_mean": 0.83,
+            "delta_abs": -0.01,
+            "delta_pct": -0.011905,
+            "baseline_samples": 2,
+            "candidate_samples": 2,
+            "value_available": true,
+            "passed": true
+          },
+          {
+            "projection_type": "strength_inference",
+            "metric": "mae",
+            "direction": "lower_is_better",
+            "max_delta": 1.0,
+            "baseline_mean": 8.0,
+            "candidate_mean": 8.4,
+            "delta_abs": 0.4,
+            "delta_pct": 0.05,
+            "baseline_samples": 2,
+            "candidate_samples": 2,
+            "value_available": true,
+            "passed": true
+          }
+        ],
+        "release_gate": {
+          "policy_version": "shadow_eval_gate_v1",
+          "status": "pass",
+          "allow_rollout": true,
+          "missing_metrics": [],
+          "failed_metrics": [],
+          "candidate_shadow_mode_status": "pass",
+          "reasons": []
+        },
+        "is_weakest": false
+      },
+      {
+        "model_tier": "advanced",
+        "metric_deltas": [
+          {
+            "projection_type": "strength_inference",
+            "metric": "coverage_ci95",
+            "direction": "higher_is_better",
+            "max_delta": -0.03,
+            "baseline_mean": 0.85,
+            "candidate_mean": 0.84,
+            "delta_abs": -0.01,
+            "delta_pct": -0.011765,
+            "baseline_samples": 2,
+            "candidate_samples": 2,
+            "value_available": true,
+            "passed": true
+          },
+          {
+            "projection_type": "strength_inference",
+            "metric": "mae",
+            "direction": "lower_is_better",
+            "max_delta": 1.0,
+            "baseline_mean": 7.9,
+            "candidate_mean": 8.3,
+            "delta_abs": 0.4,
+            "delta_pct": 0.050633,
+            "baseline_samples": 2,
+            "candidate_samples": 2,
+            "value_available": true,
+            "passed": true
+          }
+        ],
+        "release_gate": {
+          "policy_version": "shadow_eval_gate_v1",
+          "status": "pass",
+          "allow_rollout": true,
+          "missing_metrics": [],
+          "failed_metrics": [],
+          "candidate_shadow_mode_status": "pass",
+          "reasons": []
+        },
+        "is_weakest": false
+      }
+    ]
+  },
   "failure_classes": {
     "baseline": {
       "projection_status_failures": {},
@@ -125,6 +228,9 @@
   },
   "release_gate": {
     "policy_version": "shadow_eval_gate_v1",
+    "tier_matrix_policy_version": "shadow_eval_tier_matrix_v1",
+    "weakest_tier": "strict",
+    "tier_matrix_status": "pass",
     "status": "pass",
     "allow_rollout": true,
     "failed_metrics": [],

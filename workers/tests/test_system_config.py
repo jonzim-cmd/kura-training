@@ -388,7 +388,12 @@ class TestConventions:
         gate = result["shadow_evaluation_gate_v1"]
         assert gate["entrypoint"] == "eval_harness.run_shadow_evaluation"
         assert gate["release_gate_policy_version"] == "shadow_eval_gate_v1"
+        assert gate["tier_matrix_policy_version"] == "shadow_eval_tier_matrix_v1"
+        assert gate["weakest_tier"] == "strict"
+        assert "model_tiers" in gate["inputs"]["baseline_config"]
+        assert "model_tiers" in gate["inputs"]["candidate_config"]
         assert "metric_deltas" in gate["report_sections"]
+        assert "tier_matrix" in gate["report_sections"]
         assert "release_gate" in gate["report_sections"]
         assert len(gate["delta_rules"]) >= 2
 

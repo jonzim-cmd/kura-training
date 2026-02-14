@@ -444,6 +444,8 @@ def _get_conventions() -> dict[str, Any]:
             "rules": [
                 "Run baseline and candidate replay side-by-side on representative corpus users before rollout.",
                 "Compute metric deltas per projection and classify failure classes for both variants.",
+                "Stratify shadow replay by model tier (strict, moderate, advanced) and publish pass/fail per tier.",
+                "Promotion requires the weakest supported tier to pass (no regression on protected metrics).",
                 "Enforce release gate policy on selected metrics with explicit tolerance thresholds.",
                 "Do not allow rollout when gate status is fail or insufficient_data.",
             ],
@@ -454,16 +456,20 @@ def _get_conventions() -> dict[str, Any]:
                     "projection_types",
                     "strength_engine",
                     "semantic_top_k",
+                    "model_tiers",
                 ],
                 "candidate_config": [
                     "source",
                     "projection_types",
                     "strength_engine",
                     "semantic_top_k",
+                    "model_tiers",
                 ],
                 "user_ids": "list of corpus users (pseudonymized in report)",
             },
             "release_gate_policy_version": "shadow_eval_gate_v1",
+            "tier_matrix_policy_version": "shadow_eval_tier_matrix_v1",
+            "weakest_tier": "strict",
             "delta_rules": [
                 {
                     "projection_type": "strength_inference",
@@ -494,6 +500,7 @@ def _get_conventions() -> dict[str, Any]:
                 "baseline.summary",
                 "candidate.summary",
                 "metric_deltas",
+                "tier_matrix",
                 "failure_classes",
                 "release_gate",
             ],

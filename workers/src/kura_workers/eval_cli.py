@@ -77,6 +77,26 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Candidate semantic top-k for --shadow mode (defaults to --semantic-top-k).",
     )
+    parser.add_argument(
+        "--shadow-model-tier",
+        action="append",
+        choices=("strict", "moderate", "advanced"),
+        default=None,
+        help=(
+            "Model tier(s) evaluated in --shadow mode (repeatable). "
+            "Defaults to strict, moderate, advanced."
+        ),
+    )
+    parser.add_argument(
+        "--candidate-shadow-model-tier",
+        action="append",
+        choices=("strict", "moderate", "advanced"),
+        default=None,
+        help=(
+            "Candidate model tier(s) for --shadow mode (repeatable). "
+            "Defaults to --shadow-model-tier."
+        ),
+    )
     return parser
 
 
@@ -97,6 +117,7 @@ async def _run(args: argparse.Namespace) -> int:
                     "semantic_top_k": int(args.semantic_top_k),
                     "source": args.source,
                     "persist": bool(args.persist),
+                    "model_tiers": args.shadow_model_tier,
                 },
                 candidate_config={
                     "projection_types": args.projection_type,
@@ -108,6 +129,7 @@ async def _run(args: argparse.Namespace) -> int:
                     ),
                     "source": args.candidate_source or args.source,
                     "persist": bool(args.persist),
+                    "model_tiers": args.candidate_shadow_model_tier or args.shadow_model_tier,
                 },
                 change_context={
                     "invoked_from": "eval_cli",

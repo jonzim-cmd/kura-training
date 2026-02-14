@@ -1982,6 +1982,13 @@ _SHADOW_DELTA_RULES = [
     },
 ]
 _SHADOW_RELEASE_POLICY_VERSION = "shadow_eval_gate_v1"
+_SHADOW_TIER_MATRIX_POLICY_VERSION = "shadow_eval_tier_matrix_v1"
+_MODEL_TIER_ORDER = {
+    "strict": 0,
+    "moderate": 1,
+    "advanced": 2,
+}
+_DEFAULT_SHADOW_MODEL_TIERS = ("strict", "moderate", "advanced")
 
 
 def _aggregate_metric_mean(
@@ -2012,6 +2019,231 @@ def _delta_passes(direction: str, delta_abs: float, max_delta: float) -> bool:
     if direction == "lower_is_better":
         return delta_abs <= max_delta
     raise ValueError(f"Unsupported shadow delta direction: {direction!r}")
+
+
+def _normalize_model_tier(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in _MODEL_TIER_ORDER:
+        return raw
+    return "moderate"
+
+
+def _model_tier_sort_key(tier: str) -> tuple[int, str]:
+    normalized = _normalize_model_tier(tier)
+    return (_MODEL_TIER_ORDER.get(normalized, len(_MODEL_TIER_ORDER)), normalized)
+
+
+def _sorted_model_tiers(tiers: Iterable[str]) -> list[str]:
+    return sorted({_normalize_model_tier(tier) for tier in tiers}, key=_model_tier_sort_key)
+
+
+def _selected_shadow_projection_types(
+    baseline_eval: dict[str, Any],
+    candidate_eval: dict[str, Any],
+) -> list[str]:
+    return sorted(
+        set(baseline_eval.get("projection_types") or [])
+        | set(candidate_eval.get("projection_types") or [])
+    )
+
+
+def _compute_shadow_metric_deltas(
+    *,
+    baseline_results: list[dict[str, Any]],
+    candidate_results: list[dict[str, Any]],
+    selected_projection_types: list[str],
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    applicable_rules = [
+        rule for rule in _SHADOW_DELTA_RULES if rule["projection_type"] in selected_projection_types
+    ]
+
+    metric_deltas: list[dict[str, Any]] = []
+    missing_metrics: list[str] = []
+    failed_metrics: list[str] = []
+    for rule in applicable_rules:
+        projection_type = str(rule["projection_type"])
+        metric_name = str(rule["metric"])
+        direction = str(rule["direction"])
+        max_delta = float(rule["max_delta"])
+
+        baseline_mean, baseline_samples = _aggregate_metric_mean(
+            baseline_results,
+            projection_type=projection_type,
+            metric_name=metric_name,
+        )
+        candidate_mean, candidate_samples = _aggregate_metric_mean(
+            candidate_results,
+            projection_type=projection_type,
+            metric_name=metric_name,
+        )
+        available = baseline_mean is not None and candidate_mean is not None
+        delta_abs = (float(candidate_mean) - float(baseline_mean)) if available else None
+        delta_pct = None
+        if available and baseline_mean and baseline_mean != 0.0:
+            delta_pct = (float(candidate_mean) / float(baseline_mean)) - 1.0
+        passed = (
+            _delta_passes(direction, float(delta_abs), max_delta)
+            if available and delta_abs is not None
+            else False
+        )
+        metric_key = f"{projection_type}:{metric_name}"
+        if not available:
+            missing_metrics.append(metric_key)
+        elif not passed:
+            failed_metrics.append(metric_key)
+        metric_deltas.append(
+            {
+                "projection_type": projection_type,
+                "metric": metric_name,
+                "direction": direction,
+                "max_delta": max_delta,
+                "baseline_mean": _round_or_none(baseline_mean, 6),
+                "candidate_mean": _round_or_none(candidate_mean, 6),
+                "delta_abs": _round_or_none(delta_abs, 6),
+                "delta_pct": _round_or_none(delta_pct, 6),
+                "baseline_samples": baseline_samples,
+                "candidate_samples": candidate_samples,
+                "value_available": available,
+                "passed": passed,
+            }
+        )
+
+    return metric_deltas, sorted(missing_metrics), sorted(failed_metrics)
+
+
+def _resolve_shadow_release_gate(
+    *,
+    missing_metrics: list[str],
+    failed_metrics: list[str],
+    candidate_shadow_status: str,
+) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    if missing_metrics:
+        reasons.append(
+            "insufficient_metric_coverage: " + ", ".join(sorted(missing_metrics))
+        )
+    if failed_metrics:
+        reasons.append(
+            "metric_delta_failures: " + ", ".join(sorted(failed_metrics))
+        )
+    if candidate_shadow_status != "pass":
+        reasons.append(f"candidate_shadow_mode_status={candidate_shadow_status}")
+
+    if missing_metrics:
+        return "insufficient_data", reasons
+    if failed_metrics or candidate_shadow_status != "pass":
+        return "fail", reasons
+    return "pass", reasons
+
+
+def _normalize_tier_eval_map(
+    reports: dict[str, dict[str, Any]] | None,
+    *,
+    fallback_eval: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    if not reports:
+        fallback_tier = _normalize_model_tier(fallback_eval.get("model_tier"))
+        return {fallback_tier: fallback_eval}
+
+    out: dict[str, dict[str, Any]] = {}
+    for raw_tier, payload in reports.items():
+        if not isinstance(payload, dict):
+            continue
+        tier = _normalize_model_tier(raw_tier)
+        out[tier] = payload
+
+    if out:
+        return out
+
+    fallback_tier = _normalize_model_tier(fallback_eval.get("model_tier"))
+    return {fallback_tier: fallback_eval}
+
+
+def _build_shadow_tier_matrix(
+    *,
+    baseline_eval: dict[str, Any],
+    candidate_eval: dict[str, Any],
+    baseline_tier_reports: dict[str, dict[str, Any]] | None = None,
+    candidate_tier_reports: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    baseline_map = _normalize_tier_eval_map(
+        baseline_tier_reports,
+        fallback_eval=baseline_eval,
+    )
+    candidate_map = _normalize_tier_eval_map(
+        candidate_tier_reports,
+        fallback_eval=candidate_eval,
+    )
+
+    model_tiers = _sorted_model_tiers(set(baseline_map) | set(candidate_map))
+    entries: list[dict[str, Any]] = []
+    for model_tier in model_tiers:
+        baseline_tier_eval = baseline_map.get(model_tier)
+        candidate_tier_eval = candidate_map.get(model_tier)
+
+        if baseline_tier_eval is None or candidate_tier_eval is None:
+            missing_side = "baseline" if baseline_tier_eval is None else "candidate"
+            missing_metrics = [f"tier_report_missing:{missing_side}"]
+            failed_metrics: list[str] = []
+            gate_status = "insufficient_data"
+            reasons = [f"missing_{missing_side}_tier_report"]
+            metric_deltas: list[dict[str, Any]] = []
+            candidate_shadow_status = "unknown"
+        else:
+            selected_projection_types = _selected_shadow_projection_types(
+                baseline_tier_eval,
+                candidate_tier_eval,
+            )
+            metric_deltas, missing_metrics, failed_metrics = _compute_shadow_metric_deltas(
+                baseline_results=list(baseline_tier_eval.get("results") or []),
+                candidate_results=list(candidate_tier_eval.get("results") or []),
+                selected_projection_types=selected_projection_types,
+            )
+            candidate_shadow_status = str(
+                (candidate_tier_eval.get("shadow_mode") or {}).get("status") or "unknown"
+            )
+            gate_status, reasons = _resolve_shadow_release_gate(
+                missing_metrics=missing_metrics,
+                failed_metrics=failed_metrics,
+                candidate_shadow_status=candidate_shadow_status,
+            )
+
+        entries.append(
+            {
+                "model_tier": model_tier,
+                "metric_deltas": metric_deltas,
+                "release_gate": {
+                    "policy_version": _SHADOW_RELEASE_POLICY_VERSION,
+                    "status": gate_status,
+                    "allow_rollout": gate_status == "pass",
+                    "missing_metrics": missing_metrics,
+                    "failed_metrics": failed_metrics,
+                    "candidate_shadow_mode_status": candidate_shadow_status,
+                    "reasons": reasons,
+                },
+            }
+        )
+
+    weakest_tier = model_tiers[0] if model_tiers else None
+    for entry in entries:
+        entry["is_weakest"] = entry["model_tier"] == weakest_tier
+
+    tier_statuses = [entry["release_gate"]["status"] for entry in entries]
+    if entries and all(status == "pass" for status in tier_statuses):
+        matrix_status = "pass"
+    elif any(status == "insufficient_data" for status in tier_statuses):
+        matrix_status = "insufficient_data"
+    elif entries:
+        matrix_status = "fail"
+    else:
+        matrix_status = "insufficient_data"
+
+    return {
+        "policy_version": _SHADOW_TIER_MATRIX_POLICY_VERSION,
+        "status": matrix_status,
+        "weakest_tier": weakest_tier,
+        "tiers": entries,
+    }
 
 
 def _failure_class_summary(eval_output: dict[str, Any]) -> dict[str, Any]:
@@ -2048,99 +2280,62 @@ def build_shadow_evaluation_report(
     baseline_eval: dict[str, Any],
     candidate_eval: dict[str, Any],
     change_context: dict[str, Any] | None = None,
+    baseline_tier_reports: dict[str, dict[str, Any]] | None = None,
+    candidate_tier_reports: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     baseline_results = list(baseline_eval.get("results") or [])
     candidate_results = list(candidate_eval.get("results") or [])
 
-    selected_projection_types = sorted(
-        set(baseline_eval.get("projection_types") or [])
-        | set(candidate_eval.get("projection_types") or [])
+    selected_projection_types = _selected_shadow_projection_types(
+        baseline_eval,
+        candidate_eval,
     )
-    applicable_rules = [
-        rule for rule in _SHADOW_DELTA_RULES if rule["projection_type"] in selected_projection_types
-    ]
-
-    metric_deltas: list[dict[str, Any]] = []
-    missing_metrics: list[str] = []
-    failed_metrics: list[str] = []
-    for rule in applicable_rules:
-        projection_type = str(rule["projection_type"])
-        metric_name = str(rule["metric"])
-        direction = str(rule["direction"])
-        max_delta = float(rule["max_delta"])
-
-        baseline_mean, baseline_samples = _aggregate_metric_mean(
-            baseline_results,
-            projection_type=projection_type,
-            metric_name=metric_name,
-        )
-        candidate_mean, candidate_samples = _aggregate_metric_mean(
-            candidate_results,
-            projection_type=projection_type,
-            metric_name=metric_name,
-        )
-        available = baseline_mean is not None and candidate_mean is not None
-        delta_abs = (
-            (float(candidate_mean) - float(baseline_mean))
-            if available
-            else None
-        )
-        delta_pct = None
-        if available and baseline_mean and baseline_mean != 0.0:
-            delta_pct = (float(candidate_mean) / float(baseline_mean)) - 1.0
-        passed = (
-            _delta_passes(direction, float(delta_abs), max_delta)
-            if available and delta_abs is not None
-            else False
-        )
-        metric_key = f"{projection_type}:{metric_name}"
-        if not available:
-            missing_metrics.append(metric_key)
-        elif not passed:
-            failed_metrics.append(metric_key)
-        metric_deltas.append(
-            {
-                "projection_type": projection_type,
-                "metric": metric_name,
-                "direction": direction,
-                "max_delta": max_delta,
-                "baseline_mean": _round_or_none(baseline_mean, 6),
-                "candidate_mean": _round_or_none(candidate_mean, 6),
-                "delta_abs": _round_or_none(delta_abs, 6),
-                "delta_pct": _round_or_none(delta_pct, 6),
-                "baseline_samples": baseline_samples,
-                "candidate_samples": candidate_samples,
-                "value_available": available,
-                "passed": passed,
-            }
-        )
+    metric_deltas, missing_metrics, failed_metrics = _compute_shadow_metric_deltas(
+        baseline_results=baseline_results,
+        candidate_results=candidate_results,
+        selected_projection_types=selected_projection_types,
+    )
 
     baseline_shadow_status = str((baseline_eval.get("shadow_mode") or {}).get("status") or "unknown")
     candidate_shadow_status = str((candidate_eval.get("shadow_mode") or {}).get("status") or "unknown")
 
-    reasons: list[str] = []
-    if missing_metrics:
-        reasons.append(
-            "insufficient_metric_coverage: " + ", ".join(sorted(missing_metrics))
-        )
-    if failed_metrics:
-        reasons.append(
-            "metric_delta_failures: " + ", ".join(sorted(failed_metrics))
-        )
-    if candidate_shadow_status != "pass":
-        reasons.append(f"candidate_shadow_mode_status={candidate_shadow_status}")
+    gate_status, reasons = _resolve_shadow_release_gate(
+        missing_metrics=missing_metrics,
+        failed_metrics=failed_metrics,
+        candidate_shadow_status=candidate_shadow_status,
+    )
 
-    if missing_metrics:
-        gate_status = "insufficient_data"
-    elif failed_metrics or candidate_shadow_status != "pass":
-        gate_status = "fail"
-    else:
-        gate_status = "pass"
+    tier_matrix = _build_shadow_tier_matrix(
+        baseline_eval=baseline_eval,
+        candidate_eval=candidate_eval,
+        baseline_tier_reports=baseline_tier_reports,
+        candidate_tier_reports=candidate_tier_reports,
+    )
+    weakest_tier = tier_matrix.get("weakest_tier")
+    weakest_entry = next(
+        (
+            entry
+            for entry in tier_matrix.get("tiers", [])
+            if entry.get("model_tier") == weakest_tier
+        ),
+        None,
+    )
+    if isinstance(weakest_entry, dict):
+        weakest_status = str((weakest_entry.get("release_gate") or {}).get("status") or "unknown")
+        if weakest_status != "pass":
+            reason = f"weakest_tier_gate_status={weakest_tier}:{weakest_status}"
+            if reason not in reasons:
+                reasons.append(reason)
+            if weakest_status == "insufficient_data":
+                gate_status = "insufficient_data"
+            elif gate_status != "insufficient_data":
+                gate_status = "fail"
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "change_context": change_context or {},
         "baseline": {
+            "model_tier": _normalize_model_tier(baseline_eval.get("model_tier")),
             "source": baseline_eval.get("source"),
             "strength_engine": baseline_eval.get("strength_engine"),
             "eval_status": baseline_eval.get("eval_status"),
@@ -2149,6 +2344,7 @@ def build_shadow_evaluation_report(
             "summary_by_source": baseline_eval.get("summary_by_source") or {},
         },
         "candidate": {
+            "model_tier": _normalize_model_tier(candidate_eval.get("model_tier")),
             "source": candidate_eval.get("source"),
             "strength_engine": candidate_eval.get("strength_engine"),
             "eval_status": candidate_eval.get("eval_status"),
@@ -2157,12 +2353,16 @@ def build_shadow_evaluation_report(
             "summary_by_source": candidate_eval.get("summary_by_source") or {},
         },
         "metric_deltas": metric_deltas,
+        "tier_matrix": tier_matrix,
         "failure_classes": {
             "baseline": _failure_class_summary(baseline_eval),
             "candidate": _failure_class_summary(candidate_eval),
         },
         "release_gate": {
             "policy_version": _SHADOW_RELEASE_POLICY_VERSION,
+            "tier_matrix_policy_version": _SHADOW_TIER_MATRIX_POLICY_VERSION,
+            "weakest_tier": weakest_tier,
+            "tier_matrix_status": tier_matrix.get("status"),
             "status": gate_status,
             "allow_rollout": gate_status == "pass",
             "failed_metrics": sorted(failed_metrics),
@@ -2187,7 +2387,52 @@ def _shadow_config(
         "semantic_top_k": max(1, int(raw.get("semantic_top_k") or SEMANTIC_DEFAULT_TOP_K)),
         "source": _normalize_source(str(raw.get("source") or EVAL_SOURCE_BOTH)),
         "persist": bool(raw.get("persist", False)),
+        "model_tier": _normalize_model_tier(raw.get("model_tier")),
     }
+
+
+def _shadow_tier_variants(
+    config: dict[str, Any] | None,
+    *,
+    default_projection_types: list[str] | None = None,
+    default_model_tiers: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    raw = config or {}
+    variants: list[dict[str, Any]] = []
+
+    tier_matrix = raw.get("tier_matrix")
+    if isinstance(tier_matrix, list):
+        for entry in tier_matrix:
+            if not isinstance(entry, dict):
+                continue
+            variants.append(
+                _shadow_config(
+                    entry,
+                    default_projection_types=default_projection_types,
+                )
+            )
+
+    if not variants:
+        base = _shadow_config(raw, default_projection_types=default_projection_types)
+        model_tiers_raw = raw.get("model_tiers")
+        if isinstance(model_tiers_raw, list) and model_tiers_raw:
+            model_tiers = [_normalize_model_tier(item) for item in model_tiers_raw]
+        elif default_model_tiers:
+            model_tiers = [_normalize_model_tier(item) for item in default_model_tiers]
+        else:
+            model_tiers = [str(base["model_tier"])]
+        for model_tier in model_tiers:
+            variant = dict(base)
+            variant["model_tier"] = model_tier
+            variants.append(variant)
+
+    deduped: dict[str, dict[str, Any]] = {}
+    for variant in variants:
+        normalized = dict(variant)
+        normalized["model_tier"] = _normalize_model_tier(normalized.get("model_tier"))
+        deduped.setdefault(str(normalized["model_tier"]), normalized)
+
+    return [deduped[tier] for tier in _sorted_model_tiers(deduped.keys())]
 
 
 def _pseudonymize_shadow_user(user_id: str) -> str:
@@ -2232,6 +2477,39 @@ def _merge_shadow_eval_outputs(outputs: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+async def _run_shadow_tier(
+    conn: psycopg.AsyncConnection[Any],
+    *,
+    user_ids: list[str],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    outputs: list[dict[str, Any]] = []
+    for user_id in user_ids:
+        outputs.append(
+            await run_eval_harness(
+                conn,
+                user_id=user_id,
+                projection_types=config["projection_types"],
+                strength_engine=config["strength_engine"],
+                semantic_top_k=int(config["semantic_top_k"]),
+                source=str(config["source"]),
+                persist=bool(config["persist"]),
+            )
+        )
+
+    aggregate = _merge_shadow_eval_outputs(outputs)
+    aggregate["model_tier"] = str(config["model_tier"])
+    aggregate["config"] = {
+        "projection_types": list(config["projection_types"]),
+        "strength_engine": str(config["strength_engine"]),
+        "semantic_top_k": int(config["semantic_top_k"]),
+        "source": str(config["source"]),
+        "persist": bool(config["persist"]),
+        "model_tier": str(config["model_tier"]),
+    }
+    return aggregate
+
+
 async def run_shadow_evaluation(
     conn: psycopg.AsyncConnection[Any],
     *,
@@ -2247,60 +2525,77 @@ async def run_shadow_evaluation(
     if not normalized_user_ids:
         raise ValueError("run_shadow_evaluation received only empty user IDs")
 
-    baseline_cfg = _shadow_config(baseline_config)
-    candidate_cfg = _shadow_config(
+    baseline_variants = _shadow_tier_variants(
+        baseline_config,
+        default_model_tiers=list(_DEFAULT_SHADOW_MODEL_TIERS),
+    )
+    candidate_variants = _shadow_tier_variants(
         candidate_config,
-        default_projection_types=baseline_cfg["projection_types"],
+        default_projection_types=baseline_variants[0]["projection_types"],
+        default_model_tiers=[str(item["model_tier"]) for item in baseline_variants],
     )
 
-    baseline_outputs: list[dict[str, Any]] = []
-    candidate_outputs: list[dict[str, Any]] = []
-    for user_id in normalized_user_ids:
-        baseline_outputs.append(
-            await run_eval_harness(
-                conn,
-                user_id=user_id,
-                projection_types=baseline_cfg["projection_types"],
-                strength_engine=baseline_cfg["strength_engine"],
-                semantic_top_k=int(baseline_cfg["semantic_top_k"]),
-                source=str(baseline_cfg["source"]),
-                persist=bool(baseline_cfg["persist"]),
-            )
-        )
-        candidate_outputs.append(
-            await run_eval_harness(
-                conn,
-                user_id=user_id,
-                projection_types=candidate_cfg["projection_types"],
-                strength_engine=candidate_cfg["strength_engine"],
-                semantic_top_k=int(candidate_cfg["semantic_top_k"]),
-                source=str(candidate_cfg["source"]),
-                persist=bool(candidate_cfg["persist"]),
-            )
+    baseline_tier_reports: dict[str, dict[str, Any]] = {}
+    for config in baseline_variants:
+        baseline_tier_reports[str(config["model_tier"])] = await _run_shadow_tier(
+            conn,
+            user_ids=normalized_user_ids,
+            config=config,
         )
 
-    baseline_aggregate = _merge_shadow_eval_outputs(baseline_outputs)
-    candidate_aggregate = _merge_shadow_eval_outputs(candidate_outputs)
+    candidate_tier_reports: dict[str, dict[str, Any]] = {}
+    for config in candidate_variants:
+        candidate_tier_reports[str(config["model_tier"])] = await _run_shadow_tier(
+            conn,
+            user_ids=normalized_user_ids,
+            config=config,
+        )
+
+    comparison_tiers = _sorted_model_tiers(set(baseline_tier_reports) | set(candidate_tier_reports))
+    focus_tier = comparison_tiers[0] if comparison_tiers else _normalize_model_tier(None)
+
+    baseline_focus = baseline_tier_reports.get(focus_tier)
+    if baseline_focus is None:
+        baseline_focus = next(iter(baseline_tier_reports.values()))
+
+    candidate_focus = candidate_tier_reports.get(focus_tier)
+    if candidate_focus is None:
+        candidate_focus = next(iter(candidate_tier_reports.values()))
+
     report = build_shadow_evaluation_report(
-        baseline_eval=baseline_aggregate,
-        candidate_eval=candidate_aggregate,
+        baseline_eval=baseline_focus,
+        candidate_eval=candidate_focus,
+        baseline_tier_reports=baseline_tier_reports,
+        candidate_tier_reports=candidate_tier_reports,
         change_context=change_context
         or {
             "user_count": len(normalized_user_ids),
             "comparison": {
-                "baseline_strength_engine": baseline_cfg["strength_engine"],
-                "candidate_strength_engine": candidate_cfg["strength_engine"],
-                "baseline_source": baseline_cfg["source"],
-                "candidate_source": candidate_cfg["source"],
+                "baseline_model_tiers": [item["model_tier"] for item in baseline_variants],
+                "candidate_model_tiers": [item["model_tier"] for item in candidate_variants],
+                "baseline_strength_engines": sorted(
+                    {str(item["strength_engine"]) for item in baseline_variants}
+                ),
+                "candidate_strength_engines": sorted(
+                    {str(item["strength_engine"]) for item in candidate_variants}
+                ),
+                "baseline_sources": sorted({str(item["source"]) for item in baseline_variants}),
+                "candidate_sources": sorted({str(item["source"]) for item in candidate_variants}),
             },
         },
     )
+
+    user_refs: set[str] = set()
+    for aggregate in baseline_tier_reports.values():
+        user_refs.update(str(ref) for ref in aggregate.get("user_refs") or [])
+
     report["corpus"] = {
         "user_count": len(normalized_user_ids),
-        "user_refs": baseline_aggregate["user_refs"],
+        "user_refs": sorted(user_refs),
+        "model_tiers": comparison_tiers,
     }
-    report["baseline"]["projection_rows"] = baseline_aggregate["projection_rows"]
-    report["candidate"]["projection_rows"] = candidate_aggregate["projection_rows"]
+    report["baseline"]["projection_rows"] = int(baseline_focus.get("projection_rows") or 0)
+    report["candidate"]["projection_rows"] = int(candidate_focus.get("projection_rows") or 0)
     return report
 
 

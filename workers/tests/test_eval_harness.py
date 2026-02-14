@@ -3,6 +3,7 @@
 from datetime import date, datetime, timedelta, timezone
 
 from kura_workers.eval_harness import (
+    _shadow_tier_variants,
     build_semantic_labels_from_event_rows,
     build_shadow_evaluation_report,
     build_shadow_mode_rollout_checks,
@@ -648,3 +649,104 @@ def test_build_shadow_evaluation_report_fails_on_large_regression():
     assert report["release_gate"]["status"] == "fail"
     assert report["release_gate"]["allow_rollout"] is False
     assert report["release_gate"]["failed_metrics"]
+
+
+def test_shadow_tier_variants_default_to_all_model_tiers():
+    variants = _shadow_tier_variants({}, default_model_tiers=["strict", "moderate", "advanced"])
+    assert [item["model_tier"] for item in variants] == ["strict", "moderate", "advanced"]
+
+
+def test_build_shadow_evaluation_report_blocks_rollout_on_weakest_tier_regression():
+    baseline_strict = {
+        "model_tier": "strict",
+        "projection_types": ["strength_inference"],
+        "source": "event_store",
+        "strength_engine": "closed_form",
+        "eval_status": "ok",
+        "summary": {},
+        "summary_by_source": {},
+        "shadow_mode": {"status": "pass", "checks": []},
+        "results": [
+            {
+                "projection_type": "strength_inference",
+                "status": "ok",
+                "metrics": {"coverage_ci95": 0.90, "mae": 6.0},
+            }
+        ],
+    }
+    baseline_moderate = {
+        "model_tier": "moderate",
+        "projection_types": ["strength_inference"],
+        "source": "event_store",
+        "strength_engine": "closed_form",
+        "eval_status": "ok",
+        "summary": {},
+        "summary_by_source": {},
+        "shadow_mode": {"status": "pass", "checks": []},
+        "results": [
+            {
+                "projection_type": "strength_inference",
+                "status": "ok",
+                "metrics": {"coverage_ci95": 0.88, "mae": 6.2},
+            }
+        ],
+    }
+    candidate_strict = {
+        "model_tier": "strict",
+        "projection_types": ["strength_inference"],
+        "source": "event_store",
+        "strength_engine": "closed_form",
+        "eval_status": "ok",
+        "summary": {},
+        "summary_by_source": {},
+        "shadow_mode": {"status": "pass", "checks": []},
+        "results": [
+            {
+                "projection_type": "strength_inference",
+                "status": "ok",
+                "metrics": {"coverage_ci95": 0.80, "mae": 6.1},
+            }
+        ],
+    }
+    candidate_moderate = {
+        "model_tier": "moderate",
+        "projection_types": ["strength_inference"],
+        "source": "event_store",
+        "strength_engine": "closed_form",
+        "eval_status": "ok",
+        "summary": {},
+        "summary_by_source": {},
+        "shadow_mode": {"status": "pass", "checks": []},
+        "results": [
+            {
+                "projection_type": "strength_inference",
+                "status": "ok",
+                "metrics": {"coverage_ci95": 0.87, "mae": 6.4},
+            }
+        ],
+    }
+
+    report = build_shadow_evaluation_report(
+        baseline_eval=baseline_moderate,
+        candidate_eval=candidate_moderate,
+        baseline_tier_reports={
+            "strict": baseline_strict,
+            "moderate": baseline_moderate,
+        },
+        candidate_tier_reports={
+            "strict": candidate_strict,
+            "moderate": candidate_moderate,
+        },
+    )
+
+    assert report["tier_matrix"]["weakest_tier"] == "strict"
+    strict_entry = next(
+        tier for tier in report["tier_matrix"]["tiers"] if tier["model_tier"] == "strict"
+    )
+    moderate_entry = next(
+        tier for tier in report["tier_matrix"]["tiers"] if tier["model_tier"] == "moderate"
+    )
+    assert strict_entry["release_gate"]["status"] == "fail"
+    assert moderate_entry["release_gate"]["status"] == "pass"
+    assert report["release_gate"]["status"] == "fail"
+    assert any(reason.startswith("weakest_tier_gate_status=strict:") for reason in report["release_gate"]["reasons"])

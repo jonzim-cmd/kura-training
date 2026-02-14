@@ -1068,6 +1068,12 @@ class TestInferenceIntegration:
         assert report["release_gate"]["status"] in {"pass", "fail", "insufficient_data"}
         assert "metric_deltas" in report
         assert len(report["metric_deltas"]) >= 2
+        assert "tier_matrix" in report
+        assert report["tier_matrix"]["weakest_tier"] == "strict"
+        assert report["release_gate"]["weakest_tier"] == "strict"
+        assert {"strict", "moderate", "advanced"}.issubset(
+            {item["model_tier"] for item in report["tier_matrix"]["tiers"]}
+        )
         assert report["corpus"]["user_count"] == 1
         assert report["change_context"]["change_id"] == "shadow-eval-integration-demo"
         assert report["baseline"]["projection_rows"] >= 1
