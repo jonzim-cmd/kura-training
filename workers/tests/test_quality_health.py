@@ -229,6 +229,8 @@ class TestEvaluateReadOnlyInvariants:
         distribution = metrics["session_confidence_distribution"]
         assert set(distribution.keys()) == {"low", "medium", "high"}
         assert sum(distribution.values()) == 2
+        error_code_counts = metrics["session_error_code_counts"]
+        assert "session.logged.anchor.missing" in error_code_counts
 
     def test_external_import_quality_signals_include_uncertainty_and_unsupported(self):
         rows = [
@@ -298,6 +300,8 @@ class TestEvaluateReadOnlyInvariants:
         assert metrics["external_import_job_total"] == 3
         assert metrics["external_import_parse_fail_total"] == 2
         assert metrics["external_import_parse_fail_rate_pct"] == 66.67
+        assert metrics["external_import_error_class_counts"]["parse"] == 1
+        assert metrics["external_import_error_class_counts"]["validation"] == 1
         issue_types = {issue["type"] for issue in issues}
         assert "external_parse_fail_rate" in issue_types
 

@@ -1,0 +1,31 @@
+{
+  "canonical": {
+    "contract_version": "external_activity.v1",
+    "source": {
+      "provider": "garmin",
+      "provider_user_id": "athlete-running",
+      "external_activity_id": "run-100",
+      "ingestion_method": "file_import"
+    },
+    "workout": {
+      "workout_type": "run",
+      "duration_seconds": 1800,
+      "distance_meters": 5000,
+      "sport": "running"
+    },
+    "session": {
+      "started_at": "2026-02-14T08:00:00+00:00",
+      "ended_at": "2026-02-14T08:30:00+00:00",
+      "timezone": "UTC"
+    },
+    "provenance": {
+      "mapping_version": "garmin-v2-spec",
+      "mapped_at": "2026-02-14T08:31:00+00:00"
+    }
+  },
+  "expectations": {
+    "block_types_any": ["continuous_endurance", "interval_endurance", "tempo_threshold"],
+    "anchor_units_any": ["min_per_km"],
+    "not_measured_metrics": ["heart_rate_avg", "power_watt"]
+  }
+}

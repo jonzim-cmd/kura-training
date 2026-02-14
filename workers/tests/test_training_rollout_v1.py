@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from kura_workers.training_rollout_v1 import (
+    FEATURE_FLAG_TRAINING_LOAD_CALIBRATED,
     FEATURE_FLAG_TRAINING_LOAD_V2,
     confidence_band,
+    is_training_load_calibrated_enabled,
     is_training_load_v2_enabled,
     rollout_contract_v1,
 )
@@ -24,6 +26,11 @@ def test_training_load_v2_flag_parses_false(monkeypatch) -> None:
     assert is_training_load_v2_enabled() is False
 
 
+def test_training_load_calibrated_flag_parses_false(monkeypatch) -> None:
+    monkeypatch.setenv(FEATURE_FLAG_TRAINING_LOAD_CALIBRATED, "false")
+    assert is_training_load_calibrated_enabled() is False
+
+
 def test_rollout_contract_contains_required_monitoring_metrics() -> None:
     contract = rollout_contract_v1()
     assert contract["policy_version"] == "training_rollout.v1"
@@ -35,6 +42,12 @@ def test_rollout_contract_contains_required_monitoring_metrics() -> None:
         "low_data_user",
     }
     assert FEATURE_FLAG_TRAINING_LOAD_V2 == contract["feature_flags"]["training_load_v2"]["env_var"]
+    assert (
+        FEATURE_FLAG_TRAINING_LOAD_CALIBRATED
+        == contract["feature_flags"]["training_load_calibrated"]["env_var"]
+    )
+    assert contract["hardening_gate"]["schema_version"] == "training_hardening_gate.v1"
+    assert contract["hardening_gate"]["required_before_ramp_up"] is True
     assert {
         "external_import_parse_fail_rate_pct",
         "session_missing_anchor_rate_pct",

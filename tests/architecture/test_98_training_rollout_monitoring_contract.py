@@ -58,3 +58,4 @@ def test_quality_health_exposes_rollout_monitoring_metrics() -> None:
     assert metrics["session_missing_anchor_rate_pct"] == 100.0
     distribution = metrics["session_confidence_distribution"]
     assert set(distribution) == {"low", "medium", "high"}
+    assert metrics["session_error_code_counts"]["session.logged.anchor.missing"] >= 1

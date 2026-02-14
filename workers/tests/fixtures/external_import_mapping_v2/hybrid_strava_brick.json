@@ -1,0 +1,41 @@
+{
+  "canonical": {
+    "contract_version": "external_activity.v1",
+    "source": {
+      "provider": "strava",
+      "provider_user_id": "athlete-hybrid",
+      "external_activity_id": "brick-400",
+      "ingestion_method": "file_import"
+    },
+    "workout": {
+      "workout_type": "brick",
+      "duration_seconds": 3000,
+      "distance_meters": 9000,
+      "sport": "triathlon"
+    },
+    "session": {
+      "started_at": "2026-02-14T14:00:00+00:00",
+      "ended_at": "2026-02-14T14:50:00+00:00",
+      "timezone": "UTC"
+    },
+    "sets": [
+      {
+        "sequence": 1,
+        "exercise": "Circuit",
+        "reps": 10,
+        "duration_seconds": 90,
+        "distance_meters": 400,
+        "rest_seconds": 60
+      }
+    ],
+    "provenance": {
+      "mapping_version": "strava-v2-spec",
+      "mapped_at": "2026-02-14T14:51:00+00:00"
+    }
+  },
+  "expectations": {
+    "block_types_any": ["circuit_hybrid", "interval_endurance"],
+    "anchor_units_any": ["min_per_km"],
+    "not_measured_metrics": ["heart_rate_avg", "power_watt"]
+  }
+}

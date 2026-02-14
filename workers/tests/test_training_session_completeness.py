@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from kura_workers.training_session_completeness import evaluate_session_completeness
+from kura_workers.training_session_completeness import (
+    ERROR_CODE_MEASUREMENT_STATE_MISSING,
+    ERROR_CODE_MISSING_INTENSITY_ANCHOR,
+    ERROR_SCHEMA_VERSION,
+    evaluate_session_completeness,
+)
 
 
 def _session_payload(blocks: list[dict]) -> dict:
@@ -120,3 +125,38 @@ def test_invalid_payload_returns_invalid_tier() -> None:
     assert result["log_valid"] is False
     assert result["tier"] == "invalid"
     assert result["errors"]
+    assert result["error_schema_version"] == ERROR_SCHEMA_VERSION
+    assert result["error_details"]
+    codes = {entry["error_code"] for entry in result["error_details"]}
+    assert ERROR_CODE_MISSING_INTENSITY_ANCHOR in codes
+
+
+def test_metric_without_measurement_state_returns_structured_error_code() -> None:
+    payload = _session_payload(
+        [
+            {
+                "block_type": "strength_set",
+                "dose": {"work": {"reps": 5}},
+                "intensity_anchors": [
+                    {"measurement_state": "measured", "unit": "rpe", "value": 8}
+                ],
+                "metrics": {
+                    "heart_rate_avg": {
+                        "value": 150,
+                        "unit": "bpm",
+                    }
+                },
+            }
+        ]
+    )
+
+    result = evaluate_session_completeness(payload)
+    assert result["log_valid"] is False
+    codes = {entry["error_code"] for entry in result["error_details"]}
+    assert ERROR_CODE_MEASUREMENT_STATE_MISSING in codes
+    detail = next(
+        entry
+        for entry in result["error_details"]
+        if entry["error_code"] == ERROR_CODE_MEASUREMENT_STATE_MISSING
+    )
+    assert detail["field_path"] == "blocks[0].metrics.heart_rate_avg.measurement_state"

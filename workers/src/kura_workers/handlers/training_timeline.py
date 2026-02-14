@@ -250,6 +250,7 @@ def _disabled_load_v2_overview() -> dict[str, Any]:
         "enabled": False,
         "status": "disabled_by_feature_flag",
         "sessions_total": 0,
+        "parameter_versions": {},
         "modalities": {},
         "global": {
             "load_score": 0.0,
@@ -307,6 +308,7 @@ def _disabled_load_v2_overview() -> dict[str, Any]:
             "top_sets": {"<exercise_id>": {"weight_kg": "number", "reps": "integer", "estimated_1rm": "number"}},
             "load_v2": {
                 "schema_version": "string",
+                "parameter_version": "string",
                 "modalities": "object (strength/sprint/endurance/plyometric/mixed)",
                 "global": "object (load_score + confidence + analysis_tier)",
             },
@@ -316,6 +318,7 @@ def _disabled_load_v2_overview() -> dict[str, Any]:
             "enabled": "boolean (feature-flag state)",
             "status": "string (optional, disabled_by_feature_flag when rollout is off)",
             "sessions_total": "integer",
+            "parameter_versions": "object (parameter_version -> session_count)",
             "modalities": "object (aggregated modality-specific load and confidence)",
             "global": "object (aggregated load_score + confidence + confidence_band + analysis_tier)",
         },

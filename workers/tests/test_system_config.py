@@ -264,6 +264,9 @@ class TestConventions:
             "analysis_advanced",
         }
         assert contract["completeness_policy"]["global_requirements"]["heart_rate_required"] is False
+        error_contract = contract["completeness_policy"]["error_contract"]
+        assert error_contract["schema_version"] == "session.completeness.errors.v1"
+        assert "session.logged.anchor.missing" in error_contract["codes"]
         rules_text = " ".join(contract["rules"]).lower()
         assert "block-relevant and minimal" in rules_text
 
@@ -282,6 +285,14 @@ class TestConventions:
         assert projection["contract"]["schema_version"] == "training_load.v2"
         assert "strength" in projection["contract"]["modalities"]
 
+    def test_has_training_load_calibration_v1_conventions(self):
+        result = _get_conventions()
+        assert "training_load_calibration_v1" in result
+        calibration = result["training_load_calibration_v1"]["contract"]
+        assert calibration["schema_version"] == "training_load_calibration.v1"
+        assert "brier_score" in calibration["metrics"]
+        assert "baseline_v1" in calibration["parameter_registry"]["available_versions"]
+
     def test_has_session_legacy_compatibility_v1_conventions(self):
         result = _get_conventions()
         assert "session_legacy_compatibility_v1" in result
@@ -296,6 +307,14 @@ class TestConventions:
         assert "strength_manual_only" in contract["qa_matrix"]
         assert "training_load_v2" in contract["feature_flags"]
         assert "external_import_parse_fail_rate_pct" in contract["monitoring"]["metrics"]
+        assert contract["hardening_gate"]["schema_version"] == "training_hardening_gate.v1"
+
+    def test_has_training_hardening_gate_v1_conventions(self):
+        result = _get_conventions()
+        assert "training_hardening_gate_v1" in result
+        contract = result["training_hardening_gate_v1"]["contract"]
+        assert contract["schema_version"] == "training_hardening_gate.v1"
+        assert "error_taxonomy" in contract["tracks"]
 
     def test_has_external_import_mapping_v2_conventions(self):
         result = _get_conventions()
@@ -304,6 +323,26 @@ class TestConventions:
         assert contract["schema_version"] == "external_import_mapping.v2"
         assert "garmin" in contract["provider_field_matrix"]
         assert "fit" in contract["format_field_matrix"]
+        assert "running" in contract["modalities"]
+        assert "provider_modality_matrix" in contract
+
+    def test_has_external_import_error_taxonomy_v1_conventions(self):
+        result = _get_conventions()
+        assert "external_import_error_taxonomy_v1" in result
+        contract = result["external_import_error_taxonomy_v1"]["contract"]
+        assert contract["schema_version"] == "external_import_error_taxonomy.v1"
+        assert set(contract["classes"]) == {
+            "parse",
+            "mapping",
+            "validation",
+            "dedup",
+            "other",
+        }
+        assert set(contract["parse_quality_classes"]) == {
+            "parse",
+            "mapping",
+            "validation",
+        }
 
     def test_has_session_feedback_certainty_v1_conventions(self):
         result = _get_conventions()

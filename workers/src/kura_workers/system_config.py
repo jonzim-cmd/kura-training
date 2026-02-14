@@ -16,10 +16,13 @@ import psycopg
 from psycopg.types.json import Json
 
 from .event_conventions import get_event_conventions
+from .external_import_error_taxonomy import external_import_error_taxonomy_v1
 from .external_import_mapping_v2 import import_mapping_contract_v2
 from .interview_guide import get_interview_guide
 from .registry import get_dimension_metadata
+from .training_hardening_gate_v1 import hardening_gate_contract_v1
 from .training_legacy_compat import legacy_compat_contract_v1
+from .training_load_calibration_v1 import calibration_protocol_v1
 from .training_load_v2 import load_projection_contract_v2
 from .training_rollout_v1 import rollout_contract_v1
 from .training_session_completeness import completeness_policy_v1
@@ -99,6 +102,14 @@ def _get_conventions() -> dict[str, Any]:
             "projection_type": "training_timeline",
             "contract": load_projection_contract_v2(),
         },
+        "training_load_calibration_v1": {
+            "rules": [
+                "Calibration uses deterministic replay inputs and versioned parameter profiles.",
+                "Promotion of calibrated parameters requires shadow guardrails to pass.",
+                "Rollback to baseline parameters must be possible via feature flag without schema changes.",
+            ],
+            "contract": calibration_protocol_v1(),
+        },
         "session_legacy_compatibility_v1": {
             "rules": [
                 "Legacy set.logged and session.logged v1 must coexist without double counting.",
@@ -116,6 +127,14 @@ def _get_conventions() -> dict[str, Any]:
             ],
             "contract": rollout_contract_v1(),
         },
+        "training_hardening_gate_v1": {
+            "rules": [
+                "Hardening gate must be green before production ramp-up.",
+                "Gate combines error taxonomy, calibration, import mapping, and rollback readiness.",
+                "Gate decision is binary and machine-readable (pass|fail).",
+            ],
+            "contract": hardening_gate_contract_v1(),
+        },
         "external_import_mapping_v2": {
             "rules": [
                 "Provider/format matrix declares supported|partial|not_available by canonical field.",
@@ -123,6 +142,14 @@ def _get_conventions() -> dict[str, Any]:
                 "No provider-specific field may become a global hard requirement.",
             ],
             "contract": import_mapping_contract_v2(),
+        },
+        "external_import_error_taxonomy_v1": {
+            "rules": [
+                "Import error monitoring uses stable error-code classes instead of message parsing.",
+                "Parse quality failures include parse, mapping, and validation classes.",
+                "Dedup conflicts are tracked separately from parse quality failure rates.",
+            ],
+            "contract": external_import_error_taxonomy_v1(),
         },
         "load_context_v1": {
             "rules": [

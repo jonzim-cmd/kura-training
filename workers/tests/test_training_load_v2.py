@@ -26,6 +26,7 @@ def test_manual_strength_row_has_valid_load_and_confidence_without_hr() -> None:
     )
     finalized = finalize_session_load_v2(session)
 
+    assert isinstance(finalized["parameter_version"], str)
     assert finalized["global"]["load_score"] > 0
     assert finalized["global"]["confidence"] >= 0.6
     assert finalized["global"]["analysis_tier"] in {
@@ -77,6 +78,7 @@ def test_timeline_summary_aggregates_modalities_and_global_confidence() -> None:
     )
 
     assert summary["sessions_total"] == 2
+    assert summary["parameter_versions"]
     assert summary["modalities"]["strength"]["rows"] == 1
     assert summary["modalities"]["endurance"]["rows"] == 1
     assert summary["global"]["load_score"] > 0

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from kura_workers.external_activity_contract import validate_external_activity_contract_v1
 from kura_workers.external_import_mapping_v2 import (
     import_mapping_contract_v2,
     map_external_activity_to_session_logged_v2,
 )
 from kura_workers.training_session_contract import validate_session_logged_payload
+
+_FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "external_import_mapping_v2"
 
 
 def _canonical_payload(*, workout_type: str = "run", sets: list[dict] | None = None) -> dict:
@@ -35,16 +40,28 @@ def _canonical_payload(*, workout_type: str = "run", sets: list[dict] | None = N
     }
 
 
-def test_import_mapping_contract_v2_exposes_provider_and_format_matrix() -> None:
+def _load_fixture(name: str) -> dict:
+    with (_FIXTURE_DIR / name).open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def test_import_mapping_contract_v2_exposes_provider_format_and_modality_matrices() -> None:
     contract = import_mapping_contract_v2()
     assert contract["schema_version"] == "external_import_mapping.v2"
     assert set(contract["provider_field_matrix"]) == {"garmin", "strava", "trainingpeaks"}
     assert set(contract["format_field_matrix"]) == {"fit", "tcx", "gpx"}
+    assert set(contract["modalities"]) == {"running", "cycling", "strength", "hybrid"}
+    assert set(contract["provider_modality_matrix"]) == {"garmin", "strava", "trainingpeaks"}
+    assert set(contract["format_modality_matrix"]) == {"fit", "tcx", "gpx"}
 
     allowed_states = {"supported", "partial", "not_available"}
     for matrix in contract["provider_field_matrix"].values():
         assert set(matrix.values()) <= allowed_states
     for matrix in contract["format_field_matrix"].values():
+        assert set(matrix.values()) <= allowed_states
+    for matrix in contract["provider_modality_matrix"].values():
+        assert set(matrix.values()) <= allowed_states
+    for matrix in contract["format_modality_matrix"].values():
         assert set(matrix.values()) <= allowed_states
 
 
@@ -90,3 +107,30 @@ def test_strength_sets_map_to_strength_blocks() -> None:
     anchor = validated.blocks[0].intensity_anchors[0]
     assert anchor.unit == "rpe"
     assert float(anchor.value) == 8.0
+
+
+def test_golden_fixtures_cover_running_cycling_strength_and_hybrid() -> None:
+    fixture_names = [
+        "running_garmin.json",
+        "cycling_trainingpeaks.json",
+        "strength_garmin_sets.json",
+        "hybrid_strava_brick.json",
+    ]
+
+    for fixture_name in fixture_names:
+        fixture = _load_fixture(fixture_name)
+        canonical = validate_external_activity_contract_v1(fixture["canonical"])
+        session_payload = map_external_activity_to_session_logged_v2(canonical)
+        validated = validate_session_logged_payload(session_payload)
+        first_block = validated.blocks[0]
+        expectations = fixture["expectations"]
+
+        assert first_block.block_type in expectations["block_types_any"], fixture_name
+        metrics = session_payload["blocks"][0]["metrics"]
+        for metric_key in expectations["not_measured_metrics"]:
+            assert metrics[metric_key]["measurement_state"] == "not_measured", fixture_name
+
+        anchors = session_payload["blocks"][0].get("intensity_anchors") or []
+        if anchors:
+            units = {str(anchor.get("unit") or "") for anchor in anchors}
+            assert units & set(expectations["anchor_units_any"]), fixture_name

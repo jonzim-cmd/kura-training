@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 CONTRACT_VERSION_V1 = "session.logged.v1"
 
@@ -46,6 +47,24 @@ PERFORMANCE_BLOCK_TYPES: tuple[str, ...] = tuple(
     block_type for block_type in BLOCK_TYPES if block_type != "recovery_session"
 )
 
+ERROR_TYPE_INVALID_MEASUREMENT_STATE = "session_logged_invalid_measurement_state"
+ERROR_TYPE_MEASUREMENT_VALUE_OR_REFERENCE_REQUIRED = (
+    "session_logged_measurement_value_or_reference_required"
+)
+ERROR_TYPE_DOSE_WORK_DIMENSION_MISSING = "session_logged_dose_work_dimension_missing"
+ERROR_TYPE_INTENSITY_STATUS_PROVIDED_WITHOUT_ANCHOR = (
+    "session_logged_intensity_status_provided_without_anchor"
+)
+ERROR_TYPE_INTENSITY_STATUS_NOT_APPLICABLE_WITH_ANCHOR = (
+    "session_logged_intensity_status_not_applicable_with_anchor"
+)
+ERROR_TYPE_PERFORMANCE_BLOCK_MISSING_ANCHOR = (
+    "session_logged_performance_block_missing_anchor"
+)
+ERROR_TYPE_SESSION_META_TEMPORAL_ORDER_INVALID = (
+    "session_logged_session_meta_temporal_order_invalid"
+)
+
 
 def _normalize_non_empty(value: str, *, field_name: str) -> str:
     normalized = value.strip()
@@ -73,7 +92,10 @@ class MeasurementValueV1(BaseModel):
         normalized = _normalize_non_empty(value, field_name="measurement_state").lower()
         if normalized not in MEASUREMENT_STATES:
             allowed = ", ".join(MEASUREMENT_STATES)
-            raise ValueError(f"measurement_state must be one of: {allowed}")
+            raise PydanticCustomError(
+                ERROR_TYPE_INVALID_MEASUREMENT_STATE,
+                f"measurement_state must be one of: {allowed}",
+            )
         return normalized
 
     @field_validator("unit", "reference")
@@ -85,7 +107,8 @@ class MeasurementValueV1(BaseModel):
     def validate_state_value_pair(self) -> "MeasurementValueV1":
         if self.measurement_state in {"measured", "estimated", "inferred"}:
             if self.value is None and self.reference is None:
-                raise ValueError(
+                raise PydanticCustomError(
+                    ERROR_TYPE_MEASUREMENT_VALUE_OR_REFERENCE_REQUIRED,
                     "measurement_state requires value or reference when state is measured/estimated/inferred"
                 )
         return self
@@ -109,7 +132,8 @@ class DoseSliceV1(BaseModel):
             )
         )
         if not has_dimension:
-            raise ValueError(
+            raise PydanticCustomError(
+                ERROR_TYPE_DOSE_WORK_DIMENSION_MISSING,
                 "dose slice must define at least one work dimension (duration_seconds, distance_meters, reps, contacts)"
             )
         return self
@@ -169,11 +193,13 @@ class SessionBlockV1(BaseModel):
     @model_validator(mode="after")
     def validate_intensity_anchor_policy(self) -> "SessionBlockV1":
         if self.intensity_anchors_status == "provided" and not self.intensity_anchors:
-            raise ValueError(
+            raise PydanticCustomError(
+                ERROR_TYPE_INTENSITY_STATUS_PROVIDED_WITHOUT_ANCHOR,
                 "intensity_anchors_status='provided' requires at least one intensity anchor"
             )
         if self.intensity_anchors_status == "not_applicable" and self.intensity_anchors:
-            raise ValueError(
+            raise PydanticCustomError(
+                ERROR_TYPE_INTENSITY_STATUS_NOT_APPLICABLE_WITH_ANCHOR,
                 "intensity_anchors_status='not_applicable' requires intensity_anchors to be empty"
             )
 
@@ -181,8 +207,12 @@ class SessionBlockV1(BaseModel):
             has_anchor = bool(self.intensity_anchors)
             explicitly_not_applicable = self.intensity_anchors_status == "not_applicable"
             if not has_anchor and not explicitly_not_applicable:
-                raise ValueError(
-                    "performance blocks require at least one intensity anchor or explicit intensity_anchors_status='not_applicable'"
+                raise PydanticCustomError(
+                    ERROR_TYPE_PERFORMANCE_BLOCK_MISSING_ANCHOR,
+                    (
+                        "performance block missing required intensity signal "
+                        "(anchor or explicit not_applicable)"
+                    ),
                 )
 
         return self
@@ -205,7 +235,10 @@ class SessionMetaV1(BaseModel):
     def validate_temporal_order(self) -> "SessionMetaV1":
         if self.started_at is not None and self.ended_at is not None:
             if self.ended_at < self.started_at:
-                raise ValueError("session_meta.ended_at must be >= session_meta.started_at")
+                raise PydanticCustomError(
+                    ERROR_TYPE_SESSION_META_TEMPORAL_ORDER_INVALID,
+                    "session_meta.ended_at must be >= session_meta.started_at",
+                )
         return self
 
 
@@ -236,4 +269,13 @@ def block_catalog_v1() -> dict[str, Any]:
             "explicit_not_applicable_value": "not_applicable",
             "global_hr_requirement": False,
         },
+        "validation_error_types": [
+            ERROR_TYPE_INVALID_MEASUREMENT_STATE,
+            ERROR_TYPE_MEASUREMENT_VALUE_OR_REFERENCE_REQUIRED,
+            ERROR_TYPE_DOSE_WORK_DIMENSION_MISSING,
+            ERROR_TYPE_INTENSITY_STATUS_PROVIDED_WITHOUT_ANCHOR,
+            ERROR_TYPE_INTENSITY_STATUS_NOT_APPLICABLE_WITH_ANCHOR,
+            ERROR_TYPE_PERFORMANCE_BLOCK_MISSING_ANCHOR,
+            ERROR_TYPE_SESSION_META_TEMPORAL_ORDER_INVALID,
+        ],
     }

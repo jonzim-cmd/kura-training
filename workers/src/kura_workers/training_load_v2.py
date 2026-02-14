@@ -4,6 +4,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from .training_load_calibration_v1 import (
+    CALIBRATION_VERSION_ENV,
+    FEATURE_FLAG_TRAINING_LOAD_CALIBRATED,
+    active_calibration_version,
+    calibration_profile_for_version,
+    calibration_protocol_v1,
+    compute_row_confidence_v1,
+    compute_row_load_components_v1,
+)
+
 _ROW_MODALITIES = ("strength", "sprint", "endurance", "plyometric", "mixed")
 
 _BLOCK_MODALITY_MAP: dict[str, str] = {
@@ -22,6 +32,7 @@ _BLOCK_MODALITY_MAP: dict[str, str] = {
 
 
 def load_projection_contract_v2() -> dict[str, Any]:
+    calibration_contract = calibration_protocol_v1()
     return {
         "schema_version": "training_load.v2",
         "modalities": list(_ROW_MODALITIES),
@@ -30,9 +41,19 @@ def load_projection_contract_v2() -> dict[str, Any]:
             "Missing sensors reduce confidence but do not invalidate sessions.",
             "Additional sensors increase confidence without schema changes.",
             "Global load is aggregated from modality-specific load buckets.",
+            "Calibration parameter profiles are versioned and shadow-gated before rollout.",
         ],
         "analysis_tiers": ["log_valid", "analysis_basic", "analysis_advanced"],
         "confidence_bands": ["low", "medium", "high"],
+        "calibration": {
+            "protocol_version": calibration_contract["schema_version"],
+            "active_parameter_version": active_calibration_version(),
+            "feature_flag": FEATURE_FLAG_TRAINING_LOAD_CALIBRATED,
+            "version_env": CALIBRATION_VERSION_ENV,
+            "available_parameter_versions": calibration_contract["parameter_registry"][
+                "available_versions"
+            ],
+        },
     }
 
 
@@ -95,9 +116,11 @@ def _init_modality_bucket() -> dict[str, Any]:
     }
 
 
-def init_session_load_v2() -> dict[str, Any]:
+def init_session_load_v2(parameter_version: str | None = None) -> dict[str, Any]:
+    resolved_parameter_version = parameter_version or active_calibration_version()
     return {
         "schema_version": "training_load.v2",
+        "parameter_version": resolved_parameter_version,
         "modalities": {modality: _init_modality_bucket() for modality in _ROW_MODALITIES},
         "global": {
             "load_score": 0.0,
@@ -123,58 +146,25 @@ def _row_confidence(
     data: dict[str, Any],
     source_type: str,
     session_confidence_hint: float | None,
+    profile: dict[str, Any],
 ) -> float:
-    base = 0.62
-    if source_type == "session_logged":
-        base = 0.68
-    elif source_type == "external_import":
-        base = 0.72
-
-    weight_kg = _to_float(data.get("weight_kg", data.get("weight")))
-    reps = _to_float(data.get("reps"))
-    duration_seconds = _to_float(data.get("duration_seconds"))
-    distance_meters = _to_float(data.get("distance_meters"))
-    contacts = _to_float(data.get("contacts"))
-    objective_dims = sum(
-        1
-        for value in (weight_kg * reps, duration_seconds, distance_meters, contacts)
-        if value > 0
-    )
-    if objective_dims >= 1:
-        base += 0.12
-    if objective_dims >= 2:
-        base += 0.08
-
-    if isinstance(session_confidence_hint, (float, int)) and session_confidence_hint > 0:
-        clamped_hint = max(0.0, min(1.0, float(session_confidence_hint)))
-        base = (base * 0.6) + (clamped_hint * 0.4)
-
-    return round(max(0.2, min(0.98, base)), 2)
-
-
-def _row_load_components(data: dict[str, Any]) -> dict[str, float]:
-    weight_kg = _to_float(data.get("weight_kg", data.get("weight")))
-    reps = _to_float(data.get("reps"))
-    duration_seconds = _to_float(data.get("duration_seconds"))
-    distance_meters = _to_float(data.get("distance_meters"))
-    contacts = _to_float(data.get("contacts"))
-
-    volume_kg = weight_kg * reps
-    load_score = (
-        (volume_kg / 100.0)
-        + (duration_seconds / 300.0)
-        + (distance_meters / 1000.0)
-        + (contacts / 20.0)
+    return compute_row_confidence_v1(
+        data=data,
+        source_type=source_type,
+        session_confidence_hint=session_confidence_hint,
+        profile=profile,
     )
 
-    return {
-        "volume_kg": volume_kg,
-        "reps": reps,
-        "duration_seconds": duration_seconds,
-        "distance_meters": distance_meters,
-        "contacts": contacts,
-        "load_score": load_score,
-    }
+
+def _row_load_components(
+    data: dict[str, Any],
+    *,
+    profile: dict[str, Any],
+) -> dict[str, float]:
+    return compute_row_load_components_v1(
+        data=data,
+        profile=profile,
+    )
 
 
 def accumulate_row_load_v2(
@@ -186,11 +176,16 @@ def accumulate_row_load_v2(
 ) -> None:
     modality = infer_row_modality(data)
     bucket = session_load["modalities"].setdefault(modality, _init_modality_bucket())
-    components = _row_load_components(data)
+    parameter_version = str(
+        session_load.get("parameter_version") or active_calibration_version()
+    ).strip()
+    profile = calibration_profile_for_version(parameter_version)
+    components = _row_load_components(data, profile=profile)
     confidence = _row_confidence(
         data=data,
         source_type=source_type,
         session_confidence_hint=session_confidence_hint,
+        profile=profile,
     )
 
     bucket["rows"] += 1
@@ -250,12 +245,20 @@ def finalize_session_load_v2(session_load: dict[str, Any]) -> dict[str, Any]:
 def summarize_timeline_load_v2(session_data: dict[str, dict[str, Any]]) -> dict[str, Any]:
     summary = init_session_load_v2()
     sessions_total = 0
+    parameter_versions: dict[str, int] = {}
 
     for session in session_data.values():
         load_v2 = session.get("load_v2")
         if not isinstance(load_v2, dict):
             continue
         sessions_total += 1
+        parameter_version = str(
+            load_v2.get("parameter_version") or active_calibration_version()
+        ).strip()
+        if parameter_version:
+            parameter_versions[parameter_version] = (
+                parameter_versions.get(parameter_version, 0) + 1
+            )
         for modality, bucket in load_v2.get("modalities", {}).items():
             if modality not in summary["modalities"]:
                 continue
@@ -294,4 +297,5 @@ def summarize_timeline_load_v2(session_data: dict[str, dict[str, Any]]) -> dict[
 
     finalize_session_load_v2(summary)
     summary["sessions_total"] = sessions_total
+    summary["parameter_versions"] = parameter_versions
     return summary

@@ -47,3 +47,4 @@ def test_training_load_contract_v2_has_modality_and_tier_registry() -> None:
     assert {"strength", "sprint", "endurance", "plyometric", "mixed"} <= set(
         contract["modalities"]
     )
+    assert contract["calibration"]["protocol_version"] == "training_load_calibration.v1"

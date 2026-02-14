@@ -1,0 +1,45 @@
+{
+  "canonical": {
+    "contract_version": "external_activity.v1",
+    "source": {
+      "provider": "garmin",
+      "provider_user_id": "athlete-strength",
+      "external_activity_id": "strength-300",
+      "ingestion_method": "file_import"
+    },
+    "workout": {
+      "workout_type": "strength",
+      "duration_seconds": 2400,
+      "sport": "strength"
+    },
+    "session": {
+      "started_at": "2026-02-14T12:00:00+00:00",
+      "ended_at": "2026-02-14T12:40:00+00:00",
+      "timezone": "UTC"
+    },
+    "sets": [
+      {
+        "sequence": 1,
+        "exercise": "Back Squat",
+        "reps": 5,
+        "weight_kg": 100,
+        "rpe": 8
+      },
+      {
+        "sequence": 2,
+        "exercise": "Back Squat",
+        "reps": 5,
+        "weight_kg": 100
+      }
+    ],
+    "provenance": {
+      "mapping_version": "garmin-v2-spec",
+      "mapped_at": "2026-02-14T12:41:00+00:00"
+    }
+  },
+  "expectations": {
+    "block_types_any": ["strength_set"],
+    "anchor_units_any": ["rpe"],
+    "not_measured_metrics": ["heart_rate_avg", "power_watt"]
+  }
+}

@@ -20,6 +20,10 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from ..external_import_error_taxonomy import (
+    classify_import_error_code,
+    is_import_parse_quality_failure,
+)
 from ..extraction_calibration import resolve_extraction_calibration_status
 from ..learning_telemetry import build_learning_signal_event
 from ..repair_provenance import build_repair_provenance, summarize_repair_provenance
@@ -32,7 +36,10 @@ from ..semantic_catalog import EXERCISE_CATALOG
 from ..set_corrections import apply_set_correction_chain
 from ..training_core_fields import evaluate_set_context_rows
 from ..training_rollout_v1 import confidence_band
-from ..training_session_completeness import evaluate_session_completeness
+from ..training_session_completeness import (
+    MISSING_ANCHOR_ERROR_CODES,
+    evaluate_session_completeness,
+)
 from ..utils import get_alias_map, get_retracted_event_ids
 
 logger = logging.getLogger(__name__)
@@ -1718,6 +1725,7 @@ def _evaluate_read_only_invariants(
     session_logged_invalid_total = 0
     session_missing_anchor_total = 0
     session_confidence_distribution = {"low": 0, "medium": 0, "high": 0}
+    session_error_code_counts: dict[str, int] = {}
     for row in session_rows:
         payload = row.get("effective_data") or row.get("data") or {}
         if not isinstance(payload, dict):
@@ -1727,12 +1735,22 @@ def _evaluate_read_only_invariants(
         completeness = evaluate_session_completeness(payload)
         confidence_value = float(completeness.get("confidence", 0.0) or 0.0)
         session_confidence_distribution[confidence_band(confidence_value)] += 1
+        error_details = completeness.get("error_details") or []
+        error_codes: set[str] = set()
+        if isinstance(error_details, list):
+            for entry in error_details:
+                if not isinstance(entry, dict):
+                    continue
+                error_code = str(entry.get("error_code") or "").strip()
+                if not error_code:
+                    continue
+                error_codes.add(error_code)
+                session_error_code_counts[error_code] = (
+                    session_error_code_counts.get(error_code, 0) + 1
+                )
         if not bool(completeness.get("log_valid")):
             session_logged_invalid_total += 1
-            errors = " ".join(
-                str(entry).lower() for entry in (completeness.get("errors") or [])
-            )
-            if "intensity anchor" in errors or "intensity_anchors_status" in errors:
+            if MISSING_ANCHOR_ERROR_CODES & error_codes:
                 session_missing_anchor_total += 1
 
     session_missing_anchor_rate_pct = (
@@ -1814,12 +1832,17 @@ def _evaluate_read_only_invariants(
     external_import_failed_total = sum(
         1 for row in import_rows if str(row.get("status") or "") == "failed"
     )
+    external_import_error_class_counts: dict[str, int] = {}
+    for row in import_rows:
+        error_class = classify_import_error_code(row.get("error_code"))
+        external_import_error_class_counts[error_class] = (
+            external_import_error_class_counts.get(error_class, 0) + 1
+        )
     external_import_parse_fail_total = sum(
         1
         for row in import_rows
         if str(row.get("status") or "") == "failed"
-        and str(row.get("error_code") or "").strip().lower()
-        in {"parse_error", "validation_error", "mapping_error", "unsupported_format"}
+        and is_import_parse_quality_failure(row.get("error_code"))
     )
     external_import_parse_fail_rate_pct = (
         round((external_import_parse_fail_total / external_import_job_total) * 100, 2)
@@ -1942,11 +1965,13 @@ def _evaluate_read_only_invariants(
         "session_missing_anchor_total": session_missing_anchor_total,
         "session_missing_anchor_rate_pct": session_missing_anchor_rate_pct,
         "session_confidence_distribution": session_confidence_distribution,
+        "session_error_code_counts": session_error_code_counts,
         "external_imported_total": external_imported_total,
         "external_import_job_total": external_import_job_total,
         "external_import_failed_total": external_import_failed_total,
         "external_import_parse_fail_total": external_import_parse_fail_total,
         "external_import_parse_fail_rate_pct": external_import_parse_fail_rate_pct,
+        "external_import_error_class_counts": external_import_error_class_counts,
         "external_dedup_skipped_total": external_dedup_skipped_total,
         "external_dedup_rejected_total": external_dedup_rejected_total,
         "external_low_confidence_fields": external_low_confidence_fields,
