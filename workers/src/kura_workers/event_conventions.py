@@ -908,4 +908,34 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "correction pattern. Never try to 'update' an existing event."
             ),
         },
+        "quality.consistency.review.decided": {
+            "description": (
+                "Records the user's decision on a proactive consistency finding "
+                "surfaced in the chat. The agent must log this event after the "
+                "user approves, declines, or snoozes a proposed fix."
+            ),
+            "category": "system_quality",
+            "fields": {
+                "required": {
+                    "item_ids": "string[] (IDs of consistency_inbox items decided on)",
+                    "decision": "string (approve|decline|snooze)",
+                    "decision_source": "string (chat_explicit)",
+                },
+                "optional": {
+                    "snooze_until": "ISO 8601 timestamp (required when decision=snooze)",
+                    "agent_summary": "string (what was proposed to the user)",
+                },
+            },
+            "example": {
+                "item_ids": ["ci-bench-press-weight-drift-2026w06"],
+                "decision": "approve",
+                "decision_source": "chat_explicit",
+            },
+            "usage": (
+                "Log after user responds to a consistency finding surfaced by "
+                "the agent. The decision controls whether a fix is executed "
+                "(approve), deferred (snooze), or dismissed (decline). "
+                "No fix may be executed without a prior approve decision."
+            ),
+        },
     }

@@ -612,15 +612,16 @@ class TestAgentBehavior:
             "contradiction",
             "low_confidence",
             "overload",
+            "consistency_prompt",
         }
-        assert len(scenarios) >= 6
+        assert len(scenarios) >= 7
         for scenario in scenarios:
             assert scenario["id"]
             assert scenario["category"] in library["required_categories"]
             assert "expected_machine_outputs" in scenario
             assert "expected_user_phrasing" in scenario
             phrasing = scenario["expected_user_phrasing"]
-            assert phrasing["label"] in {"Saved", "Inferred", "Unresolved"}
+            assert phrasing["label"] in {"Saved", "Inferred", "Unresolved", "Approval-Frage"}
             assert phrasing["clarification_strategy"]
 
     def test_operational_has_write_protocol(self):

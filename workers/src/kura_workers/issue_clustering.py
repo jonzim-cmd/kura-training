@@ -177,9 +177,32 @@ def _period_key(captured_at: datetime, granularity: str) -> str:
     return f"{iso_year}-W{iso_week:02d}"
 
 
-def _severity_weight(signal_type: str, confidence_band: str) -> float:
+# Mismatch-severity modifiers for save_claim_mismatch_attempt signals.
+# When mismatch_severity is present in signal attributes, it overrides the
+# flat 1.0 weight for this signal type to reflect data-integrity risk:
+# - critical: full weight (echo missing → plausible data corruption)
+# - warning:  reduced (partial echo → some values visible)
+# - info:     minimal (protocol detail missing → no data risk)
+_MISMATCH_SEVERITY_MODIFIER: dict[str, float] = {
+    "critical": 1.0,
+    "warning": 0.5,
+    "info": 0.1,
+    "none": 0.0,
+}
+
+
+def _severity_weight(
+    signal_type: str,
+    confidence_band: str,
+    attributes: dict[str, Any] | None = None,
+) -> float:
     signal = _normalize_text(signal_type, "unknown").lower()
     base = _SEVERITY_WEIGHT_BY_SIGNAL.get(signal, 0.60)
+    # Apply mismatch-severity modifier for save_claim_mismatch_attempt signals
+    if signal == "save_claim_mismatch_attempt" and attributes:
+        ms = attributes.get("mismatch_severity")
+        if ms and ms in _MISMATCH_SEVERITY_MODIFIER:
+            base = base * _MISMATCH_SEVERITY_MODIFIER[ms]
     if confidence_band == "high":
         return min(1.0, base)
     if confidence_band == "medium":
@@ -187,10 +210,22 @@ def _severity_weight(signal_type: str, confidence_band: str) -> float:
     return min(1.0, base * 0.75)
 
 
-def _impact_weight(signal_type: str, category: str) -> float:
+def _impact_weight(
+    signal_type: str,
+    category: str,
+    attributes: dict[str, Any] | None = None,
+) -> float:
     signal = _normalize_text(signal_type, "unknown").lower()
+    base: float | None = None
     if signal in _IMPACT_WEIGHT_BY_SIGNAL:
-        return _IMPACT_WEIGHT_BY_SIGNAL[signal]
+        base = _IMPACT_WEIGHT_BY_SIGNAL[signal]
+    # Apply mismatch-severity modifier for save_claim_mismatch_attempt signals
+    if signal == "save_claim_mismatch_attempt" and base is not None and attributes:
+        ms = attributes.get("mismatch_severity")
+        if ms and ms in _MISMATCH_SEVERITY_MODIFIER:
+            base = base * _MISMATCH_SEVERITY_MODIFIER[ms]
+    if base is not None:
+        return base
     category_key = _normalize_text(category, "quality_signal").lower()
     return _IMPACT_WEIGHT_BY_CATEGORY.get(category_key, 0.60)
 
@@ -318,10 +353,12 @@ def build_issue_clusters(
             continue
 
         severity = sum(
-            _severity_weight(item.signal_type, item.confidence_band) for item in bucket
+            _severity_weight(item.signal_type, item.confidence_band, item.attributes)
+            for item in bucket
         ) / float(event_count)
         impact = sum(
-            _impact_weight(item.signal_type, item.category) for item in bucket
+            _impact_weight(item.signal_type, item.category, item.attributes)
+            for item in bucket
         ) / float(event_count)
         factors = compute_priority_score(
             event_count=event_count,

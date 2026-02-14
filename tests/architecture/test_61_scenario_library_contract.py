@@ -26,7 +26,7 @@ def test_scenario_library_contract_has_required_categories_and_transitions() -> 
     }
 
     assert categories == set(library["required_categories"])
-    assert {"onboarding", "logging", "correction", "planning_transition"}.issubset(transitions)
+    assert {"onboarding", "logging", "correction", "planning_transition", "consistency_review"}.issubset(transitions)
 
 
 def test_scenario_library_runtime_conformance_cases_pass() -> None:

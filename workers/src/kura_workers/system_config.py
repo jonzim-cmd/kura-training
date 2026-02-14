@@ -368,6 +368,8 @@ def _get_conventions() -> dict[str, Any]:
                 "Auto-tiering adjusts tier based on observed quality (mismatch rate over 30 days).",
                 "Model identity is used for audit/logging and quality track separation only.",
                 "Strict tier additionally requires intent_handshake for high-impact writes.",
+                "Tiers control autonomy (confirmation before write), NOT integrity reporting (echo after write).",
+                "Save-Echo is tier-independent and always required — see save_echo_policy_v1.",
             ],
             "identity_resolution": {
                 "trusted_sources_order": [
@@ -842,6 +844,7 @@ def _get_agent_behavior() -> dict[str, Any]:
                     "contradiction",
                     "low_confidence",
                     "overload",
+                    "consistency_prompt",
                 ],
                 "scenarios": [
                     {
@@ -853,11 +856,16 @@ def _get_agent_behavior() -> dict[str, Any]:
                             "workflow_gate": {"status": "allowed", "phase": "onboarding", "transition": "none"},
                             "claim_guard": {"allow_saved_claim": True, "claim_status": "saved_verified"},
                             "reliability_ux": {"state": "saved"},
+                            "save_echo": {
+                                "save_echo_required": True,
+                                "save_echo_completeness": "complete",
+                            },
                             "expected_event_writes": ["quality.save_claim.checked", "learning.signal.logged"],
                         },
                         "expected_user_phrasing": {
                             "label": "Saved",
                             "must_include": ["Saved"],
+                            "must_include_values": True,
                             "must_not_include": ["Unresolved", "Inferred"],
                             "clarification_strategy": "none",
                         },
@@ -950,6 +958,25 @@ def _get_agent_behavior() -> dict[str, Any]:
                             "clarification_strategy": "one_conflict_only",
                         },
                     },
+                    {
+                        "id": "proactive_consistency_prompt_one_question",
+                        "category": "consistency_prompt",
+                        "covers_transitions": ["consistency_review"],
+                        "model_tier_example": "moderate",
+                        "expected_machine_outputs": {
+                            "consistency_inbox": {
+                                "requires_human_decision": True,
+                                "highest_severity": "warning",
+                            },
+                            "expected_event_writes": ["quality.consistency.review.decided"],
+                        },
+                        "expected_user_phrasing": {
+                            "label": "Approval-Frage",
+                            "must_include": ["Soll ich"],
+                            "must_not_include": ["automatisch korrigiert"],
+                            "clarification_strategy": "single_approval_question",
+                        },
+                    },
                 ],
             },
             "write_protocol": {
@@ -966,6 +993,61 @@ def _get_agent_behavior() -> dict[str, Any]:
                         "Use deferred language and explicitly state verification is pending."
                     ),
                 },
+            },
+            "save_echo_policy_v1": {
+                "schema_version": "save_echo_policy.v1",
+                "always_on": True,
+                "tier_independent": True,
+                "rationale": (
+                    "Save-Echo is a data-integrity control, not an autonomy decision. "
+                    "It is the only defense against plausible mistranslations (e.g. 60 kg "
+                    "instead of 80 kg) that pass all downstream checks (anomaly detection, "
+                    "self-healing, replay) undetected. The user's verification of echoed "
+                    "values is the sole feedback loop for this failure class."
+                ),
+                "contract": {
+                    "required_after": ["saved_verified", "inferred"],
+                    "echo_must_include": (
+                        "All user-relevant values that were persisted (exercise, sets, reps, "
+                        "weight, duration, etc.). Exact field names are not required; semantic "
+                        "coverage of persisted values is."
+                    ),
+                    "echo_must_not_include": (
+                        "Raw technical details (event IDs, idempotency keys, internal timestamps) "
+                        "unless the user explicitly requests them."
+                    ),
+                },
+                "message_style": {
+                    "mode": "natural_compact",
+                    "examples": {
+                        "good_minimal": "Bankdrücken 3×8 @ 80 kg — was kommt als nächstes?",
+                        "good_conversational": "80 kg Bankdrücken ist drin. Noch die Nebenübungen?",
+                        "bad_bureaucratic": (
+                            "Event-ID abc123, event_type: set.logged, exercise_id: bench_press, "
+                            "sets: 3, reps: 8, weight_kg: 80.0"
+                        ),
+                        "bad_no_echo": "Alles klar, ist drin. Was noch?",
+                    },
+                },
+                "batch_mode": "compact_summary_allowed",
+                "batch_note": (
+                    "For batch writes (multiple events), a compact summary covering all "
+                    "persisted values is acceptable. Individual per-event echo is not required."
+                ),
+                "telemetry_fields": {
+                    "save_echo_required": "bool — always true when contract applies",
+                    "save_echo_present": "bool — whether echo was detected in agent response",
+                    "save_echo_completeness": (
+                        "'complete' | 'partial' | 'missing' — "
+                        "completeness assessment of value coverage"
+                    ),
+                },
+                "interaction_with_intent_handshake": (
+                    "Intent-Handshake (pre-write confirmation) and Save-Echo (post-write "
+                    "value mirror) are orthogonal. A strict-tier agent does both: confirms "
+                    "before writing AND echoes after. An advanced-tier agent skips confirmation "
+                    "but still echoes. The two policies must never be conflated."
+                ),
             },
             "reliability_ux_protocol": {
                 "goal": (
@@ -1071,6 +1153,92 @@ def _get_agent_behavior() -> dict[str, Any]:
                         ),
                     },
                 },
+            },
+            "consistency_inbox_protocol_v1": {
+                "schema_version": "consistency_inbox_protocol.v1",
+                "rationale": (
+                    "There is no separate UI for backlog approval; the human interacts "
+                    "via the AI chat. Proactive consistency findings from nightly analysis "
+                    "must surface in the chat and request explicit user decisions before "
+                    "any fixes are executed. V1 is safe: no silent auto-fixing."
+                ),
+                "approval_required_before_fix": True,
+                "max_questions_per_turn": 1,
+                "allowed_user_decisions": ["approve", "decline", "snooze"],
+                "default_snooze_hours": 72,
+                "surfacing_rules": [
+                    "On next normal chat contact, check consistency_inbox/overview.",
+                    "If requires_human_decision=true, surface highest-severity item first.",
+                    "Frame as brief observation + one decision question.",
+                    "Do not interrupt active training logging for consistency items.",
+                ],
+                "wording_by_severity": {
+                    "critical": (
+                        "Short, direct statement of the data issue. "
+                        "Example: 'Mir ist aufgefallen, dass bei deinem letzten "
+                        "Bankdrücken-Eintrag die Werte nicht zusammenpassen. "
+                        "Soll ich das korrigieren?'"
+                    ),
+                    "warning": (
+                        "Casual mention with low urgency. "
+                        "Example: 'Kleine Inkonsistenz bei deinen Deadlift-Daten "
+                        "— soll ich das anpassen?'"
+                    ),
+                    "info": (
+                        "Optional mention, can be batched. "
+                        "Example: 'Ein paar kleine Formatierungsdetails in "
+                        "deinen letzten Einträgen — soll ich aufräumen?'"
+                    ),
+                },
+                "cooldown_rules": {
+                    "after_decline": "Same item_id not re-prompted for 7 days.",
+                    "after_snooze": "Re-prompt after snooze_until timestamp.",
+                    "after_approve": "Item removed from inbox after fix applied.",
+                    "nagging_protection": (
+                        "Max 1 consistency question per chat session. "
+                        "If user declines, do not re-ask in the same session."
+                    ),
+                },
+                "decision_event": {
+                    "event_type": "quality.consistency.review.decided",
+                    "required_fields": [
+                        "item_ids",
+                        "decision",
+                        "decision_source",
+                    ],
+                    "optional_fields": ["snooze_until"],
+                },
+                "projection": {
+                    "type": "consistency_inbox",
+                    "key": "overview",
+                    "schema": {
+                        "schema_version": "int",
+                        "generated_at": "ISO 8601 timestamp",
+                        "pending_items_total": "int",
+                        "highest_severity": "'critical' | 'warning' | 'info' | 'none'",
+                        "requires_human_decision": "bool",
+                        "items": [
+                            {
+                                "item_id": "string (stable, deterministic)",
+                                "severity": "'critical' | 'warning' | 'info'",
+                                "summary": "string (1-2 sentences, user-facing)",
+                                "recommended_action": "string",
+                                "evidence_ref": "string (event_id or projection ref)",
+                                "first_seen": "ISO 8601 timestamp",
+                            }
+                        ],
+                        "prompt_control": {
+                            "last_prompted_at": "ISO 8601 timestamp | null",
+                            "snooze_until": "ISO 8601 timestamp | null",
+                            "cooldown_active": "bool",
+                        },
+                    },
+                },
+                "safety_invariants": [
+                    "No fix without explicit user approval in chat.",
+                    "User override controls cannot bypass the approval requirement.",
+                    "Missing decision defaults to no action (safe).",
+                ],
             },
             "security_tiering": {
                 "version": "ct3.1",

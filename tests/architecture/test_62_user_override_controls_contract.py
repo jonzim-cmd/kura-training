@@ -28,6 +28,22 @@ def test_interview_guide_can_emit_override_preferences() -> None:
     assert "preference.set" in comm_pref["produces"]
 
 
+def test_consistency_inbox_approval_is_not_overridable() -> None:
+    """User preference overrides must not be able to disable the
+    'no fix without approval' safety invariant."""
+    from kura_workers.system_config import _get_agent_behavior
+
+    behavior = _get_agent_behavior()
+    protocol = behavior["operational"]["consistency_inbox_protocol_v1"]
+    # This is a safety invariant, not a user preference.
+    assert protocol["approval_required_before_fix"] is True
+    # Verify it's declared as a safety invariant.
+    invariants = protocol.get("safety_invariants", [])
+    assert any("approval" in inv.lower() or "fix" in inv.lower() for inv in invariants), (
+        "consistency_inbox_protocol must declare a safety invariant about approval-before-fix"
+    )
+
+
 def test_override_precedence_runtime_cases_pass() -> None:
     for test_name in OVERRIDE_RUNTIME_TESTS:
         assert_kura_api_test_passes(test_name)

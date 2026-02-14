@@ -24,6 +24,21 @@ REQUIRED_AGENT_CONTRACT_MATRIX: dict[str, dict[str, str]] = {
         "positive_case": "routes::agent::tests::post_task_reflection_contract_confirms_when_verification_and_audit_are_clean",
         "negative_case": "routes::agent::tests::post_task_reflection_contract_marks_unresolved_when_verification_fails",
     },
+    "save_echo_policy": {
+        "schema_pin": "routes::agent::tests::save_echo_contract_schema_version_is_pinned",
+        "positive_case": "routes::agent::tests::save_echo_contract_enforced_in_moderate_tier",
+        "negative_case": "routes::agent::tests::save_echo_contract_not_required_when_claim_failed",
+    },
+    "save_claim_mismatch_severity": {
+        "schema_pin": "routes::agent::tests::save_claim_mismatch_severity_contract_critical_when_echo_missing",
+        "positive_case": "routes::agent::tests::save_claim_mismatch_severity_contract_info_when_only_protocol_detail_missing",
+        "negative_case": "routes::agent::tests::save_claim_mismatch_severity_contract_backcompat_defaults_for_legacy_payload",
+    },
+    "consistency_inbox": {
+        "schema_pin": "routes::agent::tests::consistency_inbox_contract_is_exposed_in_context",
+        "positive_case": "routes::agent::tests::consistency_inbox_contract_requires_explicit_approval_before_fix",
+        "negative_case": "routes::agent::tests::consistency_inbox_contract_respects_snooze_cooldown",
+    },
 }
 
 
@@ -33,6 +48,9 @@ def test_required_agent_contract_matrix_keys_are_explicit() -> None:
         "trace_digest",
         "memory_tier_contract",
         "post_task_reflection",
+        "save_echo_policy",
+        "save_claim_mismatch_severity",
+        "consistency_inbox",
     }
     for contract_name, scenarios in REQUIRED_AGENT_CONTRACT_MATRIX.items():
         assert set(scenarios) == {"schema_pin", "positive_case", "negative_case"}, contract_name

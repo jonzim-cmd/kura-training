@@ -870,6 +870,21 @@ pub(super) fn build_save_claim_checked_event(
     model_identity: &ResolvedModelIdentity,
 ) -> CreateEventRequest {
     let mismatch_detected = !claim_guard.allow_saved_claim;
+    // Save-Echo is a tier-independent data-integrity contract (save_echo_policy_v1).
+    // It is always required when claim_status indicates persisted data.
+    // Completeness defaults to "missing" here — the caller (agent response layer)
+    // is responsible for upgrading to "partial"/"complete" once echo content is assessed.
+    let save_echo_required = matches!(
+        claim_guard.claim_status.as_str(),
+        "saved_verified" | "inferred"
+    );
+    let save_echo_completeness = if save_echo_required {
+        "missing"
+    } else {
+        "not_applicable"
+    };
+    let (severity, mismatch_reason_codes) =
+        classify_mismatch_severity(mismatch_detected, save_echo_required, save_echo_completeness);
     let event_data = serde_json::json!({
         "requested_event_count": requested_event_count,
         "receipt_count": receipts.len(),
@@ -880,6 +895,13 @@ pub(super) fn build_save_claim_checked_event(
         "required_checks": verification.required_checks,
         "verified_checks": verification.verified_checks,
         "mismatch_detected": mismatch_detected,
+        "mismatch_severity": severity.severity,
+        "mismatch_weight": severity.weight,
+        "mismatch_domain": severity.domain,
+        "mismatch_reason_codes": mismatch_reason_codes,
+        "save_echo_required": save_echo_required,
+        "save_echo_present": serde_json::Value::Null,
+        "save_echo_completeness": save_echo_completeness,
         "runtime_model_identity": model_identity.model_identity,
         "model_identity_source": model_identity.source,
         "model_attestation_request_id": model_identity.attestation_request_id,
@@ -926,6 +948,94 @@ pub(super) fn build_save_claim_checked_event(
             idempotency_key: format!("quality-save-claim-checked-{}", Uuid::now_v7()),
         },
     }
+}
+
+// ── Mismatch Severity Classification (save_claim_mismatch_severity contract) ──
+//
+// Severity reflects data-integrity risk, not protocol aesthetics:
+// - critical: No value echo → plausible mistranslations go undetected (accumulating drift)
+// - warning:  Partial echo → some values visible, incomplete coverage
+// - info:     Protocol detail missing (e.g. event-ID) but values correctly mirrored
+// - none:     No mismatch or claim not applicable
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct MismatchSeverity {
+    pub severity: &'static str,
+    pub weight: f64,
+    pub domain: &'static str,
+}
+
+pub(super) const MISMATCH_SEVERITY_CRITICAL: MismatchSeverity = MismatchSeverity {
+    severity: "critical",
+    weight: 1.0,
+    domain: "save_echo",
+};
+
+pub(super) const MISMATCH_SEVERITY_WARNING: MismatchSeverity = MismatchSeverity {
+    severity: "warning",
+    weight: 0.5,
+    domain: "save_echo",
+};
+
+pub(super) const MISMATCH_SEVERITY_INFO: MismatchSeverity = MismatchSeverity {
+    severity: "info",
+    weight: 0.1,
+    domain: "protocol",
+};
+
+pub(super) const MISMATCH_SEVERITY_NONE: MismatchSeverity = MismatchSeverity {
+    severity: "none",
+    weight: 0.0,
+    domain: "none",
+};
+
+/// Classify mismatch severity based on save-echo completeness and proof state.
+///
+/// The classification hierarchy (highest to lowest risk):
+/// 1. critical — echo missing entirely on a persisted write (save_echo_completeness == "missing")
+/// 2. warning  — echo partial (some values mirrored, not all)
+/// 3. info     — echo complete but proof-verification failed (protocol-level, not data-level)
+/// 4. none     — no mismatch (echo complete + proof verified) or claim not applicable
+pub(super) fn classify_mismatch_severity(
+    mismatch_detected: bool,
+    save_echo_required: bool,
+    save_echo_completeness: &str,
+) -> (MismatchSeverity, Vec<String>) {
+    if !mismatch_detected && !save_echo_required {
+        return (MISMATCH_SEVERITY_NONE, vec![]);
+    }
+
+    if !mismatch_detected && save_echo_completeness == "complete" {
+        return (MISMATCH_SEVERITY_NONE, vec![]);
+    }
+
+    let mut reason_codes = Vec::new();
+
+    // Echo-based severity (data integrity risk)
+    if save_echo_required && save_echo_completeness == "missing" {
+        reason_codes.push("save_echo_missing".to_string());
+        return (MISMATCH_SEVERITY_CRITICAL, reason_codes);
+    }
+
+    if save_echo_required && save_echo_completeness == "partial" {
+        reason_codes.push("save_echo_partial".to_string());
+        return (MISMATCH_SEVERITY_WARNING, reason_codes);
+    }
+
+    // Proof-verification mismatch with complete echo (protocol-level only)
+    if mismatch_detected && save_echo_completeness == "complete" {
+        reason_codes.push("proof_verification_failed_but_echo_complete".to_string());
+        return (MISMATCH_SEVERITY_INFO, reason_codes);
+    }
+
+    // Proof-verification mismatch, echo not yet assessed (legacy/default path)
+    if mismatch_detected {
+        reason_codes.push("proof_verification_failed".to_string());
+        // Default to critical when echo state is unknown — conservative fallback
+        return (MISMATCH_SEVERITY_CRITICAL, reason_codes);
+    }
+
+    (MISMATCH_SEVERITY_NONE, reason_codes)
 }
 
 pub(super) const LEARNING_TELEMETRY_SCHEMA_VERSION: i64 = 1;
@@ -991,6 +1101,7 @@ pub(super) fn build_learning_signal_event(
     requested_event_count: usize,
     receipt_count: usize,
     model_identity: &ResolvedModelIdentity,
+    signal_severity: MismatchSeverity,
 ) -> CreateEventRequest {
     let captured_at = Utc::now();
     let confidence_band = save_claim_confidence_band(claim_guard);
@@ -1034,6 +1145,9 @@ pub(super) fn build_learning_signal_event(
             "required_checks": verification.required_checks,
             "verified_checks": verification.verified_checks,
             "mismatch_detected": !claim_guard.allow_saved_claim,
+            "mismatch_severity": signal_severity.severity,
+            "mismatch_weight": signal_severity.weight,
+            "mismatch_domain": signal_severity.domain,
             "runtime_model_identity": model_identity.model_identity,
             "model_identity_source": model_identity.source,
             "model_attestation_request_id": model_identity.attestation_request_id,
@@ -1062,6 +1176,20 @@ pub(super) fn build_save_handshake_learning_signal_events(
     claim_guard: &AgentWriteClaimGuard,
     model_identity: &ResolvedModelIdentity,
 ) -> Vec<CreateEventRequest> {
+    // Compute severity once for all signals in this write.
+    let save_echo_required = matches!(
+        claim_guard.claim_status.as_str(),
+        "saved_verified" | "inferred"
+    );
+    let save_echo_completeness = if save_echo_required {
+        "missing"
+    } else {
+        "not_applicable"
+    };
+    let mismatch_detected = !claim_guard.allow_saved_claim;
+    let (severity, _reason_codes) =
+        classify_mismatch_severity(mismatch_detected, save_echo_required, save_echo_completeness);
+
     if claim_guard.allow_saved_claim {
         return vec![build_learning_signal_event(
             user_id,
@@ -1072,6 +1200,7 @@ pub(super) fn build_save_handshake_learning_signal_events(
             requested_event_count,
             receipts.len(),
             model_identity,
+            severity,
         )];
     }
 
@@ -1085,6 +1214,7 @@ pub(super) fn build_save_handshake_learning_signal_events(
             requested_event_count,
             receipts.len(),
             model_identity,
+            severity,
         ),
         build_learning_signal_event(
             user_id,
@@ -1095,6 +1225,7 @@ pub(super) fn build_save_handshake_learning_signal_events(
             requested_event_count,
             receipts.len(),
             model_identity,
+            severity,
         ),
     ]
 }

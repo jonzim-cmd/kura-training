@@ -787,6 +787,17 @@ pub(super) async fn resolve_auto_tier_policy(
             COALESCE(
                 SUM(
                     CASE
+                        -- Severity-aware path: only count mismatches with weight >= 0.5
+                        -- (critical=1.0, warning=0.5). Info-level (0.1) mismatches
+                        -- are protocol-pedantry and must NOT trigger tier degradation.
+                        -- The Python worker has the precise weighted breakdown for dashboards.
+                        -- Legacy fallback: binary mismatch_detected → weight 1.0.
+                        -- Excludes infrastructure-level uncertainty (receipt/readback incomplete).
+                        WHEN (data->>'mismatch_weight') IS NOT NULL
+                             AND (data->>'mismatch_weight')::NUMERIC >= 0.5
+                            THEN 1
+                        WHEN (data->>'mismatch_weight') IS NOT NULL
+                            THEN 0
                         WHEN LOWER(COALESCE(data->>'mismatch_detected', 'false')) = 'true'
                              AND NOT (
                                  COALESCE(data->'uncertainty_markers', '[]'::jsonb) ? 'write_receipt_incomplete'

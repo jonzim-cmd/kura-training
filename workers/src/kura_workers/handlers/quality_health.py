@@ -1248,6 +1248,26 @@ def _worst_status(*statuses: str) -> str:
     return max(valid, key=lambda status: _STATUS_ORDER[status])
 
 
+def _severity_weight_from_event(data: dict[str, Any]) -> tuple[str, float]:
+    """Extract mismatch severity and weight from a quality.save_claim.checked event.
+
+    Legacy events (without mismatch_severity/mismatch_weight) fall back to
+    binary classification: mismatch_detected=true → critical/1.0,
+    mismatch_detected=false → none/0.0.
+    """
+    severity = data.get("mismatch_severity")
+    weight = data.get("mismatch_weight")
+    if severity is not None and weight is not None:
+        return str(severity), float(weight)
+    # Legacy fallback: binary mismatch → critical or none
+    mismatch_detected = data.get("mismatch_detected")
+    if mismatch_detected is None:
+        mismatch_detected = not bool(data.get("allow_saved_claim", False))
+    if bool(mismatch_detected):
+        return "critical", 1.0
+    return "none", 0.0
+
+
 def _compute_save_claim_slo(
     event_rows: list[dict[str, Any]],
     window_start: datetime,
@@ -1260,32 +1280,48 @@ def _compute_save_claim_slo(
         and row["timestamp"] >= window_start
     ]
     total_checks = len(sampled)
-    mismatches = 0
+    weighted_sum = 0.0
+    binary_mismatches = 0
+    severity_breakdown: dict[str, int] = {
+        "critical": 0,
+        "warning": 0,
+        "info": 0,
+        "none": 0,
+    }
     for row in sampled:
         data = row.get("data") or {}
-        mismatch_detected = data.get("mismatch_detected")
-        if mismatch_detected is None:
-            mismatch_detected = not bool(data.get("allow_saved_claim", False))
-        mismatches += 1 if bool(mismatch_detected) else 0
+        severity, weight = _severity_weight_from_event(data)
+        weighted_sum += weight
+        if severity in severity_breakdown:
+            severity_breakdown[severity] += 1
+        if weight > 0:
+            binary_mismatches += 1
 
-    mismatch_pct = (
-        round((mismatches / total_checks) * 100, 2) if total_checks else 0.0
+    weighted_mismatch_pct = (
+        round((weighted_sum / total_checks) * 100, 2) if total_checks else 0.0
+    )
+    # Legacy binary rate kept for backward compatibility
+    binary_mismatch_pct = (
+        round((binary_mismatches / total_checks) * 100, 2) if total_checks else 0.0
     )
     status = _metric_status(
-        mismatch_pct,
+        weighted_mismatch_pct,
         _SLO_SAVE_CLAIM_MISMATCH_PCT_HEALTHY_MAX,
         _SLO_SAVE_CLAIM_MISMATCH_PCT_MONITOR_MAX,
     )
 
     return {
         "metric": "save_claim_mismatch_rate_pct",
-        "value": mismatch_pct,
+        "value": weighted_mismatch_pct,
         "unit": "percent",
         "status": status,
         "window_days": _SLO_LOOKBACK_DAYS,
         "target": {"healthy_max": 0.0, "monitor_max": 1.0},
         "sample_count": total_checks,
-        "mismatch_count": mismatches,
+        "mismatch_count": binary_mismatches,
+        "weighted_mismatch_sum": round(weighted_sum, 2),
+        "weighted_mismatch_rate_pct": weighted_mismatch_pct,
+        "severity_breakdown": severity_breakdown,
     }
 
 

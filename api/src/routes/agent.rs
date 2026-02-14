@@ -170,6 +170,8 @@ pub struct AgentContextResponse {
     pub causal_inference: Option<ProjectionResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quality_health: Option<ProjectionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consistency_inbox: Option<ProjectionResponse>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub exercise_progression: Vec<ProjectionResponse>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -2135,6 +2137,7 @@ fn build_post_task_reflection_learning_signal_event(
         requested_event_count,
         receipts.len(),
         model_identity,
+        MISMATCH_SEVERITY_NONE,
     )
 }
 
@@ -3767,6 +3770,8 @@ pub async fn get_agent_context(
     let causal_inference =
         fetch_projection(&mut tx, user_id, "causal_inference", "overview").await?;
     let quality_health = fetch_projection(&mut tx, user_id, "quality_health", "overview").await?;
+    let consistency_inbox =
+        fetch_projection(&mut tx, user_id, "consistency_inbox", "overview").await?;
 
     let ranking_context =
         RankingContext::from_task_intent(task_intent.clone(), semantic_memory.as_ref());
@@ -3823,6 +3828,7 @@ pub async fn get_agent_context(
         readiness_inference,
         causal_inference,
         quality_health,
+        consistency_inbox,
         exercise_progression,
         strength_inference,
         custom,
@@ -8073,5 +8079,410 @@ mod tests {
                 .iter()
                 .any(|class| class == "system.conventions.internal_operations")
         );
+    }
+
+    // ── Save-Echo Contract (save_echo_policy_v1) ──────────────────────
+
+    #[test]
+    fn save_echo_contract_schema_version_is_pinned() {
+        // The save_echo_policy_v1 contract is declared in system_config.
+        // This test pins the telemetry field names that appear in
+        // quality.save_claim.checked events.
+        let receipt = AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.logged".to_string(),
+            idempotency_key: "k-echo-pin-1".to_string(),
+            event_timestamp: Utc::now(),
+        };
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "training_timeline".to_string(),
+            key: "overview".to_string(),
+            status: "verified".to_string(),
+            observed_projection_version: Some(1),
+            observed_last_event_id: None,
+            detail: "echo-pin-fixture".to_string(),
+        }];
+        let verification = make_verification("verified", checks.clone());
+        let claim_guard = build_claim_guard(
+            &[receipt.clone()],
+            1,
+            &checks,
+            &[],
+            default_autonomy_policy(),
+            default_autonomy_gate(),
+        );
+        let session_audit = AgentSessionAuditSummary {
+            status: "clean".to_string(),
+            mismatch_detected: 0,
+            mismatch_repaired: 0,
+            mismatch_unresolved: 0,
+            mismatch_classes: Vec::new(),
+            clarification_question: None,
+        };
+        let model_id = super::ResolvedModelIdentity {
+            model_identity: "test-model".to_string(),
+            reason_codes: vec![],
+            source: "test".to_string(),
+            attestation_request_id: None,
+        };
+
+        let event = super::build_save_claim_checked_event(
+            1,
+            &[receipt],
+            &verification,
+            &claim_guard,
+            &session_audit,
+            &model_id,
+        );
+
+        let data = &event.data;
+        // Telemetry field names are part of the contract — renaming breaks consumers.
+        assert!(data.get("save_echo_required").is_some(), "save_echo_required field must exist");
+        assert!(data.get("save_echo_present").is_some(), "save_echo_present field must exist");
+        assert!(data.get("save_echo_completeness").is_some(), "save_echo_completeness field must exist");
+    }
+
+    #[test]
+    fn save_echo_contract_enforced_in_moderate_tier() {
+        // Save-Echo must be required even at moderate tier (tier-independent).
+        let receipt = AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.logged".to_string(),
+            idempotency_key: "k-echo-mod-1".to_string(),
+            event_timestamp: Utc::now(),
+        };
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "training_timeline".to_string(),
+            key: "overview".to_string(),
+            status: "verified".to_string(),
+            observed_projection_version: Some(1),
+            observed_last_event_id: None,
+            detail: "echo-moderate-fixture".to_string(),
+        }];
+        let verification = make_verification("verified", checks.clone());
+        let mut policy = default_autonomy_policy();
+        policy.capability_tier = "moderate".to_string();
+        let mut gate = default_autonomy_gate();
+        gate.model_tier = "moderate".to_string();
+        let claim_guard = build_claim_guard(
+            &[receipt.clone()],
+            1,
+            &checks,
+            &[],
+            policy,
+            gate,
+        );
+        assert_eq!(claim_guard.claim_status, "saved_verified");
+
+        let session_audit = AgentSessionAuditSummary {
+            status: "clean".to_string(),
+            mismatch_detected: 0,
+            mismatch_repaired: 0,
+            mismatch_unresolved: 0,
+            mismatch_classes: Vec::new(),
+            clarification_question: None,
+        };
+        let model_id = super::ResolvedModelIdentity {
+            model_identity: "test-moderate".to_string(),
+            reason_codes: vec![],
+            source: "test".to_string(),
+            attestation_request_id: None,
+        };
+
+        let event = super::build_save_claim_checked_event(
+            1,
+            &[receipt],
+            &verification,
+            &claim_guard,
+            &session_audit,
+            &model_id,
+        );
+
+        let data = &event.data;
+        assert_eq!(data["save_echo_required"], true, "save_echo must be required at moderate tier");
+        assert_eq!(data["save_echo_completeness"], "missing", "default completeness is missing until assessed");
+    }
+
+    #[test]
+    fn save_echo_contract_enforced_in_advanced_tier() {
+        // Save-Echo must be required even at advanced tier (tier-independent).
+        let receipt = AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.logged".to_string(),
+            idempotency_key: "k-echo-adv-1".to_string(),
+            event_timestamp: Utc::now(),
+        };
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "training_timeline".to_string(),
+            key: "overview".to_string(),
+            status: "verified".to_string(),
+            observed_projection_version: Some(1),
+            observed_last_event_id: None,
+            detail: "echo-advanced-fixture".to_string(),
+        }];
+        let verification = make_verification("verified", checks.clone());
+        let mut policy = default_autonomy_policy();
+        policy.capability_tier = "advanced".to_string();
+        let mut gate = default_autonomy_gate();
+        gate.model_tier = "advanced".to_string();
+        let claim_guard = build_claim_guard(
+            &[receipt.clone()],
+            1,
+            &checks,
+            &[],
+            policy,
+            gate,
+        );
+        assert_eq!(claim_guard.claim_status, "saved_verified");
+
+        let session_audit = AgentSessionAuditSummary {
+            status: "clean".to_string(),
+            mismatch_detected: 0,
+            mismatch_repaired: 0,
+            mismatch_unresolved: 0,
+            mismatch_classes: Vec::new(),
+            clarification_question: None,
+        };
+        let model_id = super::ResolvedModelIdentity {
+            model_identity: "test-advanced".to_string(),
+            reason_codes: vec![],
+            source: "test".to_string(),
+            attestation_request_id: None,
+        };
+
+        let event = super::build_save_claim_checked_event(
+            1,
+            &[receipt],
+            &verification,
+            &claim_guard,
+            &session_audit,
+            &model_id,
+        );
+
+        let data = &event.data;
+        assert_eq!(data["save_echo_required"], true, "save_echo must be required at advanced tier");
+        assert_eq!(data["save_echo_completeness"], "missing", "default completeness is missing until assessed");
+    }
+
+    // ── Mismatch Severity Contract (save_claim_mismatch_severity) ────
+
+    #[test]
+    fn save_claim_mismatch_severity_contract_critical_when_echo_missing() {
+        let (severity, reason_codes) =
+            super::classify_mismatch_severity(false, true, "missing");
+        assert_eq!(severity.severity, "critical");
+        assert_eq!(severity.weight, 1.0);
+        assert_eq!(severity.domain, "save_echo");
+        assert!(reason_codes.contains(&"save_echo_missing".to_string()));
+    }
+
+    #[test]
+    fn save_claim_mismatch_severity_contract_warning_when_echo_partial() {
+        let (severity, reason_codes) =
+            super::classify_mismatch_severity(false, true, "partial");
+        assert_eq!(severity.severity, "warning");
+        assert_eq!(severity.weight, 0.5);
+        assert_eq!(severity.domain, "save_echo");
+        assert!(reason_codes.contains(&"save_echo_partial".to_string()));
+    }
+
+    #[test]
+    fn save_claim_mismatch_severity_contract_info_when_only_protocol_detail_missing() {
+        // Echo is complete but proof verification failed → protocol-level, not data-level
+        let (severity, reason_codes) =
+            super::classify_mismatch_severity(true, true, "complete");
+        assert_eq!(severity.severity, "info");
+        assert_eq!(severity.weight, 0.1);
+        assert_eq!(severity.domain, "protocol");
+        assert!(
+            reason_codes.contains(&"proof_verification_failed_but_echo_complete".to_string())
+        );
+    }
+
+    #[test]
+    fn save_claim_mismatch_severity_contract_none_when_all_good() {
+        let (severity, reason_codes) =
+            super::classify_mismatch_severity(false, true, "complete");
+        assert_eq!(severity.severity, "none");
+        assert_eq!(severity.weight, 0.0);
+        assert!(reason_codes.is_empty());
+    }
+
+    #[test]
+    fn save_claim_mismatch_severity_contract_backcompat_defaults_for_legacy_payload() {
+        // Legacy: mismatch_detected=true, no echo fields → conservative fallback to critical
+        let (severity, reason_codes) =
+            super::classify_mismatch_severity(true, false, "not_applicable");
+        // When save_echo is not required AND no mismatch, it's none. But here mismatch IS detected.
+        assert_eq!(severity.severity, "critical");
+        assert_eq!(severity.weight, 1.0);
+        assert!(reason_codes.contains(&"proof_verification_failed".to_string()));
+    }
+
+    #[test]
+    fn save_echo_contract_not_required_when_claim_failed() {
+        // When claim_status is "failed", save_echo is not required (nothing was persisted).
+        let receipt = AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.logged".to_string(),
+            idempotency_key: "".to_string(), // empty key → receipts_incomplete
+            event_timestamp: Utc::now(),
+        };
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "training_timeline".to_string(),
+            key: "overview".to_string(),
+            status: "verified".to_string(),
+            observed_projection_version: Some(1),
+            observed_last_event_id: None,
+            detail: "echo-failed-fixture".to_string(),
+        }];
+        let verification = make_verification("verified", checks.clone());
+        let claim_guard = build_claim_guard(
+            &[receipt.clone()],
+            1,
+            &checks,
+            &[],
+            default_autonomy_policy(),
+            default_autonomy_gate(),
+        );
+        assert_eq!(claim_guard.claim_status, "failed");
+
+        let session_audit = AgentSessionAuditSummary {
+            status: "clean".to_string(),
+            mismatch_detected: 0,
+            mismatch_repaired: 0,
+            mismatch_unresolved: 0,
+            mismatch_classes: Vec::new(),
+            clarification_question: None,
+        };
+        let model_id = super::ResolvedModelIdentity {
+            model_identity: "test-failed".to_string(),
+            reason_codes: vec![],
+            source: "test".to_string(),
+            attestation_request_id: None,
+        };
+
+        let event = super::build_save_claim_checked_event(
+            1,
+            &[receipt],
+            &verification,
+            &claim_guard,
+            &session_audit,
+            &model_id,
+        );
+
+        let data = &event.data;
+        assert_eq!(data["save_echo_required"], false, "save_echo not required when claim failed");
+        assert_eq!(data["save_echo_completeness"], "not_applicable");
+    }
+
+    // ── Consistency Inbox contract tests ─────────────────────────────
+
+    fn make_inbox_projection(data: Value) -> ProjectionResponse {
+        let now = Utc::now();
+        ProjectionResponse {
+            projection: Projection {
+                id: Uuid::nil(),
+                user_id: Uuid::nil(),
+                projection_type: "consistency_inbox".to_string(),
+                key: "overview".to_string(),
+                data,
+                version: 1,
+                last_event_id: None,
+                updated_at: now,
+            },
+            meta: ProjectionMeta {
+                projection_version: 1,
+                computed_at: now,
+                freshness: ProjectionFreshness::from_computed_at(now, now),
+            },
+        }
+    }
+
+    #[test]
+    fn consistency_inbox_contract_is_exposed_in_context() {
+        // consistency_inbox is loaded as Optional<ProjectionResponse> and
+        // serialized into the agent context only when present.
+        // Verify that ProjectionResponse round-trips the inbox data intact.
+        let inbox = make_inbox_projection(json!({
+            "schema_version": 1,
+            "pending_items_total": 2,
+            "highest_severity": "warning",
+            "requires_human_decision": true,
+            "items": [],
+            "prompt_control": {}
+        }));
+        let json_val = serde_json::to_value(&inbox).unwrap();
+        assert_eq!(json_val["projection_type"], "consistency_inbox");
+        assert_eq!(json_val["key"], "overview");
+        assert_eq!(json_val["data"]["requires_human_decision"], true);
+        assert_eq!(json_val["data"]["highest_severity"], "warning");
+    }
+
+    #[test]
+    fn consistency_inbox_contract_requires_explicit_approval_before_fix() {
+        // When requires_human_decision=true, the projection must carry
+        // enough item structure for the agent to formulate an approval question.
+        let inbox = make_inbox_projection(json!({
+            "schema_version": 1,
+            "generated_at": "2026-02-14T12:00:00Z",
+            "pending_items_total": 1,
+            "highest_severity": "critical",
+            "requires_human_decision": true,
+            "items": [{
+                "item_id": "ci-test-approval",
+                "severity": "critical",
+                "summary": "Values may not match what was intended.",
+                "recommended_action": "Review and confirm.",
+                "evidence_ref": "",
+                "first_seen": "2026-02-13T00:00:00Z"
+            }],
+            "prompt_control": {
+                "last_prompted_at": null,
+                "snooze_until": null,
+                "cooldown_active": false
+            }
+        }));
+
+        let json_val = serde_json::to_value(&inbox).unwrap();
+        assert_eq!(json_val["data"]["requires_human_decision"], true);
+
+        let items = json_val["data"]["items"].as_array().unwrap();
+        assert!(!items.is_empty());
+        let item = &items[0];
+        assert!(item.get("item_id").is_some(), "item_id required for decision event");
+        assert!(item.get("severity").is_some(), "severity required for prioritization");
+        assert!(item.get("summary").is_some(), "summary required for user-facing question");
+        assert!(item.get("recommended_action").is_some(), "recommended_action required");
+    }
+
+    #[test]
+    fn consistency_inbox_contract_respects_snooze_cooldown() {
+        // prompt_control must round-trip snooze/cooldown fields.
+        let inbox = make_inbox_projection(json!({
+            "schema_version": 1,
+            "generated_at": "2026-02-14T12:00:00Z",
+            "pending_items_total": 1,
+            "highest_severity": "warning",
+            "requires_human_decision": true,
+            "items": [{
+                "item_id": "ci-abc123",
+                "severity": "warning",
+                "summary": "Test finding",
+                "recommended_action": "Review",
+                "evidence_ref": "",
+                "first_seen": "2026-02-13T10:00:00Z"
+            }],
+            "prompt_control": {
+                "last_prompted_at": null,
+                "snooze_until": "2026-02-17T12:00:00Z",
+                "cooldown_active": true
+            }
+        }));
+
+        let json_val = serde_json::to_value(&inbox).unwrap();
+        let pc = &json_val["data"]["prompt_control"];
+        assert_eq!(pc["cooldown_active"], true, "cooldown_active must be preserved");
+        assert_eq!(pc["snooze_until"], "2026-02-17T12:00:00Z", "snooze_until must be preserved");
     }
 }
