@@ -2012,6 +2012,7 @@ _ADVERSARIAL_EXPECTED_REGRET_FLOOR = {
 _ADVERSARIAL_EXPECTED_LAAJ_VERDICT = "review"
 _ADVERSARIAL_MIN_SIDECAR_ALIGNMENT_RATE = 0.70
 _REGRET_BAND_ORDER = {"low": 0, "medium": 1, "high": 2}
+_ADVERSARIAL_SCENARIOS_PER_MODE = 50
 
 
 def _aggregate_metric_mean(
@@ -2236,6 +2237,157 @@ def _rate_from_rows(rows: list[dict[str, Any]]) -> float | None:
         return None
     triggered = sum(1 for row in rows if bool(row.get("triggered_failure")))
     return triggered / len(rows)
+
+
+def _safe_prob(value: float | None, default: float) -> float:
+    if value is None:
+        return default
+    return _clamp(float(value), 0.0, 1.0)
+
+
+def _status_failure_rate(rows: list[dict[str, Any]]) -> float:
+    if not rows:
+        return 0.0
+    failed = sum(1 for row in rows if str(row.get("status") or "") != "ok")
+    return failed / len(rows)
+
+
+def _shadow_check_failure_rate(eval_output: dict[str, Any]) -> float:
+    checks = (eval_output.get("shadow_mode") or {}).get("checks") or []
+    if not isinstance(checks, list) or not checks:
+        return 0.0
+    failures = sum(
+        1 for check in checks if isinstance(check, dict) and not bool(check.get("passed"))
+    )
+    return failures / len(checks)
+
+
+def _mode_failure_probabilities(eval_output: dict[str, Any]) -> dict[str, float]:
+    results = list(eval_output.get("results") or [])
+    strength_coverage, _ = _aggregate_metric_mean(
+        results,
+        projection_type="strength_inference",
+        metric_name="coverage_ci95",
+    )
+    readiness_coverage, _ = _aggregate_metric_mean(
+        results,
+        projection_type="readiness_inference",
+        metric_name="coverage_ci95_nowcast",
+    )
+    semantic_top1, semantic_top1_samples = _aggregate_metric_mean(
+        results,
+        projection_type="semantic_memory",
+        metric_name="top1_accuracy",
+    )
+    semantic_topk, semantic_topk_samples = _aggregate_metric_mean(
+        results,
+        projection_type="semantic_memory",
+        metric_name="topk_recall",
+    )
+    causal_high_severity, _ = _aggregate_metric_mean(
+        results,
+        projection_type="causal_inference",
+        metric_name="high_severity_caveat_rate",
+    )
+
+    semantic_rows = [row for row in results if row.get("projection_type") == "semantic_memory"]
+    semantic_status_failure = _status_failure_rate(semantic_rows)
+    overall_status_failure = _status_failure_rate(results)
+    shadow_check_failure = _shadow_check_failure_rate(eval_output)
+
+    strength_cov = _safe_prob(strength_coverage, 0.78)
+    readiness_cov = _safe_prob(readiness_coverage, 0.78)
+    top1 = _safe_prob(semantic_top1, 0.80)
+    topk = _safe_prob(semantic_topk, 0.82)
+    high_severity = _safe_prob(causal_high_severity, 0.30)
+
+    missing_semantic_penalty = 0.0 if semantic_topk_samples > 0 else 0.20
+    if semantic_top1_samples == 0:
+        missing_semantic_penalty += 0.10
+
+    hallucination = _clamp((1.0 - top1) * 0.85 + semantic_status_failure * 0.15, 0.0, 1.0)
+    overconfidence = _clamp(
+        (1.0 - strength_cov) * 0.45
+        + (1.0 - readiness_cov) * 0.35
+        + high_severity * 0.20,
+        0.0,
+        1.0,
+    )
+    retrieval_miss = _clamp(
+        (1.0 - topk) * 0.65
+        + semantic_status_failure * 0.20
+        + missing_semantic_penalty,
+        0.0,
+        1.0,
+    )
+    data_integrity_drift = _clamp(
+        overall_status_failure * 0.50
+        + shadow_check_failure * 0.35
+        + (1.0 - min(strength_cov, readiness_cov)) * 0.15,
+        0.0,
+        1.0,
+    )
+
+    return {
+        "hallucination": hallucination,
+        "overconfidence": overconfidence,
+        "retrieval_miss": retrieval_miss,
+        "data_integrity_drift": data_integrity_drift,
+    }
+
+
+def _regret_band_for_mode(mode: str, *, triggered: bool, probability: float) -> str:
+    if not triggered:
+        return "low"
+    if mode == "retrieval_miss":
+        return "high"
+    if probability >= 0.70:
+        return "high"
+    return "medium"
+
+
+def _build_synthetic_adversarial_scenarios(eval_output: dict[str, Any]) -> list[dict[str, Any]]:
+    model_tier = _normalize_model_tier(eval_output.get("model_tier"))
+    mode_probs = _mode_failure_probabilities(eval_output)
+    scenarios: list[dict[str, Any]] = []
+    for mode in _ADVERSARIAL_FAILURE_MODES:
+        probability = _safe_prob(mode_probs.get(mode), 0.0)
+        total = _ADVERSARIAL_SCENARIOS_PER_MODE
+        triggered_total = int(round(probability * total))
+        triggered_total = max(0, min(total, triggered_total))
+        for idx in range(total):
+            triggered = idx < triggered_total
+            scenarios.append(
+                {
+                    "scenario_id": f"{model_tier}.{mode}.{idx + 1:03d}",
+                    "failure_mode": mode,
+                    "triggered_failure": triggered,
+                    "retrieval_regret_band": _regret_band_for_mode(
+                        mode,
+                        triggered=triggered,
+                        probability=probability,
+                    ),
+                    "laaj_verdict": _ADVERSARIAL_EXPECTED_LAAJ_VERDICT if triggered else "pass",
+                }
+            )
+    return scenarios
+
+
+def _attach_synthetic_adversarial_corpus(eval_output: dict[str, Any]) -> dict[str, Any]:
+    existing = eval_output.get("adversarial_corpus")
+    if isinstance(existing, dict):
+        scenarios = existing.get("scenarios")
+        rows = existing.get("rows")
+        if isinstance(scenarios, list) or isinstance(rows, list):
+            return eval_output
+
+    enriched = dict(eval_output)
+    enriched["adversarial_corpus"] = {
+        "schema_version": _SYNTHETIC_ADVERSARIAL_CORPUS_SCHEMA_VERSION,
+        "generator": "shadow_eval_deterministic_v1",
+        "scenarios": _build_synthetic_adversarial_scenarios(eval_output),
+    }
+    return enriched
 
 
 def _regret_band_at_least(actual_band: str, minimum_band: str) -> bool:
@@ -2987,6 +3139,10 @@ async def run_shadow_evaluation(
             user_ids=normalized_user_ids,
             config=config,
         )
+    baseline_tier_reports = {
+        tier: _attach_synthetic_adversarial_corpus(report)
+        for tier, report in baseline_tier_reports.items()
+    }
 
     candidate_tier_reports: dict[str, dict[str, Any]] = {}
     for config in candidate_variants:
@@ -2995,6 +3151,10 @@ async def run_shadow_evaluation(
             user_ids=normalized_user_ids,
             config=config,
         )
+    candidate_tier_reports = {
+        tier: _attach_synthetic_adversarial_corpus(report)
+        for tier, report in candidate_tier_reports.items()
+    }
 
     comparison_tiers = _sorted_model_tiers(set(baseline_tier_reports) | set(candidate_tier_reports))
     focus_tier = comparison_tiers[0] if comparison_tiers else _normalize_model_tier(None)

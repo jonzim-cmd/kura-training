@@ -1,5 +1,6 @@
 """Unit tests for offline replay evaluation harness."""
 
+import asyncio
 from datetime import date, datetime, timedelta, timezone
 
 from kura_workers.eval_harness import (
@@ -17,6 +18,7 @@ from kura_workers.eval_harness import (
     evaluate_strength_history,
     filter_retracted_event_rows,
     render_proof_in_production_markdown,
+    run_shadow_evaluation,
     summarize_projection_results,
     summarize_projection_results_by_source,
 )
@@ -871,6 +873,78 @@ def test_build_shadow_evaluation_report_blocks_rollout_on_adversarial_failure_mo
     assert report["adversarial_corpus"]["status"] == "fail"
     assert report["release_gate"]["status"] == "fail"
     assert "adversarial_corpus:hallucination" in report["release_gate"]["failed_metrics"]
+    assert any(
+        reason.startswith("adversarial_failure_mode_regression:")
+        for reason in report["release_gate"]["reasons"]
+    )
+
+
+def test_run_shadow_evaluation_auto_populates_adversarial_corpus_and_blocks_candidate_regression(
+    monkeypatch,
+):
+    async def _fake_run_shadow_tier(_conn, *, user_ids, config):
+        assert user_ids == ["user-1"]
+        degraded = str(config.get("strength_engine")) == "candidate_regressed"
+        top1 = 0.92 if not degraded else 0.55
+        topk = 0.96 if not degraded else 0.65
+        results = [
+            {
+                "projection_type": "strength_inference",
+                "status": "ok",
+                "metrics": {"coverage_ci95": 0.90, "mae": 6.0},
+            },
+            {
+                "projection_type": "semantic_memory",
+                "status": "ok",
+                "metrics": {"top1_accuracy": top1, "topk_recall": topk},
+            },
+        ]
+        return {
+            "generated_at": "2026-02-14T18:00:00+00:00",
+            "projection_types": list(config["projection_types"]),
+            "source": str(config["source"]),
+            "strength_engine": str(config["strength_engine"]),
+            "user_refs": ["shadow_u_test"],
+            "projection_rows": len(results),
+            "summary": {},
+            "summary_by_source": {},
+            "eval_status": "ok",
+            "shadow_mode": {"status": "pass", "checks": []},
+            "results": results,
+            "model_tier": str(config["model_tier"]),
+            "config": dict(config),
+        }
+
+    monkeypatch.setattr("kura_workers.eval_harness._run_shadow_tier", _fake_run_shadow_tier)
+    report = asyncio.run(
+        run_shadow_evaluation(
+            conn=None,
+            user_ids=["user-1"],
+            baseline_config={
+                "projection_types": ["strength_inference", "semantic_memory"],
+                "source": "event_store",
+                "strength_engine": "baseline_ok",
+                "model_tiers": ["strict"],
+            },
+            candidate_config={
+                "projection_types": ["strength_inference", "semantic_memory"],
+                "source": "event_store",
+                "strength_engine": "candidate_regressed",
+                "model_tiers": ["strict"],
+            },
+        )
+    )
+
+    adversarial = report["adversarial_corpus"]
+    assert adversarial["schema_version"] == "synthetic_adversarial_corpus.v1"
+    assert set(adversarial["evaluated_modes"]) == {
+        "hallucination",
+        "overconfidence",
+        "retrieval_miss",
+        "data_integrity_drift",
+    }
+    assert "retrieval_miss" in adversarial["failed_modes"]
+    assert report["release_gate"]["status"] == "fail"
     assert any(
         reason.startswith("adversarial_failure_mode_regression:")
         for reason in report["release_gate"]["reasons"]
