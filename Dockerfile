@@ -9,13 +9,15 @@ COPY api/Cargo.toml api/Cargo.toml
 COPY cli/Cargo.toml cli/Cargo.toml
 COPY core/Cargo.toml core/Cargo.toml
 COPY mcp/Cargo.toml mcp/Cargo.toml
+COPY mcp-runtime/Cargo.toml mcp-runtime/Cargo.toml
 
 # Create dummy sources to cache dependency compilation
-RUN mkdir -p api/src cli/src core/src mcp/src && \
+RUN mkdir -p api/src cli/src core/src mcp/src mcp-runtime/src && \
     echo "fn main() {}" > api/src/main.rs && \
     echo "fn main() {}" > cli/src/main.rs && \
     echo "" > core/src/lib.rs && \
-    echo "fn main() {}" > mcp/src/main.rs
+    echo "fn main() {}" > mcp/src/main.rs && \
+    echo "" > mcp-runtime/src/lib.rs
 
 # Build dependencies only (cached layer)
 RUN cargo build --release -p kura-api -p kura-cli 2>/dev/null || true
