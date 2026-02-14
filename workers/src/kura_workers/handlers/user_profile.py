@@ -577,7 +577,11 @@ def _compute_interview_coverage(
                 coverage.append({"area": area, "status": "uncovered"})
 
         elif area == "communication_preferences":
-            if profile_data.get("communication_style"):
+            has_runtime_style_override = any(
+                key in preferences
+                for key in ("autonomy_scope", "verbosity", "confirmation_strictness")
+            )
+            if profile_data.get("communication_style") or has_runtime_style_override:
                 coverage.append({"area": area, "status": "covered"})
             else:
                 coverage.append({"area": area, "status": "uncovered"})

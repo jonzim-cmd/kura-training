@@ -150,3 +150,15 @@ def test_every_coverage_area_can_be_marked_covered():
     for area, params in scenarios.items():
         coverage = _compute_interview_coverage(*params)
         assert _coverage_status_for(area, coverage) == "covered"
+
+
+def test_communication_preferences_covered_by_runtime_style_overrides():
+    coverage = _compute_interview_coverage(
+        aliases={},
+        preferences={"verbosity": "concise"},
+        goals=[],
+        profile_data={},
+        injuries=[],
+        bodyweight_event_count=0,
+    )
+    assert _coverage_status_for("communication_preferences", coverage) == "covered"

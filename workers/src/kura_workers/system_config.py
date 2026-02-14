@@ -716,6 +716,162 @@ def _get_agent_behavior() -> dict[str, Any]:
                     ),
                 },
             },
+            "user_override_controls_v1": {
+                "storage": "user_profile.user.preferences via preference.set",
+                "keys": {
+                    "autonomy_scope": {
+                        "allowed_values": ["strict", "moderate", "proactive"],
+                        "default": "moderate",
+                        "safety_floor": (
+                            "Effective scope is clamped by integrity/calibration status and model-tier limits."
+                        ),
+                    },
+                    "verbosity": {
+                        "allowed_values": ["concise", "balanced", "detailed"],
+                        "default": "balanced",
+                    },
+                    "confirmation_strictness": {
+                        "allowed_values": ["auto", "always", "never"],
+                        "default": "auto",
+                        "safety_floor": (
+                            "'never' cannot bypass confirm-first requirements from quality/model hard gates."
+                        ),
+                    },
+                },
+                "precedence_order": [
+                    "workflow + write-proof hard invariants",
+                    "quality_health.autonomy_policy",
+                    "user_profile preference overrides (within safety floors)",
+                    "model_tier policy clamp",
+                ],
+                "fallback_defaults": {
+                    "autonomy_scope": "moderate",
+                    "verbosity": "balanced",
+                    "confirmation_strictness": "auto",
+                },
+            },
+            "scenario_library_v1": {
+                "goal": (
+                    "Provide executable behavior scenarios that bind runtime outputs "
+                    "to user-visible reliability wording."
+                ),
+                "required_categories": [
+                    "happy_path",
+                    "ambiguity",
+                    "correction",
+                    "contradiction",
+                    "low_confidence",
+                    "overload",
+                ],
+                "scenarios": [
+                    {
+                        "id": "onboarding_logging_saved",
+                        "category": "happy_path",
+                        "covers_transitions": ["onboarding", "logging"],
+                        "model_tier_example": "moderate",
+                        "expected_machine_outputs": {
+                            "workflow_gate": {"status": "allowed", "phase": "onboarding", "transition": "none"},
+                            "claim_guard": {"allow_saved_claim": True, "claim_status": "saved_verified"},
+                            "reliability_ux": {"state": "saved"},
+                            "expected_event_writes": ["quality.save_claim.checked", "learning.signal.logged"],
+                        },
+                        "expected_user_phrasing": {
+                            "label": "Saved",
+                            "must_include": ["Saved"],
+                            "must_not_include": ["Unresolved", "Inferred"],
+                            "clarification_strategy": "none",
+                        },
+                    },
+                    {
+                        "id": "planning_override_confirm_first",
+                        "category": "ambiguity",
+                        "covers_transitions": ["planning_transition", "onboarding_override"],
+                        "model_tier_example": "strict",
+                        "expected_machine_outputs": {
+                            "workflow_gate": {"status": "allowed", "transition": "override", "override_used": True},
+                            "autonomy_gate": {"decision": "confirm_first"},
+                            "expected_event_writes": ["learning.signal.logged"],
+                        },
+                        "expected_user_phrasing": {
+                            "label": "Saved",
+                            "must_include": ["Bestätigung", "Saved"],
+                            "must_not_include": ["blocked by unknown reason"],
+                            "clarification_strategy": "confirmation_for_high_impact",
+                        },
+                    },
+                    {
+                        "id": "correction_inferred_with_provenance",
+                        "category": "correction",
+                        "covers_transitions": ["correction"],
+                        "model_tier_example": "moderate",
+                        "expected_machine_outputs": {
+                            "reliability_ux": {"state": "inferred"},
+                            "expected_event_writes": ["event.retracted", "set.corrected", "learning.signal.logged"],
+                        },
+                        "expected_user_phrasing": {
+                            "label": "Inferred",
+                            "must_include": ["Inferred", "Quelle"],
+                            "must_not_include": ["Saved ohne Hinweis"],
+                            "clarification_strategy": "none_if_provenance_sufficient",
+                        },
+                    },
+                    {
+                        "id": "session_feedback_contradiction_unresolved",
+                        "category": "contradiction",
+                        "covers_transitions": ["logging", "correction"],
+                        "model_tier_example": "moderate",
+                        "expected_machine_outputs": {
+                            "reliability_ux": {"state": "unresolved"},
+                            "session_audit": {"status": "needs_clarification"},
+                            "expected_event_writes": ["learning.signal.logged"],
+                        },
+                        "expected_user_phrasing": {
+                            "label": "Unresolved",
+                            "must_include": ["Unresolved", "Welcher Wert stimmt?"],
+                            "must_not_include": ["Saved"],
+                            "clarification_strategy": "single_conflict_question",
+                        },
+                    },
+                    {
+                        "id": "pending_read_after_write_unresolved",
+                        "category": "low_confidence",
+                        "covers_transitions": ["logging"],
+                        "model_tier_example": "advanced",
+                        "expected_machine_outputs": {
+                            "claim_guard": {
+                                "allow_saved_claim": False,
+                                "claim_status": "pending",
+                                "uncertainty_markers": ["read_after_write_unverified"],
+                            },
+                            "reliability_ux": {"state": "unresolved"},
+                            "expected_event_writes": ["quality.save_claim.checked", "learning.signal.logged"],
+                        },
+                        "expected_user_phrasing": {
+                            "label": "Unresolved",
+                            "must_include": ["Verifikation", "pending"],
+                            "must_not_include": ["Saved"],
+                            "clarification_strategy": "defer_saved_claim_until_readback",
+                        },
+                    },
+                    {
+                        "id": "multi_conflict_overload_single_question",
+                        "category": "overload",
+                        "covers_transitions": ["logging", "correction", "planning_transition"],
+                        "model_tier_example": "strict",
+                        "expected_machine_outputs": {
+                            "reliability_ux": {"state": "unresolved"},
+                            "session_audit": {"status": "needs_clarification"},
+                            "expected_event_writes": ["learning.signal.logged"],
+                        },
+                        "expected_user_phrasing": {
+                            "label": "Unresolved",
+                            "must_include": ["Konflikt"],
+                            "must_not_include": ["mehrere Fragen gleichzeitig"],
+                            "clarification_strategy": "one_conflict_only",
+                        },
+                    },
+                ],
+            },
             "write_protocol": {
                 "required_steps": [
                     "write_with_proof: include idempotency_key per event",

@@ -86,6 +86,9 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "population_priors_opt_in",
                 "challenge_mode",
                 "challenge_mode_intro_seen",
+                "autonomy_scope",
+                "verbosity",
+                "confirmation_strictness",
             ],
         },
         "goal.set": {

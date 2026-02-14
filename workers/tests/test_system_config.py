@@ -500,6 +500,42 @@ class TestAgentBehavior:
         assert challenge_mode["discoverability"]["chat_only_control"] is True
         assert "onboarding_hint" in challenge_mode["discoverability"]
 
+    def test_operational_has_user_override_controls_contract(self):
+        result = _get_agent_behavior()
+        overrides = result["operational"]["user_override_controls_v1"]
+        keys = overrides["keys"]
+
+        assert overrides["storage"] == "user_profile.user.preferences via preference.set"
+        assert keys["autonomy_scope"]["allowed_values"] == ["strict", "moderate", "proactive"]
+        assert keys["verbosity"]["allowed_values"] == ["concise", "balanced", "detailed"]
+        assert keys["confirmation_strictness"]["allowed_values"] == ["auto", "always", "never"]
+        assert overrides["fallback_defaults"]["autonomy_scope"] == "moderate"
+        assert overrides["fallback_defaults"]["verbosity"] == "balanced"
+        assert overrides["fallback_defaults"]["confirmation_strictness"] == "auto"
+
+    def test_operational_has_scenario_library_with_required_categories(self):
+        result = _get_agent_behavior()
+        library = result["operational"]["scenario_library_v1"]
+        scenarios = library["scenarios"]
+
+        assert set(library["required_categories"]) == {
+            "happy_path",
+            "ambiguity",
+            "correction",
+            "contradiction",
+            "low_confidence",
+            "overload",
+        }
+        assert len(scenarios) >= 6
+        for scenario in scenarios:
+            assert scenario["id"]
+            assert scenario["category"] in library["required_categories"]
+            assert "expected_machine_outputs" in scenario
+            assert "expected_user_phrasing" in scenario
+            phrasing = scenario["expected_user_phrasing"]
+            assert phrasing["label"] in {"Saved", "Inferred", "Unresolved"}
+            assert phrasing["clarification_strategy"]
+
     def test_operational_has_write_protocol(self):
         result = _get_agent_behavior()
         write_protocol = result["operational"]["write_protocol"]

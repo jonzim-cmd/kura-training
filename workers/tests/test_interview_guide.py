@@ -128,6 +128,9 @@ class TestEventConventions:
         assert "timezone" in pref["common_keys"]
         assert "challenge_mode" in pref["common_keys"]
         assert "challenge_mode_intro_seen" in pref["common_keys"]
+        assert "autonomy_scope" in pref["common_keys"]
+        assert "verbosity" in pref["common_keys"]
+        assert "confirmation_strictness" in pref["common_keys"]
 
     def test_profile_updated_convention(self):
         conventions = get_event_conventions()

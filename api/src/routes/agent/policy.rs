@@ -58,6 +58,8 @@ pub(super) const HIGH_IMPACT_CONFIRMATION_PAYLOAD_MISMATCH_REASON_CODE: &str =
     "high_impact_confirmation_payload_mismatch";
 pub(super) const HIGH_IMPACT_CONFIRMATION_SECRET_UNCONFIGURED_REASON_CODE: &str =
     "high_impact_confirmation_secret_unconfigured";
+pub(super) const USER_CONFIRMATION_STRICTNESS_ALWAYS_REASON_CODE: &str =
+    "user_confirmation_strictness_always";
 pub(super) const MEMORY_TIER_PRINCIPLES_STALE_CONFIRM_REASON_CODE: &str =
     "memory_principles_stale_confirm_first";
 pub(super) const MEMORY_TIER_PRINCIPLES_MISSING_CONFIRM_REASON_CODE: &str =

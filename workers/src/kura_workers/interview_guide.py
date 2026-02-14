@@ -203,10 +203,11 @@ def get_interview_guide() -> dict[str, Any]:
                 "area": "communication_preferences",
                 "description": "How the user wants to be addressed — tone, detail level, directness",
                 "approach": "conversational",
-                "produces": ["profile.updated"],
+                "produces": ["profile.updated", "preference.set"],
                 "examples": [
                     "Emerges naturally from conversation style. Store as free text.",
                     "Soll ich eher kurz und direkt sein, oder lieber mehr erklären?",
+                    "Für Autonomie/Bestätigung: preference.set keys autonomy_scope, verbosity, confirmation_strictness.",
                 ],
             },
         ],

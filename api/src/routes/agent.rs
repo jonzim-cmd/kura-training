@@ -239,6 +239,12 @@ pub struct AgentAutonomyPolicy {
     pub tier_confidence_floor: f64,
     pub throttle_active: bool,
     pub max_scope_level: String,
+    /// concise | balanced | detailed
+    pub interaction_verbosity: String,
+    /// auto | always | never
+    pub confirmation_strictness: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_requested_scope_level: Option<String>,
     pub require_confirmation_for_non_trivial_actions: bool,
     pub require_confirmation_for_plan_updates: bool,
     pub require_confirmation_for_repairs: bool,
@@ -3399,8 +3405,12 @@ pub async fn write_with_proof(
     let mut model_reason_codes = model_identity.reason_codes.clone();
     model_reason_codes.extend(tier_reason_codes);
     dedupe_reason_codes(&mut model_reason_codes);
-    let autonomy_policy = apply_model_tier_policy(
+    let policy_with_user_overrides = apply_user_preference_overrides(
         autonomy_policy_from_quality_health(quality_health.as_ref()),
+        user_profile.as_ref(),
+    );
+    let autonomy_policy = apply_model_tier_policy(
+        policy_with_user_overrides,
         &model_identity.model_identity,
         &tier_policy,
         &model_reason_codes,
@@ -4550,6 +4560,98 @@ mod tests {
     }
 
     #[test]
+    fn scenario_library_onboarding_logging_saved() {
+        let state = AgentWorkflowState {
+            onboarding_closed: false,
+            override_active: false,
+            missing_close_requirements: vec![],
+            legacy_planning_history: false,
+        };
+        let events = vec![make_set_event(
+            json!({"exercise_id": "barbell_back_squat", "reps": 5, "weight_kg": 100}),
+            Some("sess-1"),
+            "k-scenario-1",
+        )];
+        let gate = workflow_gate_from_request(&events, &state);
+        assert_eq!(gate.status, "allowed");
+        assert_eq!(gate.phase, "onboarding");
+        assert_eq!(gate.transition, "none");
+
+        let event_id = Uuid::now_v7();
+        let receipts = vec![AgentWriteReceipt {
+            event_id,
+            event_type: "set.logged".to_string(),
+            idempotency_key: "k-scenario-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "user_profile".to_string(),
+            key: "me".to_string(),
+            status: "verified".to_string(),
+            observed_projection_version: Some(1),
+            observed_last_event_id: Some(event_id),
+            detail: "ok".to_string(),
+        }];
+        let guard = build_claim_guard(
+            &receipts,
+            1,
+            &checks,
+            &[],
+            default_autonomy_policy(),
+            default_autonomy_gate(),
+        );
+        let summary = AgentSessionAuditSummary {
+            status: "clean".to_string(),
+            mismatch_detected: 0,
+            mismatch_repaired: 0,
+            mismatch_unresolved: 0,
+            mismatch_classes: vec![],
+            clarification_question: None,
+        };
+        let ux = build_reliability_ux(&guard, &summary, vec![]);
+        assert_eq!(ux.state, "saved");
+        assert!(ux.assistant_phrase.contains("Saved"));
+        assert!(ux.clarification_question.is_none());
+    }
+
+    #[test]
+    fn scenario_library_planning_override_confirm_first() {
+        let state = AgentWorkflowState {
+            onboarding_closed: false,
+            override_active: false,
+            missing_close_requirements: vec!["coverage.unit_preferences.uncovered".to_string()],
+            legacy_planning_history: false,
+        };
+        let events = vec![
+            make_event(
+                WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE,
+                json!({"reason": "user asked for plan now"}),
+                "wf-override-k-2",
+            ),
+            make_event(
+                "training_plan.updated",
+                json!({"name": "Plan A"}),
+                "plan-k-scenario-1",
+            ),
+        ];
+        let gate = workflow_gate_from_request(&events, &state);
+        assert_eq!(gate.status, "allowed");
+        assert_eq!(gate.transition, "override");
+        assert!(gate.override_used);
+
+        let tier = super::model_tier_policy_from_name("strict");
+        let policy = default_autonomy_policy();
+        let autonomy_gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &tier, &[]);
+        assert_eq!(autonomy_gate.decision, "confirm_first");
+        assert!(
+            autonomy_gate
+                .reason_codes
+                .iter()
+                .any(|code| code == "model_tier_strict_requires_confirmation")
+        );
+    }
+
+    #[test]
     fn workflow_gate_allows_legacy_compatibility_transition_when_requirements_met() {
         let state = AgentWorkflowState {
             onboarding_closed: false,
@@ -5669,6 +5771,49 @@ mod tests {
     }
 
     #[test]
+    fn claim_guard_respects_concise_verbosity_phrase() {
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "verbosity": "concise"
+                    }
+                }
+            }),
+        );
+        let policy = super::apply_user_preference_overrides(
+            super::default_autonomy_policy(),
+            Some(&profile),
+        );
+        let event_id = Uuid::now_v7();
+        let guard = build_claim_guard(
+            &[AgentWriteReceipt {
+                event_id,
+                event_type: "set.logged".to_string(),
+                idempotency_key: "k-verbosity-1".to_string(),
+                event_timestamp: Utc::now(),
+            }],
+            1,
+            &[AgentReadAfterWriteCheck {
+                projection_type: "user_profile".to_string(),
+                key: "me".to_string(),
+                status: "verified".to_string(),
+                observed_projection_version: Some(1),
+                observed_last_event_id: Some(event_id),
+                detail: "ok".to_string(),
+            }],
+            &[],
+            policy,
+            default_autonomy_gate(),
+        );
+        assert_eq!(guard.claim_status, "saved_verified");
+        assert_eq!(guard.recommended_user_phrase, "Saved.");
+    }
+
+    #[test]
     fn claim_guard_returns_deferred_markers_when_verification_pending() {
         let receipts = vec![AgentWriteReceipt {
             event_id: Uuid::now_v7(),
@@ -5939,6 +6084,164 @@ mod tests {
                 .unwrap_or("")
                 .contains("Welcher Wert stimmt?")
         );
+    }
+
+    #[test]
+    fn scenario_library_correction_inferred_with_provenance() {
+        let evidence_event = make_event(
+            "evidence.claim.logged",
+            json!({
+                "claim_type": "set_context.rest_seconds",
+                "confidence": 0.93,
+                "provenance": {"source_text_span": {"text": "rest 90 sec"}}
+            }),
+            "evidence-scenario-1",
+        );
+        let inferred_facts = collect_reliability_inferred_facts(&[evidence_event], &[]);
+        assert_eq!(inferred_facts.len(), 1);
+        assert_eq!(inferred_facts[0].field, "set_context.rest_seconds");
+
+        let event_id = Uuid::now_v7();
+        let guard = build_claim_guard(
+            &[AgentWriteReceipt {
+                event_id,
+                event_type: "set.corrected".to_string(),
+                idempotency_key: "corr-k-1".to_string(),
+                event_timestamp: Utc::now(),
+            }],
+            1,
+            &[AgentReadAfterWriteCheck {
+                projection_type: "exercise_progression".to_string(),
+                key: "barbell_back_squat".to_string(),
+                status: "verified".to_string(),
+                observed_projection_version: Some(1),
+                observed_last_event_id: Some(event_id),
+                detail: "ok".to_string(),
+            }],
+            &[],
+            default_autonomy_policy(),
+            default_autonomy_gate(),
+        );
+        let summary = AgentSessionAuditSummary {
+            status: "clean".to_string(),
+            mismatch_detected: 0,
+            mismatch_repaired: 0,
+            mismatch_unresolved: 0,
+            mismatch_classes: vec![],
+            clarification_question: None,
+        };
+        let ux = build_reliability_ux(&guard, &summary, inferred_facts);
+        assert_eq!(ux.state, "inferred");
+        assert!(ux.assistant_phrase.contains("Inferred"));
+        assert!(ux.assistant_phrase.contains("Quelle"));
+    }
+
+    #[test]
+    fn scenario_library_contradiction_unresolved() {
+        let user_id = Uuid::now_v7();
+        let requested = vec![make_event(
+            "session.completed",
+            json!({
+                "enjoyment": 5,
+                "perceived_quality": 5,
+                "perceived_exertion": 8,
+                "notes": "the session felt bad and awful"
+            }),
+            "k-scenario-contradiction",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "session.completed".to_string(),
+            idempotency_key: "k-scenario-contradiction".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let policy = default_autonomy_policy();
+        let artifacts = build_session_audit_artifacts(user_id, &requested, &receipts, &policy);
+        assert_eq!(artifacts.summary.status, "needs_clarification");
+        assert!(artifacts.summary.clarification_question.is_some());
+
+        let guard = build_claim_guard(
+            &receipts,
+            1,
+            &[AgentReadAfterWriteCheck {
+                projection_type: "session_feedback".to_string(),
+                key: "overview".to_string(),
+                status: "pending".to_string(),
+                observed_projection_version: None,
+                observed_last_event_id: None,
+                detail: "pending".to_string(),
+            }],
+            &[],
+            default_autonomy_policy(),
+            default_autonomy_gate(),
+        );
+        let ux = build_reliability_ux(&guard, &artifacts.summary, vec![]);
+        assert_eq!(ux.state, "unresolved");
+        assert!(ux.assistant_phrase.contains("Unresolved"));
+        let question = ux.clarification_question.as_deref().unwrap_or("");
+        assert!(
+            question.contains("Welcher Wert stimmt?") || question.contains("Bitte bestätigen:")
+        );
+    }
+
+    #[test]
+    fn scenario_library_pending_read_after_write_unresolved() {
+        let event_id = Uuid::now_v7();
+        let guard = build_claim_guard(
+            &[AgentWriteReceipt {
+                event_id,
+                event_type: "set.logged".to_string(),
+                idempotency_key: "k-pending-1".to_string(),
+                event_timestamp: Utc::now(),
+            }],
+            1,
+            &[AgentReadAfterWriteCheck {
+                projection_type: "training_timeline".to_string(),
+                key: "overview".to_string(),
+                status: "pending".to_string(),
+                observed_projection_version: None,
+                observed_last_event_id: None,
+                detail: "pending".to_string(),
+            }],
+            &[],
+            default_autonomy_policy(),
+            default_autonomy_gate(),
+        );
+        assert!(!guard.allow_saved_claim);
+        assert_eq!(guard.claim_status, "pending");
+        assert!(
+            guard
+                .uncertainty_markers
+                .iter()
+                .any(|marker| marker == "read_after_write_unverified")
+        );
+        assert!(
+            guard
+                .recommended_user_phrase
+                .to_lowercase()
+                .contains("pending")
+        );
+    }
+
+    #[test]
+    fn scenario_library_overload_single_conflict_question() {
+        let unresolved = vec![
+            super::SessionAuditUnresolved {
+                exercise_label: "session".to_string(),
+                field: "session_feedback.enjoyment".to_string(),
+                candidates: vec!["2".to_string(), "5".to_string()],
+            },
+            super::SessionAuditUnresolved {
+                exercise_label: "barbell_back_squat".to_string(),
+                field: "set_context.rest_seconds".to_string(),
+                candidates: vec!["60".to_string(), "90".to_string()],
+            },
+        ];
+        let question = super::build_clarification_question(&unresolved)
+            .expect("overload scenario should still produce one question");
+        assert!(question.contains("session"));
+        assert!(question.contains("Welcher Wert stimmt?"));
+        assert_eq!(question.matches('?').count(), 1);
     }
 
     #[test]
@@ -6378,6 +6681,147 @@ mod tests {
         assert_eq!(policy.slo_status, "healthy");
         assert_eq!(policy.calibration_status, "healthy");
         assert!(!policy.throttle_active);
+    }
+
+    #[test]
+    fn user_preference_overrides_apply_scope_and_verbosity_when_healthy() {
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "autonomy_scope": "proactive",
+                        "verbosity": "concise",
+                        "confirmation_strictness": "auto"
+                    }
+                }
+            }),
+        );
+        let policy = super::apply_user_preference_overrides(
+            super::default_autonomy_policy(),
+            Some(&profile),
+        );
+        assert_eq!(policy.max_scope_level, "proactive");
+        assert_eq!(policy.interaction_verbosity, "concise");
+        assert_eq!(policy.confirmation_strictness, "auto");
+        assert_eq!(
+            policy.user_requested_scope_level.as_deref(),
+            Some("proactive")
+        );
+    }
+
+    #[test]
+    fn user_preference_scope_override_is_clamped_when_quality_not_healthy() {
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "autonomy_scope": "proactive"
+                    }
+                }
+            }),
+        );
+        let mut base = super::default_autonomy_policy();
+        base.slo_status = "degraded".to_string();
+        base.max_scope_level = "strict".to_string();
+        base.throttle_active = true;
+        let policy = super::apply_user_preference_overrides(base, Some(&profile));
+        assert_eq!(policy.max_scope_level, "strict");
+        assert_eq!(
+            policy.user_requested_scope_level.as_deref(),
+            Some("proactive")
+        );
+    }
+
+    #[test]
+    fn user_preference_confirmation_always_forces_confirm_first_gate() {
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "confirmation_strictness": "always"
+                    }
+                }
+            }),
+        );
+        let policy = super::apply_user_preference_overrides(
+            super::default_autonomy_policy(),
+            Some(&profile),
+        );
+        assert!(policy.require_confirmation_for_non_trivial_actions);
+        assert!(policy.require_confirmation_for_plan_updates);
+        assert!(policy.require_confirmation_for_repairs);
+
+        let tier = super::model_tier_policy_from_name("advanced");
+        let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &tier, &[]);
+        assert_eq!(gate.decision, "confirm_first");
+        assert!(
+            gate.reason_codes
+                .iter()
+                .any(|code| code == "user_confirmation_strictness_always")
+        );
+    }
+
+    #[test]
+    fn user_preference_confirmation_never_cannot_bypass_strict_tier() {
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "confirmation_strictness": "never"
+                    }
+                }
+            }),
+        );
+        let policy = super::apply_user_preference_overrides(
+            super::default_autonomy_policy(),
+            Some(&profile),
+        );
+        let strict_tier = super::model_tier_policy_from_name("strict");
+        let gate = super::evaluate_autonomy_gate("high_impact_write", &policy, &strict_tier, &[]);
+        assert_eq!(gate.decision, "confirm_first");
+        assert!(
+            gate.reason_codes
+                .iter()
+                .any(|code| code == "model_tier_strict_requires_confirmation")
+        );
+    }
+
+    #[test]
+    fn user_preference_overrides_fallback_to_defaults_when_invalid() {
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "autonomy_scope": "hyper_proactive",
+                        "verbosity": "wall_of_text",
+                        "confirmation_strictness": "sometimes"
+                    }
+                }
+            }),
+        );
+        let policy = super::apply_user_preference_overrides(
+            super::default_autonomy_policy(),
+            Some(&profile),
+        );
+        assert_eq!(policy.max_scope_level, "moderate");
+        assert_eq!(policy.interaction_verbosity, "balanced");
+        assert_eq!(policy.confirmation_strictness, "auto");
+        assert!(policy.user_requested_scope_level.is_none());
     }
 
     #[test]

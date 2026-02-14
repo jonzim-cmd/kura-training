@@ -29,6 +29,100 @@ pub(super) fn normalize_quality_status(raw_status: &str) -> &'static str {
     }
 }
 
+pub(super) fn normalize_autonomy_scope_override(raw: Option<&str>) -> Option<String> {
+    let value = raw?.trim().to_lowercase();
+    match value.as_str() {
+        "strict" | "moderate" | "proactive" => Some(value),
+        _ => None,
+    }
+}
+
+pub(super) fn normalize_verbosity_override(raw: Option<&str>) -> Option<String> {
+    let value = raw?.trim().to_lowercase();
+    match value.as_str() {
+        "concise" | "short" | "brief" => Some("concise".to_string()),
+        "balanced" | "normal" | "default" => Some("balanced".to_string()),
+        "detailed" | "verbose" | "long" => Some("detailed".to_string()),
+        _ => None,
+    }
+}
+
+pub(super) fn normalize_confirmation_strictness_override(raw: Option<&str>) -> Option<String> {
+    let value = raw?.trim().to_lowercase();
+    match value.as_str() {
+        "auto" => Some("auto".to_string()),
+        "always" | "strict" => Some("always".to_string()),
+        "never" | "relaxed" => Some("never".to_string()),
+        _ => None,
+    }
+}
+
+pub(super) fn policy_requires_confirmation(autonomy_policy: &AgentAutonomyPolicy) -> bool {
+    autonomy_policy.throttle_active
+        || autonomy_policy.require_confirmation_for_non_trivial_actions
+        || autonomy_policy.require_confirmation_for_plan_updates
+        || autonomy_policy.require_confirmation_for_repairs
+}
+
+fn phrase_by_verbosity(verbosity: &str, concise: &str, balanced: &str, detailed: &str) -> String {
+    match verbosity.trim().to_lowercase().as_str() {
+        "concise" => concise.to_string(),
+        "detailed" => detailed.to_string(),
+        _ => balanced.to_string(),
+    }
+}
+
+pub(super) fn apply_user_preference_overrides(
+    mut autonomy_policy: AgentAutonomyPolicy,
+    user_profile: Option<&ProjectionResponse>,
+) -> AgentAutonomyPolicy {
+    let scope_raw = user_preference_string(user_profile, "autonomy_scope");
+    let verbosity_raw = user_preference_string(user_profile, "verbosity");
+    let confirmation_raw = user_preference_string(user_profile, "confirmation_strictness");
+
+    if let Some(verbosity) = normalize_verbosity_override(verbosity_raw.as_deref()) {
+        autonomy_policy.interaction_verbosity = verbosity;
+    }
+
+    if let Some(scope_level) = normalize_autonomy_scope_override(scope_raw.as_deref()) {
+        let current_scope = autonomy_policy.max_scope_level.clone();
+        let healthy_quality = normalize_quality_status(&autonomy_policy.slo_status) == "healthy"
+            && normalize_quality_status(&autonomy_policy.calibration_status) == "healthy"
+            && !autonomy_policy.throttle_active;
+        autonomy_policy.user_requested_scope_level = Some(scope_level.clone());
+        autonomy_policy.max_scope_level = if healthy_quality {
+            scope_level
+        } else {
+            stricter_scope_level(&scope_level, &current_scope)
+        };
+    }
+
+    if let Some(confirmation_mode) =
+        normalize_confirmation_strictness_override(confirmation_raw.as_deref())
+    {
+        autonomy_policy.confirmation_strictness = confirmation_mode.clone();
+        if confirmation_mode == "always" {
+            autonomy_policy.require_confirmation_for_non_trivial_actions = true;
+            autonomy_policy.require_confirmation_for_plan_updates = true;
+            autonomy_policy.require_confirmation_for_repairs = true;
+            autonomy_policy.repair_auto_apply_enabled = false;
+        } else if confirmation_mode == "never" {
+            let relaxed_mode_allowed = normalize_quality_status(&autonomy_policy.slo_status)
+                == "healthy"
+                && normalize_quality_status(&autonomy_policy.calibration_status) == "healthy"
+                && !autonomy_policy.throttle_active;
+            if relaxed_mode_allowed {
+                autonomy_policy.require_confirmation_for_non_trivial_actions = false;
+                autonomy_policy.require_confirmation_for_plan_updates = false;
+                autonomy_policy.require_confirmation_for_repairs = false;
+                autonomy_policy.repair_auto_apply_enabled = true;
+            }
+        }
+    }
+
+    autonomy_policy
+}
+
 pub(super) fn worst_quality_status(left: &str, right: &str) -> &'static str {
     let left_rank = match normalize_quality_status(left) {
         "degraded" => 2,
@@ -455,6 +549,9 @@ pub(super) fn evaluate_autonomy_gate(
             } else {
                 reason_codes.push(INTEGRITY_MONITOR_CONFIRM_REASON_CODE.to_string());
             }
+        } else if autonomy_policy.require_confirmation_for_non_trivial_actions {
+            decision = "confirm_first".to_string();
+            reason_codes.push(USER_CONFIRMATION_STRICTNESS_ALWAYS_REASON_CODE.to_string());
         } else if tier_policy.high_impact_write_policy == "confirm_first" {
             decision = "confirm_first".to_string();
             if tier_policy.capability_tier == "strict" {
@@ -515,6 +612,9 @@ pub(super) fn default_autonomy_policy() -> AgentAutonomyPolicy {
         tier_confidence_floor: 0.90,
         throttle_active: false,
         max_scope_level: "moderate".to_string(),
+        interaction_verbosity: "balanced".to_string(),
+        confirmation_strictness: "auto".to_string(),
+        user_requested_scope_level: None,
         require_confirmation_for_non_trivial_actions: false,
         require_confirmation_for_plan_updates: false,
         require_confirmation_for_repairs: false,
@@ -603,6 +703,20 @@ pub(super) fn autonomy_policy_from_quality_health(
             .and_then(Value::as_str)
             .unwrap_or("moderate")
             .to_string(),
+        interaction_verbosity: policy
+            .get("interaction_verbosity")
+            .and_then(Value::as_str)
+            .unwrap_or("balanced")
+            .to_string(),
+        confirmation_strictness: policy
+            .get("confirmation_strictness")
+            .and_then(Value::as_str)
+            .unwrap_or("auto")
+            .to_string(),
+        user_requested_scope_level: policy
+            .get("user_requested_scope_level")
+            .and_then(Value::as_str)
+            .map(|value| value.to_string()),
         require_confirmation_for_non_trivial_actions: policy
             .get("require_confirmation_for_non_trivial_actions")
             .and_then(Value::as_bool)
@@ -638,6 +752,8 @@ pub(super) fn build_claim_guard(
 ) -> AgentWriteClaimGuard {
     let mut uncertainty_markers = Vec::new();
     let mut deferred_markers = Vec::new();
+    let requires_confirmation =
+        policy_requires_confirmation(&autonomy_policy) || autonomy_gate.decision == "confirm_first";
 
     let receipts_complete = receipts.len() == requested_event_count
         && receipts
@@ -658,7 +774,7 @@ pub(super) fn build_claim_guard(
         uncertainty_markers.push("plausibility_warnings_present".to_string());
     }
 
-    if autonomy_policy.throttle_active || autonomy_gate.decision == "confirm_first" {
+    if requires_confirmation {
         uncertainty_markers.push("autonomy_throttled_by_integrity_slo".to_string());
         deferred_markers.push("confirm_non_trivial_actions_due_to_slo_regression".to_string());
     }
@@ -667,20 +783,17 @@ pub(super) fn build_claim_guard(
         deferred_markers.push("confirm_high_impact_action_due_to_model_tier".to_string());
     }
 
-    let next_action_confirmation_prompt =
-        if autonomy_policy.throttle_active || autonomy_gate.decision == "confirm_first" {
-            autonomy_policy
-                .confirmation_templates
-                .get("non_trivial_action")
-                .cloned()
-        } else {
-            None
-        };
+    let next_action_confirmation_prompt = if requires_confirmation {
+        autonomy_policy
+            .confirmation_templates
+            .get("non_trivial_action")
+            .cloned()
+    } else {
+        None
+    };
 
     let allow_saved_claim = receipts_complete && read_after_write_ok;
-    let (claim_status, recommended_user_phrase) = if allow_saved_claim
-        && (autonomy_policy.throttle_active || autonomy_gate.decision == "confirm_first")
-    {
+    let (claim_status, recommended_user_phrase) = if allow_saved_claim && requires_confirmation {
         (
             "saved_verified".to_string(),
             autonomy_policy
@@ -688,28 +801,51 @@ pub(super) fn build_claim_guard(
                 .get("post_save_followup")
                 .cloned()
                 .unwrap_or_else(|| {
-                    format!(
-                        "Saved and verified in the read model. Integrity/model status requires explicit confirmation before non-trivial follow-up actions (tier='{}', quality='{}').",
-                        autonomy_gate.model_tier,
-                        autonomy_gate.effective_quality_status,
+                    phrase_by_verbosity(
+                        &autonomy_policy.interaction_verbosity,
+                        "Saved. Nächste nicht-triviale Schritte nur mit Bestätigung.",
+                        &format!(
+                            "Saved and verified in the read model. Integrity/model status requires explicit confirmation before non-trivial follow-up actions (tier='{}', quality='{}').",
+                            autonomy_gate.model_tier,
+                            autonomy_gate.effective_quality_status,
+                        ),
+                        &format!(
+                            "Saved and verified (durable receipt + read-after-write). Because current integrity/model guardrails are active (tier='{}', quality='{}'), non-trivial follow-up actions require explicit user confirmation.",
+                            autonomy_gate.model_tier,
+                            autonomy_gate.effective_quality_status,
+                        ),
                     )
                 }),
         )
     } else if allow_saved_claim {
         (
             "saved_verified".to_string(),
-            "Saved and verified in the read model.".to_string(),
+            phrase_by_verbosity(
+                &autonomy_policy.interaction_verbosity,
+                "Saved.",
+                "Saved and verified in the read model.",
+                "Saved and verified in the read model (durable receipt + read-after-write check).",
+            ),
         )
     } else if !receipts_complete {
         (
             "failed".to_string(),
-            "Write proof incomplete (missing durable receipts). Avoid a saved claim and retry with the same idempotency keys.".to_string(),
+            phrase_by_verbosity(
+                &autonomy_policy.interaction_verbosity,
+                "Saved claim failed: missing durable receipts.",
+                "Write proof incomplete (missing durable receipts). Avoid a saved claim and retry with the same idempotency keys.",
+                "Write proof is incomplete because durable receipts are missing. Do not claim 'saved'; retry using the same idempotency keys so the write remains idempotent.",
+            ),
         )
     } else {
         (
             "pending".to_string(),
-            "Write accepted; verification still pending, so avoid a definitive 'saved' claim."
-                .to_string(),
+            phrase_by_verbosity(
+                &autonomy_policy.interaction_verbosity,
+                "Saved claim pending verification.",
+                "Write accepted; verification still pending, so avoid a definitive 'saved' claim.",
+                "Write was accepted, but read-after-write verification is still pending. Avoid any definitive 'saved' claim until projection readback is verified.",
+            ),
         )
     };
 
@@ -757,6 +893,9 @@ pub(super) fn build_save_claim_checked_event(
             "capability_tier": claim_guard.autonomy_policy.capability_tier,
             "throttle_active": claim_guard.autonomy_policy.throttle_active,
             "max_scope_level": claim_guard.autonomy_policy.max_scope_level,
+            "interaction_verbosity": claim_guard.autonomy_policy.interaction_verbosity,
+            "confirmation_strictness": claim_guard.autonomy_policy.confirmation_strictness,
+            "user_requested_scope_level": claim_guard.autonomy_policy.user_requested_scope_level,
         },
         "autonomy_gate": {
             "decision": claim_guard.autonomy_gate.decision,
