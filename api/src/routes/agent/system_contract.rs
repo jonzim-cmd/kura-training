@@ -37,7 +37,10 @@ pub(super) fn classify_system_convention_field(key: &str) -> SystemConventionFie
         | "load_context_v1"
         | "session_feedback_certainty_v1"
         | "schema_capability_gate_v1"
-        | "model_tier_registry_v1" => SystemConventionFieldClass::PublicContract,
+        | "model_tier_registry_v1"
+        | "response_mode_policy_v1"
+        | "personal_failure_profile_v1"
+        | "sidecar_retrieval_regret_v1" => SystemConventionFieldClass::PublicContract,
         "learning_clustering_v1"
         | "extraction_calibration_v1"
         | "learning_backlog_bridge_v1"

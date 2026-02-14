@@ -39,6 +39,21 @@ REQUIRED_AGENT_CONTRACT_MATRIX: dict[str, dict[str, str]] = {
         "positive_case": "routes::agent::tests::consistency_inbox_contract_requires_explicit_approval_before_fix",
         "negative_case": "routes::agent::tests::consistency_inbox_contract_respects_snooze_cooldown",
     },
+    "response_mode_policy": {
+        "schema_pin": "routes::agent::tests::response_mode_policy_contract_prefers_grounded_when_proof_verified",
+        "positive_case": "routes::agent::tests::response_mode_policy_contract_uses_hypothesis_when_evidence_is_partial",
+        "negative_case": "routes::agent::tests::response_mode_policy_contract_falls_back_to_general_without_evidence",
+    },
+    "personal_failure_profile": {
+        "schema_pin": "routes::agent::tests::personal_failure_profile_contract_is_deterministic_per_user_and_model",
+        "positive_case": "routes::agent::tests::personal_failure_profile_contract_tracks_active_failure_signals",
+        "negative_case": "routes::agent::tests::personal_failure_profile_contract_is_advisory_not_cage",
+    },
+    "sidecar_retrieval_regret": {
+        "schema_pin": "routes::agent::tests::sidecar_laa_j_contract_is_advisory_only_and_cannot_block",
+        "positive_case": "routes::agent::tests::sidecar_signal_contract_emits_retrieval_and_laaj_signal_types",
+        "negative_case": "routes::agent::tests::sidecar_retrieval_regret_contract_sets_high_regret_when_readback_incomplete",
+    },
 }
 
 
@@ -51,6 +66,9 @@ def test_required_agent_contract_matrix_keys_are_explicit() -> None:
         "save_echo_policy",
         "save_claim_mismatch_severity",
         "consistency_inbox",
+        "response_mode_policy",
+        "personal_failure_profile",
+        "sidecar_retrieval_regret",
     }
     for contract_name, scenarios in REQUIRED_AGENT_CONTRACT_MATRIX.items():
         assert set(scenarios) == {"schema_pin", "positive_case", "negative_case"}, contract_name

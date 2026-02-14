@@ -51,6 +51,12 @@ This sets `DATABASE_URL` and other required variables from the project `.env` fi
 
 **Verantwortungsteilung:** Mensch gibt Richtung und Domänenwissen (Medium: Sprache). Agent übersetzt in Code und Tests (Medium: Code). Vertrauen auf die Übersetzung, CI als Kontrolle.
 
+## Vision Guardrails
+
+- **Safety ohne Bürokratie** — Sicherheitsmechanismen müssen als leichtgewichtige Leitplanken wirken (advisory/transparent), nicht als Reibungsschicht, die sinnvolle Agent-Autonomie ausbremst.
+- **Spezifität ohne Scheingenauigkeit** — Personalisierung nur dort, wo Evidenz vorhanden ist. Bei dünner Datenlage klar als Hypothese/Unsicherheit kennzeichnen statt Präzision zu simulieren.
+- **Metriken entlang der Vision** — Erfolgsmessung priorisiert nutzerrelevante Wirkung: nachvollziehbare Begründungen, Korrekturfähigkeit, Datenqualität und produktive Human-Agent-Kollaboration.
+
 ## Quality Gates
 
 Before completing any task that changed code, run ALL applicable gates:

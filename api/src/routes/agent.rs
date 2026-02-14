@@ -657,6 +657,85 @@ pub struct AgentPostTaskReflection {
     pub chat_summary: String,
 }
 
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentResponseModePolicy {
+    pub schema_version: String,
+    /// A | B | C
+    pub mode_code: String,
+    /// grounded_personalized | hypothesis_personalized | general_guidance
+    pub mode: String,
+    /// sufficient | limited | insufficient
+    pub evidence_state: String,
+    /// 0..1 composite score from verification + quality health signals
+    pub evidence_score: f64,
+    pub threshold_a_min: f64,
+    pub threshold_b_min: f64,
+    /// healthy | monitor | degraded | unknown
+    pub quality_status: String,
+    /// healthy | monitor | degraded | unknown
+    pub integrity_slo_status: String,
+    /// healthy | monitor | degraded | unknown
+    pub calibration_status: String,
+    /// nudge_only (advisory, never hard-blocking)
+    pub policy_role: String,
+    pub requires_transparency_note: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reason_codes: Vec<String>,
+    pub assistant_instruction: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentFailureProfileSignal {
+    pub code: String,
+    pub weight: f64,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentPersonalFailureProfile {
+    pub schema_version: String,
+    pub profile_id: String,
+    pub model_identity: String,
+    /// high | medium | low
+    pub data_quality_band: String,
+    /// advisory_only (never cages autonomy)
+    pub policy_role: String,
+    pub recommended_response_mode: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub active_signals: Vec<AgentFailureProfileSignal>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentRetrievalRegret {
+    pub schema_version: String,
+    pub regret_score: f64,
+    /// low | medium | high
+    pub regret_band: String,
+    pub regret_threshold: f64,
+    pub threshold_exceeded: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentLaaJSidecar {
+    pub schema_version: String,
+    /// pass | review
+    pub verdict: String,
+    pub score: f64,
+    /// advisory_only (never hard-blocking)
+    pub policy_role: String,
+    pub can_block_autonomy: bool,
+    pub recommendation: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentSidecarAssessment {
+    pub retrieval_regret: AgentRetrievalRegret,
+    pub laaj: AgentLaaJSidecar,
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AgentWriteWithProofResponse {
     pub receipts: Vec<AgentWriteReceipt>,
@@ -672,6 +751,9 @@ pub struct AgentWriteWithProofResponse {
     pub intent_handshake_confirmation: Option<AgentIntentHandshakeConfirmation>,
     pub trace_digest: AgentTraceDigest,
     pub post_task_reflection: AgentPostTaskReflection,
+    pub response_mode_policy: AgentResponseModePolicy,
+    pub personal_failure_profile: AgentPersonalFailureProfile,
+    pub sidecar_assessment: AgentSidecarAssessment,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -1807,6 +1889,727 @@ fn build_post_task_reflection(
             }
         ),
     }
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeQualitySignals {
+    quality_status: String,
+    integrity_slo_status: String,
+    calibration_status: String,
+    unresolved_set_logged_pct: f64,
+    save_claim_integrity_rate_pct: f64,
+    save_claim_posterior_monitor_prob: f64,
+    save_claim_posterior_degraded_prob: f64,
+    issues_open: usize,
+}
+
+impl Default for RuntimeQualitySignals {
+    fn default() -> Self {
+        Self {
+            quality_status: "unknown".to_string(),
+            integrity_slo_status: "unknown".to_string(),
+            calibration_status: "unknown".to_string(),
+            unresolved_set_logged_pct: 0.0,
+            save_claim_integrity_rate_pct: 0.0,
+            save_claim_posterior_monitor_prob: 0.0,
+            save_claim_posterior_degraded_prob: 0.0,
+            issues_open: 0,
+        }
+    }
+}
+
+fn read_value_f64(value: Option<&Value>) -> Option<f64> {
+    let raw = value?;
+    if let Some(number) = raw.as_f64() {
+        return Some(number);
+    }
+    raw.as_i64().map(|number| number as f64)
+}
+
+fn read_value_usize(value: Option<&Value>) -> Option<usize> {
+    let raw = value?;
+    if let Some(number) = raw.as_u64() {
+        return usize::try_from(number).ok();
+    }
+    raw.as_i64()
+        .filter(|number| *number >= 0)
+        .and_then(|number| usize::try_from(number).ok())
+}
+
+fn normalize_quality_label(value: Option<&Value>) -> String {
+    let label = value.and_then(Value::as_str).unwrap_or("unknown");
+    let normalized = label.trim().to_lowercase();
+    match normalized.as_str() {
+        "healthy" | "monitor" | "degraded" => normalized,
+        _ => "unknown".to_string(),
+    }
+}
+
+fn extract_runtime_quality_signals(
+    quality_health: Option<&ProjectionResponse>,
+) -> RuntimeQualitySignals {
+    let mut signals = RuntimeQualitySignals::default();
+    let Some(payload) = quality_health.map(|projection| &projection.projection.data) else {
+        return signals;
+    };
+
+    signals.quality_status = normalize_quality_label(payload.get("status"));
+    signals.integrity_slo_status =
+        normalize_quality_label(payload.get("integrity_slo_status").or_else(|| {
+            payload
+                .get("integrity_slos")
+                .and_then(|slos| slos.get("status"))
+        }));
+    signals.calibration_status = normalize_quality_label(
+        payload
+            .get("autonomy_policy")
+            .and_then(|policy| policy.get("calibration_status"))
+            .or_else(|| {
+                payload
+                    .get("extraction_calibration")
+                    .and_then(|calibration| calibration.get("status"))
+            }),
+    );
+    signals.unresolved_set_logged_pct = read_value_f64(
+        payload
+            .get("metrics")
+            .and_then(|metrics| metrics.get("set_logged_unresolved_pct")),
+    )
+    .unwrap_or(0.0)
+    .clamp(0.0, 100.0);
+    signals.issues_open = read_value_usize(payload.get("issues_open")).unwrap_or(0);
+
+    let save_claim_metric = payload
+        .get("integrity_slos")
+        .and_then(|slos| slos.get("metrics"))
+        .and_then(|metrics| metrics.get("save_claim_mismatch_rate_pct"));
+    signals.save_claim_integrity_rate_pct =
+        read_value_f64(save_claim_metric.and_then(|metric| metric.get("value")))
+            .unwrap_or(0.0)
+            .clamp(0.0, 100.0);
+    signals.save_claim_posterior_monitor_prob = read_value_f64(
+        save_claim_metric.and_then(|metric| metric.get("posterior_prob_gt_monitor")),
+    )
+    .unwrap_or(0.0)
+    .clamp(0.0, 1.0);
+    signals.save_claim_posterior_degraded_prob = read_value_f64(
+        save_claim_metric.and_then(|metric| metric.get("posterior_prob_gt_degraded")),
+    )
+    .unwrap_or(0.0)
+    .clamp(0.0, 1.0);
+    signals
+}
+
+fn response_mode_thresholds(signals: &RuntimeQualitySignals) -> (f64, f64) {
+    let mut threshold_a: f64 = 0.72;
+    let mut threshold_b: f64 = 0.42;
+
+    match signals.integrity_slo_status.as_str() {
+        "monitor" => {
+            threshold_a += 0.05;
+            threshold_b += 0.03;
+        }
+        "degraded" => {
+            threshold_a += 0.12;
+            threshold_b += 0.08;
+        }
+        _ => {}
+    }
+    match signals.calibration_status.as_str() {
+        "monitor" => threshold_a += 0.04,
+        "degraded" => {
+            threshold_a += 0.10;
+            threshold_b += 0.05;
+        }
+        _ => {}
+    }
+    match signals.quality_status.as_str() {
+        "monitor" => threshold_a += 0.02,
+        "degraded" => {
+            threshold_a += 0.05;
+            threshold_b += 0.03;
+        }
+        _ => {}
+    }
+
+    (threshold_a.clamp(0.55, 0.95), threshold_b.clamp(0.25, 0.85))
+}
+
+fn response_mode_evidence_score(
+    claim_guard: &AgentWriteClaimGuard,
+    verification: &AgentWriteVerificationSummary,
+    signals: &RuntimeQualitySignals,
+) -> f64 {
+    let verification_coverage = if verification.required_checks == 0 {
+        match verification.status.as_str() {
+            "verified" => 1.0,
+            "pending" => 0.55,
+            _ => 0.0,
+        }
+    } else {
+        let ratio = verification.verified_checks as f64 / verification.required_checks as f64;
+        if verification.status == "pending" {
+            ratio.max(0.55)
+        } else {
+            ratio
+        }
+    };
+
+    let mut score = verification_coverage * 0.55;
+    if verification.status == "verified" {
+        score += 0.15;
+    } else if verification.status == "pending" {
+        score += 0.18;
+    }
+    if claim_guard.allow_saved_claim {
+        score += 0.20;
+    } else {
+        score -= if verification.status == "failed" {
+            0.12
+        } else {
+            0.03
+        };
+    }
+    if claim_guard.claim_status == "failed" {
+        score -= 0.20;
+    }
+    if claim_guard
+        .uncertainty_markers
+        .iter()
+        .any(|marker| marker == "read_after_write_unverified")
+    {
+        score -= if verification.status == "pending" {
+            0.02
+        } else {
+            0.07
+        };
+    }
+    if claim_guard.autonomy_gate.decision == "confirm_first" {
+        score -= 0.03;
+    }
+
+    let unresolved_penalty = (signals.unresolved_set_logged_pct / 100.0).clamp(0.0, 0.30) * 0.35;
+    let mismatch_penalty = (signals.save_claim_integrity_rate_pct / 100.0).clamp(0.0, 0.40) * 0.40;
+    score -= unresolved_penalty + mismatch_penalty;
+    score -= signals.save_claim_posterior_monitor_prob * 0.06;
+    score -= signals.save_claim_posterior_degraded_prob * 0.14;
+
+    match signals.calibration_status.as_str() {
+        "monitor" => score -= 0.05,
+        "degraded" => score -= 0.11,
+        _ => {}
+    }
+    match signals.integrity_slo_status.as_str() {
+        "monitor" => score -= 0.04,
+        "degraded" => score -= 0.08,
+        _ => {}
+    }
+    if signals.issues_open >= 12 {
+        score -= 0.06;
+    } else if signals.issues_open >= 6 {
+        score -= 0.03;
+    }
+
+    score.clamp(0.0, 1.0)
+}
+
+fn build_response_mode_policy(
+    claim_guard: &AgentWriteClaimGuard,
+    verification: &AgentWriteVerificationSummary,
+    quality_health: Option<&ProjectionResponse>,
+) -> AgentResponseModePolicy {
+    let signals = extract_runtime_quality_signals(quality_health);
+    let (threshold_a_min, threshold_b_min) = response_mode_thresholds(&signals);
+    let evidence_score = response_mode_evidence_score(claim_guard, verification, &signals);
+
+    let mut mode_code = "C".to_string();
+    let mut mode = "general_guidance".to_string();
+    let mut evidence_state = "insufficient".to_string();
+    let mut reason_codes: Vec<String> = Vec::new();
+
+    if verification.status != "failed"
+        && claim_guard.allow_saved_claim
+        && evidence_score >= threshold_a_min
+    {
+        mode_code = "A".to_string();
+        mode = "grounded_personalized".to_string();
+        evidence_state = "sufficient".to_string();
+        reason_codes.push("evidence_score_passes_grounded_threshold".to_string());
+    } else if verification.status != "failed" && evidence_score >= threshold_b_min {
+        mode_code = "B".to_string();
+        mode = "hypothesis_personalized".to_string();
+        evidence_state = "limited".to_string();
+        reason_codes.push("evidence_score_supports_hypothesis_mode".to_string());
+    } else {
+        reason_codes.push("insufficient_personal_evidence".to_string());
+        reason_codes.push("evidence_score_below_hypothesis_threshold".to_string());
+    }
+    if verification.status != "verified" {
+        reason_codes.push("write_proof_not_verified".to_string());
+    }
+    if !claim_guard.allow_saved_claim {
+        reason_codes.push("save_claim_not_verified".to_string());
+    }
+    if claim_guard.claim_status == "inferred" {
+        reason_codes.push("inferred_values_present".to_string());
+    }
+    if claim_guard.claim_status == "pending" {
+        reason_codes.push("claim_status_pending".to_string());
+    }
+    if signals.unresolved_set_logged_pct > 0.0 {
+        reason_codes.push("history_unresolved_set_logged_present".to_string());
+    }
+    if signals.save_claim_posterior_degraded_prob >= 0.25 {
+        reason_codes.push("integrity_regression_risk_elevated".to_string());
+    }
+    if signals.quality_status != "healthy" && signals.quality_status != "unknown" {
+        reason_codes.push(format!("quality_{}_context", signals.quality_status));
+    }
+    if signals.integrity_slo_status != "healthy" && signals.integrity_slo_status != "unknown" {
+        reason_codes.push(format!(
+            "integrity_{}_context",
+            signals.integrity_slo_status
+        ));
+    }
+    if signals.calibration_status != "healthy" && signals.calibration_status != "unknown" {
+        reason_codes.push(format!(
+            "calibration_{}_context",
+            signals.calibration_status
+        ));
+    }
+    if claim_guard.autonomy_gate.decision == "confirm_first" {
+        reason_codes.push("confirm_first_gate_active".to_string());
+    }
+    dedupe_reason_codes(&mut reason_codes);
+
+    let assistant_instruction = match mode_code.as_str() {
+        "A" => {
+            "Anchor recommendations in user-specific evidence and cite concrete personal drivers."
+                .to_string()
+        }
+        "B" => {
+            "Offer hypothesis-based personalization and explicitly name uncertainty + missing evidence."
+                .to_string()
+        }
+        _ => {
+            "Provide general guidance first and ask one high-value clarification before specific recommendations."
+                .to_string()
+        }
+    };
+    let requires_transparency_note = mode_code != "A";
+
+    AgentResponseModePolicy {
+        schema_version: RESPONSE_MODE_POLICY_SCHEMA_VERSION.to_string(),
+        mode_code,
+        mode,
+        evidence_state,
+        evidence_score,
+        threshold_a_min,
+        threshold_b_min,
+        quality_status: signals.quality_status,
+        integrity_slo_status: signals.integrity_slo_status,
+        calibration_status: signals.calibration_status,
+        policy_role: RESPONSE_MODE_POLICY_ROLE_NUDGE_ONLY.to_string(),
+        requires_transparency_note,
+        reason_codes,
+        assistant_instruction,
+    }
+}
+
+fn build_personal_failure_profile(
+    user_id: Uuid,
+    model_identity: &ResolvedModelIdentity,
+    claim_guard: &AgentWriteClaimGuard,
+    verification: &AgentWriteVerificationSummary,
+    session_audit: &AgentSessionAuditSummary,
+    response_mode_policy: &AgentResponseModePolicy,
+) -> AgentPersonalFailureProfile {
+    let mut active_signals: Vec<AgentFailureProfileSignal> = Vec::new();
+
+    if verification.status != "verified" {
+        active_signals.push(AgentFailureProfileSignal {
+            code: "read_after_write_unverified".to_string(),
+            weight: 0.8,
+        });
+    }
+    if claim_guard.claim_status != "saved_verified" {
+        active_signals.push(AgentFailureProfileSignal {
+            code: "claim_not_saved_verified".to_string(),
+            weight: 0.7,
+        });
+    }
+    if session_audit.mismatch_unresolved > 0 {
+        active_signals.push(AgentFailureProfileSignal {
+            code: "session_mismatch_unresolved".to_string(),
+            weight: 0.95,
+        });
+    }
+    if claim_guard.autonomy_gate.decision == "confirm_first" {
+        active_signals.push(AgentFailureProfileSignal {
+            code: "confirm_first_gate_active".to_string(),
+            weight: 0.35,
+        });
+    }
+    if response_mode_policy.mode_code == "C" {
+        active_signals.push(AgentFailureProfileSignal {
+            code: "insufficient_personal_evidence".to_string(),
+            weight: 0.6,
+        });
+    }
+
+    let max_weight = active_signals
+        .iter()
+        .map(|signal| signal.weight)
+        .fold(0.0_f64, f64::max);
+    let data_quality_band = if max_weight >= 0.85 {
+        "low"
+    } else if max_weight >= 0.5 {
+        "medium"
+    } else {
+        "high"
+    };
+
+    let profile_seed = format!(
+        "{}|{}|{}",
+        user_id, model_identity.model_identity, PERSONAL_FAILURE_PROFILE_SCHEMA_VERSION
+    );
+    let profile_id = format!("pfp_{}", stable_hash_suffix(&profile_seed, 20));
+
+    AgentPersonalFailureProfile {
+        schema_version: PERSONAL_FAILURE_PROFILE_SCHEMA_VERSION.to_string(),
+        profile_id,
+        model_identity: model_identity.model_identity.clone(),
+        data_quality_band: data_quality_band.to_string(),
+        policy_role: SIDECAR_POLICY_ROLE_ADVISORY_ONLY.to_string(),
+        recommended_response_mode: response_mode_policy.mode.clone(),
+        active_signals,
+    }
+}
+
+fn regret_band(score: f64) -> &'static str {
+    if score >= 0.66 {
+        "high"
+    } else if score >= 0.33 {
+        "medium"
+    } else {
+        "low"
+    }
+}
+
+fn build_retrieval_regret(
+    claim_guard: &AgentWriteClaimGuard,
+    verification: &AgentWriteVerificationSummary,
+    response_mode_policy: &AgentResponseModePolicy,
+) -> AgentRetrievalRegret {
+    let mut regret_threshold = 0.45;
+    if response_mode_policy.integrity_slo_status == "degraded"
+        || response_mode_policy.calibration_status == "degraded"
+    {
+        regret_threshold = 0.35;
+    } else if response_mode_policy.integrity_slo_status == "monitor"
+        || response_mode_policy.calibration_status == "monitor"
+        || response_mode_policy.quality_status == "monitor"
+    {
+        regret_threshold = 0.40;
+    }
+
+    let mut reason_codes = Vec::new();
+    if verification.required_checks == 0 {
+        reason_codes.push("no_read_after_write_checks".to_string());
+    }
+    if response_mode_policy.evidence_score < response_mode_policy.threshold_b_min {
+        reason_codes.push("evidence_score_below_hypothesis_threshold".to_string());
+    }
+
+    if verification.verified_checks < verification.required_checks {
+        reason_codes.push("read_after_write_incomplete".to_string());
+    }
+    if !claim_guard.allow_saved_claim {
+        reason_codes.push("save_claim_not_verified".to_string());
+    }
+    if verification.status == "failed" {
+        reason_codes.push("write_proof_failed".to_string());
+    }
+    if response_mode_policy.mode_code != "A" {
+        reason_codes.push("response_mode_not_grounded".to_string());
+    }
+    if regret_threshold < 0.45 {
+        reason_codes.push("regret_threshold_tightened_by_quality_context".to_string());
+    }
+    dedupe_reason_codes(&mut reason_codes);
+
+    let mut regret_score = 1.0 - response_mode_policy.evidence_score;
+    if verification.required_checks == 0 {
+        regret_score += 0.05;
+    }
+    if verification.status == "failed" {
+        regret_score += 0.15;
+    }
+    if !claim_guard.allow_saved_claim {
+        regret_score += 0.08;
+    }
+    if response_mode_policy.mode_code == "C" {
+        regret_score += 0.07;
+    }
+    regret_score = regret_score.clamp(0.0, 1.0);
+
+    AgentRetrievalRegret {
+        schema_version: RETRIEVAL_REGRET_SCHEMA_VERSION.to_string(),
+        regret_score,
+        regret_band: regret_band(regret_score).to_string(),
+        regret_threshold,
+        threshold_exceeded: regret_score >= regret_threshold,
+        reason_codes,
+    }
+}
+
+fn build_laaj_sidecar(
+    claim_guard: &AgentWriteClaimGuard,
+    session_audit: &AgentSessionAuditSummary,
+    response_mode_policy: &AgentResponseModePolicy,
+    retrieval_regret: &AgentRetrievalRegret,
+) -> AgentLaaJSidecar {
+    let mut reason_codes = Vec::new();
+    let mut score = 1.0 - retrieval_regret.regret_score;
+
+    if session_audit.status == "needs_clarification" {
+        score -= 0.25;
+        reason_codes.push("session_audit_needs_clarification".to_string());
+    }
+    if claim_guard.claim_status == "failed" {
+        score -= 0.2;
+        reason_codes.push("claim_guard_failed".to_string());
+    }
+    if response_mode_policy.mode_code == "C" {
+        score -= 0.15;
+        reason_codes.push("response_mode_general_guidance".to_string());
+    }
+    if claim_guard.autonomy_gate.decision == "confirm_first" {
+        score -= 0.05;
+        reason_codes.push("autonomy_confirm_first_active".to_string());
+    }
+    dedupe_reason_codes(&mut reason_codes);
+    score = score.clamp(0.0, 1.0);
+
+    let verdict = if score >= 0.65 { "pass" } else { "review" };
+    let recommendation = if verdict == "pass" {
+        "Proceed with current autonomy gate and keep user-facing rationale explicit."
+    } else {
+        "Switch to uncertainty-explicit wording and ask one high-value clarification before strong personalization."
+    };
+
+    AgentLaaJSidecar {
+        schema_version: LAAJ_SIDECAR_SCHEMA_VERSION.to_string(),
+        verdict: verdict.to_string(),
+        score,
+        policy_role: SIDECAR_POLICY_ROLE_ADVISORY_ONLY.to_string(),
+        can_block_autonomy: false,
+        recommendation: recommendation.to_string(),
+        reason_codes,
+    }
+}
+
+fn build_sidecar_assessment(
+    claim_guard: &AgentWriteClaimGuard,
+    verification: &AgentWriteVerificationSummary,
+    session_audit: &AgentSessionAuditSummary,
+    response_mode_policy: &AgentResponseModePolicy,
+) -> AgentSidecarAssessment {
+    let retrieval_regret = build_retrieval_regret(claim_guard, verification, response_mode_policy);
+    let laaj = build_laaj_sidecar(
+        claim_guard,
+        session_audit,
+        response_mode_policy,
+        &retrieval_regret,
+    );
+    AgentSidecarAssessment {
+        retrieval_regret,
+        laaj,
+    }
+}
+
+fn response_mode_confidence_band(policy: &AgentResponseModePolicy) -> &'static str {
+    match policy.mode_code.as_str() {
+        "A" => "high",
+        "B" => "medium",
+        _ => "low",
+    }
+}
+
+fn failure_profile_confidence_band(profile: &AgentPersonalFailureProfile) -> &'static str {
+    match profile.data_quality_band.as_str() {
+        "high" => "high",
+        "medium" => "medium",
+        _ => "low",
+    }
+}
+
+fn learning_signal_event_from_contract(
+    user_id: Uuid,
+    signal_type: &str,
+    issue_type: &str,
+    invariant_id: &str,
+    workflow_phase: &str,
+    confidence_band: &str,
+    attributes: Value,
+    session_id: &str,
+) -> CreateEventRequest {
+    let captured_at = Utc::now();
+    let agent_version =
+        std::env::var("KURA_AGENT_VERSION").unwrap_or_else(|_| "api_agent_v1".to_string());
+    let signature_seed = format!(
+        "{}|{}|{}|{}|{}|{}|{}",
+        signal_type,
+        issue_type,
+        invariant_id,
+        agent_version,
+        workflow_phase,
+        "chat",
+        confidence_band
+    );
+    let cluster_signature = format!("ls_{}", stable_hash_suffix(&signature_seed, 20));
+    let event_data = serde_json::json!({
+        "schema_version": LEARNING_TELEMETRY_SCHEMA_VERSION,
+        "signal_type": signal_type,
+        "category": learning_signal_category(signal_type),
+        "captured_at": captured_at,
+        "user_ref": {
+            "pseudonymized_user_id": pseudonymize_user_id_for_learning_signal(user_id),
+        },
+        "signature": {
+            "issue_type": issue_type,
+            "invariant_id": invariant_id,
+            "agent_version": agent_version,
+            "workflow_phase": workflow_phase,
+            "modality": "chat",
+            "confidence_band": confidence_band,
+        },
+        "cluster_signature": cluster_signature,
+        "attributes": attributes,
+    });
+
+    CreateEventRequest {
+        timestamp: captured_at,
+        event_type: "learning.signal.logged".to_string(),
+        data: event_data,
+        metadata: EventMetadata {
+            source: Some("agent_write_with_proof".to_string()),
+            agent: Some("api".to_string()),
+            device: None,
+            session_id: Some(session_id.to_string()),
+            idempotency_key: format!("learning-signal-{}", Uuid::now_v7()),
+        },
+    }
+}
+
+fn build_response_mode_sidecar_learning_signal_events(
+    user_id: Uuid,
+    response_mode_policy: &AgentResponseModePolicy,
+    personal_failure_profile: &AgentPersonalFailureProfile,
+    sidecar_assessment: &AgentSidecarAssessment,
+) -> Vec<CreateEventRequest> {
+    let response_mode_event = learning_signal_event_from_contract(
+        user_id,
+        "response_mode_selected",
+        "response_mode_policy",
+        RESPONSE_MODE_INVARIANT_ID,
+        "agent_write_with_proof",
+        response_mode_confidence_band(response_mode_policy),
+        serde_json::json!({
+            "contract_schema_version": response_mode_policy.schema_version,
+            "mode_code": response_mode_policy.mode_code,
+            "mode": response_mode_policy.mode,
+            "evidence_state": response_mode_policy.evidence_state,
+            "evidence_score": response_mode_policy.evidence_score,
+            "threshold_a_min": response_mode_policy.threshold_a_min,
+            "threshold_b_min": response_mode_policy.threshold_b_min,
+            "quality_status": response_mode_policy.quality_status,
+            "integrity_slo_status": response_mode_policy.integrity_slo_status,
+            "calibration_status": response_mode_policy.calibration_status,
+            "policy_role": response_mode_policy.policy_role,
+            "requires_transparency_note": response_mode_policy.requires_transparency_note,
+            "reason_codes": response_mode_policy.reason_codes,
+        }),
+        "learning:response-mode",
+    );
+
+    let personal_failure_event = learning_signal_event_from_contract(
+        user_id,
+        "personal_failure_profile_observed",
+        "personal_failure_profile",
+        PERSONAL_FAILURE_PROFILE_INVARIANT_ID,
+        "agent_write_with_proof",
+        failure_profile_confidence_band(personal_failure_profile),
+        serde_json::json!({
+            "contract_schema_version": personal_failure_profile.schema_version,
+            "profile_id": personal_failure_profile.profile_id,
+            "model_identity": personal_failure_profile.model_identity,
+            "data_quality_band": personal_failure_profile.data_quality_band,
+            "policy_role": personal_failure_profile.policy_role,
+            "recommended_response_mode": personal_failure_profile.recommended_response_mode,
+            "active_signal_codes": personal_failure_profile
+                .active_signals
+                .iter()
+                .map(|signal| signal.code.clone())
+                .collect::<Vec<_>>(),
+            "active_signal_weights": personal_failure_profile
+                .active_signals
+                .iter()
+                .map(|signal| signal.weight)
+                .collect::<Vec<_>>(),
+        }),
+        "learning:personal-failure-profile",
+    );
+
+    let retrieval_regret_event = learning_signal_event_from_contract(
+        user_id,
+        "retrieval_regret_observed",
+        "retrieval_regret",
+        RETRIEVAL_REGRET_INVARIANT_ID,
+        "agent_write_with_proof",
+        sidecar_assessment.retrieval_regret.regret_band.as_str(),
+        serde_json::json!({
+            "contract_schema_version": sidecar_assessment.retrieval_regret.schema_version,
+            "regret_score": sidecar_assessment.retrieval_regret.regret_score,
+            "regret_band": sidecar_assessment.retrieval_regret.regret_band,
+            "regret_threshold": sidecar_assessment.retrieval_regret.regret_threshold,
+            "threshold_exceeded": sidecar_assessment.retrieval_regret.threshold_exceeded,
+            "reason_codes": sidecar_assessment.retrieval_regret.reason_codes,
+            "policy_role": SIDECAR_POLICY_ROLE_ADVISORY_ONLY,
+        }),
+        "learning:retrieval-regret",
+    );
+
+    let laaj_confidence_band = if sidecar_assessment.laaj.verdict == "pass" {
+        "high"
+    } else {
+        "medium"
+    };
+    let laaj_event = learning_signal_event_from_contract(
+        user_id,
+        "laaj_sidecar_assessed",
+        "laaj_sidecar",
+        LAAJ_SIDECAR_INVARIANT_ID,
+        "agent_write_with_proof",
+        laaj_confidence_band,
+        serde_json::json!({
+            "contract_schema_version": sidecar_assessment.laaj.schema_version,
+            "verdict": sidecar_assessment.laaj.verdict,
+            "score": sidecar_assessment.laaj.score,
+            "policy_role": sidecar_assessment.laaj.policy_role,
+            "can_block_autonomy": sidecar_assessment.laaj.can_block_autonomy,
+            "recommendation": sidecar_assessment.laaj.recommendation,
+            "reason_codes": sidecar_assessment.laaj.reason_codes,
+        }),
+        "learning:laaj-sidecar",
+    );
+
+    vec![
+        response_mode_event,
+        personal_failure_event,
+        retrieval_regret_event,
+        laaj_event,
+    ]
 }
 
 static LEAK_DOTTED_TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -3588,6 +4391,22 @@ pub async fn write_with_proof(
         &verification,
         &claim_guard,
     );
+    let response_mode_policy =
+        build_response_mode_policy(&claim_guard, &verification, quality_health.as_ref());
+    let personal_failure_profile = build_personal_failure_profile(
+        user_id,
+        &model_identity,
+        &claim_guard,
+        &verification,
+        &session_audit_summary,
+        &response_mode_policy,
+    );
+    let sidecar_assessment = build_sidecar_assessment(
+        &claim_guard,
+        &verification,
+        &session_audit_summary,
+        &response_mode_policy,
+    );
     let trace_digest = build_trace_digest(
         &receipts,
         &warnings,
@@ -3626,6 +4445,12 @@ pub async fn write_with_proof(
     {
         quality_events.push(workflow_signal);
     }
+    quality_events.extend(build_response_mode_sidecar_learning_signal_events(
+        user_id,
+        &response_mode_policy,
+        &personal_failure_profile,
+        &sidecar_assessment,
+    ));
     quality_events.extend(telemetry_events);
     let reflection_signal = build_post_task_reflection_learning_signal_event(
         user_id,
@@ -3665,6 +4490,9 @@ pub async fn write_with_proof(
         intent_handshake_confirmation,
         trace_digest,
         post_task_reflection,
+        response_mode_policy,
+        personal_failure_profile,
+        sidecar_assessment,
     };
     let response = if language_mode == AgentLanguageMode::UserSafe {
         apply_user_safe_language_guard(response)
@@ -7672,6 +8500,53 @@ mod tests {
             }),
             trace_digest,
             post_task_reflection,
+            response_mode_policy: super::AgentResponseModePolicy {
+                schema_version: super::RESPONSE_MODE_POLICY_SCHEMA_VERSION.to_string(),
+                mode_code: "B".to_string(),
+                mode: "hypothesis_personalized".to_string(),
+                evidence_state: "limited".to_string(),
+                evidence_score: 0.51,
+                threshold_a_min: 0.72,
+                threshold_b_min: 0.42,
+                quality_status: "monitor".to_string(),
+                integrity_slo_status: "monitor".to_string(),
+                calibration_status: "healthy".to_string(),
+                policy_role: super::RESPONSE_MODE_POLICY_ROLE_NUDGE_ONLY.to_string(),
+                requires_transparency_note: true,
+                reason_codes: vec!["write_proof_partial_or_pending".to_string()],
+                assistant_instruction: "Use uncertainty-explicit personalization.".to_string(),
+            },
+            personal_failure_profile: super::AgentPersonalFailureProfile {
+                schema_version: super::PERSONAL_FAILURE_PROFILE_SCHEMA_VERSION.to_string(),
+                profile_id: "pfp_test".to_string(),
+                model_identity: "test-model".to_string(),
+                data_quality_band: "medium".to_string(),
+                policy_role: super::SIDECAR_POLICY_ROLE_ADVISORY_ONLY.to_string(),
+                recommended_response_mode: "hypothesis_personalized".to_string(),
+                active_signals: vec![super::AgentFailureProfileSignal {
+                    code: "read_after_write_unverified".to_string(),
+                    weight: 0.8,
+                }],
+            },
+            sidecar_assessment: super::AgentSidecarAssessment {
+                retrieval_regret: super::AgentRetrievalRegret {
+                    schema_version: super::RETRIEVAL_REGRET_SCHEMA_VERSION.to_string(),
+                    regret_score: 0.6,
+                    regret_band: "medium".to_string(),
+                    regret_threshold: 0.4,
+                    threshold_exceeded: true,
+                    reason_codes: vec!["read_after_write_incomplete".to_string()],
+                },
+                laaj: super::AgentLaaJSidecar {
+                    schema_version: super::LAAJ_SIDECAR_SCHEMA_VERSION.to_string(),
+                    verdict: "review".to_string(),
+                    score: 0.5,
+                    policy_role: super::SIDECAR_POLICY_ROLE_ADVISORY_ONLY.to_string(),
+                    can_block_autonomy: false,
+                    recommendation: "Ask one clarification first.".to_string(),
+                    reason_codes: vec!["response_mode_general_guidance".to_string()],
+                },
+            },
         };
 
         let guarded = super::apply_user_safe_language_guard(response);
@@ -7962,6 +8837,447 @@ mod tests {
     }
 
     #[test]
+    fn response_mode_policy_contract_prefers_grounded_when_proof_verified() {
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            _session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("verified", "verified", "clean", None);
+        let policy = super::build_response_mode_policy(&claim_guard, &verification, None);
+        assert_eq!(
+            policy.schema_version,
+            super::RESPONSE_MODE_POLICY_SCHEMA_VERSION
+        );
+        assert_eq!(policy.mode_code, "A");
+        assert_eq!(policy.mode, "grounded_personalized");
+        assert_eq!(policy.evidence_state, "sufficient");
+        assert!(!policy.requires_transparency_note);
+        assert_eq!(
+            policy.policy_role,
+            super::RESPONSE_MODE_POLICY_ROLE_NUDGE_ONLY
+        );
+    }
+
+    #[test]
+    fn response_mode_policy_contract_uses_hypothesis_when_evidence_is_partial() {
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            _session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("pending", "pending", "clean", None);
+        let policy = super::build_response_mode_policy(&claim_guard, &verification, None);
+        assert_eq!(policy.mode_code, "B");
+        assert_eq!(policy.mode, "hypothesis_personalized");
+        assert_eq!(policy.evidence_state, "limited");
+        assert!(policy.requires_transparency_note);
+        assert!(
+            policy
+                .reason_codes
+                .iter()
+                .any(|code| code == "evidence_score_supports_hypothesis_mode")
+        );
+    }
+
+    #[test]
+    fn response_mode_policy_contract_falls_back_to_general_without_evidence() {
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            _session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("failed", "pending", "clean", None);
+        let policy = super::build_response_mode_policy(&claim_guard, &verification, None);
+        assert_eq!(policy.mode_code, "C");
+        assert_eq!(policy.mode, "general_guidance");
+        assert_eq!(policy.evidence_state, "insufficient");
+        assert!(policy.requires_transparency_note);
+        assert!(
+            policy
+                .assistant_instruction
+                .to_lowercase()
+                .contains("clarification")
+        );
+    }
+
+    #[test]
+    fn response_mode_policy_contract_adapts_thresholds_from_quality_health_projection() {
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            _session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("verified", "verified", "clean", None);
+        let quality_health = make_projection_response(
+            "quality_health",
+            "overview",
+            Utc::now(),
+            json!({
+                "status": "monitor",
+                "integrity_slo_status": "monitor",
+                "issues_open": 6,
+                "metrics": {
+                    "set_logged_unresolved_pct": 6.0
+                },
+                "integrity_slos": {
+                    "status": "monitor",
+                    "metrics": {
+                        "save_claim_mismatch_rate_pct": {
+                            "value": 8.0,
+                            "posterior_prob_gt_monitor": 0.4,
+                            "posterior_prob_gt_degraded": 0.2
+                        }
+                    }
+                },
+                "autonomy_policy": {
+                    "calibration_status": "monitor"
+                }
+            }),
+        );
+        let policy =
+            super::build_response_mode_policy(&claim_guard, &verification, Some(&quality_health));
+        assert_eq!(policy.mode_code, "B");
+        assert_eq!(policy.quality_status, "monitor");
+        assert_eq!(policy.integrity_slo_status, "monitor");
+        assert_eq!(policy.calibration_status, "monitor");
+        assert!(policy.threshold_a_min > 0.72);
+        assert!(policy.threshold_b_min > 0.42);
+        assert!(policy.evidence_score >= policy.threshold_b_min);
+        assert!(policy.evidence_score < policy.threshold_a_min);
+    }
+
+    #[test]
+    fn personal_failure_profile_contract_is_deterministic_per_user_and_model() {
+        let user_id = Uuid::now_v7();
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("pending", "pending", "clean", None);
+        let mode = super::build_response_mode_policy(&claim_guard, &verification, None);
+        let model_a = super::ResolvedModelIdentity {
+            model_identity: "openai:gpt-5".to_string(),
+            reason_codes: vec![],
+            source: "test".to_string(),
+            attestation_request_id: None,
+        };
+        let model_b = super::ResolvedModelIdentity {
+            model_identity: "openai:gpt-5-mini".to_string(),
+            reason_codes: vec![],
+            source: "test".to_string(),
+            attestation_request_id: None,
+        };
+        let first = super::build_personal_failure_profile(
+            user_id,
+            &model_a,
+            &claim_guard,
+            &verification,
+            &session_audit,
+            &mode,
+        );
+        let second = super::build_personal_failure_profile(
+            user_id,
+            &model_a,
+            &claim_guard,
+            &verification,
+            &session_audit,
+            &mode,
+        );
+        let third = super::build_personal_failure_profile(
+            user_id,
+            &model_b,
+            &claim_guard,
+            &verification,
+            &session_audit,
+            &mode,
+        );
+        assert_eq!(
+            first.schema_version,
+            super::PERSONAL_FAILURE_PROFILE_SCHEMA_VERSION
+        );
+        assert_eq!(first.profile_id, second.profile_id);
+        assert_ne!(first.profile_id, third.profile_id);
+    }
+
+    #[test]
+    fn personal_failure_profile_contract_is_advisory_not_cage() {
+        let user_id = Uuid::now_v7();
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("pending", "pending", "clean", None);
+        let mode = super::build_response_mode_policy(&claim_guard, &verification, None);
+        let model_identity = super::ResolvedModelIdentity {
+            model_identity: "openai:gpt-5".to_string(),
+            reason_codes: vec![],
+            source: "test".to_string(),
+            attestation_request_id: None,
+        };
+        let profile = super::build_personal_failure_profile(
+            user_id,
+            &model_identity,
+            &claim_guard,
+            &verification,
+            &session_audit,
+            &mode,
+        );
+        assert_eq!(
+            profile.policy_role,
+            super::SIDECAR_POLICY_ROLE_ADVISORY_ONLY
+        );
+        assert_eq!(profile.recommended_response_mode, mode.mode);
+    }
+
+    #[test]
+    fn personal_failure_profile_contract_tracks_active_failure_signals() {
+        let user_id = Uuid::now_v7();
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("failed", "pending", "needs_clarification", None);
+        let mode = super::build_response_mode_policy(&claim_guard, &verification, None);
+        let model_identity = super::ResolvedModelIdentity {
+            model_identity: "openai:gpt-5".to_string(),
+            reason_codes: vec![],
+            source: "test".to_string(),
+            attestation_request_id: None,
+        };
+        let profile = super::build_personal_failure_profile(
+            user_id,
+            &model_identity,
+            &claim_guard,
+            &verification,
+            &session_audit,
+            &mode,
+        );
+        let signal_codes: Vec<String> = profile
+            .active_signals
+            .iter()
+            .map(|signal| signal.code.clone())
+            .collect();
+        assert!(
+            signal_codes
+                .iter()
+                .any(|code| code == "read_after_write_unverified")
+        );
+        assert!(
+            signal_codes
+                .iter()
+                .any(|code| code == "session_mismatch_unresolved")
+        );
+        assert!(
+            signal_codes
+                .iter()
+                .any(|code| code == "insufficient_personal_evidence")
+        );
+    }
+
+    #[test]
+    fn sidecar_retrieval_regret_contract_sets_high_regret_when_readback_incomplete() {
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("pending", "pending", "needs_clarification", None);
+        let mode = super::build_response_mode_policy(&claim_guard, &verification, None);
+        let sidecar =
+            super::build_sidecar_assessment(&claim_guard, &verification, &session_audit, &mode);
+        assert_eq!(
+            sidecar.retrieval_regret.schema_version,
+            super::RETRIEVAL_REGRET_SCHEMA_VERSION
+        );
+        assert!(sidecar.retrieval_regret.regret_score > 0.45);
+        assert!(sidecar.retrieval_regret.threshold_exceeded);
+        assert!(
+            sidecar
+                .retrieval_regret
+                .reason_codes
+                .iter()
+                .any(|code| code == "read_after_write_incomplete")
+        );
+    }
+
+    #[test]
+    fn sidecar_retrieval_regret_contract_uses_monitor_threshold_when_quality_is_monitor() {
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("verified", "verified", "clean", None);
+        let quality_health = make_projection_response(
+            "quality_health",
+            "overview",
+            Utc::now(),
+            json!({
+                "status": "monitor",
+                "integrity_slo_status": "monitor",
+                "autonomy_policy": {
+                    "calibration_status": "healthy"
+                }
+            }),
+        );
+        let mode =
+            super::build_response_mode_policy(&claim_guard, &verification, Some(&quality_health));
+        let sidecar =
+            super::build_sidecar_assessment(&claim_guard, &verification, &session_audit, &mode);
+        assert_eq!(sidecar.retrieval_regret.regret_threshold, 0.4);
+    }
+
+    #[test]
+    fn sidecar_retrieval_regret_contract_uses_degraded_threshold_when_quality_is_degraded() {
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("verified", "verified", "clean", None);
+        let quality_health = make_projection_response(
+            "quality_health",
+            "overview",
+            Utc::now(),
+            json!({
+                "status": "degraded",
+                "integrity_slo_status": "degraded",
+                "autonomy_policy": {
+                    "calibration_status": "degraded"
+                }
+            }),
+        );
+        let mode =
+            super::build_response_mode_policy(&claim_guard, &verification, Some(&quality_health));
+        let sidecar =
+            super::build_sidecar_assessment(&claim_guard, &verification, &session_audit, &mode);
+        assert_eq!(sidecar.retrieval_regret.regret_threshold, 0.35);
+    }
+
+    #[test]
+    fn sidecar_laa_j_contract_is_advisory_only_and_cannot_block() {
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("pending", "pending", "clean", None);
+        let mode = super::build_response_mode_policy(&claim_guard, &verification, None);
+        let sidecar =
+            super::build_sidecar_assessment(&claim_guard, &verification, &session_audit, &mode);
+        assert_eq!(
+            sidecar.laaj.schema_version,
+            super::LAAJ_SIDECAR_SCHEMA_VERSION
+        );
+        assert_eq!(
+            sidecar.laaj.policy_role,
+            super::SIDECAR_POLICY_ROLE_ADVISORY_ONLY
+        );
+        assert!(!sidecar.laaj.can_block_autonomy);
+    }
+
+    #[test]
+    fn sidecar_signal_contract_emits_retrieval_and_laaj_signal_types() {
+        let user_id = Uuid::now_v7();
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("pending", "pending", "needs_clarification", None);
+        let mode = super::build_response_mode_policy(&claim_guard, &verification, None);
+        let model_identity = super::ResolvedModelIdentity {
+            model_identity: "openai:gpt-5".to_string(),
+            reason_codes: vec![],
+            source: "test".to_string(),
+            attestation_request_id: None,
+        };
+        let profile = super::build_personal_failure_profile(
+            user_id,
+            &model_identity,
+            &claim_guard,
+            &verification,
+            &session_audit,
+            &mode,
+        );
+        let sidecar =
+            super::build_sidecar_assessment(&claim_guard, &verification, &session_audit, &mode);
+        let events = super::build_response_mode_sidecar_learning_signal_events(
+            user_id, &mode, &profile, &sidecar,
+        );
+        let signal_types: Vec<String> = events
+            .iter()
+            .filter_map(|event| {
+                event
+                    .data
+                    .get("signal_type")
+                    .and_then(Value::as_str)
+                    .map(|value| value.to_string())
+            })
+            .collect();
+        assert!(
+            signal_types
+                .iter()
+                .any(|value| value == "response_mode_selected")
+        );
+        assert!(
+            signal_types
+                .iter()
+                .any(|value| value == "personal_failure_profile_observed")
+        );
+        assert!(
+            signal_types
+                .iter()
+                .any(|value| value == "retrieval_regret_observed")
+        );
+        assert!(
+            signal_types
+                .iter()
+                .any(|value| value == "laaj_sidecar_assessed")
+        );
+    }
+
+    #[test]
     fn capabilities_manifest_exposes_agent_contract_preferences() {
         let manifest = build_agent_capabilities();
         assert_eq!(manifest.schema_version, "agent_capabilities.v2.self_model");
@@ -8139,9 +9455,18 @@ mod tests {
 
         let data = &event.data;
         // Telemetry field names are part of the contract — renaming breaks consumers.
-        assert!(data.get("save_echo_required").is_some(), "save_echo_required field must exist");
-        assert!(data.get("save_echo_present").is_some(), "save_echo_present field must exist");
-        assert!(data.get("save_echo_completeness").is_some(), "save_echo_completeness field must exist");
+        assert!(
+            data.get("save_echo_required").is_some(),
+            "save_echo_required field must exist"
+        );
+        assert!(
+            data.get("save_echo_present").is_some(),
+            "save_echo_present field must exist"
+        );
+        assert!(
+            data.get("save_echo_completeness").is_some(),
+            "save_echo_completeness field must exist"
+        );
     }
 
     #[test]
@@ -8166,14 +9491,7 @@ mod tests {
         policy.capability_tier = "moderate".to_string();
         let mut gate = default_autonomy_gate();
         gate.model_tier = "moderate".to_string();
-        let claim_guard = build_claim_guard(
-            &[receipt.clone()],
-            1,
-            &checks,
-            &[],
-            policy,
-            gate,
-        );
+        let claim_guard = build_claim_guard(&[receipt.clone()], 1, &checks, &[], policy, gate);
         assert_eq!(claim_guard.claim_status, "saved_verified");
 
         let session_audit = AgentSessionAuditSummary {
@@ -8201,15 +9519,16 @@ mod tests {
         );
 
         let data = &event.data;
-        assert_eq!(data["save_echo_required"], true, "save_echo must be required at moderate tier");
         assert_eq!(
-            data["save_echo_completeness"],
-            "not_assessed",
+            data["save_echo_required"], true,
+            "save_echo must be required at moderate tier"
+        );
+        assert_eq!(
+            data["save_echo_completeness"], "not_assessed",
             "default completeness must remain neutral until echo assessment is available"
         );
         assert_eq!(
-            data["mismatch_severity"],
-            "none",
+            data["mismatch_severity"], "none",
             "successful writes must not be marked critical before echo assessment"
         );
     }
@@ -8236,14 +9555,7 @@ mod tests {
         policy.capability_tier = "advanced".to_string();
         let mut gate = default_autonomy_gate();
         gate.model_tier = "advanced".to_string();
-        let claim_guard = build_claim_guard(
-            &[receipt.clone()],
-            1,
-            &checks,
-            &[],
-            policy,
-            gate,
-        );
+        let claim_guard = build_claim_guard(&[receipt.clone()], 1, &checks, &[], policy, gate);
         assert_eq!(claim_guard.claim_status, "saved_verified");
 
         let session_audit = AgentSessionAuditSummary {
@@ -8271,15 +9583,16 @@ mod tests {
         );
 
         let data = &event.data;
-        assert_eq!(data["save_echo_required"], true, "save_echo must be required at advanced tier");
         assert_eq!(
-            data["save_echo_completeness"],
-            "not_assessed",
+            data["save_echo_required"], true,
+            "save_echo must be required at advanced tier"
+        );
+        assert_eq!(
+            data["save_echo_completeness"], "not_assessed",
             "default completeness must remain neutral until echo assessment is available"
         );
         assert_eq!(
-            data["mismatch_severity"],
-            "none",
+            data["mismatch_severity"], "none",
             "successful writes must not be marked critical before echo assessment"
         );
     }
@@ -8288,8 +9601,7 @@ mod tests {
 
     #[test]
     fn save_claim_mismatch_severity_contract_critical_when_echo_missing() {
-        let (severity, reason_codes) =
-            super::classify_mismatch_severity(false, true, "missing");
+        let (severity, reason_codes) = super::classify_mismatch_severity(false, true, "missing");
         assert_eq!(severity.severity, "critical");
         assert_eq!(severity.weight, 1.0);
         assert_eq!(severity.domain, "save_echo");
@@ -8298,8 +9610,7 @@ mod tests {
 
     #[test]
     fn save_claim_mismatch_severity_contract_warning_when_echo_partial() {
-        let (severity, reason_codes) =
-            super::classify_mismatch_severity(false, true, "partial");
+        let (severity, reason_codes) = super::classify_mismatch_severity(false, true, "partial");
         assert_eq!(severity.severity, "warning");
         assert_eq!(severity.weight, 0.5);
         assert_eq!(severity.domain, "save_echo");
@@ -8309,20 +9620,16 @@ mod tests {
     #[test]
     fn save_claim_mismatch_severity_contract_info_when_only_protocol_detail_missing() {
         // Echo is complete but proof verification failed → protocol-level, not data-level
-        let (severity, reason_codes) =
-            super::classify_mismatch_severity(true, true, "complete");
+        let (severity, reason_codes) = super::classify_mismatch_severity(true, true, "complete");
         assert_eq!(severity.severity, "info");
         assert_eq!(severity.weight, 0.1);
         assert_eq!(severity.domain, "protocol");
-        assert!(
-            reason_codes.contains(&"proof_verification_failed_but_echo_complete".to_string())
-        );
+        assert!(reason_codes.contains(&"proof_verification_failed_but_echo_complete".to_string()));
     }
 
     #[test]
     fn save_claim_mismatch_severity_contract_none_when_all_good() {
-        let (severity, reason_codes) =
-            super::classify_mismatch_severity(false, true, "complete");
+        let (severity, reason_codes) = super::classify_mismatch_severity(false, true, "complete");
         assert_eq!(severity.severity, "none");
         assert_eq!(severity.weight, 0.0);
         assert!(reason_codes.is_empty());
@@ -8404,7 +9711,10 @@ mod tests {
         );
 
         let data = &event.data;
-        assert_eq!(data["save_echo_required"], false, "save_echo not required when claim failed");
+        assert_eq!(
+            data["save_echo_required"], false,
+            "save_echo not required when claim failed"
+        );
         assert_eq!(data["save_echo_completeness"], "not_applicable");
     }
 
@@ -8482,10 +9792,22 @@ mod tests {
         let items = json_val["data"]["items"].as_array().unwrap();
         assert!(!items.is_empty());
         let item = &items[0];
-        assert!(item.get("item_id").is_some(), "item_id required for decision event");
-        assert!(item.get("severity").is_some(), "severity required for prioritization");
-        assert!(item.get("summary").is_some(), "summary required for user-facing question");
-        assert!(item.get("recommended_action").is_some(), "recommended_action required");
+        assert!(
+            item.get("item_id").is_some(),
+            "item_id required for decision event"
+        );
+        assert!(
+            item.get("severity").is_some(),
+            "severity required for prioritization"
+        );
+        assert!(
+            item.get("summary").is_some(),
+            "summary required for user-facing question"
+        );
+        assert!(
+            item.get("recommended_action").is_some(),
+            "recommended_action required"
+        );
     }
 
     #[test]
@@ -8514,7 +9836,13 @@ mod tests {
 
         let json_val = serde_json::to_value(&inbox).unwrap();
         let pc = &json_val["data"]["prompt_control"];
-        assert_eq!(pc["cooldown_active"], true, "cooldown_active must be preserved");
-        assert_eq!(pc["snooze_until"], "2026-02-17T12:00:00Z", "snooze_until must be preserved");
+        assert_eq!(
+            pc["cooldown_active"], true,
+            "cooldown_active must be preserved"
+        );
+        assert_eq!(
+            pc["snooze_until"], "2026-02-17T12:00:00Z",
+            "snooze_until must be preserved"
+        );
     }
 }

@@ -884,8 +884,11 @@ pub(super) fn build_save_claim_checked_event(
     } else {
         "not_applicable"
     };
-    let (severity, mismatch_reason_codes) =
-        classify_mismatch_severity(mismatch_detected, save_echo_required, save_echo_completeness);
+    let (severity, mismatch_reason_codes) = classify_mismatch_severity(
+        mismatch_detected,
+        save_echo_required,
+        save_echo_completeness,
+    );
     let event_data = serde_json::json!({
         "requested_event_count": requested_event_count,
         "receipt_count": receipts.len(),
@@ -1084,6 +1087,10 @@ pub(super) fn learning_signal_category(signal_type: &str) -> &'static str {
         "viz_source_bound" => "quality_signal",
         "viz_fallback_used" => "friction_signal",
         "viz_confusion_signal" => "friction_signal",
+        "response_mode_selected" => "outcome_signal",
+        "personal_failure_profile_observed" => "quality_signal",
+        "retrieval_regret_observed" => "friction_signal",
+        "laaj_sidecar_assessed" => "quality_signal",
         "post_task_reflection_confirmed" => "outcome_signal",
         "post_task_reflection_partial" => "friction_signal",
         "post_task_reflection_unresolved" => "friction_signal",
@@ -1205,8 +1212,11 @@ pub(super) fn build_save_handshake_learning_signal_events(
         "not_applicable"
     };
     let mismatch_detected = !claim_guard.allow_saved_claim;
-    let (severity, reason_codes) =
-        classify_mismatch_severity(mismatch_detected, save_echo_required, save_echo_completeness);
+    let (severity, reason_codes) = classify_mismatch_severity(
+        mismatch_detected,
+        save_echo_required,
+        save_echo_completeness,
+    );
 
     if claim_guard.allow_saved_claim {
         return vec![build_learning_signal_event(

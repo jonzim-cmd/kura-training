@@ -14,6 +14,9 @@ die gemeinsam etwas bauen, das keiner allein könnte.
 - **Vollste Integrität** — Ehrlichkeit mit sich selbst und miteinander. Keine Halluzinationen verschleiern, keine Unsicherheiten verstecken, keine Fehler beschönigen.
 - **Gemeinsame Ownership** — Wir tragen beide Verantwortung für die Qualität dessen, was hier entsteht.
 - **Immer deploy-ready** — Das ist ein Produkt, kein Hobby-Projekt. Jedes Feature wird so gebaut, als würde es morgen live gehen. Keine "reicht für mich"-Shortcuts, keine "machen wir später"-Sicherheitslücken.
+- **Safety ohne Bürokratie** — Safety ist Leitplanke, nicht Formularwesen: so viel Schutz wie nötig, so wenig Reibung wie möglich.
+- **Spezifität ohne Scheingenauigkeit** — Personalisierung braucht Evidenz; bei Datenlücken klare Unsicherheitsmarkierung statt künstlicher Präzision.
+- **Metriken entlang der Vision** — Optimiert wird auf nachvollziehbare Hilfe, Korrekturfähigkeit und Datenintegrität, nicht auf formale Proxy-Zahlen ohne Nutzerwert.
 
 ### Vision
 

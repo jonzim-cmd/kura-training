@@ -420,6 +420,124 @@ def _get_conventions() -> dict[str, Any]:
                 "reason_codes",
             ],
         },
+        "response_mode_policy_v1": {
+            "rules": [
+                "Select response mode by evidence state, not by forced personalization.",
+                "Mode A (grounded_personalized) requires verified write-proof evidence.",
+                "Mode B (hypothesis_personalized) allows tentative personalization with explicit uncertainty.",
+                "Mode C (general_guidance) keeps recommendations generic and asks one high-value clarification.",
+                "Policy role is advisory-only nudge logic; it must never hard-block autonomy gates.",
+            ],
+            "schema_version": "response_mode_policy.v1",
+            "policy_role": "nudge_only",
+            "modes": {
+                "A": {
+                    "name": "grounded_personalized",
+                    "evidence_state": "sufficient",
+                    "require_transparency_note": False,
+                },
+                "B": {
+                    "name": "hypothesis_personalized",
+                    "evidence_state": "limited",
+                    "require_transparency_note": True,
+                },
+                "C": {
+                    "name": "general_guidance",
+                    "evidence_state": "insufficient",
+                    "require_transparency_note": True,
+                },
+            },
+            "switch_logic": {
+                "A_if": (
+                    "verification.status!=failed AND claim_guard.allow_saved_claim=true "
+                    "AND evidence_score >= threshold_a_min"
+                ),
+                "B_if": "verification.status!=failed AND evidence_score >= threshold_b_min",
+                "C_else": "fallback when personalized evidence is not reliable enough",
+            },
+            "evidence_score": {
+                "range": [0.0, 1.0],
+                "components": [
+                    "read_after_write_coverage",
+                    "claim_guard_saved_claim",
+                    "integrity_slo_context",
+                    "calibration_context",
+                    "historical_unresolved_rate",
+                    "save_claim_posterior_risk",
+                ],
+                "penalty_policy": "non-linear penalties for degraded integrity/calibration context",
+            },
+            "adaptive_thresholds": {
+                "base": {"A_min": 0.72, "B_min": 0.42},
+                "adjustments": {
+                    "integrity.monitor": {"A_plus": 0.05, "B_plus": 0.03},
+                    "integrity.degraded": {"A_plus": 0.12, "B_plus": 0.08},
+                    "calibration.monitor": {"A_plus": 0.04, "B_plus": 0.00},
+                    "calibration.degraded": {"A_plus": 0.10, "B_plus": 0.05},
+                    "quality.monitor": {"A_plus": 0.02, "B_plus": 0.00},
+                    "quality.degraded": {"A_plus": 0.05, "B_plus": 0.03},
+                },
+            },
+            "safety": {
+                "no_forced_personalization": True,
+                "no_autonomy_blocking_from_mode_policy": True,
+            },
+        },
+        "personal_failure_profile_v1": {
+            "rules": [
+                "Maintain a deterministic per-user x model profile key for recurring failure patterns.",
+                "Track active failure modes as weighted signals, not binary labels.",
+                "Use profile only as advisory context for communication strategy and evidence disclosure.",
+                "Profile must never cage model capability; it can nudge response mode only.",
+            ],
+            "schema_version": "personal_failure_profile.v1",
+            "keying": {
+                "profile_id_seed": "user_id + model_identity + schema_version",
+                "profile_id_format": "pfp_<stable_hash>",
+            },
+            "policy_role": "advisory_only",
+            "required_fields": [
+                "profile_id",
+                "model_identity",
+                "data_quality_band",
+                "recommended_response_mode",
+                "active_signals[]",
+            ],
+        },
+        "sidecar_retrieval_regret_v1": {
+            "rules": [
+                "LaaJ runs as sidecar (advisory), never as authority over autonomy gate.",
+                "Retrieval-regret is measured continuously and exposed with score + band + reason codes.",
+                "High regret should trigger transparency and one clarification question, not bureaucratic friction.",
+                "Sidecar output must remain explainable and lightweight for chat UX.",
+            ],
+            "laaj_sidecar": {
+                "schema_version": "laaj_sidecar.v1",
+                "policy_role": "advisory_only",
+                "must_not_block_autonomy": True,
+                "verdicts": ["pass", "review"],
+            },
+            "retrieval_regret": {
+                "schema_version": "retrieval_regret.v1",
+                "score_range": [0.0, 1.0],
+                "bands": ["low", "medium", "high"],
+                "threshold_default": 0.45,
+                "adaptive_thresholds": {
+                    "integrity_or_calibration_degraded": 0.35,
+                    "integrity_or_calibration_monitor": 0.40,
+                    "healthy_default": 0.45,
+                },
+            },
+            "event_contract": {
+                "event_type": "learning.signal.logged",
+                "signal_types": [
+                    "response_mode_selected",
+                    "personal_failure_profile_observed",
+                    "retrieval_regret_observed",
+                    "laaj_sidecar_assessed",
+                ],
+            },
+        },
         "learning_backlog_bridge_v1": {
             "rules": [
                 "Generate machine-readable issue candidates from weekly learning_issue_clusters and extraction underperformance reports.",
