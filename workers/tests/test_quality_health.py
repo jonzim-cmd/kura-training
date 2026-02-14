@@ -10,6 +10,7 @@ from kura_workers.handlers.quality_health import (
     _build_simulated_repair_proposals,
     _compute_integrity_slos,
     _compute_quality_score,
+    _compute_response_mode_outcomes,
     _evaluate_read_only_invariants,
     _generate_repair_proposals,
     _simulate_repair_proposals,
@@ -857,3 +858,93 @@ class TestIntegritySlos:
         assert policy["throttle_active"] is True
         assert policy["require_confirmation_for_repairs"] is True
         assert policy["repair_auto_apply_enabled"] is False
+
+
+class TestResponseModeOutcomes:
+    def test_outcome_metrics_enforce_sample_floor_before_tuning(self):
+        rows = []
+        for _ in range(4):
+            rows.append(
+                {
+                    "data": {
+                        "signal_type": "response_mode_selected",
+                        "attributes": {"mode_code": "B"},
+                    }
+                }
+            )
+            rows.append(
+                {
+                    "data": {
+                        "signal_type": "post_task_reflection_confirmed",
+                        "attributes": {},
+                    }
+                }
+            )
+
+        outcomes = _compute_response_mode_outcomes(rows)
+        assert outcomes["response_mode_selected_total"] == 4
+        assert outcomes["post_task_reflection_total"] == 4
+        assert outcomes["sample_ok"] is False
+        assert outcomes["sample_confidence"] == "low"
+
+    def test_outcome_metrics_track_follow_through_challenge_and_regret(self):
+        rows = []
+        for idx in range(10):
+            mode = "A"
+            if idx in {6, 7, 8}:
+                mode = "B"
+            if idx == 9:
+                mode = "C"
+            rows.append(
+                {
+                    "data": {
+                        "signal_type": "response_mode_selected",
+                        "attributes": {"mode_code": mode},
+                    }
+                }
+            )
+            rows.append(
+                {
+                    "data": {
+                        "signal_type": (
+                            "post_task_reflection_confirmed" if idx < 7 else "post_task_reflection_unresolved"
+                        ),
+                        "attributes": {},
+                    }
+                }
+            )
+
+        for idx in range(8):
+            rows.append(
+                {
+                    "data": {
+                        "signal_type": "retrieval_regret_observed",
+                        "attributes": {"threshold_exceeded": idx < 3},
+                    }
+                }
+            )
+
+        rows.extend(
+            [
+                {"data": {"signal_type": "workflow_override_used", "attributes": {}}},
+                {"data": {"signal_type": "workflow_override_used", "attributes": {}}},
+                {"data": {"signal_type": "correction_applied", "attributes": {}}},
+            ]
+        )
+        rows.extend(
+            [{"data": {"signal_type": "save_handshake_verified", "attributes": {}}} for _ in range(7)]
+        )
+        rows.extend(
+            [{"data": {"signal_type": "save_handshake_pending", "attributes": {}}} for _ in range(2)]
+        )
+        rows.append({"data": {"signal_type": "save_claim_mismatch_attempt", "attributes": {}}})
+
+        outcomes = _compute_response_mode_outcomes(rows)
+        assert outcomes["sample_ok"] is True
+        assert outcomes["sample_confidence"] == "medium"
+        assert outcomes["response_mode_selected_total"] == 10
+        assert outcomes["response_mode_general_share_pct"] == 10.0
+        assert outcomes["post_task_follow_through_rate_pct"] == 70.0
+        assert outcomes["retrieval_regret_exceeded_pct"] == 37.5
+        assert outcomes["user_challenge_rate_pct"] == 20.0
+        assert outcomes["save_handshake_verified_rate_pct"] == 70.0

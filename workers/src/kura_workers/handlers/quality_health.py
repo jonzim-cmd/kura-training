@@ -115,6 +115,9 @@ _DETERMINISTIC_PROPOSAL_SOURCES = {
     "catalog_key_slug_match",
 }
 _SLO_LOOKBACK_DAYS = 7
+_RESPONSE_MODE_OUTCOME_LOOKBACK_DAYS = 14
+_RESPONSE_MODE_OUTCOME_MIN_RESPONSE_MODE_SAMPLES = 8
+_RESPONSE_MODE_OUTCOME_MIN_REFLECTION_SAMPLES = 8
 _SLO_UNRESOLVED_SET_PCT_HEALTHY_MAX = 2.0
 _SLO_UNRESOLVED_SET_PCT_MONITOR_MAX = 5.0
 _SLO_SAVE_CLAIM_MISMATCH_PCT_HEALTHY_MAX = 8.0
@@ -130,6 +133,19 @@ _INV004_ENFORCEMENT_CUTOFF_DEFAULT = "2026-02-14T00:00:00+00:00"
 _SLO_REPAIR_LATENCY_HOURS_HEALTHY_MAX = 24.0
 _SLO_REPAIR_LATENCY_HOURS_MONITOR_MAX = 48.0
 _STATUS_ORDER = {"healthy": 0, "monitor": 1, "degraded": 2}
+_RESPONSE_MODE_OUTCOME_SIGNAL_TYPES = (
+    "response_mode_selected",
+    "retrieval_regret_observed",
+    "workflow_override_used",
+    "correction_applied",
+    "correction_undone",
+    "post_task_reflection_confirmed",
+    "post_task_reflection_partial",
+    "post_task_reflection_unresolved",
+    "save_handshake_verified",
+    "save_handshake_pending",
+    "save_claim_mismatch_attempt",
+)
 
 _OVERVIEW_KEY_BY_PROJECTION = {
     "body_composition",
@@ -1277,6 +1293,165 @@ async def _load_latest_quality_issue_signals(
             (user_id,),
         )
         return await cur.fetchall()
+
+
+async def _load_recent_response_mode_signal_rows(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+    *,
+    lookback_days: int = _RESPONSE_MODE_OUTCOME_LOOKBACK_DAYS,
+) -> list[dict[str, Any]]:
+    window_days = max(1, int(lookback_days))
+    window_start = datetime.now(timezone.utc) - timedelta(days=window_days)
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT timestamp, data
+            FROM events
+            WHERE user_id = %s
+              AND event_type = 'learning.signal.logged'
+              AND timestamp >= %s
+              AND data->>'signal_type' = ANY(%s)
+            ORDER BY timestamp ASC, id ASC
+            """,
+            (user_id, window_start, list(_RESPONSE_MODE_OUTCOME_SIGNAL_TYPES)),
+        )
+        return await cur.fetchall()
+
+
+def _value_as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return False
+
+
+def _rate_pct(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round((numerator / denominator) * 100.0, 2)
+
+
+def _compute_response_mode_outcomes(
+    signal_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    mode_counts = {"A": 0, "B": 0, "C": 0}
+    retrieval_regret_total = 0
+    retrieval_regret_exceeded_total = 0
+    user_challenge_total = 0
+    correction_signal_total = 0
+    post_task_reflection_total = 0
+    post_task_reflection_confirmed_total = 0
+    save_handshake_total = 0
+    save_handshake_verified_total = 0
+
+    for row in signal_rows:
+        payload = row.get("data") or {}
+        if not isinstance(payload, dict):
+            continue
+        signal_type = str(payload.get("signal_type") or "").strip()
+        attributes = payload.get("attributes") or {}
+        if not isinstance(attributes, dict):
+            attributes = {}
+
+        if signal_type == "response_mode_selected":
+            mode_code = str(attributes.get("mode_code") or "").strip().upper()
+            if mode_code in mode_counts:
+                mode_counts[mode_code] += 1
+            continue
+
+        if signal_type == "retrieval_regret_observed":
+            retrieval_regret_total += 1
+            if _value_as_bool(attributes.get("threshold_exceeded")):
+                retrieval_regret_exceeded_total += 1
+            continue
+
+        if signal_type == "workflow_override_used":
+            user_challenge_total += 1
+            correction_signal_total += 1
+            continue
+
+        if signal_type in {"correction_applied", "correction_undone"}:
+            correction_signal_total += 1
+            continue
+
+        if signal_type in {
+            "post_task_reflection_confirmed",
+            "post_task_reflection_partial",
+            "post_task_reflection_unresolved",
+        }:
+            post_task_reflection_total += 1
+            if signal_type == "post_task_reflection_confirmed":
+                post_task_reflection_confirmed_total += 1
+            continue
+
+        if signal_type in {
+            "save_handshake_verified",
+            "save_handshake_pending",
+            "save_claim_mismatch_attempt",
+        }:
+            save_handshake_total += 1
+            if signal_type == "save_handshake_verified":
+                save_handshake_verified_total += 1
+
+    response_mode_selected_total = sum(mode_counts.values())
+    sample_ok = (
+        response_mode_selected_total
+        >= _RESPONSE_MODE_OUTCOME_MIN_RESPONSE_MODE_SAMPLES
+        and post_task_reflection_total >= _RESPONSE_MODE_OUTCOME_MIN_REFLECTION_SAMPLES
+    )
+    if (
+        response_mode_selected_total >= 24
+        and post_task_reflection_total >= 24
+    ):
+        sample_confidence = "high"
+    elif sample_ok:
+        sample_confidence = "medium"
+    else:
+        sample_confidence = "low"
+
+    return {
+        "window_days": _RESPONSE_MODE_OUTCOME_LOOKBACK_DAYS,
+        "response_mode_selected_total": response_mode_selected_total,
+        "response_mode_grounded_total": mode_counts["A"],
+        "response_mode_hypothesis_total": mode_counts["B"],
+        "response_mode_general_total": mode_counts["C"],
+        "response_mode_general_share_pct": _rate_pct(
+            mode_counts["C"], response_mode_selected_total
+        ),
+        "retrieval_regret_total": retrieval_regret_total,
+        "retrieval_regret_exceeded_total": retrieval_regret_exceeded_total,
+        "retrieval_regret_exceeded_pct": _rate_pct(
+            retrieval_regret_exceeded_total, retrieval_regret_total
+        ),
+        "user_challenge_total": user_challenge_total,
+        "user_challenge_rate_pct": _rate_pct(
+            user_challenge_total, response_mode_selected_total
+        ),
+        "correction_signal_total": correction_signal_total,
+        "correction_signal_rate_pct": _rate_pct(
+            correction_signal_total, response_mode_selected_total
+        ),
+        "post_task_reflection_total": post_task_reflection_total,
+        "post_task_reflection_confirmed_total": post_task_reflection_confirmed_total,
+        "post_task_follow_through_rate_pct": _rate_pct(
+            post_task_reflection_confirmed_total, post_task_reflection_total
+        ),
+        "save_handshake_total": save_handshake_total,
+        "save_handshake_verified_total": save_handshake_verified_total,
+        "save_handshake_verified_rate_pct": _rate_pct(
+            save_handshake_verified_total, save_handshake_total
+        ),
+        "sample_floor_response_mode_selected": (
+            _RESPONSE_MODE_OUTCOME_MIN_RESPONSE_MODE_SAMPLES
+        ),
+        "sample_floor_post_task_reflection": _RESPONSE_MODE_OUTCOME_MIN_REFLECTION_SAMPLES,
+        "sample_ok": sample_ok,
+        "sample_confidence": sample_confidence,
+    }
 
 
 def _metric_status(
@@ -2796,12 +2971,16 @@ async def update_quality_health(
             )
         return
 
+    outcome_signal_rows = await _load_recent_response_mode_signal_rows(conn, user_id)
+    response_mode_outcomes = _compute_response_mode_outcomes(outcome_signal_rows)
+
     alias_map = await get_alias_map(conn, user_id, retracted_ids=retracted_ids)
     issues, metrics = _evaluate_read_only_invariants(
         rows,
         alias_map,
         import_job_rows=import_job_rows,
     )
+    metrics["response_mode_outcomes"] = response_mode_outcomes
     latest_quality_issue_signal_rows = await _load_latest_quality_issue_signals(
         conn,
         user_id,
@@ -2856,6 +3035,7 @@ async def update_quality_health(
             alias_map,
             import_job_rows=import_job_rows,
         )
+        metrics["response_mode_outcomes"] = response_mode_outcomes
         verified_at = datetime.now(timezone.utc).isoformat()
         await _verify_applied_repairs(
             conn,

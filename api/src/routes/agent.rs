@@ -676,6 +676,15 @@ pub struct AgentResponseModePolicy {
     pub integrity_slo_status: String,
     /// healthy | monitor | degraded | unknown
     pub calibration_status: String,
+    /// number of historical response-mode selections in the lookback window
+    pub outcome_signal_sample_size: usize,
+    pub outcome_signal_sample_ok: bool,
+    /// low | medium | high
+    pub outcome_signal_sample_confidence: String,
+    pub historical_follow_through_rate_pct: f64,
+    pub historical_challenge_rate_pct: f64,
+    pub historical_regret_exceeded_rate_pct: f64,
+    pub historical_save_verified_rate_pct: f64,
     /// nudge_only (advisory, never hard-blocking)
     pub policy_role: String,
     pub requires_transparency_note: bool,
@@ -1901,6 +1910,13 @@ struct RuntimeQualitySignals {
     save_claim_posterior_monitor_prob: f64,
     save_claim_posterior_degraded_prob: f64,
     issues_open: usize,
+    outcome_signal_sample_size: usize,
+    outcome_signal_sample_ok: bool,
+    outcome_signal_sample_confidence: String,
+    historical_follow_through_rate_pct: f64,
+    historical_challenge_rate_pct: f64,
+    historical_regret_exceeded_rate_pct: f64,
+    historical_save_verified_rate_pct: f64,
 }
 
 impl Default for RuntimeQualitySignals {
@@ -1914,6 +1930,13 @@ impl Default for RuntimeQualitySignals {
             save_claim_posterior_monitor_prob: 0.0,
             save_claim_posterior_degraded_prob: 0.0,
             issues_open: 0,
+            outcome_signal_sample_size: 0,
+            outcome_signal_sample_ok: false,
+            outcome_signal_sample_confidence: "low".to_string(),
+            historical_follow_through_rate_pct: 0.0,
+            historical_challenge_rate_pct: 0.0,
+            historical_regret_exceeded_rate_pct: 0.0,
+            historical_save_verified_rate_pct: 0.0,
         }
     }
 }
@@ -1936,12 +1959,39 @@ fn read_value_usize(value: Option<&Value>) -> Option<usize> {
         .and_then(|number| usize::try_from(number).ok())
 }
 
+fn read_value_bool(value: Option<&Value>) -> Option<bool> {
+    let raw = value?;
+    if let Some(flag) = raw.as_bool() {
+        return Some(flag);
+    }
+    if let Some(number) = raw.as_i64() {
+        return Some(number != 0);
+    }
+    raw.as_str().and_then(|raw| {
+        let normalized = raw.trim().to_lowercase();
+        match normalized.as_str() {
+            "true" | "1" | "yes" | "y" => Some(true),
+            "false" | "0" | "no" | "n" => Some(false),
+            _ => None,
+        }
+    })
+}
+
 fn normalize_quality_label(value: Option<&Value>) -> String {
     let label = value.and_then(Value::as_str).unwrap_or("unknown");
     let normalized = label.trim().to_lowercase();
     match normalized.as_str() {
         "healthy" | "monitor" | "degraded" => normalized,
         _ => "unknown".to_string(),
+    }
+}
+
+fn normalize_sample_confidence(value: Option<&Value>) -> String {
+    let label = value.and_then(Value::as_str).unwrap_or("low");
+    let normalized = label.trim().to_lowercase();
+    match normalized.as_str() {
+        "low" | "medium" | "high" => normalized,
+        _ => "low".to_string(),
     }
 }
 
@@ -1997,6 +2047,42 @@ fn extract_runtime_quality_signals(
     )
     .unwrap_or(0.0)
     .clamp(0.0, 1.0);
+
+    let response_mode_outcomes = payload
+        .get("metrics")
+        .and_then(|metrics| metrics.get("response_mode_outcomes"));
+    signals.outcome_signal_sample_size = read_value_usize(
+        response_mode_outcomes.and_then(|outcomes| outcomes.get("response_mode_selected_total")),
+    )
+    .unwrap_or(0);
+    signals.outcome_signal_sample_ok =
+        read_value_bool(response_mode_outcomes.and_then(|outcomes| outcomes.get("sample_ok")))
+            .unwrap_or(false);
+    signals.outcome_signal_sample_confidence = normalize_sample_confidence(
+        response_mode_outcomes.and_then(|outcomes| outcomes.get("sample_confidence")),
+    );
+    signals.historical_follow_through_rate_pct = read_value_f64(
+        response_mode_outcomes
+            .and_then(|outcomes| outcomes.get("post_task_follow_through_rate_pct")),
+    )
+    .unwrap_or(0.0)
+    .clamp(0.0, 100.0);
+    signals.historical_challenge_rate_pct = read_value_f64(
+        response_mode_outcomes.and_then(|outcomes| outcomes.get("user_challenge_rate_pct")),
+    )
+    .unwrap_or(0.0)
+    .clamp(0.0, 100.0);
+    signals.historical_regret_exceeded_rate_pct = read_value_f64(
+        response_mode_outcomes.and_then(|outcomes| outcomes.get("retrieval_regret_exceeded_pct")),
+    )
+    .unwrap_or(0.0)
+    .clamp(0.0, 100.0);
+    signals.historical_save_verified_rate_pct = read_value_f64(
+        response_mode_outcomes
+            .and_then(|outcomes| outcomes.get("save_handshake_verified_rate_pct")),
+    )
+    .unwrap_or(0.0)
+    .clamp(0.0, 100.0);
     signals
 }
 
@@ -2030,6 +2116,39 @@ fn response_mode_thresholds(signals: &RuntimeQualitySignals) -> (f64, f64) {
             threshold_b += 0.03;
         }
         _ => {}
+    }
+
+    if signals.outcome_signal_sample_ok {
+        if signals.historical_regret_exceeded_rate_pct >= 40.0 {
+            threshold_a += 0.04;
+            threshold_b += 0.03;
+        } else if signals.historical_regret_exceeded_rate_pct <= 12.0 {
+            threshold_a -= 0.02;
+            threshold_b -= 0.01;
+        }
+
+        if signals.historical_challenge_rate_pct >= 20.0 {
+            threshold_a += 0.03;
+            threshold_b += 0.02;
+        } else if signals.historical_challenge_rate_pct <= 8.0 {
+            threshold_a -= 0.01;
+        }
+
+        if signals.historical_follow_through_rate_pct >= 72.0 {
+            threshold_a -= 0.02;
+            threshold_b -= 0.01;
+        } else if signals.historical_follow_through_rate_pct <= 38.0 {
+            threshold_a += 0.03;
+            threshold_b += 0.02;
+        }
+
+        if signals.historical_save_verified_rate_pct >= 88.0 {
+            threshold_a -= 0.01;
+            threshold_b -= 0.01;
+        } else if signals.historical_save_verified_rate_pct <= 60.0 {
+            threshold_a += 0.02;
+            threshold_b += 0.01;
+        }
     }
 
     (threshold_a.clamp(0.55, 0.95), threshold_b.clamp(0.25, 0.85))
@@ -2110,6 +2229,20 @@ fn response_mode_evidence_score(
         score -= 0.03;
     }
 
+    if signals.outcome_signal_sample_ok {
+        let challenge_penalty =
+            (signals.historical_challenge_rate_pct / 100.0).clamp(0.0, 0.40) * 0.12;
+        let regret_penalty =
+            (signals.historical_regret_exceeded_rate_pct / 100.0).clamp(0.0, 0.60) * 0.16;
+        let follow_delta =
+            ((signals.historical_follow_through_rate_pct - 50.0) / 50.0).clamp(-1.0, 1.0);
+        let save_delta =
+            ((signals.historical_save_verified_rate_pct - 50.0) / 50.0).clamp(-1.0, 1.0);
+        score -= challenge_penalty + regret_penalty;
+        score += follow_delta * 0.07;
+        score += save_delta * 0.05;
+    }
+
     score.clamp(0.0, 1.0)
 }
 
@@ -2177,6 +2310,20 @@ fn build_response_mode_policy(
             signals.calibration_status
         ));
     }
+    if signals.outcome_signal_sample_ok {
+        reason_codes.push("historical_outcome_tuning_applied".to_string());
+        if signals.historical_regret_exceeded_rate_pct >= 40.0 {
+            reason_codes.push("historical_high_regret_rate".to_string());
+        }
+        if signals.historical_challenge_rate_pct >= 20.0 {
+            reason_codes.push("historical_high_challenge_rate".to_string());
+        }
+        if signals.historical_follow_through_rate_pct <= 38.0 {
+            reason_codes.push("historical_low_follow_through_rate".to_string());
+        }
+    } else if signals.outcome_signal_sample_size > 0 {
+        reason_codes.push("historical_outcome_sample_below_floor".to_string());
+    }
     if claim_guard.autonomy_gate.decision == "confirm_first" {
         reason_codes.push("confirm_first_gate_active".to_string());
     }
@@ -2209,6 +2356,13 @@ fn build_response_mode_policy(
         quality_status: signals.quality_status,
         integrity_slo_status: signals.integrity_slo_status,
         calibration_status: signals.calibration_status,
+        outcome_signal_sample_size: signals.outcome_signal_sample_size,
+        outcome_signal_sample_ok: signals.outcome_signal_sample_ok,
+        outcome_signal_sample_confidence: signals.outcome_signal_sample_confidence,
+        historical_follow_through_rate_pct: signals.historical_follow_through_rate_pct,
+        historical_challenge_rate_pct: signals.historical_challenge_rate_pct,
+        historical_regret_exceeded_rate_pct: signals.historical_regret_exceeded_rate_pct,
+        historical_save_verified_rate_pct: signals.historical_save_verified_rate_pct,
         policy_role: RESPONSE_MODE_POLICY_ROLE_NUDGE_ONLY.to_string(),
         requires_transparency_note,
         reason_codes,
@@ -2526,6 +2680,13 @@ fn build_response_mode_sidecar_learning_signal_events(
             "quality_status": response_mode_policy.quality_status,
             "integrity_slo_status": response_mode_policy.integrity_slo_status,
             "calibration_status": response_mode_policy.calibration_status,
+            "outcome_signal_sample_size": response_mode_policy.outcome_signal_sample_size,
+            "outcome_signal_sample_ok": response_mode_policy.outcome_signal_sample_ok,
+            "outcome_signal_sample_confidence": response_mode_policy.outcome_signal_sample_confidence,
+            "historical_follow_through_rate_pct": response_mode_policy.historical_follow_through_rate_pct,
+            "historical_challenge_rate_pct": response_mode_policy.historical_challenge_rate_pct,
+            "historical_regret_exceeded_rate_pct": response_mode_policy.historical_regret_exceeded_rate_pct,
+            "historical_save_verified_rate_pct": response_mode_policy.historical_save_verified_rate_pct,
             "policy_role": response_mode_policy.policy_role,
             "requires_transparency_note": response_mode_policy.requires_transparency_note,
             "reason_codes": response_mode_policy.reason_codes,
@@ -8511,6 +8672,13 @@ mod tests {
                 quality_status: "monitor".to_string(),
                 integrity_slo_status: "monitor".to_string(),
                 calibration_status: "healthy".to_string(),
+                outcome_signal_sample_size: 0,
+                outcome_signal_sample_ok: false,
+                outcome_signal_sample_confidence: "low".to_string(),
+                historical_follow_through_rate_pct: 0.0,
+                historical_challenge_rate_pct: 0.0,
+                historical_regret_exceeded_rate_pct: 0.0,
+                historical_save_verified_rate_pct: 0.0,
                 policy_role: super::RESPONSE_MODE_POLICY_ROLE_NUDGE_ONLY.to_string(),
                 requires_transparency_note: true,
                 reason_codes: vec!["write_proof_partial_or_pending".to_string()],
@@ -8957,6 +9125,124 @@ mod tests {
         assert!(policy.threshold_b_min > 0.42);
         assert!(policy.evidence_score >= policy.threshold_b_min);
         assert!(policy.evidence_score < policy.threshold_a_min);
+    }
+
+    #[test]
+    fn response_mode_policy_contract_tightens_thresholds_when_outcome_history_is_risky() {
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            _session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("verified", "verified", "clean", None);
+        let quality_health = make_projection_response(
+            "quality_health",
+            "overview",
+            Utc::now(),
+            json!({
+                "status": "healthy",
+                "integrity_slo_status": "healthy",
+                "issues_open": 0,
+                "metrics": {
+                    "set_logged_unresolved_pct": 0.0,
+                    "response_mode_outcomes": {
+                        "response_mode_selected_total": 24,
+                        "post_task_reflection_total": 24,
+                        "sample_ok": true,
+                        "sample_confidence": "high",
+                        "user_challenge_rate_pct": 32.0,
+                        "post_task_follow_through_rate_pct": 30.0,
+                        "retrieval_regret_exceeded_pct": 48.0,
+                        "save_handshake_verified_rate_pct": 40.0
+                    }
+                },
+                "integrity_slos": {
+                    "status": "healthy",
+                    "metrics": {
+                        "save_claim_mismatch_rate_pct": {
+                            "value": 2.0,
+                            "posterior_prob_gt_monitor": 0.1,
+                            "posterior_prob_gt_degraded": 0.02
+                        }
+                    }
+                }
+            }),
+        );
+        let policy =
+            super::build_response_mode_policy(&claim_guard, &verification, Some(&quality_health));
+        assert!(policy.outcome_signal_sample_ok);
+        assert_eq!(policy.outcome_signal_sample_confidence, "high");
+        assert!(policy.threshold_a_min > 0.72);
+        assert!(policy.threshold_b_min > 0.42);
+        assert_eq!(policy.mode_code, "B");
+        assert!(
+            policy
+                .reason_codes
+                .iter()
+                .any(|code| code == "historical_outcome_tuning_applied")
+        );
+        assert!(
+            policy
+                .reason_codes
+                .iter()
+                .any(|code| code == "historical_high_regret_rate")
+        );
+    }
+
+    #[test]
+    fn response_mode_policy_contract_relaxes_thresholds_when_outcome_history_is_stable() {
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            _session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("verified", "verified", "clean", None);
+        let quality_health = make_projection_response(
+            "quality_health",
+            "overview",
+            Utc::now(),
+            json!({
+                "status": "healthy",
+                "integrity_slo_status": "healthy",
+                "issues_open": 0,
+                "metrics": {
+                    "set_logged_unresolved_pct": 0.0,
+                    "response_mode_outcomes": {
+                        "response_mode_selected_total": 30,
+                        "post_task_reflection_total": 30,
+                        "sample_ok": true,
+                        "sample_confidence": "high",
+                        "user_challenge_rate_pct": 4.0,
+                        "post_task_follow_through_rate_pct": 84.0,
+                        "retrieval_regret_exceeded_pct": 8.0,
+                        "save_handshake_verified_rate_pct": 92.0
+                    }
+                },
+                "integrity_slos": {
+                    "status": "healthy",
+                    "metrics": {
+                        "save_claim_mismatch_rate_pct": {
+                            "value": 1.0,
+                            "posterior_prob_gt_monitor": 0.04,
+                            "posterior_prob_gt_degraded": 0.01
+                        }
+                    }
+                }
+            }),
+        );
+        let policy =
+            super::build_response_mode_policy(&claim_guard, &verification, Some(&quality_health));
+        assert!(policy.outcome_signal_sample_ok);
+        assert!(policy.threshold_a_min < 0.72);
+        assert!(policy.threshold_b_min < 0.42);
+        assert_eq!(policy.mode_code, "A");
+        assert!(policy.evidence_score >= policy.threshold_a_min);
     }
 
     #[test]

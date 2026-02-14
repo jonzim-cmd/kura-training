@@ -464,8 +464,24 @@ def _get_conventions() -> dict[str, Any]:
                     "calibration_context",
                     "historical_unresolved_rate",
                     "save_claim_posterior_risk",
+                    "challenge_rate",
+                    "follow_through_rate",
+                    "retrieval_regret_exceeded_rate",
+                    "save_handshake_verified_rate",
                 ],
                 "penalty_policy": "non-linear penalties for degraded integrity/calibration context",
+            },
+            "outcome_tuning": {
+                "window_days": 14,
+                "sample_floor": {
+                    "response_mode_selected_total": 8,
+                    "post_task_reflection_total": 8,
+                },
+                "apply_only_when_sample_ok": True,
+                "principle": (
+                    "Tighten thresholds when regret/challenge rises, relax conservatively "
+                    "when follow-through and save-handshake verification stay strong."
+                ),
             },
             "adaptive_thresholds": {
                 "base": {"A_min": 0.72, "B_min": 0.42},
@@ -476,6 +492,11 @@ def _get_conventions() -> dict[str, Any]:
                     "calibration.degraded": {"A_plus": 0.10, "B_plus": 0.05},
                     "quality.monitor": {"A_plus": 0.02, "B_plus": 0.00},
                     "quality.degraded": {"A_plus": 0.05, "B_plus": 0.03},
+                    "outcomes.high_regret_or_challenge_or_low_follow_through": {
+                        "A_plus": 0.04,
+                        "B_plus": 0.03,
+                    },
+                    "outcomes.consistently_stable": {"A_minus": 0.02, "B_minus": 0.01},
                 },
             },
             "safety": {
