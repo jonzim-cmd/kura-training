@@ -64,6 +64,11 @@ REQUIRED_AGENT_CONTRACT_MATRIX: dict[str, dict[str, str]] = {
         "positive_case": "routes::agent::tests::decision_brief_contract_highlights_high_impact_decisions_from_consistency_inbox",
         "negative_case": "routes::agent::tests::decision_brief_contract_uses_person_tradeoffs_from_preferences",
     },
+    "high_impact_plan_update": {
+        "schema_pin": "routes::agent::tests::high_impact_classification_keeps_routine_plan_update_low_impact",
+        "positive_case": "routes::agent::tests::high_impact_classification_escalates_large_plan_shift",
+        "negative_case": "routes::agent::tests::high_impact_classification_keeps_routine_plan_update_low_impact",
+    },
 }
 
 
@@ -81,6 +86,7 @@ def test_required_agent_contract_matrix_keys_are_explicit() -> None:
         "sidecar_retrieval_regret",
         "counterfactual_recommendation",
         "decision_brief",
+        "high_impact_plan_update",
     }
     for contract_name, scenarios in REQUIRED_AGENT_CONTRACT_MATRIX.items():
         assert set(scenarios) == {"schema_pin", "positive_case", "negative_case"}, contract_name

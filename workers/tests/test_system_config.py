@@ -503,6 +503,15 @@ class TestConventions:
         assert sidecar["retrieval_regret_signal_type"] == "retrieval_regret_observed"
         assert sidecar["laaj_signal_type"] == "laaj_sidecar_assessed"
 
+    def test_sidecar_retrieval_regret_v1_declares_runtime_and_developer_channels(self):
+        result = _get_conventions()
+        assert "sidecar_retrieval_regret_v1" in result
+        sidecar = result["sidecar_retrieval_regret_v1"]
+        channels = sidecar["delivery_channels"]
+        assert channels["runtime_context"] == "agent_write_with_proof.response.sidecar_assessment"
+        assert channels["developer_telemetry"] == "events.learning.signal.logged"
+        assert channels["policy_mode"] == "advisory_only"
+
     def test_has_decision_brief_v1_conventions(self):
         result = _get_conventions()
         assert "decision_brief_v1" in result
@@ -515,8 +524,15 @@ class TestConventions:
             "recent_person_failures",
             "person_tradeoffs",
         }
-        assert brief["max_items_per_block"] == 3
+        assert brief["required_output_fields"][0] == "chat_template_id"
+        caps = brief["item_caps_by_mode"]
+        assert caps["concise"] == 3
+        assert caps["balanced_default"] == 4
+        assert caps["detailed_default"] == 5
+        assert caps["explicit_detail_request_max"] == 6
         assert brief["source_priority"][0] == "quality_health/overview"
+        assert brief["detail_mode"]["default_mode"] == "balanced"
+        assert "ausfuehrlich" in brief["detail_mode"]["explicit_request_keywords"]
         assert (
             brief["chat_context_template"]["template_id"]
             == "decision_brief.chat.context.v1"
@@ -527,6 +543,27 @@ class TestConventions:
         )
         assert brief["chat_context_template"]["must_include_hypothesis_rule"] is True
         assert brief["safety"]["must_not_claim_false_certainty"] is True
+
+    def test_has_high_impact_plan_update_v1_conventions(self):
+        result = _get_conventions()
+        assert "high_impact_plan_update_v1" in result
+        contract = result["high_impact_plan_update_v1"]
+        assert contract["schema_version"] == "high_impact_plan_update.v1"
+        assert (
+            "training_plan.updated"
+            not in contract["classification"]["always_high_impact_event_types"]
+        )
+        thresholds = contract["classification"]["training_plan_updated_high_impact_when"][
+            "thresholds_abs_gte"
+        ]
+        assert thresholds["volume_delta_pct"] == 15.0
+        assert thresholds["intensity_delta_pct"] == 10.0
+        assert thresholds["frequency_delta_per_week"] == 2.0
+        assert thresholds["cycle_length_weeks_delta"] == 2.0
+        assert (
+            contract["safety"]["must_avoid_bureaucratic_friction_for_routine_adjustments"]
+            is True
+        )
 
     def test_has_proof_in_production_v1_conventions(self):
         result = _get_conventions()

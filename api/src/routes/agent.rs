@@ -148,6 +148,7 @@ pub struct AgentContextMeta {
 pub struct AgentDecisionBrief {
     pub schema_version: String,
     pub chat_template_id: String,
+    pub item_cap_per_block: usize,
     pub chat_context_block: String,
     pub likely_true: Vec<String>,
     pub unclear: Vec<String>,
@@ -2040,7 +2041,10 @@ fn normalize_sample_confidence(value: Option<&Value>) -> String {
     }
 }
 
-const DECISION_BRIEF_MAX_ITEMS_PER_BLOCK: usize = 3;
+const DECISION_BRIEF_MIN_ITEMS_PER_BLOCK: usize = 3;
+const DECISION_BRIEF_BALANCED_ITEMS_PER_BLOCK: usize = 4;
+const DECISION_BRIEF_DETAILED_ITEMS_PER_BLOCK: usize = 5;
+const DECISION_BRIEF_MAX_ITEMS_PER_BLOCK: usize = 6;
 const DECISION_BRIEF_CHAT_TEMPLATE_ID: &str = "decision_brief.chat.context.v1";
 
 fn read_value_string(value: Option<&Value>) -> Option<String> {
@@ -2067,9 +2071,6 @@ fn read_value_string_list(value: Option<&Value>) -> Vec<String> {
 }
 
 fn push_decision_brief_entry(block: &mut Vec<String>, text: impl Into<String>) {
-    if block.len() >= DECISION_BRIEF_MAX_ITEMS_PER_BLOCK {
-        return;
-    }
     let normalized = text.into().trim().to_string();
     if normalized.is_empty() {
         return;
@@ -2078,6 +2079,55 @@ fn push_decision_brief_entry(block: &mut Vec<String>, text: impl Into<String>) {
         return;
     }
     block.push(normalized);
+}
+
+fn task_intent_requests_detailed_decision_brief(task_intent: Option<&str>) -> bool {
+    let Some(intent) = task_intent else {
+        return false;
+    };
+    let normalized = intent.trim().to_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+    [
+        "ausfuehrlich",
+        "detail",
+        "detailed",
+        "verbose",
+        "mehr begruendung",
+        "mehr details",
+        "erklaer",
+        "explain",
+        "why",
+        "warum",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+fn decision_brief_item_cap(user_profile: &ProjectionResponse, task_intent: Option<&str>) -> usize {
+    let verbosity = user_preference_string(Some(user_profile), "verbosity")
+        .unwrap_or_else(|| "balanced".to_string())
+        .trim()
+        .to_lowercase();
+    let mut cap = match verbosity.as_str() {
+        "concise" => DECISION_BRIEF_MIN_ITEMS_PER_BLOCK,
+        "detailed" => DECISION_BRIEF_DETAILED_ITEMS_PER_BLOCK,
+        _ => DECISION_BRIEF_BALANCED_ITEMS_PER_BLOCK,
+    };
+    if task_intent_requests_detailed_decision_brief(task_intent) {
+        cap = (cap + 1).min(DECISION_BRIEF_MAX_ITEMS_PER_BLOCK);
+    }
+    cap.clamp(
+        DECISION_BRIEF_MIN_ITEMS_PER_BLOCK,
+        DECISION_BRIEF_MAX_ITEMS_PER_BLOCK,
+    )
+}
+
+fn cap_decision_brief_block(block: &mut Vec<String>, cap: usize) {
+    if block.len() > cap {
+        block.truncate(cap);
+    }
 }
 
 fn append_decision_brief_chat_section(block: &mut String, heading: &str, items: &[String]) {
@@ -2132,12 +2182,14 @@ fn build_decision_brief(
     user_profile: &ProjectionResponse,
     quality_health: Option<&ProjectionResponse>,
     consistency_inbox: Option<&ProjectionResponse>,
+    task_intent: Option<&str>,
 ) -> AgentDecisionBrief {
     let mut likely_true: Vec<String> = Vec::new();
     let mut unclear: Vec<String> = Vec::new();
     let mut high_impact_decisions: Vec<String> = Vec::new();
     let mut recent_person_failures: Vec<String> = Vec::new();
     let mut person_tradeoffs: Vec<String> = Vec::new();
+    let item_cap_per_block = decision_brief_item_cap(user_profile, task_intent);
 
     let quality = extract_runtime_quality_signals(quality_health);
     if quality.integrity_slo_status == "healthy" && quality.calibration_status == "healthy" {
@@ -2416,6 +2468,12 @@ fn build_decision_brief(
         );
     }
 
+    cap_decision_brief_block(&mut likely_true, item_cap_per_block);
+    cap_decision_brief_block(&mut unclear, item_cap_per_block);
+    cap_decision_brief_block(&mut high_impact_decisions, item_cap_per_block);
+    cap_decision_brief_block(&mut recent_person_failures, item_cap_per_block);
+    cap_decision_brief_block(&mut person_tradeoffs, item_cap_per_block);
+
     let chat_context_block = build_decision_brief_chat_context_block(
         &likely_true,
         &unclear,
@@ -2427,6 +2485,7 @@ fn build_decision_brief(
     AgentDecisionBrief {
         schema_version: DECISION_BRIEF_SCHEMA_VERSION.to_string(),
         chat_template_id: DECISION_BRIEF_CHAT_TEMPLATE_ID.to_string(),
+        item_cap_per_block,
         chat_context_block,
         likely_true,
         unclear,
@@ -5441,8 +5500,12 @@ pub async fn get_agent_context(
         semantic_memory.as_ref(),
         generated_at,
     );
-    let decision_brief =
-        build_decision_brief(&user_profile, quality_health.as_ref(), consistency_inbox.as_ref());
+    let decision_brief = build_decision_brief(
+        &user_profile,
+        quality_health.as_ref(),
+        consistency_inbox.as_ref(),
+        ranking_context.intent.as_deref(),
+    );
 
     Ok(Json(AgentContextResponse {
         system,
@@ -10383,6 +10446,7 @@ mod tests {
                 "counterfactual_recommendation_v1": {"schema_version": "counterfactual_recommendation.v1"},
                 "synthetic_adversarial_corpus_v1": {"schema_version": "synthetic_adversarial_corpus.v1"},
                 "decision_brief_v1": {"schema_version": "decision_brief.v1"},
+                "high_impact_plan_update_v1": {"schema_version": "high_impact_plan_update.v1"},
                 "learning_clustering_v1": {"rules": ["internal"]},
                 "shadow_evaluation_gate_v1": {"rules": ["internal"]},
                 "unexpected_convention": {"rules": ["unknown"]}
@@ -10420,6 +10484,7 @@ mod tests {
         assert!(conventions.contains_key("counterfactual_recommendation_v1"));
         assert!(conventions.contains_key("synthetic_adversarial_corpus_v1"));
         assert!(conventions.contains_key("decision_brief_v1"));
+        assert!(conventions.contains_key("high_impact_plan_update_v1"));
         assert!(!conventions.contains_key("learning_clustering_v1"));
         assert!(!conventions.contains_key("shadow_evaluation_gate_v1"));
         assert!(!conventions.contains_key("unexpected_convention"));
@@ -10957,11 +11022,16 @@ mod tests {
             &user_profile,
             Some(&quality_health),
             Some(&inbox),
+            None,
         );
         assert_eq!(brief.schema_version, super::DECISION_BRIEF_SCHEMA_VERSION);
         assert_eq!(
             brief.chat_template_id,
             super::DECISION_BRIEF_CHAT_TEMPLATE_ID
+        );
+        assert_eq!(
+            brief.item_cap_per_block,
+            super::DECISION_BRIEF_BALANCED_ITEMS_PER_BLOCK
         );
         assert!(brief.chat_context_block.contains("Was ist wahrscheinlich wahr?"));
         assert!(brief.chat_context_block.contains("Was ist unklar?"));
@@ -10985,11 +11055,11 @@ mod tests {
         assert!(!brief.high_impact_decisions.is_empty());
         assert!(!brief.recent_person_failures.is_empty());
         assert!(!brief.person_tradeoffs.is_empty());
-        assert!(brief.likely_true.len() <= 3);
-        assert!(brief.unclear.len() <= 3);
-        assert!(brief.high_impact_decisions.len() <= 3);
-        assert!(brief.recent_person_failures.len() <= 3);
-        assert!(brief.person_tradeoffs.len() <= 3);
+        assert!(brief.likely_true.len() <= brief.item_cap_per_block);
+        assert!(brief.unclear.len() <= brief.item_cap_per_block);
+        assert!(brief.high_impact_decisions.len() <= brief.item_cap_per_block);
+        assert!(brief.recent_person_failures.len() <= brief.item_cap_per_block);
+        assert!(brief.person_tradeoffs.len() <= brief.item_cap_per_block);
     }
 
     #[test]
@@ -11046,6 +11116,7 @@ mod tests {
             &user_profile,
             Some(&quality_health),
             Some(&inbox),
+            None,
         );
         assert!(
             brief
@@ -11087,7 +11158,11 @@ mod tests {
             }),
         );
 
-        let brief = super::build_decision_brief(&user_profile, None, None);
+        let brief = super::build_decision_brief(&user_profile, None, None, None);
+        assert_eq!(
+            brief.item_cap_per_block,
+            super::DECISION_BRIEF_MIN_ITEMS_PER_BLOCK
+        );
         assert!(
             brief
                 .person_tradeoffs
@@ -11170,6 +11245,7 @@ mod tests {
             &user_profile,
             Some(&quality_health),
             Some(&inbox),
+            None,
         );
 
         for entry in &brief.likely_true {
@@ -11192,5 +11268,131 @@ mod tests {
                 .chat_context_block
                 .contains("Regel: Wenn Unklarheit dominiert")
         );
+    }
+
+    #[test]
+    fn decision_brief_contract_expands_item_cap_when_detail_is_requested() {
+        let user_profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "verbosity": "detailed"
+                    },
+                    "baseline_profile": {
+                        "status": "needs_input",
+                        "required_missing": ["timezone", "age_or_date_of_birth"]
+                    },
+                    "data_quality": {
+                        "events_without_exercise_id": 3,
+                        "actionable": [{"code": "missing_exercise_id"}, {"code": "missing_unit"}]
+                    }
+                }
+            }),
+        );
+        let quality_health = make_projection_response(
+            "quality_health",
+            "overview",
+            Utc::now(),
+            json!({
+                "status": "degraded",
+                "integrity_slo_status": "degraded",
+                "autonomy_policy": {
+                    "calibration_status": "monitor"
+                },
+                "metrics": {
+                    "response_mode_outcomes": {
+                        "response_mode_selected_total": 5,
+                        "sample_ok": false,
+                        "sample_confidence": "low",
+                        "user_challenge_rate_pct": 34.0,
+                        "retrieval_regret_exceeded_pct": 51.0
+                    }
+                }
+            }),
+        );
+        let inbox = make_inbox_projection(json!({
+            "schema_version": 1,
+            "pending_items_total": 2,
+            "highest_severity": "warning",
+            "requires_human_decision": true,
+            "items": [{
+                "item_id": "ci-warning-2",
+                "severity": "warning",
+                "summary": "Recent load values may be inconsistent.",
+                "recommended_action": "Review and confirm."
+            }, {
+                "item_id": "ci-warning-3",
+                "severity": "warning",
+                "summary": "Some intensity anchors are missing.",
+                "recommended_action": "Confirm or correct."
+            }]
+        }));
+
+        let default_brief =
+            super::build_decision_brief(&user_profile, Some(&quality_health), Some(&inbox), None);
+        let detailed_brief = super::build_decision_brief(
+            &user_profile,
+            Some(&quality_health),
+            Some(&inbox),
+            Some("bitte ausfuehrlich begruenden"),
+        );
+
+        assert_eq!(
+            default_brief.item_cap_per_block,
+            super::DECISION_BRIEF_DETAILED_ITEMS_PER_BLOCK
+        );
+        assert_eq!(
+            detailed_brief.item_cap_per_block,
+            super::DECISION_BRIEF_MAX_ITEMS_PER_BLOCK
+        );
+        assert!(detailed_brief.recent_person_failures.len() >= default_brief.recent_person_failures.len());
+    }
+
+    #[test]
+    fn high_impact_classification_keeps_routine_plan_update_low_impact() {
+        let events = vec![make_event(
+            "training_plan.updated",
+            json!({
+                "name": "Routine micro-adjustment",
+                "delta": {
+                    "volume_delta_pct": 8.0,
+                    "intensity_delta_pct": 4.0,
+                    "frequency_delta_per_week": 1
+                }
+            }),
+            "plan-low-impact-1",
+        )];
+
+        let action_class = super::classify_write_action_class(&events);
+        let summary = super::summarize_high_impact_change_set(&events);
+
+        assert_eq!(action_class, "low_impact_write");
+        assert!(summary.is_empty());
+    }
+
+    #[test]
+    fn high_impact_classification_escalates_large_plan_shift() {
+        let events = vec![make_event(
+            "training_plan.updated",
+            json!({
+                "name": "Aggressive mesocycle rewrite",
+                "change_scope": "full_rewrite",
+                "delta": {
+                    "volume_delta_pct": 22.0,
+                    "intensity_delta_pct": 12.0,
+                    "frequency_delta_per_week": 2
+                }
+            }),
+            "plan-high-impact-1",
+        )];
+
+        let action_class = super::classify_write_action_class(&events);
+        let summary = super::summarize_high_impact_change_set(&events);
+
+        assert_eq!(action_class, "high_impact_write");
+        assert_eq!(summary, vec!["training_plan.updated:1".to_string()]);
     }
 }

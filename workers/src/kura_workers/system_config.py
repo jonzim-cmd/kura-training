@@ -558,6 +558,11 @@ def _get_conventions() -> dict[str, Any]:
                     "laaj_sidecar_assessed",
                 ],
             },
+            "delivery_channels": {
+                "runtime_context": "agent_write_with_proof.response.sidecar_assessment",
+                "developer_telemetry": "events.learning.signal.logged",
+                "policy_mode": "advisory_only",
+            },
         },
         "counterfactual_recommendation_v1": {
             "rules": [
@@ -629,11 +634,21 @@ def _get_conventions() -> dict[str, Any]:
             "rules": [
                 "Return a compact, structured decision image for agent reasoning (not raw telemetry dumps).",
                 "Always include five blocks: likely_true, unclear, high_impact_decisions, recent_person_failures, person_tradeoffs.",
-                "Each block must stay short and bounded to preserve chat UX readability.",
+                "Use compact-by-default blocks, but allow bounded expansion when the user explicitly asks for detail.",
                 "Specificity must remain evidence-anchored and avoid false precision.",
                 "Provide a chat_context_block that mirrors the five blocks in a deterministic section order.",
             ],
             "schema_version": "decision_brief.v1",
+            "required_output_fields": [
+                "chat_template_id",
+                "item_cap_per_block",
+                "chat_context_block",
+                "likely_true",
+                "unclear",
+                "high_impact_decisions",
+                "recent_person_failures",
+                "person_tradeoffs",
+            ],
             "required_blocks": [
                 "likely_true",
                 "unclear",
@@ -641,12 +656,28 @@ def _get_conventions() -> dict[str, Any]:
                 "recent_person_failures",
                 "person_tradeoffs",
             ],
-            "max_items_per_block": 3,
+            "item_caps_by_mode": {
+                "concise": 3,
+                "balanced_default": 4,
+                "detailed_default": 5,
+                "explicit_detail_request_max": 6,
+            },
             "source_priority": [
                 "quality_health/overview",
                 "consistency_inbox/overview",
                 "user_profile/me",
             ],
+            "detail_mode": {
+                "default_mode": "balanced",
+                "explicit_request_keywords": [
+                    "ausfuehrlich",
+                    "detail",
+                    "detailed",
+                    "verbose",
+                    "warum",
+                    "explain",
+                ],
+            },
             "chat_context_template": {
                 "template_id": "decision_brief.chat.context.v1",
                 "section_order": [
@@ -662,6 +693,50 @@ def _get_conventions() -> dict[str, Any]:
                 "must_expose_uncertainty_when_signals_are_thin": True,
                 "must_not_claim_false_certainty": True,
                 "must_not_expand_into_long_raw_data_dumps": True,
+            },
+        },
+        "high_impact_plan_update_v1": {
+            "rules": [
+                "Do not classify every training_plan.updated event as high impact.",
+                "Routine plan adjustments must remain low-impact to avoid bureaucratic friction.",
+                "Escalate only structural rewrites or large deltas to high-impact confirmation.",
+            ],
+            "schema_version": "high_impact_plan_update.v1",
+            "classification": {
+                "always_high_impact_event_types": [
+                    "training_plan.created",
+                    "training_plan.archived",
+                    "projection_rule.created",
+                    "projection_rule.archived",
+                    "weight_target.set",
+                    "sleep_target.set",
+                    "nutrition_target.set",
+                    "workflow.onboarding.closed",
+                    "workflow.onboarding.override_granted",
+                ],
+                "training_plan_updated_high_impact_when": {
+                    "change_scope_values": [
+                        "full_rewrite",
+                        "structural",
+                        "major_adjustment",
+                        "mesocycle_reset",
+                        "phase_shift",
+                    ],
+                    "flags_any_true": [
+                        "replace_entire_plan",
+                        "archive_previous_plan",
+                        "requires_explicit_confirmation",
+                    ],
+                    "thresholds_abs_gte": {
+                        "volume_delta_pct": 15.0,
+                        "intensity_delta_pct": 10.0,
+                        "frequency_delta_per_week": 2.0,
+                        "cycle_length_weeks_delta": 2.0,
+                    },
+                },
+            },
+            "safety": {
+                "must_avoid_bureaucratic_friction_for_routine_adjustments": True,
             },
         },
         "learning_backlog_bridge_v1": {

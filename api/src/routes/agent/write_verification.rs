@@ -142,13 +142,120 @@ pub(super) fn worst_quality_status(left: &str, right: &str) -> &'static str {
     }
 }
 
+const PLAN_UPDATE_VOLUME_DELTA_HIGH_IMPACT_ABS_GTE: f64 = 15.0;
+const PLAN_UPDATE_INTENSITY_DELTA_HIGH_IMPACT_ABS_GTE: f64 = 10.0;
+const PLAN_UPDATE_FREQUENCY_DELTA_HIGH_IMPACT_ABS_GTE: f64 = 2.0;
+const PLAN_UPDATE_DURATION_DELTA_WEEKS_HIGH_IMPACT_ABS_GTE: f64 = 2.0;
+
+fn read_abs_f64(value: Option<&Value>) -> Option<f64> {
+    let raw = value?;
+    if let Some(number) = raw.as_f64() {
+        return Some(number.abs());
+    }
+    if let Some(number) = raw.as_i64() {
+        return Some((number as f64).abs());
+    }
+    if let Some(number) = raw.as_u64() {
+        return Some((number as f64).abs());
+    }
+    raw.as_str()
+        .and_then(|text| text.trim().parse::<f64>().ok())
+        .map(f64::abs)
+}
+
+fn read_plan_delta_abs(data: &Value, keys: &[&str]) -> Option<f64> {
+    for key in keys {
+        if let Some(number) = read_abs_f64(data.get(*key)) {
+            return Some(number);
+        }
+        if let Some(number) = read_abs_f64(data.get("delta").and_then(|delta| delta.get(*key))) {
+            return Some(number);
+        }
+    }
+    None
+}
+
+fn training_plan_update_is_high_impact(data: &Value) -> bool {
+    let scope = data
+        .get("change_scope")
+        .or_else(|| data.get("update_scope"))
+        .and_then(Value::as_str)
+        .map(|raw| raw.trim().to_lowercase());
+    if matches!(
+        scope.as_deref(),
+        Some("full_rewrite" | "structural" | "major_adjustment" | "mesocycle_reset" | "phase_shift")
+    ) {
+        return true;
+    }
+
+    if data
+        .get("replace_entire_plan")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || data
+            .get("archive_previous_plan")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || data
+            .get("requires_explicit_confirmation")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return true;
+    }
+
+    let volume_delta = read_plan_delta_abs(
+        data,
+        &[
+            "volume_delta_pct",
+            "planned_volume_delta_pct",
+            "total_volume_delta_pct",
+        ],
+    )
+    .unwrap_or(0.0);
+    if volume_delta >= PLAN_UPDATE_VOLUME_DELTA_HIGH_IMPACT_ABS_GTE {
+        return true;
+    }
+
+    let intensity_delta = read_plan_delta_abs(
+        data,
+        &["intensity_delta_pct", "rir_delta", "rpe_delta", "effort_delta_pct"],
+    )
+    .unwrap_or(0.0);
+    if intensity_delta >= PLAN_UPDATE_INTENSITY_DELTA_HIGH_IMPACT_ABS_GTE {
+        return true;
+    }
+
+    let frequency_delta = read_plan_delta_abs(
+        data,
+        &["frequency_delta_per_week", "sessions_per_week_delta"],
+    )
+    .unwrap_or(0.0);
+    if frequency_delta >= PLAN_UPDATE_FREQUENCY_DELTA_HIGH_IMPACT_ABS_GTE {
+        return true;
+    }
+
+    let duration_delta =
+        read_plan_delta_abs(data, &["cycle_length_weeks_delta", "plan_duration_weeks_delta"])
+            .unwrap_or(0.0);
+    duration_delta >= PLAN_UPDATE_DURATION_DELTA_WEEKS_HIGH_IMPACT_ABS_GTE
+}
+
+fn is_high_impact_planning_change(event: &CreateEventRequest) -> bool {
+    let event_type = event.event_type.trim().to_lowercase();
+    if event_type == WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE
+        || event_type == WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE
+    {
+        return true;
+    }
+    if event_type == "training_plan.updated" {
+        return training_plan_update_is_high_impact(&event.data);
+    }
+    is_planning_or_coaching_event_type(&event_type)
+}
+
 pub(super) fn classify_write_action_class(events: &[CreateEventRequest]) -> String {
-    let high_impact = events.iter().any(|event| {
-        let event_type = event.event_type.trim().to_lowercase();
-        is_planning_or_coaching_event_type(&event_type)
-            || event_type == WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE
-            || event_type == WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE
-    });
+    let high_impact = events.iter().any(is_high_impact_planning_change);
 
     if high_impact {
         "high_impact_write".to_string()
@@ -160,11 +267,8 @@ pub(super) fn classify_write_action_class(events: &[CreateEventRequest]) -> Stri
 pub(super) fn summarize_high_impact_change_set(events: &[CreateEventRequest]) -> Vec<String> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for event in events {
-        let event_type = event.event_type.trim().to_lowercase();
-        if is_planning_or_coaching_event_type(&event_type)
-            || event_type == WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE
-            || event_type == WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE
-        {
+        if is_high_impact_planning_change(event) {
+            let event_type = event.event_type.trim().to_lowercase();
             *counts.entry(event_type).or_insert(0) += 1;
         }
     }

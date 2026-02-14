@@ -29,6 +29,10 @@ def test_sidecar_retrieval_regret_contract_declares_advisory_only_semantics() ->
         "retrieval_regret_observed",
         "laaj_sidecar_assessed",
     }
+    channels = contract["delivery_channels"]
+    assert channels["runtime_context"] == "agent_write_with_proof.response.sidecar_assessment"
+    assert channels["developer_telemetry"] == "events.learning.signal.logged"
+    assert channels["policy_mode"] == "advisory_only"
 
 
 def test_sidecar_signal_taxonomy_is_registered() -> None:

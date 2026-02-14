@@ -9,6 +9,7 @@ RUNTIME_TESTS: tuple[str, ...] = (
     "routes::agent::tests::decision_brief_contract_highlights_high_impact_decisions_from_consistency_inbox",
     "routes::agent::tests::decision_brief_contract_uses_person_tradeoffs_from_preferences",
     "routes::agent::tests::decision_brief_contract_renders_chat_context_block_with_all_entries",
+    "routes::agent::tests::decision_brief_contract_expands_item_cap_when_detail_is_requested",
 )
 
 
@@ -22,12 +23,23 @@ def test_decision_brief_contract_declares_compact_structured_blocks() -> None:
         "recent_person_failures",
         "person_tradeoffs",
     }
-    assert contract["max_items_per_block"] == 3
+    assert set(contract["required_output_fields"]) >= {
+        "chat_template_id",
+        "item_cap_per_block",
+        "chat_context_block",
+    }
+    caps = contract["item_caps_by_mode"]
+    assert caps["concise"] == 3
+    assert caps["balanced_default"] == 4
+    assert caps["detailed_default"] == 5
+    assert caps["explicit_detail_request_max"] == 6
     assert contract["source_priority"] == [
         "quality_health/overview",
         "consistency_inbox/overview",
         "user_profile/me",
     ]
+    assert contract["detail_mode"]["default_mode"] == "balanced"
+    assert "ausfuehrlich" in contract["detail_mode"]["explicit_request_keywords"]
     template = contract["chat_context_template"]
     assert template["template_id"] == "decision_brief.chat.context.v1"
     assert template["section_order"] == [
