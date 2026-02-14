@@ -79,6 +79,7 @@ def _get_conventions() -> dict[str, Any]:
                 "Apply block-specific completeness rules instead of global sensor requirements.",
                 "No global HR requirement: missing sensor values must be explicit via measurement_state.",
                 "Performance blocks require intensity anchors unless explicitly marked not_applicable.",
+                "Clarifications must be block-relevant and minimal: ask only for missing log_valid fields of the affected block.",
             ],
             "event_type": "session.logged",
             "contract": block_catalog_v1(),

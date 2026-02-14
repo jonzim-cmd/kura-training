@@ -2494,6 +2494,16 @@ fn build_session_audit_artifacts(
             continue;
         }
 
+        if event_type == "session.logged" {
+            for gap in collect_session_logged_required_field_gaps(event) {
+                mismatch_detected += 1;
+                mismatch_unresolved += 1;
+                mismatch_classes.insert(AUDIT_CLASS_SESSION_BLOCK_REQUIRED_FIELD.to_string(), ());
+                unresolved.push(gap);
+            }
+            continue;
+        }
+
         if event_type != "session.completed" {
             continue;
         }
@@ -3922,6 +3932,24 @@ mod tests {
         }
     }
 
+    fn make_session_logged_event(
+        data: serde_json::Value,
+        idempotency_key: &str,
+    ) -> CreateEventRequest {
+        CreateEventRequest {
+            timestamp: Utc::now(),
+            event_type: "session.logged".to_string(),
+            data,
+            metadata: EventMetadata {
+                source: Some("api".to_string()),
+                agent: Some("test".to_string()),
+                device: None,
+                session_id: Some("session-1".to_string()),
+                idempotency_key: idempotency_key.to_string(),
+            },
+        }
+    }
+
     fn make_event(
         event_type: &str,
         data: serde_json::Value,
@@ -5270,6 +5298,129 @@ mod tests {
         assert!(signal_types.iter().any(|s| s == "mismatch_detected"));
         assert!(signal_types.iter().any(|s| s == "mismatch_unresolved"));
         assert!(!signal_types.iter().any(|s| s == "mismatch_repaired"));
+    }
+
+    #[test]
+    fn session_audit_session_logged_strength_without_hr_keeps_clean() {
+        let user_id = Uuid::now_v7();
+        let requested = vec![make_session_logged_event(
+            json!({
+                "contract_version": "session.logged.v1",
+                "session_meta": {"sport": "strength", "timezone": "Europe/Berlin"},
+                "blocks": [
+                    {
+                        "block_type": "strength_set",
+                        "dose": {
+                            "work": {"reps": 5},
+                            "repeats": 5
+                        },
+                        "intensity_anchors": [
+                            {
+                                "measurement_state": "measured",
+                                "unit": "rpe",
+                                "value": 8
+                            }
+                        ]
+                    }
+                ],
+                "provenance": {"source_type": "manual"}
+            }),
+            "k-session-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "session.logged".to_string(),
+            idempotency_key: "k-session-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let policy = default_autonomy_policy();
+
+        let artifacts = build_session_audit_artifacts(user_id, &requested, &receipts, &policy);
+        assert_eq!(artifacts.summary.status, "clean");
+        assert_eq!(artifacts.summary.mismatch_detected, 0);
+        assert_eq!(artifacts.summary.mismatch_unresolved, 0);
+        assert!(artifacts.summary.clarification_question.is_none());
+    }
+
+    #[test]
+    fn session_audit_session_logged_interval_missing_anchor_requires_block_question() {
+        let user_id = Uuid::now_v7();
+        let requested = vec![make_session_logged_event(
+            json!({
+                "contract_version": "session.logged.v1",
+                "session_meta": {"sport": "running", "timezone": "Europe/Berlin"},
+                "blocks": [
+                    {
+                        "block_type": "interval_endurance",
+                        "dose": {
+                            "work": {"duration_seconds": 120},
+                            "recovery": {"duration_seconds": 60},
+                            "repeats": 8
+                        }
+                    }
+                ],
+                "provenance": {"source_type": "manual"}
+            }),
+            "k-session-2",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "session.logged".to_string(),
+            idempotency_key: "k-session-2".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let policy = default_autonomy_policy();
+
+        let artifacts = build_session_audit_artifacts(user_id, &requested, &receipts, &policy);
+        assert_eq!(artifacts.summary.status, "needs_clarification");
+        assert_eq!(artifacts.summary.mismatch_detected, 1);
+        assert_eq!(artifacts.summary.mismatch_repaired, 0);
+        assert_eq!(artifacts.summary.mismatch_unresolved, 1);
+        let question = artifacts
+            .summary
+            .clarification_question
+            .as_deref()
+            .unwrap_or("");
+        assert!(question.contains("Intensitätsanker"));
+        assert!(question.contains("not_applicable"));
+        assert!(!question.contains("Herzfrequenz muss"));
+    }
+
+    #[test]
+    fn session_audit_session_logged_not_applicable_anchor_status_keeps_clean() {
+        let user_id = Uuid::now_v7();
+        let requested = vec![make_session_logged_event(
+            json!({
+                "contract_version": "session.logged.v1",
+                "session_meta": {"sport": "running", "timezone": "Europe/Berlin"},
+                "blocks": [
+                    {
+                        "block_type": "interval_endurance",
+                        "dose": {
+                            "work": {"duration_seconds": 120},
+                            "recovery": {"duration_seconds": 60},
+                            "repeats": 8
+                        },
+                        "intensity_anchors_status": "not_applicable"
+                    }
+                ],
+                "provenance": {"source_type": "manual"}
+            }),
+            "k-session-3",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "session.logged".to_string(),
+            idempotency_key: "k-session-3".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let policy = default_autonomy_policy();
+
+        let artifacts = build_session_audit_artifacts(user_id, &requested, &receipts, &policy);
+        assert_eq!(artifacts.summary.status, "clean");
+        assert_eq!(artifacts.summary.mismatch_detected, 0);
+        assert_eq!(artifacts.summary.mismatch_unresolved, 0);
+        assert!(artifacts.summary.clarification_question.is_none());
     }
 
     #[test]

@@ -264,6 +264,8 @@ class TestConventions:
             "analysis_advanced",
         }
         assert contract["completeness_policy"]["global_requirements"]["heart_rate_required"] is False
+        rules_text = " ".join(contract["rules"]).lower()
+        assert "block-relevant and minimal" in rules_text
 
     def test_has_load_context_v1_conventions(self):
         result = _get_conventions()

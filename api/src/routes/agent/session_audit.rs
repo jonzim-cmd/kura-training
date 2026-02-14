@@ -6,6 +6,8 @@ pub(super) const SESSION_AUDIT_INVARIANT_ID: &str = "INV-008";
 pub(super) const EVIDENCE_PARSER_VERSION: &str = "mention_parser.v1";
 pub(super) const EVIDENCE_CLAIM_EVENT_TYPE: &str = "evidence.claim.logged";
 pub(super) const AUDIT_CLASS_MISSING_MENTION_FIELD: &str = "missing_mention_bound_field";
+pub(super) const AUDIT_CLASS_SESSION_BLOCK_REQUIRED_FIELD: &str =
+    "session_block_required_field_missing";
 pub(super) const AUDIT_CLASS_SCALE_NORMALIZED_TO_FIVE: &str = "scale_normalized_to_five";
 pub(super) const AUDIT_CLASS_SCALE_OUT_OF_BOUNDS: &str = "scale_out_of_bounds";
 pub(super) const AUDIT_CLASS_NARRATIVE_CONTRADICTION: &str = "narrative_structured_contradiction";
@@ -542,6 +544,134 @@ pub(super) fn has_non_null_field(event: &CreateEventRequest, field: &str) -> boo
         .unwrap_or(false)
 }
 
+fn session_block_scope_label(block_index: usize, block_type: Option<&str>) -> String {
+    let index = block_index + 1;
+    let normalized = block_type
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase());
+    match normalized {
+        Some(block_type) => format!("Block {index} ({block_type})"),
+        None => format!("Block {index}"),
+    }
+}
+
+fn has_non_null_work_dimension(work_obj: &serde_json::Map<String, Value>) -> bool {
+    for key in ["duration_seconds", "distance_meters", "reps", "contacts"] {
+        if work_obj.get(key).is_some_and(|value| !value.is_null()) {
+            return true;
+        }
+    }
+    false
+}
+
+fn block_explicitly_marks_anchors_not_applicable(
+    block_obj: &serde_json::Map<String, Value>,
+) -> bool {
+    block_obj
+        .get("intensity_anchors_status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .map(|value| value.eq_ignore_ascii_case("not_applicable"))
+        .unwrap_or(false)
+}
+
+fn block_has_anchor_entries(block_obj: &serde_json::Map<String, Value>) -> bool {
+    block_obj
+        .get("intensity_anchors")
+        .and_then(Value::as_array)
+        .is_some_and(|anchors| !anchors.is_empty())
+}
+
+fn performance_block_requires_anchor(block_type: &str) -> bool {
+    !block_type.eq_ignore_ascii_case("recovery_session")
+}
+
+pub(super) fn collect_session_logged_required_field_gaps(
+    event: &CreateEventRequest,
+) -> Vec<SessionAuditUnresolved> {
+    let mut unresolved: Vec<SessionAuditUnresolved> = Vec::new();
+    let Some(blocks) = event.data.get("blocks").and_then(Value::as_array) else {
+        unresolved.push(SessionAuditUnresolved {
+            exercise_label: "Session".to_string(),
+            field: "blocks".to_string(),
+            candidates: Vec::new(),
+        });
+        return unresolved;
+    };
+
+    if blocks.is_empty() {
+        unresolved.push(SessionAuditUnresolved {
+            exercise_label: "Session".to_string(),
+            field: "blocks".to_string(),
+            candidates: Vec::new(),
+        });
+        return unresolved;
+    }
+
+    for (block_index, block) in blocks.iter().enumerate() {
+        let Some(block_obj) = block.as_object() else {
+            unresolved.push(SessionAuditUnresolved {
+                exercise_label: session_block_scope_label(block_index, None),
+                field: "block".to_string(),
+                candidates: Vec::new(),
+            });
+            continue;
+        };
+        let block_type = block_obj
+            .get("block_type")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let scope_label = session_block_scope_label(block_index, block_type);
+
+        if block_type.is_none() {
+            unresolved.push(SessionAuditUnresolved {
+                exercise_label: scope_label.clone(),
+                field: "block_type".to_string(),
+                candidates: Vec::new(),
+            });
+            continue;
+        }
+
+        let Some(dose_obj) = block_obj.get("dose").and_then(Value::as_object) else {
+            unresolved.push(SessionAuditUnresolved {
+                exercise_label: scope_label.clone(),
+                field: "dose".to_string(),
+                candidates: Vec::new(),
+            });
+            continue;
+        };
+
+        let has_work_dimension = dose_obj
+            .get("work")
+            .and_then(Value::as_object)
+            .map(has_non_null_work_dimension)
+            .unwrap_or(false);
+        if !has_work_dimension {
+            unresolved.push(SessionAuditUnresolved {
+                exercise_label: scope_label.clone(),
+                field: "dose.work".to_string(),
+                candidates: Vec::new(),
+            });
+        }
+
+        let block_type_value = block_type.unwrap_or_default();
+        if performance_block_requires_anchor(block_type_value)
+            && !block_has_anchor_entries(block_obj)
+            && !block_explicitly_marks_anchors_not_applicable(block_obj)
+        {
+            unresolved.push(SessionAuditUnresolved {
+                exercise_label: scope_label,
+                field: "blocks.intensity_anchors".to_string(),
+                candidates: Vec::new(),
+            });
+        }
+    }
+
+    unresolved
+}
+
 pub(super) fn validate_session_feedback_certainty_contract(
     events: &[CreateEventRequest],
 ) -> Result<(), AppError> {
@@ -691,6 +821,12 @@ pub(super) fn validate_session_feedback_certainty_contract(
 
 pub(super) fn audit_field_label(field: &str) -> &'static str {
     match field {
+        "blocks" => "Session-Blöcke",
+        "block" => "Block-Objekt",
+        "block_type" => "Blocktyp",
+        "dose" => "Block-Dosis",
+        "dose.work" => "Work-Dosis",
+        "blocks.intensity_anchors" => "Intensitätsanker",
         "rest_seconds" => "Satzpause",
         "tempo" => "Tempo",
         "rir" => "RIR",
@@ -728,6 +864,20 @@ pub(super) fn build_clarification_question(
     unresolved: &[SessionAuditUnresolved],
 ) -> Option<String> {
     let first = unresolved.first()?;
+    if first.candidates.is_empty() {
+        if first.field == "blocks.intensity_anchors" {
+            return Some(format!(
+                "Bitte ergänzen: {} bei {}. Nutze mindestens einen Anker (z. B. Pace, Power, Borg/RPE, % Referenz oder Herzfrequenz) oder setze intensity_anchors_status=not_applicable.",
+                audit_field_label(&first.field),
+                first.exercise_label,
+            ));
+        }
+        return Some(format!(
+            "Bitte ergänzen: {} bei {}.",
+            audit_field_label(&first.field),
+            first.exercise_label
+        ));
+    }
     if first.candidates.len() > 1 {
         let values = first
             .candidates
