@@ -736,7 +736,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                     "viz_shown, viz_skipped, viz_source_bound, viz_fallback_used, "
                     "viz_confusion_signal, response_mode_selected, "
                     "personal_failure_profile_observed, retrieval_regret_observed, "
-                    "laaj_sidecar_assessed"
+                    "laaj_sidecar_assessed, counterfactual_recommendation_prepared"
                 ),
                 "category": "string (required: quality_signal|friction_signal|outcome_signal|correction_signal)",
                 "captured_at": "string (required, ISO datetime)",

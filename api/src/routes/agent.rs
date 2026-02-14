@@ -745,6 +745,37 @@ pub struct AgentSidecarAssessment {
     pub laaj: AgentLaaJSidecar,
 }
 
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentCounterfactualAlternative {
+    pub option_id: String,
+    pub title: String,
+    pub when_to_choose: String,
+    pub tradeoff: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub missing_evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentCounterfactualRecommendation {
+    pub schema_version: String,
+    /// advisory_only (never blocks autonomy)
+    pub policy_role: String,
+    /// first_principles
+    pub rationale_style: String,
+    pub primary_recommendation_mode: String,
+    /// evidence_anchored | uncertainty_explicit
+    pub transparency_level: String,
+    pub explanation_summary: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reason_codes: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub alternatives: Vec<AgentCounterfactualAlternative>,
+    pub ask_user_challenge_question: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub challenge_question: Option<String>,
+    pub ux_compact: bool,
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AgentWriteWithProofResponse {
     pub receipts: Vec<AgentWriteReceipt>,
@@ -763,6 +794,7 @@ pub struct AgentWriteWithProofResponse {
     pub response_mode_policy: AgentResponseModePolicy,
     pub personal_failure_profile: AgentPersonalFailureProfile,
     pub sidecar_assessment: AgentSidecarAssessment,
+    pub counterfactual_recommendation: AgentCounterfactualRecommendation,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -2582,6 +2614,144 @@ fn build_sidecar_assessment(
     }
 }
 
+fn build_counterfactual_recommendation(
+    claim_guard: &AgentWriteClaimGuard,
+    verification: &AgentWriteVerificationSummary,
+    response_mode_policy: &AgentResponseModePolicy,
+    sidecar_assessment: &AgentSidecarAssessment,
+) -> AgentCounterfactualRecommendation {
+    let limited_evidence = response_mode_policy.mode_code != "A";
+    let high_regret = sidecar_assessment.retrieval_regret.threshold_exceeded;
+    let confirm_first = claim_guard.autonomy_gate.decision == "confirm_first";
+    let transparency_level = if limited_evidence || high_regret || verification.status != "verified"
+    {
+        "uncertainty_explicit"
+    } else {
+        "evidence_anchored"
+    };
+    let mut reason_codes: Vec<String> = Vec::new();
+    if limited_evidence {
+        reason_codes.push("counterfactual_limited_evidence_context".to_string());
+    }
+    if high_regret {
+        reason_codes.push("counterfactual_high_regret_context".to_string());
+    }
+    if confirm_first {
+        reason_codes.push("counterfactual_confirm_first_gate".to_string());
+    }
+    if response_mode_policy.outcome_signal_sample_ok {
+        reason_codes.push("counterfactual_history_sample_ok".to_string());
+    } else if response_mode_policy.outcome_signal_sample_size > 0 {
+        reason_codes.push("counterfactual_history_sample_below_floor".to_string());
+    }
+    dedupe_reason_codes(&mut reason_codes);
+
+    let missing_evidence = vec![
+        "Mehr persoenliche Verlaufssignale fuer diese Empfehlung.".to_string(),
+        "Explizites Feedback, welche Annahme fuer dich unplausibel wirkt.".to_string(),
+    ];
+    let mut alternatives = if limited_evidence || high_regret {
+        vec![
+            AgentCounterfactualAlternative {
+                option_id: "cf_collect_evidence".to_string(),
+                title: "Erst Evidenz staerken, dann zuspitzen".to_string(),
+                when_to_choose: "Wenn du Sicherheit vor Tempo priorisierst.".to_string(),
+                tradeoff: "Weniger sofortige Personalisierung, dafuer geringeres Fehlrisiko."
+                    .to_string(),
+                missing_evidence: missing_evidence.clone(),
+            },
+            AgentCounterfactualAlternative {
+                option_id: "cf_small_probe".to_string(),
+                title: "Kleine Probe mit schneller Rueckmeldung".to_string(),
+                when_to_choose: "Wenn du Momentum behalten und zuegig lernen willst.".to_string(),
+                tradeoff: "Schnelleres Lernen, aber kurzfristig mehr Unsicherheit.".to_string(),
+                missing_evidence,
+            },
+        ]
+    } else {
+        vec![
+            AgentCounterfactualAlternative {
+                option_id: "cf_accelerate".to_string(),
+                title: "Etwas ambitionierterer naechster Schritt".to_string(),
+                when_to_choose: "Wenn du Fortschritt beschleunigen willst und dich stabil fuehlst."
+                    .to_string(),
+                tradeoff: "Hoeherer Fortschrittshebel, aber etwas engeres Fehlerfenster."
+                    .to_string(),
+                missing_evidence: Vec::new(),
+            },
+            AgentCounterfactualAlternative {
+                option_id: "cf_stabilize".to_string(),
+                title: "Konservative Stabilisierung".to_string(),
+                when_to_choose: "Wenn du Konstanz und Planbarkeit priorisierst.".to_string(),
+                tradeoff: "Etwas langsamerer Fortschritt, dafuer robustere Ausfuehrung."
+                    .to_string(),
+                missing_evidence: Vec::new(),
+            },
+        ]
+    };
+    alternatives.truncate(2);
+
+    let ask_user_challenge_question = limited_evidence || high_regret || confirm_first;
+    let challenge_question = if ask_user_challenge_question {
+        Some("Welche Annahme hinter meiner Empfehlung wuerdest du zuerst challengen?".to_string())
+    } else {
+        None
+    };
+    let explanation_summary = if transparency_level == "uncertainty_explicit" {
+        "Ich zeige dir bewusst eine konservative und eine probe-basierte Alternative, damit du transparent zwischen Sicherheit und Tempo waehlen kannst.".to_string()
+    } else {
+        "Ich zeige dir eine beschleunigende und eine stabilisierende Alternative, damit die Entscheidung nachvollziehbar bleibt.".to_string()
+    };
+
+    AgentCounterfactualRecommendation {
+        schema_version: COUNTERFACTUAL_RECOMMENDATION_SCHEMA_VERSION.to_string(),
+        policy_role: SIDECAR_POLICY_ROLE_ADVISORY_ONLY.to_string(),
+        rationale_style: "first_principles".to_string(),
+        primary_recommendation_mode: response_mode_policy.mode.clone(),
+        transparency_level: transparency_level.to_string(),
+        explanation_summary,
+        reason_codes,
+        alternatives,
+        ask_user_challenge_question,
+        challenge_question,
+        ux_compact: true,
+    }
+}
+
+fn build_counterfactual_learning_signal_event(
+    user_id: Uuid,
+    response_mode_policy: &AgentResponseModePolicy,
+    sidecar_assessment: &AgentSidecarAssessment,
+    counterfactual: &AgentCounterfactualRecommendation,
+) -> CreateEventRequest {
+    let confidence_band = if counterfactual.transparency_level == "evidence_anchored" {
+        "high"
+    } else {
+        "medium"
+    };
+    learning_signal_event_from_contract(
+        user_id,
+        "counterfactual_recommendation_prepared",
+        "counterfactual_recommendation",
+        COUNTERFACTUAL_RECOMMENDATION_INVARIANT_ID,
+        "agent_write_with_proof",
+        confidence_band,
+        serde_json::json!({
+            "contract_schema_version": counterfactual.schema_version,
+            "policy_role": counterfactual.policy_role,
+            "rationale_style": counterfactual.rationale_style,
+            "primary_recommendation_mode": counterfactual.primary_recommendation_mode,
+            "transparency_level": counterfactual.transparency_level,
+            "alternatives_total": counterfactual.alternatives.len(),
+            "ask_user_challenge_question": counterfactual.ask_user_challenge_question,
+            "reason_codes": counterfactual.reason_codes,
+            "response_mode_code": response_mode_policy.mode_code,
+            "retrieval_regret_threshold_exceeded": sidecar_assessment.retrieval_regret.threshold_exceeded,
+        }),
+        "learning:counterfactual-recommendation",
+    )
+}
+
 fn response_mode_confidence_band(policy: &AgentResponseModePolicy) -> &'static str {
     match policy.mode_code.as_str() {
         "A" => "high",
@@ -2840,6 +3010,12 @@ fn collect_machine_language_tokens(response: &AgentWriteWithProofResponse) -> Ha
     for signal in &response.post_task_reflection.emitted_learning_signal_types {
         insert_machine_token(&mut tokens, signal);
     }
+    for code in &response.counterfactual_recommendation.reason_codes {
+        insert_machine_token(&mut tokens, code);
+    }
+    for alternative in &response.counterfactual_recommendation.alternatives {
+        insert_machine_token(&mut tokens, &alternative.option_id);
+    }
     if let Some(technical) = response.repair_feedback.technical.as_ref() {
         for step in &technical.command_trace {
             insert_machine_token(&mut tokens, step);
@@ -2986,6 +3162,10 @@ fn user_facing_text_fields(response: &AgentWriteWithProofResponse) -> Vec<&str> 
             .post_task_reflection
             .next_verification_step
             .as_str(),
+        response
+            .counterfactual_recommendation
+            .explanation_summary
+            .as_str(),
     ];
     if let Some(question) = response.reliability_ux.clarification_question.as_deref() {
         texts.push(question);
@@ -2998,6 +3178,21 @@ fn user_facing_text_fields(response: &AgentWriteWithProofResponse) -> Vec<&str> 
     }
     if let Some(undo) = response.repair_feedback.undo.as_ref() {
         texts.push(undo.detail.as_str());
+    }
+    if let Some(question) = response
+        .counterfactual_recommendation
+        .challenge_question
+        .as_deref()
+    {
+        texts.push(question);
+    }
+    for alternative in &response.counterfactual_recommendation.alternatives {
+        texts.push(alternative.title.as_str());
+        texts.push(alternative.when_to_choose.as_str());
+        texts.push(alternative.tradeoff.as_str());
+        for missing in &alternative.missing_evidence {
+            texts.push(missing.as_str());
+        }
     }
     for warning in &response.warnings {
         texts.push(warning.message.as_str());
@@ -3050,6 +3245,26 @@ fn rewrite_user_facing_fields_once(
         &response.post_task_reflection.next_verification_step,
         machine_tokens,
     );
+    response.counterfactual_recommendation.explanation_summary = rewrite_user_text_once(
+        &response.counterfactual_recommendation.explanation_summary,
+        machine_tokens,
+    );
+    if let Some(question) = response
+        .counterfactual_recommendation
+        .challenge_question
+        .as_mut()
+    {
+        *question = rewrite_user_text_once(question, machine_tokens);
+    }
+    for alternative in &mut response.counterfactual_recommendation.alternatives {
+        alternative.title = rewrite_user_text_once(&alternative.title, machine_tokens);
+        alternative.when_to_choose =
+            rewrite_user_text_once(&alternative.when_to_choose, machine_tokens);
+        alternative.tradeoff = rewrite_user_text_once(&alternative.tradeoff, machine_tokens);
+        for missing in &mut alternative.missing_evidence {
+            *missing = rewrite_user_text_once(missing, machine_tokens);
+        }
+    }
     for warning in &mut response.warnings {
         warning.message = rewrite_user_text_once(&warning.message, machine_tokens);
     }
@@ -4568,6 +4783,12 @@ pub async fn write_with_proof(
         &session_audit_summary,
         &response_mode_policy,
     );
+    let counterfactual_recommendation = build_counterfactual_recommendation(
+        &claim_guard,
+        &verification,
+        &response_mode_policy,
+        &sidecar_assessment,
+    );
     let trace_digest = build_trace_digest(
         &receipts,
         &warnings,
@@ -4612,6 +4833,12 @@ pub async fn write_with_proof(
         &personal_failure_profile,
         &sidecar_assessment,
     ));
+    quality_events.push(build_counterfactual_learning_signal_event(
+        user_id,
+        &response_mode_policy,
+        &sidecar_assessment,
+        &counterfactual_recommendation,
+    ));
     quality_events.extend(telemetry_events);
     let reflection_signal = build_post_task_reflection_learning_signal_event(
         user_id,
@@ -4654,6 +4881,7 @@ pub async fn write_with_proof(
         response_mode_policy,
         personal_failure_profile,
         sidecar_assessment,
+        counterfactual_recommendation,
     };
     let response = if language_mode == AgentLanguageMode::UserSafe {
         apply_user_safe_language_guard(response)
@@ -8715,6 +8943,28 @@ mod tests {
                     reason_codes: vec!["response_mode_general_guidance".to_string()],
                 },
             },
+            counterfactual_recommendation: super::AgentCounterfactualRecommendation {
+                schema_version: super::COUNTERFACTUAL_RECOMMENDATION_SCHEMA_VERSION.to_string(),
+                policy_role: super::SIDECAR_POLICY_ROLE_ADVISORY_ONLY.to_string(),
+                rationale_style: "first_principles".to_string(),
+                primary_recommendation_mode: "hypothesis_personalized".to_string(),
+                transparency_level: "uncertainty_explicit".to_string(),
+                explanation_summary: "Ich zeige zwei Alternativen fuer einen klaren Tradeoff."
+                    .to_string(),
+                reason_codes: vec!["counterfactual_limited_evidence_context".to_string()],
+                alternatives: vec![super::AgentCounterfactualAlternative {
+                    option_id: "cf_collect_evidence".to_string(),
+                    title: "Mehr Evidenz sammeln".to_string(),
+                    when_to_choose: "Wenn du Sicherheit willst.".to_string(),
+                    tradeoff: "Langsamer, aber robuster.".to_string(),
+                    missing_evidence: vec!["Mehr persoenliche Verlaufssignale.".to_string()],
+                }],
+                ask_user_challenge_question: true,
+                challenge_question: Some(
+                    "Welche Annahme hinter meiner Empfehlung willst du challengen?".to_string(),
+                ),
+                ux_compact: true,
+            },
         };
 
         let guarded = super::apply_user_safe_language_guard(response);
@@ -9564,6 +9814,104 @@ mod tests {
     }
 
     #[test]
+    fn counterfactual_recommendation_contract_is_advisory_and_transparent() {
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("pending", "pending", "clean", None);
+        let mode = super::build_response_mode_policy(&claim_guard, &verification, None);
+        let sidecar =
+            super::build_sidecar_assessment(&claim_guard, &verification, &session_audit, &mode);
+        let counterfactual = super::build_counterfactual_recommendation(
+            &claim_guard,
+            &verification,
+            &mode,
+            &sidecar,
+        );
+        assert_eq!(
+            counterfactual.schema_version,
+            super::COUNTERFACTUAL_RECOMMENDATION_SCHEMA_VERSION
+        );
+        assert_eq!(
+            counterfactual.policy_role,
+            super::SIDECAR_POLICY_ROLE_ADVISORY_ONLY
+        );
+        assert_eq!(counterfactual.rationale_style, "first_principles");
+        assert_eq!(counterfactual.transparency_level, "uncertainty_explicit");
+        assert!(counterfactual.ask_user_challenge_question);
+        assert!(counterfactual.alternatives.len() <= 2);
+    }
+
+    #[test]
+    fn counterfactual_recommendation_contract_keeps_ux_compact() {
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("verified", "verified", "clean", None);
+        let mode = super::build_response_mode_policy(&claim_guard, &verification, None);
+        let sidecar =
+            super::build_sidecar_assessment(&claim_guard, &verification, &session_audit, &mode);
+        let counterfactual = super::build_counterfactual_recommendation(
+            &claim_guard,
+            &verification,
+            &mode,
+            &sidecar,
+        );
+        assert!(counterfactual.ux_compact);
+        assert!(counterfactual.alternatives.len() <= 2);
+        assert!(!counterfactual.ask_user_challenge_question);
+        assert!(counterfactual.challenge_question.is_none());
+    }
+
+    #[test]
+    fn counterfactual_recommendation_signal_contract_emits_quality_signal() {
+        let user_id = Uuid::now_v7();
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("pending", "pending", "clean", None);
+        let mode = super::build_response_mode_policy(&claim_guard, &verification, None);
+        let sidecar =
+            super::build_sidecar_assessment(&claim_guard, &verification, &session_audit, &mode);
+        let counterfactual = super::build_counterfactual_recommendation(
+            &claim_guard,
+            &verification,
+            &mode,
+            &sidecar,
+        );
+        let event = super::build_counterfactual_learning_signal_event(
+            user_id,
+            &mode,
+            &sidecar,
+            &counterfactual,
+        );
+        assert_eq!(
+            event.data["signal_type"].as_str(),
+            Some("counterfactual_recommendation_prepared")
+        );
+        assert_eq!(event.data["category"].as_str(), Some("quality_signal"));
+        assert_eq!(
+            event.data["attributes"]["alternatives_total"].as_u64(),
+            Some(counterfactual.alternatives.len() as u64)
+        );
+    }
+
+    #[test]
     fn capabilities_manifest_exposes_agent_contract_preferences() {
         let manifest = build_agent_capabilities();
         assert_eq!(manifest.schema_version, "agent_capabilities.v2.self_model");
@@ -9620,6 +9968,7 @@ mod tests {
                 "session_feedback_certainty_v1": {"event_type": "session.completed"},
                 "schema_capability_gate_v1": {"rules": ["capability checks"]},
                 "model_tier_registry_v1": {"tiers": {"strict": {"high_impact_write_policy": "block"}}},
+                "counterfactual_recommendation_v1": {"schema_version": "counterfactual_recommendation.v1"},
                 "learning_clustering_v1": {"rules": ["internal"]},
                 "shadow_evaluation_gate_v1": {"rules": ["internal"]},
                 "unexpected_convention": {"rules": ["unknown"]}
@@ -9654,6 +10003,7 @@ mod tests {
         assert!(conventions.contains_key("session_feedback_certainty_v1"));
         assert!(conventions.contains_key("schema_capability_gate_v1"));
         assert!(conventions.contains_key("model_tier_registry_v1"));
+        assert!(conventions.contains_key("counterfactual_recommendation_v1"));
         assert!(!conventions.contains_key("learning_clustering_v1"));
         assert!(!conventions.contains_key("shadow_evaluation_gate_v1"));
         assert!(!conventions.contains_key("unexpected_convention"));

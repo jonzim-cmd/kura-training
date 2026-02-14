@@ -559,6 +559,23 @@ def _get_conventions() -> dict[str, Any]:
                 ],
             },
         },
+        "counterfactual_recommendation_v1": {
+            "rules": [
+                "Expose recommendation rationale as first-principles alternatives, not opaque scores.",
+                "Always include at most two counterfactual options to protect chat UX compactness.",
+                "When evidence is limited or regret is high, force explicit uncertainty wording and one challenge question.",
+                "Contract is advisory-only: it supports reasoning quality but never blocks autonomy execution.",
+            ],
+            "schema_version": "counterfactual_recommendation.v1",
+            "policy_role": "advisory_only",
+            "rationale_style": "first_principles",
+            "ux": {"max_alternatives": 2, "max_challenge_questions": 1, "compact": True},
+            "transparency_levels": ["evidence_anchored", "uncertainty_explicit"],
+            "event_contract": {
+                "event_type": "learning.signal.logged",
+                "signal_type": "counterfactual_recommendation_prepared",
+            },
+        },
         "learning_backlog_bridge_v1": {
             "rules": [
                 "Generate machine-readable issue candidates from weekly learning_issue_clusters and extraction underperformance reports.",

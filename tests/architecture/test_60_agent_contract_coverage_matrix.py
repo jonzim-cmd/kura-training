@@ -54,6 +54,11 @@ REQUIRED_AGENT_CONTRACT_MATRIX: dict[str, dict[str, str]] = {
         "positive_case": "routes::agent::tests::sidecar_signal_contract_emits_retrieval_and_laaj_signal_types",
         "negative_case": "routes::agent::tests::sidecar_retrieval_regret_contract_sets_high_regret_when_readback_incomplete",
     },
+    "counterfactual_recommendation": {
+        "schema_pin": "routes::agent::tests::counterfactual_recommendation_contract_is_advisory_and_transparent",
+        "positive_case": "routes::agent::tests::counterfactual_recommendation_signal_contract_emits_quality_signal",
+        "negative_case": "routes::agent::tests::counterfactual_recommendation_contract_keeps_ux_compact",
+    },
 }
 
 
@@ -69,6 +74,7 @@ def test_required_agent_contract_matrix_keys_are_explicit() -> None:
         "response_mode_policy",
         "personal_failure_profile",
         "sidecar_retrieval_regret",
+        "counterfactual_recommendation",
     }
     for contract_name, scenarios in REQUIRED_AGENT_CONTRACT_MATRIX.items():
         assert set(scenarios) == {"schema_pin", "positive_case", "negative_case"}, contract_name

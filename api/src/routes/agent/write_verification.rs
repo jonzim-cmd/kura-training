@@ -1091,6 +1091,7 @@ pub(super) fn learning_signal_category(signal_type: &str) -> &'static str {
         "personal_failure_profile_observed" => "quality_signal",
         "retrieval_regret_observed" => "friction_signal",
         "laaj_sidecar_assessed" => "quality_signal",
+        "counterfactual_recommendation_prepared" => "quality_signal",
         "post_task_reflection_confirmed" => "outcome_signal",
         "post_task_reflection_partial" => "friction_signal",
         "post_task_reflection_unresolved" => "friction_signal",
