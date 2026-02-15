@@ -41,14 +41,19 @@ def get_interview_guide() -> dict[str, Any]:
                 "and why (so Kura can track patterns and give better feedback over time). "
                 "This helps the user feel oriented and more willing to share openly."
             ),
+            "name_collection": (
+                "Ask for the user's preferred name as part of the introduction — "
+                "it's the most natural social opening. Store immediately as "
+                "profile.updated with preferred_name. This is NOT a coverage area "
+                "to check off later; it belongs to the first moment of contact."
+            ),
             "example": (
                 "Ich habe Zugriff auf Kura — ein System, das dein Training trackt "
-                "und über die Zeit Muster erkennen kann. Damit das wirklich nützlich wird, "
+                "und über die Zeit Muster erkennen kann. Bevor wir loslegen: "
+                "Wie soll ich dich nennen? [...] Damit das wirklich nützlich wird, "
                 "würde ich dich gerne kurz kennenlernen: Was du trainierst, was dich antreibt, "
-                "wo es gerade hakt. Dauert nur ein paar Minuten — ich frage nach deinem "
-                "Training, deinen Zielen und deiner Situation, damit Kura dir wirklich "
-                "relevantes Feedback geben kann. Du kannst jederzeit abbrechen oder "
-                "das Thema wechseln."
+                "wo es gerade hakt. Dauert nur ein paar Minuten, und du kannst jederzeit "
+                "abbrechen oder das Thema wechseln."
             ),
         },
         "collaboration_primer": {

@@ -26,6 +26,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "(Decision 13 INV-006)."
             ),
             "fields": {
+                "preferred_name": "string (optional, how the user wants to be addressed)",
                 "experience_level": "string (optional: beginner, intermediate, advanced)",
                 "training_modality": "string (optional: strength, endurance, hybrid, crossfit)",
                 "training_frequency_per_week": "number (optional)",
