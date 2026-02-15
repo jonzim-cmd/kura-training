@@ -155,12 +155,14 @@ def _infer_enjoyment_from_text(text: str | None) -> float | None:
     if not text:
         return None
     normalized = text.lower()
-    has_positive = any(token in normalized for token in _POSITIVE_HINTS)
-    has_negative = any(token in normalized for token in _NEGATIVE_HINTS)
-    if has_positive and not has_negative:
+    positive_hits = sum(1 for token in _POSITIVE_HINTS if token in normalized)
+    negative_hits = sum(1 for token in _NEGATIVE_HINTS if token in normalized)
+
+    if positive_hits > 0 and negative_hits == 0:
         return 8.0
-    if has_negative and not has_positive:
-        return 4.0
+    if negative_hits > 0 and positive_hits == 0:
+        # Strongly negative free-text (multiple cues) maps to low enjoyment.
+        return 2.0 if negative_hits >= 2 else 4.0
     return None
 
 

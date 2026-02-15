@@ -71,6 +71,25 @@ def test_normalize_feedback_confirmed_state_does_not_auto_infer():
     assert normalized["enjoyment_state"] == "confirmed"
 
 
+def test_normalize_feedback_infers_strong_negative_legacy_text():
+    normalized = _normalize_session_feedback_payload(
+        {
+            "feeling": "Training war heute richtig schlecht und müde",
+        }
+    )
+    assert normalized["context"] == "Training war heute richtig schlecht und müde"
+    assert normalized["enjoyment"] == 2.0
+
+
+def test_normalize_feedback_infers_mild_negative_legacy_text():
+    normalized = _normalize_session_feedback_payload(
+        {
+            "summary": "Heute war ich ziemlich müde.",
+        }
+    )
+    assert normalized["enjoyment"] == 4.0
+
+
 def test_compute_enjoyment_trend_detects_improving():
     entries = [
         {"enjoyment": 2.0},
