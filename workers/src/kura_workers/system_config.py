@@ -613,6 +613,19 @@ def _get_conventions() -> dict[str, Any]:
                     "draft_preferred",
                     "ask_first",
                 ],
+                "runtime_threshold_constants": {
+                    "ADVISORY_RESPONSE_HINT_GROUNDED_MIN_SPECIFICITY": 0.72,
+                    "ADVISORY_RESPONSE_HINT_GROUNDED_MAX_HALLUCINATION_RISK": 0.40,
+                    "ADVISORY_RESPONSE_HINT_GROUNDED_MAX_DATA_QUALITY_RISK": 0.42,
+                    "ADVISORY_RESPONSE_HINT_GENERAL_MIN_HALLUCINATION_RISK": 0.65,
+                    "ADVISORY_RESPONSE_HINT_GENERAL_MAX_CONFIDENCE": 0.45,
+                    "ADVISORY_RESPONSE_HINT_GENERAL_MIN_DATA_QUALITY_RISK": 0.62,
+                    "ADVISORY_PERSIST_ACTION_ASK_FIRST_MIN_RISK": 0.72,
+                    "ADVISORY_PERSIST_ACTION_DRAFT_MIN_RISK": 0.48,
+                    "ADVISORY_CLARIFICATION_BUDGET_MIN_RISK": 0.55,
+                    "ADVISORY_UNCERTAINTY_NOTE_MIN_HALLUCINATION_RISK": 0.45,
+                    "ADVISORY_UNCERTAINTY_NOTE_MAX_CONFIDENCE": 0.62,
+                },
                 "clarification_question_budget_max": 1,
                 "requires_uncertainty_note_conditions": [
                     "hallucination_risk >= 0.45",
@@ -626,6 +639,8 @@ def _get_conventions() -> dict[str, Any]:
                 "metrics": [
                     "advisory_high_hallucination_risk_rate_pct",
                     "advisory_high_data_quality_risk_rate_pct",
+                    "advisory_high_risk_cautious_rate_pct",
+                    "advisory_high_risk_persist_now_rate_pct",
                     "follow_through_rate_pct",
                     "retrieval_regret_exceeded_rate_pct",
                 ],

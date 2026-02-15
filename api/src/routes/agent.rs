@@ -11723,6 +11723,32 @@ mod tests {
             super::ADVISORY_ACTION_PLAN_SCHEMA_VERSION,
             "advisory_action_plan.v1"
         );
+        assert_eq!(super::ADVISORY_RESPONSE_HINT_GROUNDED_MIN_SPECIFICITY, 0.72);
+        assert_eq!(
+            super::ADVISORY_RESPONSE_HINT_GROUNDED_MAX_HALLUCINATION_RISK,
+            0.40
+        );
+        assert_eq!(
+            super::ADVISORY_RESPONSE_HINT_GROUNDED_MAX_DATA_QUALITY_RISK,
+            0.42
+        );
+        assert_eq!(
+            super::ADVISORY_RESPONSE_HINT_GENERAL_MIN_HALLUCINATION_RISK,
+            0.65
+        );
+        assert_eq!(super::ADVISORY_RESPONSE_HINT_GENERAL_MAX_CONFIDENCE, 0.45);
+        assert_eq!(
+            super::ADVISORY_RESPONSE_HINT_GENERAL_MIN_DATA_QUALITY_RISK,
+            0.62
+        );
+        assert_eq!(super::ADVISORY_PERSIST_ACTION_ASK_FIRST_MIN_RISK, 0.72);
+        assert_eq!(super::ADVISORY_PERSIST_ACTION_DRAFT_MIN_RISK, 0.48);
+        assert_eq!(super::ADVISORY_CLARIFICATION_BUDGET_MIN_RISK, 0.55);
+        assert_eq!(
+            super::ADVISORY_UNCERTAINTY_NOTE_MIN_HALLUCINATION_RISK,
+            0.45
+        );
+        assert_eq!(super::ADVISORY_UNCERTAINTY_NOTE_MAX_CONFIDENCE, 0.62);
     }
 
     #[test]
@@ -11841,6 +11867,49 @@ mod tests {
         assert!(advisory_scores.confidence_score >= 0.6);
         assert_eq!(action_plan.persist_action, "persist_now");
         assert_eq!(action_plan.clarification_question_budget, 0);
+    }
+
+    #[test]
+    fn advisory_scoring_layer_contract_keeps_general_guidance_for_high_risk_scores() {
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            _session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("verified", "verified", "clean", None);
+        let persist_intent = make_persist_intent_fixture("auto_save", "saved");
+        let mode = super::build_response_mode_policy(&claim_guard, &verification, None);
+        assert_eq!(mode.mode_code, "A");
+
+        let advisory_scores = super::AgentAdvisoryScores {
+            schema_version: super::ADVISORY_SCORING_LAYER_SCHEMA_VERSION.to_string(),
+            policy_role: super::SIDECAR_POLICY_ROLE_ADVISORY_ONLY.to_string(),
+            specificity_score: 0.91,
+            hallucination_risk: 0.79,
+            data_quality_risk: 0.74,
+            confidence_score: 0.41,
+            specificity_band: "high".to_string(),
+            hallucination_risk_band: "high".to_string(),
+            data_quality_risk_band: "high".to_string(),
+            confidence_band: "medium".to_string(),
+            specificity_reason_codes: vec!["test_specificity".to_string()],
+            hallucination_reason_codes: vec!["test_hallucination".to_string()],
+            data_quality_reason_codes: vec!["test_data_quality".to_string()],
+            confidence_reason_codes: vec!["test_confidence".to_string()],
+        };
+        let action_plan = super::build_advisory_action_plan(
+            &claim_guard,
+            &mode,
+            &persist_intent,
+            &advisory_scores,
+        );
+
+        assert_eq!(action_plan.response_mode_hint, "general_guidance");
+        assert_eq!(action_plan.persist_action, "ask_first");
+        assert!(action_plan.requires_uncertainty_note);
     }
 
     #[test]

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from kura_workers.learning_telemetry import core_signal_types, signal_category
 from kura_workers.system_config import _get_conventions
 from tests.architecture.conftest import assert_kura_api_test_passes
@@ -10,7 +13,40 @@ RUNTIME_TESTS: tuple[str, ...] = (
     "routes::agent::tests::advisory_scoring_layer_contract_is_advisory_only_non_blocking",
     "routes::agent::tests::advisory_scoring_layer_contract_maps_risky_case_to_cautionary_actions",
     "routes::agent::tests::advisory_scoring_layer_contract_maps_stable_case_to_low_friction_actions",
+    "routes::agent::tests::advisory_scoring_layer_contract_keeps_general_guidance_for_high_risk_scores",
 )
+
+RUNTIME_THRESHOLD_CONSTANTS: tuple[str, ...] = (
+    "ADVISORY_RESPONSE_HINT_GROUNDED_MIN_SPECIFICITY",
+    "ADVISORY_RESPONSE_HINT_GROUNDED_MAX_HALLUCINATION_RISK",
+    "ADVISORY_RESPONSE_HINT_GROUNDED_MAX_DATA_QUALITY_RISK",
+    "ADVISORY_RESPONSE_HINT_GENERAL_MIN_HALLUCINATION_RISK",
+    "ADVISORY_RESPONSE_HINT_GENERAL_MAX_CONFIDENCE",
+    "ADVISORY_RESPONSE_HINT_GENERAL_MIN_DATA_QUALITY_RISK",
+    "ADVISORY_PERSIST_ACTION_ASK_FIRST_MIN_RISK",
+    "ADVISORY_PERSIST_ACTION_DRAFT_MIN_RISK",
+    "ADVISORY_CLARIFICATION_BUDGET_MIN_RISK",
+    "ADVISORY_UNCERTAINTY_NOTE_MIN_HALLUCINATION_RISK",
+    "ADVISORY_UNCERTAINTY_NOTE_MAX_CONFIDENCE",
+)
+_POLICY_RS = (
+    Path(__file__).resolve().parents[2] / "api" / "src" / "routes" / "agent" / "policy.rs"
+)
+_RUNTIME_CONSTANT_RE = re.compile(
+    r"pub\(super\) const (?P<name>ADVISORY_[A-Z0-9_]+): f64 = (?P<value>\d+(?:\.\d+)?);"
+)
+
+
+def _runtime_advisory_threshold_constants() -> dict[str, float]:
+    source = _POLICY_RS.read_text(encoding="utf-8")
+    parsed: dict[str, float] = {}
+    for match in _RUNTIME_CONSTANT_RE.finditer(source):
+        name = match.group("name")
+        if name in RUNTIME_THRESHOLD_CONSTANTS:
+            parsed[name] = float(match.group("value"))
+    missing = sorted(set(RUNTIME_THRESHOLD_CONSTANTS) - set(parsed))
+    assert not missing, f"Missing advisory runtime constants in policy.rs: {missing}"
+    return {name: parsed[name] for name in RUNTIME_THRESHOLD_CONSTANTS}
 
 
 def test_advisory_scoring_layer_contract_declares_four_score_surface_and_nudge_policy() -> None:
@@ -46,6 +82,10 @@ def test_advisory_scoring_layer_contract_declares_four_score_surface_and_nudge_p
         "ask_first",
     }
     assert action_map["clarification_question_budget_max"] == 1
+    assert (
+        action_map["runtime_threshold_constants"]
+        == _runtime_advisory_threshold_constants()
+    )
 
     safety = contract["safety"]
     assert safety["advisory_only"] is True
@@ -56,6 +96,14 @@ def test_advisory_scoring_layer_contract_declares_four_score_surface_and_nudge_p
     event_contract = contract["event_contract"]
     assert event_contract["event_type"] == "learning.signal.logged"
     assert event_contract["signal_type"] == "advisory_scoring_assessed"
+
+    calibration_metrics = set(contract["calibration"]["metrics"])
+    assert {
+        "advisory_high_hallucination_risk_rate_pct",
+        "advisory_high_data_quality_risk_rate_pct",
+        "advisory_high_risk_cautious_rate_pct",
+        "advisory_high_risk_persist_now_rate_pct",
+    }.issubset(calibration_metrics)
 
 
 def test_advisory_scoring_signal_taxonomy_is_registered() -> None:

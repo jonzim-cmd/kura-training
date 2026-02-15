@@ -72,6 +72,15 @@ pub struct AdminAgentLearningSignalSummary {
     pub advisory_high_hallucination_risk_rate_pct: f64,
     pub advisory_high_data_quality_risk: i64,
     pub advisory_high_data_quality_risk_rate_pct: f64,
+    pub advisory_persist_action_persist_now: i64,
+    pub advisory_persist_action_draft_preferred: i64,
+    pub advisory_persist_action_ask_first: i64,
+    pub advisory_cautious_persist_action_rate_pct: f64,
+    pub advisory_high_risk_runs: i64,
+    pub advisory_high_risk_cautious_actions: i64,
+    pub advisory_high_risk_cautious_rate_pct: f64,
+    pub advisory_high_risk_persist_now: i64,
+    pub advisory_high_risk_persist_now_rate_pct: f64,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -169,6 +178,12 @@ struct LearningSignalSummaryRow {
     advisory_scoring_assessed: i64,
     advisory_high_hallucination_risk: i64,
     advisory_high_data_quality_risk: i64,
+    advisory_persist_action_persist_now: i64,
+    advisory_persist_action_draft_preferred: i64,
+    advisory_persist_action_ask_first: i64,
+    advisory_high_risk_runs: i64,
+    advisory_high_risk_cautious_actions: i64,
+    advisory_high_risk_persist_now: i64,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -402,6 +417,29 @@ fn build_anomalies(
         });
     }
 
+    if overview.learning_signals.advisory_high_risk_runs >= 10
+        && overview
+            .learning_signals
+            .advisory_high_risk_persist_now_rate_pct
+            >= 25.0
+    {
+        anomalies.push(AdminAgentTelemetryAnomaly {
+            code: "advisory_high_risk_persist_now_rate_high".to_string(),
+            severity: "warning".to_string(),
+            title: "High-risk sessions still persist too aggressively".to_string(),
+            detail:
+                "In high-risk advisory runs, persist_now appears too often, which weakens the intended risk-reduction nudges."
+                    .to_string(),
+            metric_value: overview
+                .learning_signals
+                .advisory_high_risk_persist_now_rate_pct,
+            threshold: 25.0,
+            recommendation:
+                "Tighten ask-first/draft mapping for high-risk bands and verify uncertainty wording coverage."
+                    .to_string(),
+        });
+    }
+
     if overview.requests.write_with_proof_requests >= 20
         && overview.requests.write_with_proof_error_rate_pct >= 8.0
     {
@@ -609,7 +647,42 @@ async fn load_overview(
             COUNT(*) FILTER (
                 WHERE e.data->>'signal_type' = 'advisory_scoring_assessed'
                   AND LOWER(COALESCE(e.data#>>'{attributes,data_quality_risk_band}', 'low')) = 'high'
-            )::bigint AS advisory_high_data_quality_risk
+            )::bigint AS advisory_high_data_quality_risk,
+            COUNT(*) FILTER (
+                WHERE e.data->>'signal_type' = 'advisory_scoring_assessed'
+                  AND LOWER(COALESCE(e.data#>>'{attributes,persist_action}', 'persist_now')) = 'persist_now'
+            )::bigint AS advisory_persist_action_persist_now,
+            COUNT(*) FILTER (
+                WHERE e.data->>'signal_type' = 'advisory_scoring_assessed'
+                  AND LOWER(COALESCE(e.data#>>'{attributes,persist_action}', 'persist_now')) = 'draft_preferred'
+            )::bigint AS advisory_persist_action_draft_preferred,
+            COUNT(*) FILTER (
+                WHERE e.data->>'signal_type' = 'advisory_scoring_assessed'
+                  AND LOWER(COALESCE(e.data#>>'{attributes,persist_action}', 'persist_now')) = 'ask_first'
+            )::bigint AS advisory_persist_action_ask_first,
+            COUNT(*) FILTER (
+                WHERE e.data->>'signal_type' = 'advisory_scoring_assessed'
+                  AND (
+                    LOWER(COALESCE(e.data#>>'{attributes,hallucination_risk_band}', 'low')) = 'high'
+                    OR LOWER(COALESCE(e.data#>>'{attributes,data_quality_risk_band}', 'low')) = 'high'
+                  )
+            )::bigint AS advisory_high_risk_runs,
+            COUNT(*) FILTER (
+                WHERE e.data->>'signal_type' = 'advisory_scoring_assessed'
+                  AND (
+                    LOWER(COALESCE(e.data#>>'{attributes,hallucination_risk_band}', 'low')) = 'high'
+                    OR LOWER(COALESCE(e.data#>>'{attributes,data_quality_risk_band}', 'low')) = 'high'
+                  )
+                  AND LOWER(COALESCE(e.data#>>'{attributes,persist_action}', 'persist_now')) IN ('ask_first', 'draft_preferred')
+            )::bigint AS advisory_high_risk_cautious_actions,
+            COUNT(*) FILTER (
+                WHERE e.data->>'signal_type' = 'advisory_scoring_assessed'
+                  AND (
+                    LOWER(COALESCE(e.data#>>'{attributes,hallucination_risk_band}', 'low')) = 'high'
+                    OR LOWER(COALESCE(e.data#>>'{attributes,data_quality_risk_band}', 'low')) = 'high'
+                  )
+                  AND LOWER(COALESCE(e.data#>>'{attributes,persist_action}', 'persist_now')) = 'persist_now'
+            )::bigint AS advisory_high_risk_persist_now
         FROM events e
         WHERE e.event_type = 'learning.signal.logged'
           AND e.timestamp >= NOW() - make_interval(hours => $1)
@@ -777,6 +850,26 @@ async fn load_overview(
             advisory_high_data_quality_risk_rate_pct: rate_pct(
                 learning.advisory_high_data_quality_risk,
                 learning.advisory_scoring_assessed,
+            ),
+            advisory_persist_action_persist_now: learning.advisory_persist_action_persist_now,
+            advisory_persist_action_draft_preferred: learning
+                .advisory_persist_action_draft_preferred,
+            advisory_persist_action_ask_first: learning.advisory_persist_action_ask_first,
+            advisory_cautious_persist_action_rate_pct: rate_pct(
+                learning.advisory_persist_action_ask_first
+                    + learning.advisory_persist_action_draft_preferred,
+                learning.advisory_scoring_assessed,
+            ),
+            advisory_high_risk_runs: learning.advisory_high_risk_runs,
+            advisory_high_risk_cautious_actions: learning.advisory_high_risk_cautious_actions,
+            advisory_high_risk_cautious_rate_pct: rate_pct(
+                learning.advisory_high_risk_cautious_actions,
+                learning.advisory_high_risk_runs,
+            ),
+            advisory_high_risk_persist_now: learning.advisory_high_risk_persist_now,
+            advisory_high_risk_persist_now_rate_pct: rate_pct(
+                learning.advisory_high_risk_persist_now,
+                learning.advisory_high_risk_runs,
             ),
         },
         requests: AdminAgentRequestSummary {
@@ -1001,6 +1094,15 @@ mod tests {
                 advisory_high_hallucination_risk_rate_pct: 25.0,
                 advisory_high_data_quality_risk: 5,
                 advisory_high_data_quality_risk_rate_pct: 20.8,
+                advisory_persist_action_persist_now: 9,
+                advisory_persist_action_draft_preferred: 8,
+                advisory_persist_action_ask_first: 7,
+                advisory_cautious_persist_action_rate_pct: 62.5,
+                advisory_high_risk_runs: 12,
+                advisory_high_risk_cautious_actions: 9,
+                advisory_high_risk_cautious_rate_pct: 75.0,
+                advisory_high_risk_persist_now: 3,
+                advisory_high_risk_persist_now_rate_pct: 25.0,
             },
             requests: AdminAgentRequestSummary {
                 total_agent_requests: 100,
@@ -1093,6 +1195,23 @@ mod tests {
             anomalies
                 .iter()
                 .any(|item| item.code == "advisory_data_quality_risk_high")
+        );
+    }
+
+    #[test]
+    fn build_anomalies_flags_advisory_nudge_effectiveness_gap() {
+        let mut overview = make_overview(10.0, 10.0, 2.0);
+        overview.learning_signals.advisory_high_risk_runs = 22;
+        overview.learning_signals.advisory_high_risk_persist_now = 9;
+        overview.learning_signals.advisory_high_risk_persist_now_rate_pct = 40.9;
+        overview.learning_signals.advisory_high_risk_cautious_actions = 13;
+        overview.learning_signals.advisory_high_risk_cautious_rate_pct = 59.1;
+
+        let anomalies = build_anomalies(&overview, 10);
+        assert!(
+            anomalies
+                .iter()
+                .any(|item| item.code == "advisory_high_risk_persist_now_rate_high")
         );
     }
 

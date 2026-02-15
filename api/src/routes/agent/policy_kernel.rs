@@ -888,14 +888,18 @@ pub(super) fn build_advisory_action_plan(
 ) -> AgentAdvisoryActionPlan {
     let mut reason_codes: Vec<String> = Vec::new();
 
-    let mut response_mode_hint = if advisory_scores.specificity_score >= 0.72
-        && advisory_scores.hallucination_risk <= 0.40
-        && advisory_scores.data_quality_risk <= 0.42
+    let response_mode_hint = if advisory_scores.specificity_score
+        >= ADVISORY_RESPONSE_HINT_GROUNDED_MIN_SPECIFICITY
+        && advisory_scores.hallucination_risk
+            <= ADVISORY_RESPONSE_HINT_GROUNDED_MAX_HALLUCINATION_RISK
+        && advisory_scores.data_quality_risk
+            <= ADVISORY_RESPONSE_HINT_GROUNDED_MAX_DATA_QUALITY_RISK
     {
         "grounded_personalized".to_string()
-    } else if advisory_scores.hallucination_risk >= 0.65
-        || advisory_scores.confidence_score <= 0.45
-        || advisory_scores.data_quality_risk >= 0.62
+    } else if advisory_scores.hallucination_risk
+        >= ADVISORY_RESPONSE_HINT_GENERAL_MIN_HALLUCINATION_RISK
+        || advisory_scores.confidence_score <= ADVISORY_RESPONSE_HINT_GENERAL_MAX_CONFIDENCE
+        || advisory_scores.data_quality_risk >= ADVISORY_RESPONSE_HINT_GENERAL_MIN_DATA_QUALITY_RISK
     {
         "general_guidance".to_string()
     } else {
@@ -905,11 +909,14 @@ pub(super) fn build_advisory_action_plan(
         reason_codes.push("response_mode_hint_adjusted_by_advisory_scores".to_string());
     }
 
-    let mut persist_action = if advisory_scores.data_quality_risk >= 0.72
-        || advisory_scores.hallucination_risk >= 0.72
+    let mut persist_action = if advisory_scores.data_quality_risk
+        >= ADVISORY_PERSIST_ACTION_ASK_FIRST_MIN_RISK
+        || advisory_scores.hallucination_risk >= ADVISORY_PERSIST_ACTION_ASK_FIRST_MIN_RISK
     {
         "ask_first".to_string()
-    } else if advisory_scores.data_quality_risk >= 0.48 || !claim_guard.allow_saved_claim {
+    } else if advisory_scores.data_quality_risk >= ADVISORY_PERSIST_ACTION_DRAFT_MIN_RISK
+        || !claim_guard.allow_saved_claim
+    {
         "draft_preferred".to_string()
     } else {
         "persist_now".to_string()
@@ -927,15 +934,17 @@ pub(super) fn build_advisory_action_plan(
         reason_codes.push("persist_status_not_saved".to_string());
     }
 
-    let clarification_question_budget =
-        usize::from(advisory_scores.hallucination_risk >= 0.55 || advisory_scores.data_quality_risk >= 0.55);
+    let clarification_question_budget = usize::from(
+        advisory_scores.hallucination_risk >= ADVISORY_CLARIFICATION_BUDGET_MIN_RISK
+            || advisory_scores.data_quality_risk >= ADVISORY_CLARIFICATION_BUDGET_MIN_RISK,
+    );
     if clarification_question_budget == 1 {
         reason_codes.push("clarification_budget_enabled_by_risk".to_string());
     }
 
     let requires_uncertainty_note = response_mode_policy.requires_transparency_note
-        || advisory_scores.hallucination_risk >= 0.45
-        || advisory_scores.confidence_score < 0.62;
+        || advisory_scores.hallucination_risk >= ADVISORY_UNCERTAINTY_NOTE_MIN_HALLUCINATION_RISK
+        || advisory_scores.confidence_score < ADVISORY_UNCERTAINTY_NOTE_MAX_CONFIDENCE;
     if requires_uncertainty_note {
         reason_codes.push("uncertainty_note_required".to_string());
     }
@@ -976,11 +985,6 @@ pub(super) fn build_advisory_action_plan(
         }
     }
     .to_string();
-
-    if response_mode_hint == "general_guidance" && response_mode_policy.mode_code == "A" {
-        response_mode_hint = "hypothesis_personalized".to_string();
-        reason_codes.push("grounded_mode_relaxed_to_hypothesis_for_consistency".to_string());
-    }
 
     dedupe_reason_codes(&mut reason_codes);
 

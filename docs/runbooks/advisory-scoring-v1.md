@@ -36,12 +36,15 @@ Use admin telemetry endpoints:
 Primary metrics:
 - `advisory_high_hallucination_risk_rate_pct`
 - `advisory_high_data_quality_risk_rate_pct`
+- `advisory_high_risk_cautious_rate_pct`
+- `advisory_high_risk_persist_now_rate_pct`
 - `retrieval_regret_rate_pct`
 - `context_read_coverage_pct`
 
 ## Alert Guidance
 - Warning if hallucination high-risk rate >= 35% with at least 10 advisory samples.
 - Warning if data-quality high-risk rate >= 35% with at least 10 advisory samples.
+- Warning if `advisory_high_risk_persist_now_rate_pct` >= 25% with at least 10 high-risk runs.
 - Critical if write-with-proof error rate >= 8% with enough volume.
 
 ## Safe Tuning Rules
