@@ -34,6 +34,22 @@ A full source-to-target migration was executed from VPS Postgres to Supabase, fo
   - `docker-kura-proxy-1`
 - Gateway health check passed: `{ "status": "ok", "version": "0.1.0" }`
 
+## Auth Compatibility Regression (Strategie B)
+
+- Test target: `cargo test -p kura-api routes::auth::tests -- --nocapture`
+- Database target: Supabase session pooler (`aws-1-eu-west-1.pooler.supabase.com:5432/postgres`)
+- Result: `15 passed; 0 failed`
+- Covered paths:
+  - email/password login credential validation
+  - OAuth authorization code exchange (PKCE fail + success)
+  - refresh token rotation + replay rejection
+  - device token consume-once behavior
+- Data hygiene:
+  - temporary test rows used random `*-client-*` and `*-user-*` prefixes
+  - cleanup executed after run
+  - post-cleanup check: `users_total = 1`, test-prefixed users/clients = `0`
+- Detailed evidence: `docs/reports/supabase-auth-compatibility-2026-02-15.md`
+
 ## Incident During Cutover
 
 - Worker crash loop occurred with `permission denied to set role "app_worker"`.

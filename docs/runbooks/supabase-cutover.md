@@ -76,6 +76,10 @@ Note: `scripts/deploy.sh` now runs the migration drift gate automatically before
    - no `permission denied to set role "app_worker"` in recent logs
 4. Critical table presence:
    - `external_import_jobs` exists
+5. Auth compatibility regression (Strategie B, DB-only):
+   - run `cargo test -p kura-api routes::auth::tests -- --nocapture` against Supabase DB URL
+   - verify login, PKCE exchange, refresh rotation, and device token flows pass without Supabase Auth token issuance
+   - evidence report: `docs/reports/supabase-auth-compatibility-2026-02-15.md`
 
 ## 8. Rollback Procedure (pending timed drill)
 

@@ -1910,10 +1910,15 @@ struct RefreshTokenRow {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppError, generate_user_code, is_valid_loopback_redirect, normalize_email,
-        normalize_user_code, oidc_email_verified, validate_invite_email_binding,
-        validate_oauth_client,
+        AppError, DeviceTokenRequest, authenticate_email_password_user_id, device_token,
+        exchange_authorization_code, generate_user_code, is_valid_loopback_redirect, issue_tokens,
+        normalize_email, normalize_user_code, oidc_email_verified, refresh_tokens,
+        validate_invite_email_binding, validate_oauth_client,
     };
+    use crate::state::{AppState, SignupGate};
+    use axum::{Json, extract::State};
+    use chrono::{Duration, Utc};
+    use kura_core::auth;
     use serde_json::json;
     use sqlx::postgres::PgPoolOptions;
     use uuid::Uuid;
@@ -1997,16 +2002,63 @@ mod tests {
             .ok()
     }
 
-    #[tokio::test]
-    async fn validate_oauth_client_unknown_client_is_rejected() {
-        let Some(pool) = db_pool_if_available().await else {
-            return;
-        };
-
+    async fn db_pool_with_migrations_if_available() -> Option<sqlx::PgPool> {
+        let pool = db_pool_if_available().await?;
         sqlx::migrate!("../migrations")
             .run(&pool)
             .await
             .expect("migrations should run");
+        Some(pool)
+    }
+
+    async fn seed_oauth_client(pool: &sqlx::PgPool, client_id: &str, redirect_uri: &str) {
+        sqlx::query(
+            "INSERT INTO oauth_clients \
+             (client_id, allowed_redirect_uris, allow_loopback_redirect, is_active) \
+             VALUES ($1, $2, FALSE, TRUE)",
+        )
+        .bind(client_id)
+        .bind(vec![redirect_uri.to_string()])
+        .execute(pool)
+        .await
+        .expect("insert oauth client");
+    }
+
+    async fn seed_email_password_user(pool: &sqlx::PgPool, email: &str, password: &str) -> Uuid {
+        let user_id = Uuid::now_v7();
+        let password_hash = auth::hash_password(password).expect("hash password");
+        let email_norm = normalize_email(email);
+
+        sqlx::query(
+            "INSERT INTO users (id, email, password_hash, is_active) \
+             VALUES ($1, $2, $3, TRUE)",
+        )
+        .bind(user_id)
+        .bind(&email_norm)
+        .bind(&password_hash)
+        .execute(pool)
+        .await
+        .expect("insert user");
+
+        sqlx::query(
+            "INSERT INTO user_identities \
+             (user_id, provider, provider_subject, email_norm, email_verified_at) \
+             VALUES ($1, 'email_password', $2, $2, NOW())",
+        )
+        .bind(user_id)
+        .bind(&email_norm)
+        .execute(pool)
+        .await
+        .expect("insert email identity");
+
+        user_id
+    }
+
+    #[tokio::test]
+    async fn validate_oauth_client_unknown_client_is_rejected() {
+        let Some(pool) = db_pool_with_migrations_if_available().await else {
+            return;
+        };
 
         let random_client = format!("missing-client-{}", Uuid::now_v7());
         let err = validate_oauth_client(&pool, &random_client, "http://127.0.0.1:31337/callback")
@@ -2023,14 +2075,9 @@ mod tests {
 
     #[tokio::test]
     async fn validate_oauth_client_inactive_client_is_rejected() {
-        let Some(pool) = db_pool_if_available().await else {
+        let Some(pool) = db_pool_with_migrations_if_available().await else {
             return;
         };
-
-        sqlx::migrate!("../migrations")
-            .run(&pool)
-            .await
-            .expect("migrations should run");
 
         let client_id = format!("inactive-client-{}", Uuid::now_v7());
         sqlx::query(
@@ -2052,5 +2099,293 @@ mod tests {
             AppError::Unauthorized { .. } => {}
             other => panic!("unexpected error variant: {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn authenticate_email_password_user_id_validates_credentials() {
+        let Some(pool) = db_pool_with_migrations_if_available().await else {
+            return;
+        };
+
+        let email = format!("auth-login-{}@example.com", Uuid::now_v7());
+        let password = "Supabase-Login-Test-Password-123!";
+        let user_id = seed_email_password_user(&pool, &email, password).await;
+
+        let resolved = authenticate_email_password_user_id(&pool, &email, password)
+            .await
+            .expect("valid credentials should pass");
+        assert_eq!(resolved, user_id);
+
+        let err = authenticate_email_password_user_id(&pool, &email, "wrong-password")
+            .await
+            .expect_err("invalid credentials must fail");
+        assert!(matches!(err, AppError::Unauthorized { .. }));
+    }
+
+    #[tokio::test]
+    async fn exchange_authorization_code_rejects_wrong_pkce_without_consuming_code() {
+        let Some(pool) = db_pool_with_migrations_if_available().await else {
+            return;
+        };
+
+        let client_id = format!("pkce-client-{}", Uuid::now_v7());
+        let redirect_uri = "http://127.0.0.1:3030/callback";
+        seed_oauth_client(&pool, &client_id, redirect_uri).await;
+
+        let email = format!("pkce-user-{}@example.com", Uuid::now_v7());
+        let user_id = seed_email_password_user(&pool, &email, "Pkce-Test-Password-123!").await;
+
+        let (code, code_hash) = auth::generate_auth_code();
+        let auth_code_id = Uuid::now_v7();
+        let expected_verifier = format!("pkce-verifier-{}", Uuid::now_v7());
+        let code_challenge = auth::generate_code_challenge(&expected_verifier);
+
+        sqlx::query(
+            "INSERT INTO oauth_authorization_codes \
+             (id, user_id, code_hash, client_id, redirect_uri, code_challenge, expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(auth_code_id)
+        .bind(user_id)
+        .bind(&code_hash)
+        .bind(&client_id)
+        .bind(redirect_uri)
+        .bind(&code_challenge)
+        .bind(Utc::now() + Duration::minutes(5))
+        .execute(&pool)
+        .await
+        .expect("insert auth code");
+
+        let err = exchange_authorization_code(
+            &pool,
+            &code,
+            "wrong-verifier",
+            redirect_uri,
+            &client_id,
+        )
+        .await
+        .expect_err("wrong pkce verifier must fail");
+        assert!(matches!(err, AppError::Unauthorized { .. }));
+
+        let used_at: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT used_at FROM oauth_authorization_codes WHERE id = $1",
+        )
+        .bind(auth_code_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load auth code");
+        assert!(used_at.is_none(), "failed PKCE must not consume auth code");
+    }
+
+    #[tokio::test]
+    async fn exchange_authorization_code_consumes_code_and_issues_tokens() {
+        let Some(pool) = db_pool_with_migrations_if_available().await else {
+            return;
+        };
+
+        let client_id = format!("pkce-success-client-{}", Uuid::now_v7());
+        let redirect_uri = "http://127.0.0.1:3131/callback";
+        seed_oauth_client(&pool, &client_id, redirect_uri).await;
+
+        let email = format!("pkce-success-{}@example.com", Uuid::now_v7());
+        let user_id = seed_email_password_user(&pool, &email, "Pkce-Success-Password-123!").await;
+
+        let (code, code_hash) = auth::generate_auth_code();
+        let auth_code_id = Uuid::now_v7();
+        let verifier = format!("pkce-ok-verifier-{}", Uuid::now_v7());
+        let challenge = auth::generate_code_challenge(&verifier);
+
+        sqlx::query(
+            "INSERT INTO oauth_authorization_codes \
+             (id, user_id, code_hash, client_id, redirect_uri, code_challenge, expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(auth_code_id)
+        .bind(user_id)
+        .bind(&code_hash)
+        .bind(&client_id)
+        .bind(redirect_uri)
+        .bind(&challenge)
+        .bind(Utc::now() + Duration::minutes(5))
+        .execute(&pool)
+        .await
+        .expect("insert auth code");
+
+        let Json(tokens) =
+            exchange_authorization_code(&pool, &code, &verifier, redirect_uri, &client_id)
+                .await
+                .expect("valid pkce exchange should pass");
+        assert!(tokens.access_token.starts_with("kura_at_"));
+        assert!(tokens.refresh_token.starts_with("kura_rt_"));
+
+        let used_at: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT used_at FROM oauth_authorization_codes WHERE id = $1",
+        )
+        .bind(auth_code_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load auth code");
+        assert!(used_at.is_some(), "successful exchange must consume code");
+
+        let access_hash = auth::hash_token(&tokens.access_token);
+        let refresh_hash = auth::hash_token(&tokens.refresh_token);
+        let access_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM oauth_access_tokens WHERE token_hash = $1 AND user_id = $2)",
+        )
+        .bind(&access_hash)
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("check access token row");
+        let refresh_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM oauth_refresh_tokens WHERE token_hash = $1 AND user_id = $2)",
+        )
+        .bind(&refresh_hash)
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("check refresh token row");
+        assert!(access_exists);
+        assert!(refresh_exists);
+    }
+
+    #[tokio::test]
+    async fn refresh_tokens_rotates_old_tokens_and_invalidates_previous_refresh_token() {
+        let Some(pool) = db_pool_with_migrations_if_available().await else {
+            return;
+        };
+
+        let client_id = format!("refresh-client-{}", Uuid::now_v7());
+        let redirect_uri = "http://127.0.0.1:3232/callback";
+        seed_oauth_client(&pool, &client_id, redirect_uri).await;
+
+        let email = format!("refresh-user-{}@example.com", Uuid::now_v7());
+        let user_id =
+            seed_email_password_user(&pool, &email, "Refresh-Test-Password-123!").await;
+
+        let Json(initial_tokens) = issue_tokens(
+            &pool,
+            user_id,
+            &client_id,
+            vec!["agent:read".to_string(), "agent:write".to_string()],
+        )
+        .await
+        .expect("issue initial tokens");
+
+        let initial_refresh_hash = auth::hash_token(&initial_tokens.refresh_token);
+        let old_refresh: (Uuid, Uuid) = sqlx::query_as(
+            "SELECT id, access_token_id FROM oauth_refresh_tokens WHERE token_hash = $1",
+        )
+        .bind(&initial_refresh_hash)
+        .fetch_one(&pool)
+        .await
+        .expect("load initial refresh token row");
+
+        let Json(rotated_tokens) = refresh_tokens(&pool, &initial_tokens.refresh_token, &client_id)
+            .await
+            .expect("refresh should rotate tokens");
+        assert!(rotated_tokens.access_token.starts_with("kura_at_"));
+        assert!(rotated_tokens.refresh_token.starts_with("kura_rt_"));
+        assert_ne!(rotated_tokens.refresh_token, initial_tokens.refresh_token);
+
+        let old_refresh_revoked: bool =
+            sqlx::query_scalar("SELECT is_revoked FROM oauth_refresh_tokens WHERE id = $1")
+                .bind(old_refresh.0)
+                .fetch_one(&pool)
+                .await
+                .expect("load old refresh revocation state");
+        let old_access_revoked: bool =
+            sqlx::query_scalar("SELECT is_revoked FROM oauth_access_tokens WHERE id = $1")
+                .bind(old_refresh.1)
+                .fetch_one(&pool)
+                .await
+                .expect("load old access revocation state");
+        assert!(old_refresh_revoked);
+        assert!(old_access_revoked);
+
+        let new_refresh_hash = auth::hash_token(&rotated_tokens.refresh_token);
+        let new_refresh_active: bool =
+            sqlx::query_scalar("SELECT NOT is_revoked FROM oauth_refresh_tokens WHERE token_hash = $1")
+                .bind(&new_refresh_hash)
+                .fetch_one(&pool)
+                .await
+                .expect("load new refresh token state");
+        assert!(new_refresh_active);
+
+        let err = refresh_tokens(&pool, &initial_tokens.refresh_token, &client_id)
+            .await
+            .expect_err("old refresh token must be invalid after rotation");
+        assert!(matches!(err, AppError::Unauthorized { .. }));
+    }
+
+    #[tokio::test]
+    async fn device_token_consumes_approved_device_code_once() {
+        let Some(pool) = db_pool_with_migrations_if_available().await else {
+            return;
+        };
+
+        let client_id = format!("device-client-{}", Uuid::now_v7());
+        let redirect_uri = "http://127.0.0.1:3333/callback";
+        seed_oauth_client(&pool, &client_id, redirect_uri).await;
+
+        let email = format!("device-user-{}@example.com", Uuid::now_v7());
+        let user_id = seed_email_password_user(&pool, &email, "Device-Test-Password-123!").await;
+
+        let device_code = format!("kura_dc_test_{}", Uuid::now_v7().simple());
+        let device_code_hash = auth::hash_token(&device_code);
+        let user_code_hash = auth::hash_token(&format!("USER{}", Uuid::now_v7().simple()));
+        let device_row_id = Uuid::now_v7();
+
+        sqlx::query(
+            "INSERT INTO oauth_device_codes \
+             (id, device_code_hash, user_code_hash, client_id, scopes, status, approved_user_id, \
+              approved_at, interval_seconds, expires_at) \
+             VALUES ($1, $2, $3, $4, $5, 'approved', $6, NOW(), 5, $7)",
+        )
+        .bind(device_row_id)
+        .bind(&device_code_hash)
+        .bind(&user_code_hash)
+        .bind(&client_id)
+        .bind(vec!["agent:read".to_string(), "agent:write".to_string()])
+        .bind(user_id)
+        .bind(Utc::now() + Duration::minutes(5))
+        .execute(&pool)
+        .await
+        .expect("insert approved device code");
+
+        let state = AppState {
+            db: pool.clone(),
+            signup_gate: SignupGate::Open,
+        };
+        let Json(tokens) = device_token(
+            State(state.clone()),
+            Json(DeviceTokenRequest {
+                device_code: device_code.clone(),
+                client_id: client_id.clone(),
+            }),
+        )
+        .await
+        .expect("approved device code should issue tokens");
+        assert!(tokens.access_token.starts_with("kura_at_"));
+        assert!(tokens.refresh_token.starts_with("kura_rt_"));
+
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM oauth_device_codes WHERE id = $1")
+                .bind(device_row_id)
+                .fetch_one(&pool)
+                .await
+                .expect("load device code status");
+        assert_eq!(status, "consumed");
+
+        let err = device_token(
+            State(state),
+            Json(DeviceTokenRequest {
+                device_code,
+                client_id,
+            }),
+        )
+        .await
+        .expect_err("consumed device code must not be reusable");
+        assert!(matches!(err, AppError::Unauthorized { .. }));
     }
 }
