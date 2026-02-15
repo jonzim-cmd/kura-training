@@ -1191,6 +1191,14 @@ def _get_agent_behavior() -> dict[str, Any]:
                             "'never' cannot bypass confirm-first requirements from quality/model hard gates."
                         ),
                     },
+                    "save_confirmation_mode": {
+                        "allowed_values": ["auto", "always", "never"],
+                        "default": "auto",
+                        "safety_floor": (
+                            "'never' may reduce save prompts for routine flows, but cannot bypass "
+                            "high-impact or confirm-first safety gates."
+                        ),
+                    },
                 },
                 "precedence_order": [
                     "workflow + write-proof hard invariants",
@@ -1202,6 +1210,7 @@ def _get_agent_behavior() -> dict[str, Any]:
                     "autonomy_scope": "moderate",
                     "verbosity": "balanced",
                     "confirmation_strictness": "auto",
+                    "save_confirmation_mode": "auto",
                 },
             },
             "scenario_library_v1": {
@@ -1421,6 +1430,45 @@ def _get_agent_behavior() -> dict[str, Any]:
                     "before writing AND echoes after. An advanced-tier agent skips confirmation "
                     "but still echoes. The two policies must never be conflated."
                 ),
+            },
+            "persist_intent_policy_v1": {
+                "schema_version": "persist_intent_policy.v1",
+                "goal": (
+                    "Ensure relevant discussion outcomes are not silently lost when chat context "
+                    "is compacted. Every relevant write outcome must expose explicit persistence status."
+                ),
+                "allowed_modes": ["auto_save", "auto_draft", "ask_first"],
+                "status_labels": ["saved", "draft", "not_saved"],
+                "decision_rules": {
+                    "auto_save_when": (
+                        "claim_guard.allow_saved_claim=true AND no unresolved clarification remains."
+                    ),
+                    "auto_draft_when": (
+                        "claim_guard.allow_saved_claim=false OR verification pending/failed for relevant outcomes."
+                    ),
+                    "ask_first_when": (
+                        "high-impact or confirm-first safety floor applies while persistence remains unresolved."
+                    ),
+                },
+                "anti_spam": {
+                    "max_save_confirmation_prompts_per_turn": 1,
+                    "prompt_strategy": "single_topic_question",
+                    "must_avoid_prompt_spam_for_routine_verified_logging": True,
+                },
+                "draft_persistence": {
+                    "event_type": "observation.logged",
+                    "projection_type": "open_observations",
+                    "required_provenance_fields": [
+                        "source_type",
+                        "source_path",
+                        "reason_codes",
+                    ],
+                    "dimension_prefix": "provisional.persist_intent.",
+                },
+                "fail_safe": {
+                    "no_saved_wording_without_proof": True,
+                    "require_explicit_status_label": True,
+                },
             },
             "reliability_ux_protocol": {
                 "goal": (

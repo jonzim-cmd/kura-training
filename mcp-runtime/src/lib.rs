@@ -644,9 +644,9 @@ impl McpServer {
                                     .and_then(|obj| obj.get("temporal_basis"))
                                     .is_none()
                                 {
-                                    let temporal_basis =
-                                        self.resolve_temporal_basis_for_high_impact_write(args)
-                                            .await?;
+                                    let temporal_basis = self
+                                        .resolve_temporal_basis_for_high_impact_write(args)
+                                        .await?;
                                     handshake["temporal_basis"] = temporal_basis;
                                 }
                                 handshake
@@ -660,9 +660,9 @@ impl McpServer {
                             }
                             None => {
                                 let goal = arg_optional_string(args, "intent_goal")?;
-                                let temporal_basis =
-                                    self.resolve_temporal_basis_for_high_impact_write(args)
-                                        .await?;
+                                let temporal_basis = self
+                                    .resolve_temporal_basis_for_high_impact_write(args)
+                                    .await?;
                                 build_default_intent_handshake(
                                     &normalized_events,
                                     goal.as_deref(),
@@ -726,6 +726,40 @@ impl McpServer {
             effective_path = legacy_path;
         }
 
+        let contract = write_contract_surface(&response.body);
+        if !response.is_success() {
+            return Err(ToolError::new(
+                "api_error",
+                format!("kura_events_write failed with HTTP {}", response.status),
+            )
+            .with_details(json!({
+                "request": {
+                    "mode": mode.as_str(),
+                    "effective_mode": effective_mode,
+                    "path": effective_path,
+                    "event_count": events.len()
+                },
+                "response": response.to_value(),
+                "contract": contract,
+                "compatibility": {
+                    "capability_mode": self.capability_profile.mode.as_str(),
+                    "fallback_applied": fallback_applied,
+                    "notes": compatibility_notes
+                }
+            })));
+        }
+
+        let persist_intent_mode = contract
+            .get("persist_intent")
+            .and_then(|v| v.get("mode"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let persist_status_label = contract
+            .get("persist_intent")
+            .and_then(|v| v.get("status_label"))
+            .cloned()
+            .unwrap_or(Value::Null);
+
         Ok(json!({
             "request": {
                 "mode": mode.as_str(),
@@ -734,10 +768,13 @@ impl McpServer {
                 "event_count": events.len()
             },
             "response": response.to_value(),
+            "contract": contract,
             "completion": {
                 "status": if fallback_applied { "complete_with_fallback" } else { "complete" },
                 "event_count": events.len(),
-                "verification_contract_enforced": mode != WriteMode::WriteWithProof || !fallback_applied
+                "verification_contract_enforced": mode != WriteMode::WriteWithProof || !fallback_applied,
+                "persist_intent_mode": persist_intent_mode,
+                "persist_status_label": persist_status_label
             },
             "compatibility": {
                 "capability_mode": self.capability_profile.mode.as_str(),
@@ -936,19 +973,17 @@ impl McpServer {
             )
             .await?;
         if response.status >= 400 {
-            return Err(
-                ToolError::new(
-                    "temporal_context_unavailable",
-                    format!(
-                        "Failed to fetch fresh agent context for temporal_basis (HTTP {})",
-                        response.status
-                    ),
-                )
-                .with_field("temporal_basis")
-                .with_docs_hint(
-                    "Retry after GET /v1/agent/context succeeds, or provide temporal_basis explicitly.",
+            return Err(ToolError::new(
+                "temporal_context_unavailable",
+                format!(
+                    "Failed to fetch fresh agent context for temporal_basis (HTTP {})",
+                    response.status
                 ),
-            );
+            )
+            .with_field("temporal_basis")
+            .with_docs_hint(
+                "Retry after GET /v1/agent/context succeeds, or provide temporal_basis explicitly.",
+            ));
         }
 
         let temporal_context = response
@@ -967,16 +1002,13 @@ impl McpServer {
                 )
             })?;
 
-        let context_generated_at = temporal_context
-            .get("now_utc")
-            .cloned()
-            .ok_or_else(|| {
-                ToolError::new(
-                    "temporal_context_missing",
-                    "meta.temporal_context.now_utc is required",
-                )
-                .with_field("temporal_basis.context_generated_at")
-            })?;
+        let context_generated_at = temporal_context.get("now_utc").cloned().ok_or_else(|| {
+            ToolError::new(
+                "temporal_context_missing",
+                "meta.temporal_context.now_utc is required",
+            )
+            .with_field("temporal_basis.context_generated_at")
+        })?;
         let timezone = temporal_context.get("timezone").cloned().ok_or_else(|| {
             ToolError::new(
                 "temporal_context_missing",
@@ -1277,6 +1309,11 @@ impl ToolError {
 
     fn with_docs_hint(mut self, docs_hint: impl Into<String>) -> Self {
         self.docs_hint = Some(docs_hint.into());
+        self
+    }
+
+    fn with_details(mut self, details: Value) -> Self {
+        self.details = Some(details);
         self
     }
 
@@ -1609,6 +1646,14 @@ fn tool_completion_status(payload: &Value) -> &'static str {
     } else {
         "complete"
     }
+}
+
+fn write_contract_surface(body: &Value) -> Value {
+    json!({
+        "verification": body.get("verification").cloned().unwrap_or(Value::Null),
+        "claim_guard": body.get("claim_guard").cloned().unwrap_or(Value::Null),
+        "persist_intent": body.get("persist_intent").cloned().unwrap_or(Value::Null)
+    })
 }
 
 fn legacy_write_target(
@@ -2464,7 +2509,7 @@ fn to_pretty_json(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     #[test]
     fn normalize_api_path_adds_leading_slash() {
@@ -2604,5 +2649,27 @@ mod tests {
                 .iter()
                 .any(|w| w.contains("min_mcp_version"))
         );
+    }
+
+    #[test]
+    fn write_contract_surface_exposes_persist_intent_when_present() {
+        let body = json!({
+            "verification": {"status": "verified"},
+            "claim_guard": {"allow_saved_claim": true},
+            "persist_intent": {"mode": "auto_save", "status_label": "saved"}
+        });
+        let surface = write_contract_surface(&body);
+        assert_eq!(surface["verification"]["status"], "verified");
+        assert_eq!(surface["claim_guard"]["allow_saved_claim"], true);
+        assert_eq!(surface["persist_intent"]["mode"], "auto_save");
+        assert_eq!(surface["persist_intent"]["status_label"], "saved");
+    }
+
+    #[test]
+    fn write_contract_surface_defaults_to_null_when_fields_missing() {
+        let surface = write_contract_surface(&json!({"unexpected": true}));
+        assert_eq!(surface["verification"], Value::Null);
+        assert_eq!(surface["claim_guard"], Value::Null);
+        assert_eq!(surface["persist_intent"], Value::Null);
     }
 }

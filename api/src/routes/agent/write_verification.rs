@@ -57,6 +57,16 @@ pub(super) fn normalize_confirmation_strictness_override(raw: Option<&str>) -> O
     }
 }
 
+pub(super) fn normalize_save_confirmation_mode_override(raw: Option<&str>) -> Option<String> {
+    let value = raw?.trim().to_lowercase();
+    match value.as_str() {
+        "auto" => Some("auto".to_string()),
+        "always" | "strict" => Some("always".to_string()),
+        "never" | "relaxed" => Some("never".to_string()),
+        _ => None,
+    }
+}
+
 pub(super) fn policy_requires_confirmation(autonomy_policy: &AgentAutonomyPolicy) -> bool {
     autonomy_policy.throttle_active
         || autonomy_policy.require_confirmation_for_non_trivial_actions
@@ -79,6 +89,7 @@ pub(super) fn apply_user_preference_overrides(
     let scope_raw = user_preference_string(user_profile, "autonomy_scope");
     let verbosity_raw = user_preference_string(user_profile, "verbosity");
     let confirmation_raw = user_preference_string(user_profile, "confirmation_strictness");
+    let save_confirmation_raw = user_preference_string(user_profile, "save_confirmation_mode");
 
     if let Some(verbosity) = normalize_verbosity_override(verbosity_raw.as_deref()) {
         autonomy_policy.interaction_verbosity = verbosity;
@@ -118,6 +129,12 @@ pub(super) fn apply_user_preference_overrides(
                 autonomy_policy.repair_auto_apply_enabled = true;
             }
         }
+    }
+
+    if let Some(save_mode) =
+        normalize_save_confirmation_mode_override(save_confirmation_raw.as_deref())
+    {
+        autonomy_policy.save_confirmation_mode = save_mode;
     }
 
     autonomy_policy
@@ -619,8 +636,7 @@ pub(super) fn validate_temporal_basis(
                 "current_context": temporal_context.timezone,
             })),
             docs_hint: Some(
-                "Refresh /v1/agent/context and reuse its temporal_context.timezone."
-                    .to_string(),
+                "Refresh /v1/agent/context and reuse its temporal_context.timezone.".to_string(),
             ),
         });
     }
@@ -658,8 +674,8 @@ pub(super) fn validate_temporal_basis(
                 docs_hint: Some("Use date format YYYY-MM-DD.".to_string()),
             });
         };
-        let Some(last_local) = chrono::NaiveDate::parse_from_str(last_training_date, "%Y-%m-%d")
-            .ok()
+        let Some(last_local) =
+            chrono::NaiveDate::parse_from_str(last_training_date, "%Y-%m-%d").ok()
         else {
             return Err(AppError::Validation {
                 message:
@@ -857,6 +873,7 @@ pub(super) fn default_autonomy_policy() -> AgentAutonomyPolicy {
         max_scope_level: "moderate".to_string(),
         interaction_verbosity: "balanced".to_string(),
         confirmation_strictness: "auto".to_string(),
+        save_confirmation_mode: "auto".to_string(),
         user_requested_scope_level: None,
         require_confirmation_for_non_trivial_actions: false,
         require_confirmation_for_plan_updates: false,
@@ -953,6 +970,11 @@ pub(super) fn autonomy_policy_from_quality_health(
             .to_string(),
         confirmation_strictness: policy
             .get("confirmation_strictness")
+            .and_then(Value::as_str)
+            .unwrap_or("auto")
+            .to_string(),
+        save_confirmation_mode: policy
+            .get("save_confirmation_mode")
             .and_then(Value::as_str)
             .unwrap_or("auto")
             .to_string(),
@@ -1112,6 +1134,26 @@ pub(super) fn build_save_claim_checked_event(
     session_audit: &AgentSessionAuditSummary,
     model_identity: &ResolvedModelIdentity,
 ) -> CreateEventRequest {
+    build_save_claim_checked_event_with_persist(
+        requested_event_count,
+        receipts,
+        verification,
+        claim_guard,
+        session_audit,
+        model_identity,
+        None,
+    )
+}
+
+pub(super) fn build_save_claim_checked_event_with_persist(
+    requested_event_count: usize,
+    receipts: &[AgentWriteReceipt],
+    verification: &AgentWriteVerificationSummary,
+    claim_guard: &AgentWriteClaimGuard,
+    session_audit: &AgentSessionAuditSummary,
+    model_identity: &ResolvedModelIdentity,
+    persist_intent: Option<&AgentPersistIntent>,
+) -> CreateEventRequest {
     let mismatch_detected = !claim_guard.allow_saved_claim;
     // Save-Echo is a tier-independent data-integrity contract (save_echo_policy_v1).
     // It is always required when claim_status indicates persisted data.
@@ -1132,6 +1174,30 @@ pub(super) fn build_save_claim_checked_event(
         save_echo_required,
         save_echo_completeness,
     );
+    let persist_mode = persist_intent
+        .map(|intent| intent.mode.clone())
+        .unwrap_or_else(|| "not_assessed".to_string());
+    let persist_status_label = persist_intent
+        .map(|intent| intent.status_label.clone())
+        .unwrap_or_else(|| {
+            if claim_guard.allow_saved_claim {
+                "saved".to_string()
+            } else {
+                "not_saved".to_string()
+            }
+        });
+    let persist_reason_codes = persist_intent
+        .map(|intent| intent.reason_codes.clone())
+        .unwrap_or_default();
+    let persist_draft_event_count = persist_intent
+        .map(|intent| intent.draft_event_count)
+        .unwrap_or(0);
+    let persist_draft_persisted_count = persist_intent
+        .map(|intent| intent.draft_persisted_count)
+        .unwrap_or(0);
+    let persist_ask_first_prompted = persist_intent
+        .and_then(|intent| intent.user_prompt.as_ref())
+        .is_some();
     let event_data = serde_json::json!({
         "requested_event_count": requested_event_count,
         "receipt_count": receipts.len(),
@@ -1149,6 +1215,12 @@ pub(super) fn build_save_claim_checked_event(
         "save_echo_required": save_echo_required,
         "save_echo_present": serde_json::Value::Null,
         "save_echo_completeness": save_echo_completeness,
+        "persist_intent_mode": persist_mode,
+        "persist_status_label": persist_status_label,
+        "persist_reason_codes": persist_reason_codes,
+        "persist_draft_event_count": persist_draft_event_count,
+        "persist_draft_persisted_count": persist_draft_persisted_count,
+        "persist_ask_first_prompted": persist_ask_first_prompted,
         "runtime_model_identity": model_identity.model_identity,
         "model_identity_source": model_identity.source,
         "model_attestation_request_id": model_identity.attestation_request_id,
@@ -1164,6 +1236,7 @@ pub(super) fn build_save_claim_checked_event(
             "max_scope_level": claim_guard.autonomy_policy.max_scope_level,
             "interaction_verbosity": claim_guard.autonomy_policy.interaction_verbosity,
             "confirmation_strictness": claim_guard.autonomy_policy.confirmation_strictness,
+            "save_confirmation_mode": claim_guard.autonomy_policy.save_confirmation_mode,
             "user_requested_scope_level": claim_guard.autonomy_policy.user_requested_scope_level,
         },
         "autonomy_gate": {

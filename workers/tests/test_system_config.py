@@ -677,9 +677,20 @@ class TestAgentBehavior:
         assert keys["autonomy_scope"]["allowed_values"] == ["strict", "moderate", "proactive"]
         assert keys["verbosity"]["allowed_values"] == ["concise", "balanced", "detailed"]
         assert keys["confirmation_strictness"]["allowed_values"] == ["auto", "always", "never"]
+        assert keys["save_confirmation_mode"]["allowed_values"] == ["auto", "always", "never"]
         assert overrides["fallback_defaults"]["autonomy_scope"] == "moderate"
         assert overrides["fallback_defaults"]["verbosity"] == "balanced"
         assert overrides["fallback_defaults"]["confirmation_strictness"] == "auto"
+        assert overrides["fallback_defaults"]["save_confirmation_mode"] == "auto"
+
+    def test_operational_has_persist_intent_policy_contract(self):
+        result = _get_agent_behavior()
+        policy = result["operational"]["persist_intent_policy_v1"]
+        assert policy["schema_version"] == "persist_intent_policy.v1"
+        assert policy["allowed_modes"] == ["auto_save", "auto_draft", "ask_first"]
+        assert policy["status_labels"] == ["saved", "draft", "not_saved"]
+        assert policy["anti_spam"]["max_save_confirmation_prompts_per_turn"] == 1
+        assert policy["fail_safe"]["no_saved_wording_without_proof"] is True
 
     def test_operational_has_scenario_library_with_required_categories(self):
         result = _get_agent_behavior()

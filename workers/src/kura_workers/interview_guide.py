@@ -215,7 +215,7 @@ def get_interview_guide() -> dict[str, Any]:
                 "examples": [
                     "Emerges naturally from conversation style. Store as free text.",
                     "Soll ich eher kurz und direkt sein, oder lieber mehr erklären?",
-                    "Für Autonomie/Bestätigung: preference.set keys autonomy_scope, verbosity, confirmation_strictness.",
+                    "Für Autonomie/Bestätigung: preference.set keys autonomy_scope, verbosity, confirmation_strictness, save_confirmation_mode.",
                 ],
             },
         ],

@@ -303,6 +303,8 @@ pub struct AgentAutonomyPolicy {
     pub interaction_verbosity: String,
     /// auto | always | never
     pub confirmation_strictness: String,
+    /// auto | always | never
+    pub save_confirmation_mode: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_requested_scope_level: Option<String>,
     pub require_confirmation_for_non_trivial_actions: bool,
@@ -837,6 +839,32 @@ pub struct AgentCounterfactualRecommendation {
     pub ux_compact: bool,
 }
 
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentPersistIntentGroupedItem {
+    /// training_set | training_session | session_feedback | plan_update | preference | observation | other
+    pub topic: String,
+    pub count: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub event_types: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentPersistIntent {
+    pub schema_version: String,
+    /// auto_save | auto_draft | ask_first
+    pub mode: String,
+    /// saved | draft | not_saved
+    pub status_label: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reason_codes: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub grouped_items: Vec<AgentPersistIntentGroupedItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_prompt: Option<String>,
+    pub draft_event_count: usize,
+    pub draft_persisted_count: usize,
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AgentWriteWithProofResponse {
     pub receipts: Vec<AgentWriteReceipt>,
@@ -856,6 +884,7 @@ pub struct AgentWriteWithProofResponse {
     pub personal_failure_profile: AgentPersonalFailureProfile,
     pub sidecar_assessment: AgentSidecarAssessment,
     pub counterfactual_recommendation: AgentCounterfactualRecommendation,
+    pub persist_intent: AgentPersistIntent,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -1854,6 +1883,9 @@ use session_audit::*;
 mod write_verification;
 use write_verification::*;
 
+mod persist_intent;
+use persist_intent::*;
+
 fn warning_code_from_warning(warning: &BatchEventWarning) -> String {
     let field = warning
         .field
@@ -2558,13 +2590,7 @@ fn parse_agent_timezone(
 
     if let Some(raw_timezone) = profile_timezone {
         if let Ok(parsed) = raw_timezone.parse::<Tz>() {
-            return (
-                parsed,
-                raw_timezone,
-                "preference".to_string(),
-                false,
-                None,
-            );
+            return (parsed, raw_timezone, "preference".to_string(), false, None);
         }
     }
 
@@ -2599,8 +2625,8 @@ pub(super) fn build_agent_temporal_context(
     let today_local = now_local.date_naive();
     let weekday_local = now_local.format("%A").to_string().to_lowercase();
     let last_training_date_local = parse_training_last_date(training_timeline);
-    let days_since_last_training = last_training_date_local
-        .map(|value| today_local.signed_duration_since(value).num_days());
+    let days_since_last_training =
+        last_training_date_local.map(|value| today_local.signed_duration_since(value).num_days());
 
     AgentTemporalContext {
         schema_version: AGENT_TEMPORAL_CONTEXT_SCHEMA_VERSION.to_string(),
@@ -3617,6 +3643,9 @@ fn collect_machine_language_tokens(response: &AgentWriteWithProofResponse) -> Ha
     for code in &response.counterfactual_recommendation.reason_codes {
         insert_machine_token(&mut tokens, code);
     }
+    for code in &response.persist_intent.reason_codes {
+        insert_machine_token(&mut tokens, code);
+    }
     for alternative in &response.counterfactual_recommendation.alternatives {
         insert_machine_token(&mut tokens, &alternative.option_id);
     }
@@ -3790,6 +3819,9 @@ fn user_facing_text_fields(response: &AgentWriteWithProofResponse) -> Vec<&str> 
     {
         texts.push(question);
     }
+    if let Some(prompt) = response.persist_intent.user_prompt.as_deref() {
+        texts.push(prompt);
+    }
     for alternative in &response.counterfactual_recommendation.alternatives {
         texts.push(alternative.title.as_str());
         texts.push(alternative.when_to_choose.as_str());
@@ -3859,6 +3891,9 @@ fn rewrite_user_facing_fields_once(
         .as_mut()
     {
         *question = rewrite_user_text_once(question, machine_tokens);
+    }
+    if let Some(prompt) = response.persist_intent.user_prompt.as_mut() {
+        *prompt = rewrite_user_text_once(prompt, machine_tokens);
     }
     for alternative in &mut response.counterfactual_recommendation.alternatives {
         alternative.title = rewrite_user_text_once(&alternative.title, machine_tokens);
@@ -5130,9 +5165,10 @@ pub async fn write_with_proof(
         training_timeline.as_ref(),
         Utc::now(),
     );
-    let temporal_basis_required = req.events.iter().any(|event| {
-        is_planning_or_coaching_event_type(&event.event_type.trim().to_lowercase())
-    });
+    let temporal_basis_required = req
+        .events
+        .iter()
+        .any(|event| is_planning_or_coaching_event_type(&event.event_type.trim().to_lowercase()));
 
     let intent_handshake_confirmation = match req.intent_handshake.as_ref() {
         Some(handshake) => {
@@ -5394,6 +5430,61 @@ pub async fn write_with_proof(
         autonomy_policy,
         autonomy_gate,
     );
+    let mut persist_intent_computation = build_persist_intent_computation(
+        user_id,
+        &req.events,
+        &receipts,
+        &verification,
+        &claim_guard,
+        &session_audit_summary,
+        &action_class,
+    );
+    if !persist_intent_computation.draft_events.is_empty() {
+        match write_events_with_receipts(
+            &state,
+            user_id,
+            &persist_intent_computation.draft_events,
+            "persist_intent.idempotency_key",
+        )
+        .await
+        {
+            Ok((draft_receipts, draft_warnings, _draft_write_path)) => {
+                warnings.extend(draft_warnings);
+                event_ids.extend(draft_receipts.iter().map(|receipt| receipt.event_id));
+                persist_intent_computation
+                    .persist_intent
+                    .draft_persisted_count = draft_receipts.len();
+                if !claim_guard.allow_saved_claim && !draft_receipts.is_empty() {
+                    persist_intent_computation.persist_intent.status_label = "draft".to_string();
+                }
+            }
+            Err(err) => {
+                warnings.push(BatchEventWarning {
+                    event_index: 0,
+                    field: "persist_intent.draft".to_string(),
+                    message: format!(
+                        "Draft persistence failed; relevant items remain not_saved ({err:?})."
+                    ),
+                    severity: "warning".to_string(),
+                });
+                if !persist_intent_computation
+                    .persist_intent
+                    .reason_codes
+                    .iter()
+                    .any(|code| code == "draft_persist_failed")
+                {
+                    persist_intent_computation
+                        .persist_intent
+                        .reason_codes
+                        .push("draft_persist_failed".to_string());
+                }
+                if !claim_guard.allow_saved_claim {
+                    persist_intent_computation.persist_intent.status_label =
+                        "not_saved".to_string();
+                }
+            }
+        }
+    }
     let evidence_events = build_evidence_claim_events(user_id, &req.events, &receipts);
     if !evidence_events.is_empty() {
         let _ = create_events_batch_internal(&state, user_id, &evidence_events).await;
@@ -5447,13 +5538,14 @@ pub async fn write_with_proof(
         &repair_feedback,
     );
 
-    let quality_signal = build_save_claim_checked_event(
+    let quality_signal = build_save_claim_checked_event_with_persist(
         requested_event_count,
         &receipts,
         &verification,
         &claim_guard,
         &session_audit_summary,
         &model_identity,
+        Some(&persist_intent_computation.persist_intent),
     );
     let mut quality_events = vec![quality_signal];
     quality_events.extend(build_save_handshake_learning_signal_events(
@@ -5524,6 +5616,7 @@ pub async fn write_with_proof(
         personal_failure_profile,
         sidecar_assessment,
         counterfactual_recommendation,
+        persist_intent: persist_intent_computation.persist_intent,
     };
     let response = if language_mode == AgentLanguageMode::UserSafe {
         apply_user_safe_language_guard(response)
@@ -8722,7 +8815,8 @@ mod tests {
                     "preferences": {
                         "autonomy_scope": "proactive",
                         "verbosity": "concise",
-                        "confirmation_strictness": "auto"
+                        "confirmation_strictness": "auto",
+                        "save_confirmation_mode": "auto"
                     }
                 }
             }),
@@ -8734,6 +8828,7 @@ mod tests {
         assert_eq!(policy.max_scope_level, "proactive");
         assert_eq!(policy.interaction_verbosity, "concise");
         assert_eq!(policy.confirmation_strictness, "auto");
+        assert_eq!(policy.save_confirmation_mode, "auto");
         assert_eq!(
             policy.user_requested_scope_level.as_deref(),
             Some("proactive")
@@ -8827,6 +8922,231 @@ mod tests {
     }
 
     #[test]
+    fn user_preference_save_confirmation_mode_always_prompts_when_unsaved() {
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "save_confirmation_mode": "always"
+                    }
+                }
+            }),
+        );
+        let policy = super::apply_user_preference_overrides(
+            super::default_autonomy_policy(),
+            Some(&profile),
+        );
+        assert_eq!(policy.save_confirmation_mode, "always");
+
+        let events = vec![make_event(
+            "set.logged",
+            json!({"exercise_id": "barbell_bench_press", "reps": 5}),
+            "k-save-mode-always-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.logged".to_string(),
+            idempotency_key: "k-save-mode-always-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "training_timeline".to_string(),
+            key: "overview".to_string(),
+            status: "pending".to_string(),
+            observed_projection_version: Some(1),
+            observed_last_event_id: None,
+            detail: "save-mode-always".to_string(),
+        }];
+        let verification = make_verification("pending", checks.clone());
+        let claim_guard = super::build_claim_guard(
+            &receipts,
+            1,
+            &checks,
+            &[],
+            policy,
+            super::default_autonomy_gate(),
+        );
+        let session_audit = AgentSessionAuditSummary {
+            status: "clean".to_string(),
+            mismatch_detected: 0,
+            mismatch_repaired: 0,
+            mismatch_unresolved: 0,
+            mismatch_classes: Vec::new(),
+            clarification_question: None,
+        };
+
+        let computation = super::build_persist_intent_computation(
+            Uuid::now_v7(),
+            &events,
+            &receipts,
+            &verification,
+            &claim_guard,
+            &session_audit,
+            "low_impact_write",
+        );
+        assert_eq!(computation.persist_intent.mode, "ask_first");
+        assert!(computation.persist_intent.user_prompt.is_some());
+    }
+
+    #[test]
+    fn user_preference_save_confirmation_mode_never_keeps_routine_verified_auto_save() {
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "save_confirmation_mode": "never"
+                    }
+                }
+            }),
+        );
+        let policy = super::apply_user_preference_overrides(
+            super::default_autonomy_policy(),
+            Some(&profile),
+        );
+        assert_eq!(policy.save_confirmation_mode, "never");
+
+        let events = vec![make_event(
+            "set.logged",
+            json!({"exercise_id": "barbell_row", "reps": 6}),
+            "k-save-mode-never-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.logged".to_string(),
+            idempotency_key: "k-save-mode-never-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "training_timeline".to_string(),
+            key: "overview".to_string(),
+            status: "verified".to_string(),
+            observed_projection_version: Some(1),
+            observed_last_event_id: None,
+            detail: "save-mode-never".to_string(),
+        }];
+        let verification = make_verification("verified", checks.clone());
+        let claim_guard = super::build_claim_guard(
+            &receipts,
+            1,
+            &checks,
+            &[],
+            policy,
+            super::default_autonomy_gate(),
+        );
+        assert!(claim_guard.allow_saved_claim);
+        let session_audit = AgentSessionAuditSummary {
+            status: "clean".to_string(),
+            mismatch_detected: 0,
+            mismatch_repaired: 0,
+            mismatch_unresolved: 0,
+            mismatch_classes: Vec::new(),
+            clarification_question: None,
+        };
+
+        let computation = super::build_persist_intent_computation(
+            Uuid::now_v7(),
+            &events,
+            &receipts,
+            &verification,
+            &claim_guard,
+            &session_audit,
+            "low_impact_write",
+        );
+        assert_eq!(computation.persist_intent.mode, "auto_save");
+        assert_eq!(computation.persist_intent.status_label, "saved");
+        assert!(computation.persist_intent.user_prompt.is_none());
+        assert!(computation.draft_events.is_empty());
+    }
+
+    #[test]
+    fn user_preference_save_confirmation_mode_never_respects_high_impact_safety_floor() {
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "preferences": {
+                        "save_confirmation_mode": "never"
+                    }
+                }
+            }),
+        );
+        let policy = super::apply_user_preference_overrides(
+            super::default_autonomy_policy(),
+            Some(&profile),
+        );
+
+        let events = vec![make_event(
+            "training_plan.updated",
+            json!({
+                "change_scope": "full_rewrite",
+                "replace_entire_plan": true
+            }),
+            "k-save-mode-never-hi-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "training_plan.updated".to_string(),
+            idempotency_key: "k-save-mode-never-hi-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "training_plan".to_string(),
+            key: "active".to_string(),
+            status: "pending".to_string(),
+            observed_projection_version: Some(1),
+            observed_last_event_id: None,
+            detail: "save-mode-never-high-impact".to_string(),
+        }];
+        let verification = make_verification("pending", checks.clone());
+        let claim_guard = super::build_claim_guard(
+            &receipts,
+            1,
+            &checks,
+            &[],
+            policy,
+            super::default_autonomy_gate(),
+        );
+        let session_audit = AgentSessionAuditSummary {
+            status: "clean".to_string(),
+            mismatch_detected: 0,
+            mismatch_repaired: 0,
+            mismatch_unresolved: 0,
+            mismatch_classes: Vec::new(),
+            clarification_question: None,
+        };
+
+        let action_class = super::classify_write_action_class(&events);
+        assert_eq!(action_class, "high_impact_write");
+
+        let computation = super::build_persist_intent_computation(
+            Uuid::now_v7(),
+            &events,
+            &receipts,
+            &verification,
+            &claim_guard,
+            &session_audit,
+            &action_class,
+        );
+        assert_eq!(computation.persist_intent.mode, "ask_first");
+        assert!(
+            computation
+                .persist_intent
+                .reason_codes
+                .iter()
+                .any(|code| code == "safety_floor_confirm_first")
+        );
+        assert!(computation.persist_intent.user_prompt.is_some());
+    }
+
+    #[test]
     fn user_preference_overrides_fallback_to_defaults_when_invalid() {
         let profile = make_projection_response(
             "user_profile",
@@ -8837,7 +9157,8 @@ mod tests {
                     "preferences": {
                         "autonomy_scope": "hyper_proactive",
                         "verbosity": "wall_of_text",
-                        "confirmation_strictness": "sometimes"
+                        "confirmation_strictness": "sometimes",
+                        "save_confirmation_mode": "whenever"
                     }
                 }
             }),
@@ -8849,6 +9170,7 @@ mod tests {
         assert_eq!(policy.max_scope_level, "moderate");
         assert_eq!(policy.interaction_verbosity, "balanced");
         assert_eq!(policy.confirmation_strictness, "auto");
+        assert_eq!(policy.save_confirmation_mode, "auto");
         assert!(policy.user_requested_scope_level.is_none());
     }
 
@@ -9617,6 +9939,22 @@ mod tests {
                 ),
                 ux_compact: true,
             },
+            persist_intent: super::AgentPersistIntent {
+                schema_version: super::PERSIST_INTENT_SCHEMA_VERSION.to_string(),
+                mode: "ask_first".to_string(),
+                status_label: "draft".to_string(),
+                reason_codes: vec!["claim_guard_unsaved".to_string()],
+                grouped_items: vec![super::AgentPersistIntentGroupedItem {
+                    topic: "training_set".to_string(),
+                    count: 1,
+                    event_types: vec!["set.logged".to_string()],
+                }],
+                user_prompt: Some(
+                    "Soll ich diese Trainingsergebnisse jetzt final in Kura speichern?".to_string(),
+                ),
+                draft_event_count: 1,
+                draft_persisted_count: 1,
+            },
         };
 
         let guarded = super::apply_user_safe_language_guard(response);
@@ -9737,7 +10075,10 @@ mod tests {
         assert!(!temporal_context.timezone_assumed);
         assert_eq!(temporal_context.today_local_date, "2026-02-15");
         assert_eq!(temporal_context.weekday_local, "sunday");
-        assert_eq!(temporal_context.last_training_date_local.as_deref(), Some("2026-02-13"));
+        assert_eq!(
+            temporal_context.last_training_date_local.as_deref(),
+            Some("2026-02-13")
+        );
         assert_eq!(temporal_context.days_since_last_training, Some(2));
     }
 
@@ -9807,8 +10148,7 @@ mod tests {
             temporal_basis: Some(temporal_basis),
         };
 
-        let result =
-            super::validate_temporal_basis(&handshake, &temporal_context, true, now);
+        let result = super::validate_temporal_basis(&handshake, &temporal_context, true, now);
         assert!(result.is_ok(), "fresh matching temporal basis should pass");
     }
 
@@ -11399,6 +11739,196 @@ mod tests {
             "save_echo not required when claim failed"
         );
         assert_eq!(data["save_echo_completeness"], "not_applicable");
+    }
+
+    // ── Persist-Intent Contract (persist_intent_policy_v1) ───────────
+
+    #[test]
+    fn persist_intent_contract_schema_version_is_pinned() {
+        assert_eq!(
+            super::PERSIST_INTENT_SCHEMA_VERSION,
+            "persist_intent_policy.v1"
+        );
+    }
+
+    #[test]
+    fn persist_intent_contract_auto_save_for_verified_routine_write() {
+        let events = vec![make_event(
+            "set.logged",
+            json!({"exercise_id": "barbell_back_squat", "reps": 5}),
+            "k-persist-intent-routine-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "set.logged".to_string(),
+            idempotency_key: "k-persist-intent-routine-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "training_timeline".to_string(),
+            key: "overview".to_string(),
+            status: "verified".to_string(),
+            observed_projection_version: Some(1),
+            observed_last_event_id: None,
+            detail: "persist-intent-routine".to_string(),
+        }];
+        let verification = make_verification("verified", checks.clone());
+        let claim_guard = super::build_claim_guard(
+            &receipts,
+            1,
+            &checks,
+            &[],
+            super::default_autonomy_policy(),
+            super::default_autonomy_gate(),
+        );
+        assert!(claim_guard.allow_saved_claim);
+        let session_audit = AgentSessionAuditSummary {
+            status: "clean".to_string(),
+            mismatch_detected: 0,
+            mismatch_repaired: 0,
+            mismatch_unresolved: 0,
+            mismatch_classes: Vec::new(),
+            clarification_question: None,
+        };
+
+        let computation = super::build_persist_intent_computation(
+            Uuid::now_v7(),
+            &events,
+            &receipts,
+            &verification,
+            &claim_guard,
+            &session_audit,
+            "low_impact_write",
+        );
+
+        assert_eq!(
+            computation.persist_intent.schema_version,
+            super::PERSIST_INTENT_SCHEMA_VERSION
+        );
+        assert_eq!(computation.persist_intent.mode, "auto_save");
+        assert_eq!(computation.persist_intent.status_label, "saved");
+        assert!(computation.persist_intent.user_prompt.is_none());
+        assert_eq!(computation.persist_intent.draft_event_count, 0);
+        assert!(computation.draft_events.is_empty());
+    }
+
+    #[test]
+    fn persist_intent_contract_asks_first_for_high_impact_when_unsaved() {
+        let events = vec![make_event(
+            "training_plan.updated",
+            json!({
+                "change_scope": "full_rewrite",
+                "replace_entire_plan": true
+            }),
+            "k-persist-intent-hi-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "training_plan.updated".to_string(),
+            idempotency_key: "k-persist-intent-hi-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "training_plan".to_string(),
+            key: "active".to_string(),
+            status: "pending".to_string(),
+            observed_projection_version: Some(1),
+            observed_last_event_id: None,
+            detail: "persist-intent-high-impact".to_string(),
+        }];
+        let verification = make_verification("pending", checks.clone());
+        let claim_guard = super::build_claim_guard(
+            &receipts,
+            1,
+            &checks,
+            &[],
+            super::default_autonomy_policy(),
+            super::default_autonomy_gate(),
+        );
+        assert!(!claim_guard.allow_saved_claim);
+        let session_audit = AgentSessionAuditSummary {
+            status: "needs_clarification".to_string(),
+            mismatch_detected: 1,
+            mismatch_repaired: 0,
+            mismatch_unresolved: 1,
+            mismatch_classes: vec!["narrative_structured_contradiction".to_string()],
+            clarification_question: Some(
+                "Konflikt bei Planumfang: Welcher Wert stimmt genau?".to_string(),
+            ),
+        };
+
+        let computation = super::build_persist_intent_computation(
+            Uuid::now_v7(),
+            &events,
+            &receipts,
+            &verification,
+            &claim_guard,
+            &session_audit,
+            "high_impact_write",
+        );
+
+        assert_eq!(computation.persist_intent.mode, "ask_first");
+        assert_eq!(computation.persist_intent.status_label, "draft");
+        assert!(computation.persist_intent.user_prompt.is_some());
+        assert!(!computation.draft_events.is_empty());
+    }
+
+    #[test]
+    fn persist_intent_contract_uses_single_prompt_for_multiple_reasons() {
+        let events = vec![make_event(
+            "training_plan.updated",
+            json!({
+                "change_scope": "full_rewrite",
+                "replace_entire_plan": true,
+                "context_text": "Bitte gesamte Woche umbauen."
+            }),
+            "k-persist-intent-spam-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "training_plan.updated".to_string(),
+            idempotency_key: "k-persist-intent-spam-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let checks = vec![AgentReadAfterWriteCheck {
+            projection_type: "training_plan".to_string(),
+            key: "active".to_string(),
+            status: "pending".to_string(),
+            observed_projection_version: Some(1),
+            observed_last_event_id: None,
+            detail: "persist-intent-anti-spam".to_string(),
+        }];
+        let verification = make_verification("pending", checks.clone());
+        let mut policy = super::default_autonomy_policy();
+        policy.save_confirmation_mode = "always".to_string();
+        let mut gate = super::default_autonomy_gate();
+        gate.decision = "confirm_first".to_string();
+        let claim_guard = super::build_claim_guard(&receipts, 1, &checks, &[], policy, gate);
+        let session_audit = AgentSessionAuditSummary {
+            status: "needs_clarification".to_string(),
+            mismatch_detected: 1,
+            mismatch_repaired: 0,
+            mismatch_unresolved: 1,
+            mismatch_classes: vec!["missing_mention_bound_field".to_string()],
+            clarification_question: Some("Welcher Wert stimmt fuer den Plan?".to_string()),
+        };
+
+        let computation = super::build_persist_intent_computation(
+            Uuid::now_v7(),
+            &events,
+            &receipts,
+            &verification,
+            &claim_guard,
+            &session_audit,
+            "high_impact_write",
+        );
+        let prompt = computation
+            .persist_intent
+            .user_prompt
+            .expect("ask_first mode must emit one prompt");
+        assert_eq!(prompt.matches('?').count(), 1);
+        assert!(!prompt.contains('\n'));
+        assert!(computation.persist_intent.reason_codes.len() >= 2);
     }
 
     // ── Consistency Inbox contract tests ─────────────────────────────

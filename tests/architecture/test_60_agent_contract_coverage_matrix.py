@@ -79,6 +79,11 @@ REQUIRED_AGENT_CONTRACT_MATRIX: dict[str, dict[str, str]] = {
         "positive_case": "routes::agent::tests::temporal_phrase_regression_contract_keeps_plus_five_hours_on_same_local_day",
         "negative_case": "routes::agent::tests::temporal_phrase_regression_contract_adjusts_day_delta_after_timezone_switch",
     },
+    "persist_intent": {
+        "schema_pin": "routes::agent::tests::persist_intent_contract_schema_version_is_pinned",
+        "positive_case": "routes::agent::tests::persist_intent_contract_auto_save_for_verified_routine_write",
+        "negative_case": "routes::agent::tests::persist_intent_contract_asks_first_for_high_impact_when_unsaved",
+    },
 }
 
 
@@ -99,6 +104,7 @@ def test_required_agent_contract_matrix_keys_are_explicit() -> None:
         "high_impact_plan_update",
         "temporal_grounding",
         "temporal_phrase_regression",
+        "persist_intent",
     }
     for contract_name, scenarios in REQUIRED_AGENT_CONTRACT_MATRIX.items():
         assert set(scenarios) == {"schema_pin", "positive_case", "negative_case"}, contract_name

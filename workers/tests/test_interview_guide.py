@@ -131,6 +131,7 @@ class TestEventConventions:
         assert "autonomy_scope" in pref["common_keys"]
         assert "verbosity" in pref["common_keys"]
         assert "confirmation_strictness" in pref["common_keys"]
+        assert "save_confirmation_mode" in pref["common_keys"]
 
     def test_profile_updated_convention(self):
         conventions = get_event_conventions()

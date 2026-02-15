@@ -109,15 +109,17 @@ pub async fn run(api_url: &str, token: Option<&str>, command: AgentCommands) -> 
             strength_limit,
             custom_limit,
             task_intent,
-        } => context(
-            api_url,
-            token,
-            exercise_limit,
-            strength_limit,
-            custom_limit,
-            task_intent,
-        )
-        .await,
+        } => {
+            context(
+                api_url,
+                token,
+                exercise_limit,
+                strength_limit,
+                custom_limit,
+                task_intent,
+            )
+            .await
+        }
         AgentCommands::WriteWithProof(args) => write_with_proof(api_url, token, args).await,
         AgentCommands::Evidence { command } => match command {
             AgentEvidenceCommands::Event { event_id } => {

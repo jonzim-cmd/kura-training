@@ -89,6 +89,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "autonomy_scope",
                 "verbosity",
                 "confirmation_strictness",
+                "save_confirmation_mode",
             ],
         },
         "goal.set": {
