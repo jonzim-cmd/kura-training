@@ -5,6 +5,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class Config:
     database_url: str
+    listen_database_url: str
     poll_interval_seconds: float = 5.0
     batch_size: int = 10
     max_retries: int = 3
@@ -16,9 +17,13 @@ class Config:
         database_url = os.environ.get("DATABASE_URL")
         if not database_url:
             raise RuntimeError("DATABASE_URL must be set")
+        listen_database_url = os.environ.get("KURA_WORKER_LISTEN_DATABASE_URL", "").strip()
+        if not listen_database_url:
+            listen_database_url = database_url
 
         return cls(
             database_url=database_url,
+            listen_database_url=listen_database_url,
             poll_interval_seconds=float(os.environ.get("KURA_POLL_INTERVAL", "5.0")),
             batch_size=int(os.environ.get("KURA_BATCH_SIZE", "10")),
             max_retries=int(os.environ.get("KURA_MAX_RETRIES", "3")),

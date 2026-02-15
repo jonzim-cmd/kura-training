@@ -11,6 +11,7 @@
 # Optional overrides:
 #   KURA_API_DATABASE_URL
 #   KURA_WORKER_DATABASE_URL
+#   KURA_WORKER_LISTEN_DATABASE_URL
 
 services:
   kura-postgres:
@@ -76,6 +77,7 @@ services:
       dockerfile: Dockerfile
     environment:
       DATABASE_URL: ${KURA_WORKER_DATABASE_URL:-postgresql://kura:${KURA_DB_PASSWORD}@kura-postgres:5432/kura}
+      KURA_WORKER_LISTEN_DATABASE_URL: ${KURA_WORKER_LISTEN_DATABASE_URL:-}
       KURA_POLL_INTERVAL: "5.0"
       KURA_BATCH_SIZE: "10"
       KURA_LOG_FORMAT: "json"

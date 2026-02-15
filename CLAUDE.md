@@ -110,6 +110,10 @@ Not every dimension needs all levels. But the question must be asked.
 
 Neue Architektur-Entscheidungen werden nicht als Design Docs (Markdown) festgehalten, sondern als ausführbare Tests in `tests/architecture/`. Das "Warum" bleibt kurz in Beads oder hier. Das "Was muss gelten" wird Code, den CI dauerhaft erzwingt. Vollständiger Workflow in `AGENTS.md`.
 
+### Supabase Cutover Decision Record (2026-02-15)
+
+Für den Launch-Track gilt verbindlich `AUTH_STRATEGY=B` (DB-only Migration), Full Supabase Auth ist explizit post-launch Scope. Das Rollenmodell bleibt bei `app_writer`, `app_reader`, `app_worker`, `app_migrator` und wird auf Supabase-Postgres geführt. Die Runtime-Policy trennt Query- und LISTEN-Pfade: API/Worker-Queries über Runtime-DB-URL, Worker-LISTEN über optional dedizierte URL (`KURA_WORKER_LISTEN_DATABASE_URL`) für Direct-Connection-Szenarien. `SET ROLE` bzw. `SET LOCAL` und `set_config('kura.current_user_id', ..., true)` müssen in transaktionalen Pfaden laufen. `users`, `api_keys`, `oauth_*` bleiben die Auth-Source-of-Truth in diesem Track.
+
 ## VPS Deployment & Fred
 
 **Server:** `moltbot@100.65.100.2` (Tailscale)

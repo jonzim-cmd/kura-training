@@ -31,6 +31,7 @@ Additional required fix during rollout:
 
 - `KURA_API_DATABASE_URL` - source: `docker/.env.production` on VPS - owner: ops
 - `KURA_WORKER_DATABASE_URL` - source: `docker/.env.production` on VPS - owner: ops
+- `KURA_WORKER_LISTEN_DATABASE_URL` - source: `docker/.env.production` on VPS - owner: ops (optional, direct LISTEN path)
 - `KURA_API_KEY` - source: `docker/.env.production` on VPS - owner: ops
 - `KURA_AGENT_MODEL_ATTESTATION_SECRET` - source: `docker/.env.production` on VPS - owner: ops
 

@@ -32,6 +32,8 @@ class Worker:
             self.config.poll_interval_seconds,
             self.config.batch_size,
         )
+        if self.config.listen_database_url != self.config.database_url:
+            logger.info("Worker LISTEN uses dedicated database URL")
 
         # Write system_config on startup (deployment-static, before processing jobs)
         async with await psycopg.AsyncConnection.connect(
@@ -62,7 +64,7 @@ class Worker:
         while not self._shutdown.is_set():
             try:
                 async with await psycopg.AsyncConnection.connect(
-                    self.config.database_url, autocommit=True
+                    self.config.listen_database_url, autocommit=True
                 ) as conn:
                     await conn.execute("LISTEN kura_jobs")
                     logger.info("Listening on kura_jobs channel")

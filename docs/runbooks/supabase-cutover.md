@@ -16,7 +16,7 @@ Auth strategy is fixed to `AUTH_STRATEGY=B`: auth logic remains in Kura API (`us
 ## 3. Connection Policy (Current Production)
 
 - API runtime: session pooler
-- Worker runtime: session pooler
+- Worker runtime: session pooler for query path, optional dedicated LISTEN URL via `KURA_WORKER_LISTEN_DATABASE_URL`
 - Migration/admin operations: session pooler (current), direct endpoint planned when network path supports it
 
 Note: direct endpoint was not reachable from current VPS network path at cutover time (IPv6 routing limitation), so production uses session pooler.
@@ -25,6 +25,7 @@ Note: direct endpoint was not reachable from current VPS network path at cutover
 
 - `KURA_API_DATABASE_URL`
 - `KURA_WORKER_DATABASE_URL`
+- `KURA_WORKER_LISTEN_DATABASE_URL` (optional, for direct LISTEN/NOTIFY path)
 - `KURA_AGENT_MODEL_ATTESTATION_SECRET`
 - `KURA_API_KEY`
 - `KURA_DB_PASSWORD` (legacy local fallback path; still present in compose)
