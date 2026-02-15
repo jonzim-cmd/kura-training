@@ -720,6 +720,20 @@ class TestAgentBehavior:
         assert guards["enforce_legacy_domain_invariants"] is True
         assert guards["atomic_formal_write_plus_retract"] is True
 
+    def test_operational_has_observation_draft_resolution_contract(self):
+        result = _get_agent_behavior()
+        contract = result["operational"]["observation_draft_resolution_v1"]
+        assert contract["schema_version"] == "observation_draft_resolve.v1"
+        api_contract = contract["api_contract"]
+        assert api_contract["resolve_endpoint"] == (
+            "POST /v1/agent/observation-drafts/{observation_id}/resolve-as-observation"
+        )
+        guards = contract["resolve_write_guards"]
+        assert guards["requires_non_provisional_dimension"] is True
+        assert guards["event_type"] == "observation.logged"
+        assert guards["atomic_observation_write_plus_retract"] is True
+        assert guards["default_retract_reason"] == "resolved_as_observation"
+
     def test_operational_has_draft_hygiene_feedback_contract(self):
         result = _get_agent_behavior()
         contract = result["operational"]["draft_hygiene_feedback_v1"]

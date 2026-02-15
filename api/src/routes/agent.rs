@@ -39,6 +39,10 @@ pub fn router() -> Router<AppState> {
             post(promote_observation_draft),
         )
         .route(
+            "/v1/agent/observation-drafts/{observation_id}/resolve-as-observation",
+            post(resolve_observation_draft_as_observation),
+        )
+        .route(
             "/v1/agent/evidence/event/{event_id}",
             get(get_event_evidence_lineage),
         )
@@ -355,6 +359,52 @@ pub struct AgentObservationDraftPromoteResponse {
     pub draft_observation_id: Uuid,
     pub promoted_event_id: Uuid,
     pub retraction_event_id: Uuid,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<BatchEventWarning>,
+}
+
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
+pub struct AgentObservationDraftResolveRequest {
+    pub dimension: String,
+    #[serde(default)]
+    pub value: Option<Value>,
+    #[serde(default)]
+    pub context_text: Option<String>,
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub unit: Option<String>,
+    #[serde(default)]
+    pub scale: Option<Value>,
+    #[serde(default)]
+    pub scope: Option<Value>,
+    #[serde(default)]
+    pub provenance: Option<Value>,
+    #[serde(default)]
+    pub timestamp: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub device: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+    #[serde(default)]
+    pub retract_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentObservationDraftResolveResponse {
+    pub schema_version: String,
+    pub draft_observation_id: Uuid,
+    pub resolved_event_id: Uuid,
+    pub retraction_event_id: Uuid,
+    pub resolved_dimension: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<BatchEventWarning>,
 }
@@ -2077,6 +2127,53 @@ fn draft_context_from_rows(
     }
 }
 
+fn draft_tag_value(data: &Value, prefix: &str) -> Option<String> {
+    data.get("tags").and_then(Value::as_array).and_then(|tags| {
+        tags.iter().find_map(|tag| {
+            let text = tag.as_str()?.trim();
+            text.strip_prefix(prefix).map(|suffix| suffix.to_string())
+        })
+    })
+}
+
+fn normalize_tag_list(tags: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for tag in tags {
+        let normalized = tag.trim().to_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        if seen.insert(normalized.clone()) {
+            out.push(normalized);
+        }
+    }
+    out
+}
+
+fn sanitize_resolved_observation_tags(tags: Vec<String>) -> Vec<String> {
+    normalize_tag_list(tags)
+        .into_iter()
+        .filter(|tag| {
+            !tag.starts_with("claim_status:")
+                && !tag.starts_with("mode:")
+                && !tag.contains("persist_intent")
+        })
+        .collect()
+}
+
+fn tags_from_data(data: &Value) -> Vec<String> {
+    data.get("tags")
+        .and_then(Value::as_array)
+        .map(|tags| {
+            tags.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
 fn draft_list_item_from_row(row: &DraftObservationEventRow) -> AgentObservationDraftListItem {
     let dimension = row
         .data
@@ -2094,27 +2191,8 @@ fn draft_list_item_from_row(row: &DraftObservationEventRow) -> AgentObservationD
             .and_then(|value| value.get("source_event_type"))
             .and_then(Value::as_str)
             .map(str::to_string),
-        claim_status: row
-            .data
-            .get("tags")
-            .and_then(Value::as_array)
-            .and_then(|tags| {
-                tags.iter().find_map(|tag| {
-                    let text = tag.as_str()?.trim();
-                    text.strip_prefix("claim_status:")
-                        .map(|suffix| suffix.to_string())
-                })
-            }),
-        mode: row
-            .data
-            .get("tags")
-            .and_then(Value::as_array)
-            .and_then(|tags| {
-                tags.iter().find_map(|tag| {
-                    let text = tag.as_str()?.trim();
-                    text.strip_prefix("mode:").map(|suffix| suffix.to_string())
-                })
-            }),
+        claim_status: draft_tag_value(&row.data, "claim_status:"),
+        mode: draft_tag_value(&row.data, "mode:"),
         confidence: row.data.get("confidence").and_then(Value::as_f64),
     }
 }
@@ -2220,7 +2298,7 @@ fn draft_promotion_hint(event_type: &str) -> String {
     if is_plan_event_type(event_type) {
         return "training_plan.* requires /v1/agent/write-with-proof; promote with a non-plan event here or route through write-with-proof.".to_string();
     }
-    "Promote schreibt ein formales Event und retractet den Draft in einem atomaren Batch."
+    "Promote schreibt ein formales Event und retractet den Draft in einem atomaren Batch. Für reine Notizen nutze /v1/agent/observation-drafts/{observation_id}/resolve-as-observation."
         .to_string()
 }
 
@@ -2255,6 +2333,40 @@ fn validate_observation_draft_promote_event_type(raw_event_type: &str) -> Result
         });
     }
     Ok(event_type)
+}
+
+fn normalize_observation_dimension(raw_dimension: &str) -> String {
+    raw_dimension
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|ch| if ch.is_whitespace() { '_' } else { ch })
+        .collect()
+}
+
+fn validate_observation_draft_resolve_dimension(raw_dimension: &str) -> Result<String, AppError> {
+    let dimension = normalize_observation_dimension(raw_dimension);
+    if dimension.is_empty() {
+        return Err(AppError::Validation {
+            message: "dimension must not be empty".to_string(),
+            field: Some("dimension".to_string()),
+            received: None,
+            docs_hint: Some(
+                "Provide a normalized observation dimension (e.g. competition_note).".to_string(),
+            ),
+        });
+    }
+    if dimension.starts_with(OBSERVATION_DRAFT_DIMENSION_PREFIX) {
+        return Err(AppError::Validation {
+            message: "dimension must be non-provisional for resolve-as-observation".to_string(),
+            field: Some("dimension".to_string()),
+            received: Some(Value::String(dimension)),
+            docs_hint: Some(
+                "Use a stable dimension without provisional.persist_intent.* prefix.".to_string(),
+            ),
+        });
+    }
+    Ok(dimension)
 }
 
 fn clamp_verify_timeout_ms(value: Option<u64>) -> u64 {
@@ -2548,6 +2660,7 @@ const OBSERVATION_DRAFT_CONTEXT_SCHEMA_VERSION: &str = "observation_draft_contex
 const OBSERVATION_DRAFT_LIST_SCHEMA_VERSION: &str = "observation_draft_list.v1";
 const OBSERVATION_DRAFT_DETAIL_SCHEMA_VERSION: &str = "observation_draft_detail.v1";
 const OBSERVATION_DRAFT_PROMOTE_SCHEMA_VERSION: &str = "observation_draft_promote.v1";
+const OBSERVATION_DRAFT_RESOLVE_SCHEMA_VERSION: &str = "observation_draft_resolve.v1";
 const OBSERVATION_DRAFT_DIMENSION_PREFIX: &str = "provisional.persist_intent.";
 
 fn read_value_string(value: Option<&Value>) -> Option<String> {
@@ -5614,27 +5727,8 @@ pub async fn get_observation_draft(
             value: row.data.get("value").cloned().unwrap_or(Value::Null),
             context_text: trim_or_none(row.data.get("context_text").and_then(Value::as_str)),
             source_event_type: source_event_type.clone(),
-            claim_status: row
-                .data
-                .get("tags")
-                .and_then(Value::as_array)
-                .and_then(|tags| {
-                    tags.iter().find_map(|tag| {
-                        let text = tag.as_str()?.trim();
-                        text.strip_prefix("claim_status:")
-                            .map(|suffix| suffix.to_string())
-                    })
-                }),
-            mode: row
-                .data
-                .get("tags")
-                .and_then(Value::as_array)
-                .and_then(|tags| {
-                    tags.iter().find_map(|tag| {
-                        let text = tag.as_str()?.trim();
-                        text.strip_prefix("mode:").map(|suffix| suffix.to_string())
-                    })
-                }),
+            claim_status: draft_tag_value(&row.data, "claim_status:"),
+            mode: draft_tag_value(&row.data, "mode:"),
             confidence: row.data.get("confidence").and_then(Value::as_f64),
             provenance,
             scope: row.data.get("scope").cloned(),
@@ -5766,6 +5860,202 @@ pub async fn promote_observation_draft(
             draft_observation_id: observation_id,
             promoted_event_id: batch.events[0].id,
             retraction_event_id: batch.events[1].id,
+            warnings: batch.warnings,
+        }),
+    ))
+}
+
+/// Resolve one open draft observation as a durable open observation and retract the draft.
+#[utoipa::path(
+    post,
+    path = "/v1/agent/observation-drafts/{observation_id}/resolve-as-observation",
+    params(
+        ("observation_id" = Uuid, Path, description = "Draft observation event ID")
+    ),
+    request_body = AgentObservationDraftResolveRequest,
+    responses(
+        (status = 201, description = "Draft resolved as observation and retracted", body = AgentObservationDraftResolveResponse),
+        (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 404, description = "Draft not found", body = ApiError),
+        (status = 409, description = "Idempotency conflict", body = ApiError),
+        (status = 422, description = "Policy violation", body = ApiError)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "system"
+)]
+pub async fn resolve_observation_draft_as_observation(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Path(observation_id): Path<Uuid>,
+    Json(req): Json<AgentObservationDraftResolveRequest>,
+) -> Result<(StatusCode, Json<AgentObservationDraftResolveResponse>), AppError> {
+    require_scopes(
+        &auth,
+        &["agent:write"],
+        "POST /v1/agent/observation-drafts/{observation_id}/resolve-as-observation",
+    )?;
+    let user_id = auth.user_id;
+    let resolved_dimension = validate_observation_draft_resolve_dimension(&req.dimension)?;
+    if let Some(confidence) = req.confidence {
+        if !confidence.is_finite() {
+            return Err(AppError::Validation {
+                message: "confidence must be a finite number".to_string(),
+                field: Some("confidence".to_string()),
+                received: Some(Value::String(confidence.to_string())),
+                docs_hint: Some("Use a numeric confidence value in range 0..1.".to_string()),
+            });
+        }
+    }
+
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let draft = fetch_draft_observation_by_id(&mut tx, user_id, observation_id).await?;
+    tx.commit().await?;
+
+    let draft = draft.ok_or_else(|| AppError::NotFound {
+        resource: format!("observation draft '{}'", observation_id),
+    })?;
+    let draft_session_id = draft
+        .metadata
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let mut resolved_data = draft.data.as_object().cloned().unwrap_or_default();
+    resolved_data.insert(
+        "dimension".to_string(),
+        Value::String(resolved_dimension.clone()),
+    );
+    if let Some(value) = req.value {
+        resolved_data.insert("value".to_string(), value);
+    }
+    match req.context_text.as_deref() {
+        Some(raw_text) => match trim_or_none(Some(raw_text)) {
+            Some(text) => {
+                resolved_data.insert("context_text".to_string(), Value::String(text));
+            }
+            None => {
+                resolved_data.remove("context_text");
+            }
+        },
+        None => {}
+    }
+    if let Some(confidence) = req.confidence {
+        resolved_data.insert("confidence".to_string(), Value::from(confidence));
+    }
+    match req.unit.as_deref() {
+        Some(raw_unit) => match trim_or_none(Some(raw_unit)) {
+            Some(unit) => {
+                resolved_data.insert("unit".to_string(), Value::String(unit));
+            }
+            None => {
+                resolved_data.remove("unit");
+            }
+        },
+        None => {}
+    }
+    if let Some(scale) = req.scale {
+        resolved_data.insert("scale".to_string(), scale);
+    }
+    if let Some(scope) = req.scope {
+        resolved_data.insert("scope".to_string(), scope);
+    }
+    if let Some(provenance) = req.provenance {
+        resolved_data.insert("provenance".to_string(), provenance);
+    }
+    let resolved_tags = match req.tags {
+        Some(tags) => sanitize_resolved_observation_tags(tags),
+        None => sanitize_resolved_observation_tags(tags_from_data(&draft.data)),
+    };
+    if resolved_tags.is_empty() {
+        resolved_data.remove("tags");
+    } else {
+        resolved_data.insert(
+            "tags".to_string(),
+            Value::Array(resolved_tags.into_iter().map(Value::String).collect()),
+        );
+    }
+
+    let resolved_data_value = Value::Object(resolved_data);
+    let resolved_timestamp = req.timestamp.unwrap_or_else(Utc::now);
+    let resolved_source =
+        trim_or_none(req.source.as_deref()).or_else(|| Some("agent_draft_resolve".to_string()));
+    let resolved_agent =
+        trim_or_none(req.agent.as_deref()).or_else(|| Some("agent-api".to_string()));
+    let resolved_device = trim_or_none(req.device.as_deref());
+    let resolved_session_id = trim_or_none(req.session_id.as_deref()).or(draft_session_id);
+    let resolved_idempotency_key = trim_or_none(req.idempotency_key.as_deref()).unwrap_or_else(|| {
+        let seed = format!(
+            "{}|{}|{}|{}",
+            user_id,
+            observation_id,
+            resolved_dimension,
+            serde_json::to_string(&resolved_data_value).unwrap_or_else(|_| "{}".to_string())
+        );
+        format!("draft-resolve-{}", stable_hash_suffix(&seed, 20))
+    });
+
+    let resolved_event = CreateEventRequest {
+        timestamp: resolved_timestamp,
+        event_type: "observation.logged".to_string(),
+        data: resolved_data_value,
+        metadata: EventMetadata {
+            source: resolved_source,
+            agent: resolved_agent,
+            device: resolved_device,
+            session_id: resolved_session_id.clone(),
+            idempotency_key: resolved_idempotency_key,
+        },
+    };
+
+    let retract_reason =
+        trim_or_none(req.retract_reason.as_deref()).unwrap_or_else(|| "resolved_as_observation".to_string());
+    let retract_seed = format!(
+        "{}|{}|{}|{}",
+        user_id,
+        observation_id,
+        resolved_event.metadata.idempotency_key,
+        retract_reason
+    );
+    let retract_event = CreateEventRequest {
+        timestamp: Utc::now(),
+        event_type: "event.retracted".to_string(),
+        data: json!({
+            "retracted_event_id": observation_id,
+            "retracted_event_type": "observation.logged",
+            "reason": retract_reason,
+            "resolved_event_type": "observation.logged",
+            "resolved_dimension": resolved_dimension,
+        }),
+        metadata: EventMetadata {
+            source: Some("agent_draft_resolve".to_string()),
+            agent: Some("agent-api".to_string()),
+            device: None,
+            session_id: resolved_session_id,
+            idempotency_key: format!("draft-resolve-retract-{}", stable_hash_suffix(&retract_seed, 20)),
+        },
+    };
+    let events = vec![resolved_event, retract_event];
+    enforce_legacy_domain_invariants(&state, user_id, &events).await?;
+    let batch = create_events_batch_internal(&state, user_id, &events).await?;
+    if batch.events.len() < 2 {
+        return Err(AppError::Internal(
+            "resolve batch did not return both observation and retraction events".to_string(),
+        ));
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(AgentObservationDraftResolveResponse {
+            schema_version: OBSERVATION_DRAFT_RESOLVE_SCHEMA_VERSION.to_string(),
+            draft_observation_id: observation_id,
+            resolved_event_id: batch.events[0].id,
+            retraction_event_id: batch.events[1].id,
+            resolved_dimension,
             warnings: batch.warnings,
         }),
     ))
@@ -13184,6 +13474,10 @@ mod tests {
             "observation_draft_promote.v1"
         );
         assert_eq!(
+            super::OBSERVATION_DRAFT_RESOLVE_SCHEMA_VERSION,
+            "observation_draft_resolve.v1"
+        );
+        assert_eq!(
             super::OBSERVATION_DRAFT_DIMENSION_PREFIX,
             "provisional.persist_intent."
         );
@@ -13291,5 +13585,48 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn observation_draft_resolution_contract_requires_non_provisional_dimension() {
+        let ok = super::validate_observation_draft_resolve_dimension(" Competition Note ");
+        assert_eq!(
+            ok.expect("competition note should be valid"),
+            "competition_note"
+        );
+
+        let provisional_error = super::validate_observation_draft_resolve_dimension(
+            "provisional.persist_intent.training_plan",
+        )
+        .expect_err("provisional dimension should be rejected");
+        match provisional_error {
+            AppError::Validation {
+                field,
+                docs_hint,
+                message,
+                ..
+            } => {
+                assert_eq!(field.as_deref(), Some("dimension"));
+                assert!(message.contains("must be non-provisional"));
+                assert_eq!(
+                    docs_hint.as_deref(),
+                    Some("Use a stable dimension without provisional.persist_intent.* prefix.")
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn observation_draft_resolution_contract_sanitizes_persist_intent_tags() {
+        let tags = super::sanitize_resolved_observation_tags(vec![
+            "CLAIM_STATUS:draft".to_string(),
+            "mode:ask_first".to_string(),
+            "persist_intent_candidate".to_string(),
+            "competition".to_string(),
+            "competition".to_string(),
+            "  note  ".to_string(),
+        ]);
+        assert_eq!(tags, vec!["competition".to_string(), "note".to_string()]);
     }
 }

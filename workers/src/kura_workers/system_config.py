@@ -1514,6 +1514,24 @@ def _get_agent_behavior() -> dict[str, Any]:
                     "atomic_formal_write_plus_retract": True,
                 },
             },
+            "observation_draft_resolution_v1": {
+                "schema_version": "observation_draft_resolve.v1",
+                "goal": (
+                    "Allow intentional draft closure when content should remain an observation "
+                    "instead of being promoted into a formal domain event."
+                ),
+                "api_contract": {
+                    "resolve_endpoint": (
+                        "POST /v1/agent/observation-drafts/{observation_id}/resolve-as-observation"
+                    ),
+                },
+                "resolve_write_guards": {
+                    "requires_non_provisional_dimension": True,
+                    "event_type": "observation.logged",
+                    "atomic_observation_write_plus_retract": True,
+                    "default_retract_reason": "resolved_as_observation",
+                },
+            },
             "draft_hygiene_feedback_v1": {
                 "schema_version": "draft_hygiene_feedback.v1",
                 "goal": (

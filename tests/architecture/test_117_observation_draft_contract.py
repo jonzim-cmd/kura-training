@@ -12,6 +12,8 @@ RUNTIME_TESTS: tuple[str, ...] = (
     "routes::agent::tests::observation_draft_context_contract_maps_recent_drafts_and_age",
     "routes::agent::tests::observation_draft_context_contract_maps_list_item_contract",
     "routes::agent::tests::observation_draft_promotion_contract_requires_non_plan_formal_event_type",
+    "routes::agent::tests::observation_draft_resolution_contract_requires_non_provisional_dimension",
+    "routes::agent::tests::observation_draft_resolution_contract_sanitizes_persist_intent_tags",
 )
 
 
@@ -66,6 +68,22 @@ def test_observation_draft_promotion_contract_is_declared() -> None:
     assert guards["reject_retraction_as_formal_target"] is True
     assert guards["enforce_legacy_domain_invariants"] is True
     assert guards["atomic_formal_write_plus_retract"] is True
+
+
+def test_observation_draft_resolution_contract_is_declared() -> None:
+    operational = _operational()
+    contract = operational["observation_draft_resolution_v1"]
+    assert contract["schema_version"] == "observation_draft_resolve.v1"
+    api_contract = contract["api_contract"]
+    assert (
+        api_contract["resolve_endpoint"]
+        == "POST /v1/agent/observation-drafts/{observation_id}/resolve-as-observation"
+    )
+    guards = contract["resolve_write_guards"]
+    assert guards["requires_non_provisional_dimension"] is True
+    assert guards["event_type"] == "observation.logged"
+    assert guards["atomic_observation_write_plus_retract"] is True
+    assert guards["default_retract_reason"] == "resolved_as_observation"
 
 
 def test_draft_hygiene_contract_is_declared_and_thresholds_behave() -> None:

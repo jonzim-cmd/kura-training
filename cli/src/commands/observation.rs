@@ -29,6 +29,8 @@ pub enum ObservationDraftCommands {
     },
     /// Promote draft into a formal event and retract the draft
     Promote(ObservationDraftPromoteArgs),
+    /// Resolve draft as durable observation and retract the draft
+    Resolve(ObservationDraftResolveArgs),
 }
 
 #[derive(Args)]
@@ -68,6 +70,49 @@ pub struct ObservationDraftPromoteArgs {
     pub retract_reason: Option<String>,
 }
 
+#[derive(Args)]
+pub struct ObservationDraftResolveArgs {
+    /// Draft observation event id
+    #[arg(long)]
+    pub id: Uuid,
+    /// Stable non-provisional observation dimension (e.g. competition_note)
+    #[arg(long)]
+    pub dimension: String,
+    /// Optional observation value as JSON string
+    #[arg(long, conflicts_with = "value_file")]
+    pub value: Option<String>,
+    /// Optional observation value JSON from file (use '-' for stdin)
+    #[arg(long, short = 'f', conflicts_with = "value")]
+    pub value_file: Option<String>,
+    /// Optional context text override
+    #[arg(long)]
+    pub context_text: Option<String>,
+    /// Optional confidence override (0..1 recommended)
+    #[arg(long)]
+    pub confidence: Option<f64>,
+    /// Optional tags (repeat --tag)
+    #[arg(long = "tag")]
+    pub tags: Vec<String>,
+    /// Optional metadata.source override
+    #[arg(long)]
+    pub source: Option<String>,
+    /// Optional metadata.agent override
+    #[arg(long)]
+    pub agent: Option<String>,
+    /// Optional metadata.device override
+    #[arg(long)]
+    pub device: Option<String>,
+    /// Optional metadata.session_id override
+    #[arg(long)]
+    pub session_id: Option<String>,
+    /// Optional metadata.idempotency_key override
+    #[arg(long)]
+    pub idempotency_key: Option<String>,
+    /// Optional retraction reason
+    #[arg(long)]
+    pub retract_reason: Option<String>,
+}
+
 pub async fn run(api_url: &str, token: Option<&str>, command: ObservationCommands) -> i32 {
     match command {
         ObservationCommands::Draft { command } => draft(api_url, token, command).await,
@@ -79,6 +124,7 @@ async fn draft(api_url: &str, token: Option<&str>, command: ObservationDraftComm
         ObservationDraftCommands::List { limit } => list_drafts(api_url, token, limit).await,
         ObservationDraftCommands::Show { id } => show_draft(api_url, token, id).await,
         ObservationDraftCommands::Promote(args) => promote_draft(api_url, token, args).await,
+        ObservationDraftCommands::Resolve(args) => resolve_draft(api_url, token, args).await,
     }
 }
 
@@ -140,6 +186,29 @@ fn parse_data_payload(data: Option<&str>, data_file: Option<&str>) -> serde_json
     );
 }
 
+fn parse_optional_json_payload(
+    value: Option<&str>,
+    value_file: Option<&str>,
+) -> Option<serde_json::Value> {
+    if let Some(raw) = value {
+        return Some(serde_json::from_str(raw).unwrap_or_else(|e| {
+            exit_error(
+                &format!("Invalid JSON in --value: {e}"),
+                Some("Provide valid JSON for --value"),
+            )
+        }));
+    }
+    if let Some(path) = value_file {
+        return Some(read_json_from_file(path).unwrap_or_else(|e| {
+            exit_error(
+                &e,
+                Some("Provide a valid JSON file for --value-file (or '-' for stdin)"),
+            )
+        }));
+    }
+    None
+}
+
 async fn promote_draft(
     api_url: &str,
     token: Option<&str>,
@@ -186,14 +255,83 @@ async fn promote_draft(
     .await
 }
 
+async fn resolve_draft(
+    api_url: &str,
+    token: Option<&str>,
+    args: ObservationDraftResolveArgs,
+) -> i32 {
+    let value_payload =
+        parse_optional_json_payload(args.value.as_deref(), args.value_file.as_deref());
+    let path = format!(
+        "/v1/agent/observation-drafts/{}/resolve-as-observation",
+        args.id
+    );
+    let mut body = json!({
+        "dimension": args.dimension,
+    });
+    if let Some(value) = value_payload {
+        body["value"] = value;
+    }
+    if let Some(context_text) = args.context_text {
+        body["context_text"] = json!(context_text);
+    }
+    if let Some(confidence) = args.confidence {
+        body["confidence"] = json!(confidence);
+    }
+    if !args.tags.is_empty() {
+        body["tags"] = json!(args.tags);
+    }
+    if let Some(source) = args.source {
+        body["source"] = json!(source);
+    }
+    if let Some(agent) = args.agent {
+        body["agent"] = json!(agent);
+    }
+    if let Some(device) = args.device {
+        body["device"] = json!(device);
+    }
+    if let Some(session_id) = args.session_id {
+        body["session_id"] = json!(session_id);
+    }
+    if let Some(idempotency_key) = args.idempotency_key {
+        body["idempotency_key"] = json!(idempotency_key);
+    }
+    if let Some(retract_reason) = args.retract_reason {
+        body["retract_reason"] = json!(retract_reason);
+    }
+    api_request(
+        api_url,
+        reqwest::Method::POST,
+        &path,
+        token,
+        Some(body),
+        &[],
+        &[],
+        false,
+        false,
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_data_payload;
+    use super::{parse_data_payload, parse_optional_json_payload};
     use serde_json::json;
 
     #[test]
     fn parse_data_payload_accepts_inline_json() {
         let payload = parse_data_payload(Some(r#"{"reps": 5, "weight_kg": 100}"#), None);
         assert_eq!(payload, json!({"reps": 5, "weight_kg": 100}));
+    }
+
+    #[test]
+    fn parse_optional_json_payload_returns_none_when_not_set() {
+        assert_eq!(parse_optional_json_payload(None, None), None);
+    }
+
+    #[test]
+    fn parse_optional_json_payload_accepts_inline_json() {
+        let payload = parse_optional_json_payload(Some(r#"{"note":"ok"}"#), None);
+        assert_eq!(payload, Some(json!({"note": "ok"})));
     }
 }
