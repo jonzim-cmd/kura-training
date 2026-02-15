@@ -1,4 +1,4 @@
-# Supabase Pro Baseline Report - 2026-02-15
+# Supabase Baseline Report - 2026-02-15
 
 ## Project
 
@@ -24,7 +24,7 @@
 
 - Production API and worker run on session pooler URL.
 - Direct endpoint was not reachable from VPS network path at cutover time, so direct mode was not used in production runtime.
-- Production compose now requires explicit `KURA_API_DATABASE_URL` / `KURA_WORKER_DATABASE_URL` (no implicit local DB fallback for API/worker).
+- Production compose requires explicit `KURA_API_DATABASE_URL` / `KURA_WORKER_DATABASE_URL` (no implicit local DB fallback for API/worker).
 
 ## Transport Security
 
@@ -49,24 +49,64 @@ Additional required fix during rollout:
 - `KURA_API_KEY` - source: `docker/.env.production` on VPS - owner: ops
 - `KURA_AGENT_MODEL_ATTESTATION_SECRET` - source: `docker/.env.production` on VPS - owner: ops
 
-## Backup / PITR / Spend Guardrails
+## Organization Billing Status
 
-- Physical backup API status (`supabase backups list`):
-  - `region = eu-west-1`
-  - `walg_enabled = true`
-  - `pitr_enabled = false`
-  - `backups = []` at query time
-- PITR enablement requires explicit operator action in Supabase project settings (CLI does not expose an enable command in current version).
-- Spend guardrails are an operator-controlled setting in the dashboard; current CLI version does not expose a read endpoint for budget alerts/hard cap.
+Observed via Management API on 2026-02-15:
 
-### Guardrail Policy (launch target)
+- Organization: `gnimangxbapltvkrwjem` (`JZ`)
+- Organization plan: `free`
+- Allowed release channels: `ga`, `preview`
 
-1. PITR: enable before public launch and verify `pitr_enabled=true`.
-2. Spend alerts: configure alert thresholds at 50%, 80%, 95% of monthly budget.
-3. Monthly hard cap: configure organization-level spend cap before launch freeze.
+## Addon Inventory (Management API)
 
-### Restore Drill Window
+`GET /v1/projects/{ref}/billing/addons` returned:
 
-- Window: **2026-02-20 10:00-10:30 UTC**
-- Owner: `jonzim-cmd`
-- Objective: execute PITR restore rehearsal and validate service recovery checklist.
+- `selected_addons = []`
+- `available_addons` includes:
+  - `compute_instance` variants (`ci_micro` ... `ci_48xlarge_*`)
+  - `pitr` variants (`pitr_7`, `pitr_14`, `pitr_28`)
+  - `ipv4_default`
+  - `custom_domain`, `auth_mfa_phone`, `auth_mfa_web_authn`, `log_drain`
+
+## Backup / PITR Status
+
+`supabase backups list --project-ref slawzzhovquintrsmfby` (2026-02-15):
+
+- `region = eu-west-1`
+- `walg_enabled = true`
+- `pitr_enabled = false`
+- `backups = []` at query time
+
+PITR enablement attempt (2026-02-15):
+
+- request: `PATCH /v1/projects/slawzzhovquintrsmfby/billing/addons` with `{"addon_type":"pitr","addon_variant":"pitr_7"}`
+- response: `400`
+- message: `Organization is not entitled to the selected PITR duration.`
+
+## Spend Guardrails API Coverage
+
+Management API v1 currently exposes project billing add-ons, but no documented spend-alert / monthly hard-cap endpoints.
+
+Documented billing path for this project:
+
+- `GET/PATCH /v1/projects/{ref}/billing/addons`
+
+Probed org-level billing paths (2026-02-15) all returned `404`:
+
+- `/v1/organizations/{slug}/billing`
+- `/v1/organizations/{slug}/billing/subscription`
+- `/v1/organizations/{slug}/billing/alerts`
+- `/v1/organizations/{slug}/billing/usage`
+
+## Guardrail Gate Status
+
+1. PITR gate (`pitr_enabled=true`): **FAIL** (`false`).
+2. Spend alerts 50/80/95 + monthly hard cap configured: **FAIL** (not available in current org state / not configured).
+3. Billing-plan readiness for paid guardrails: **FAIL** (organization plan is `free`).
+
+## Required Manual Actions Before Public Launch
+
+1. Upgrade organization plan from `free` to a paid plan that entitles PITR and spend controls.
+2. Configure spend alerts at 50%, 80%, 95% and set monthly hard cap in Supabase dashboard/billing.
+3. Re-run PITR enablement check until `pitr_enabled=true`.
+4. Run PITR restore drill and attach evidence to rollout report.

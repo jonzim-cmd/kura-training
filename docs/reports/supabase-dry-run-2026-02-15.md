@@ -81,7 +81,11 @@ A full source-to-target migration was executed from VPS Postgres to Supabase, fo
 - Rollback <= 30 min: PASS (`73s`)
 - Data integrity parity: PASS for migration checks performed
 - Runtime health (API/worker): PASS
+- Monitoring drill evidence recorded: `docs/reports/supabase-monitoring-drill-2026-02-15.md`
 
-## Remaining Work
+## Remaining Launch Blockers
 
-1. Complete baseline guardrail metadata (PITR/spend/restore drill owner+date).
+1. Organization billing plan is still `free` (paid guardrails not yet available).
+2. PITR remains disabled (`pitr_enabled=false`).
+3. Spend alerts + monthly hard cap are not configured.
+4. See baseline details: `docs/reports/supabase-pro-baseline-2026-02-15.md`.

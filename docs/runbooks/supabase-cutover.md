@@ -2,13 +2,13 @@
 
 ## 1. Scope
 
-This runbook covers the launch-critical DB cutover from VPS Postgres to Supabase Pro.
+This runbook covers the launch-critical DB cutover from VPS Postgres to Supabase.
 Auth strategy is fixed to `AUTH_STRATEGY=B`: auth logic remains in Kura API (`users`, `api_keys`, `oauth_*` stay source of truth).
 
 ## 2. Environment Baseline
 
 - Supabase project ref: `slawzzhovquintrsmfby`
-- Region: EU
+- Region: EU (`eu-west-1`)
 - Auth issuer: `https://slawzzhovquintrsmfby.supabase.co/auth/v1`
 - Auth JWKS: `https://slawzzhovquintrsmfby.supabase.co/auth/v1/.well-known/jwks.json`
 - Primary DB name: `postgres`
@@ -64,7 +64,7 @@ Production guardrail: `docker/compose.production.yml` requires `KURA_API_DATABAS
    - `docker compose -f docker/compose.production.yml --env-file docker/.env.production up -d kura-api kura-worker`
    - `docker compose -f docker/compose.production.yml --env-file docker/.env.production up -d --force-recreate kura-proxy`
 
-Note: `scripts/deploy.sh` now runs the migration drift gate automatically before starting services.
+Note: `scripts/deploy.sh` runs the migration drift gate automatically before starting services.
 
 ## 7. Post-Cutover Validation
 
@@ -103,16 +103,77 @@ Note: `scripts/deploy.sh` now runs the migration drift gate automatically before
 4. Trigger: data integrity mismatch in key table spot checks (`users/events/projections/oauth_*`)
    - Action: rollback and run source-vs-target diff before reattempt
 
-## 10. Go/No-Go Gates
+## 10. Monitoring & Alerts
 
-- Timed rollback drill (2026-02-15): `73s` (PASS, threshold `<= 30 min`)
-- Timed restore-to-Supabase drill (2026-02-15): `74s` (PASS, dry-run downtime proxy `<= 15 min`)
-- P0/P1 defects in cutover path: none currently open from runtime switch itself
-- API health after cutover: pass
-- Worker health after cutover: pass (after role grant fix)
-- Data-integrity spot checks during rollback drill: PASS (`users/events/projections/oauth_clients/user_identities/api_keys` unchanged)
+Alert owner: `jonzim-cmd`  
+Escalation path: `jonzim-cmd` -> launch room -> rollback owner (`jonzim-cmd`)  
+Reaction SLA: acknowledge in `<= 5 min`, mitigation decision in `<= 15 min`
 
-## 11. Known Gaps
+| Signal | Source | Alert Threshold | Owner | Reaction SLA |
+| --- | --- | --- | --- | --- |
+| Auth failure rate | `POST /v1/auth/email/login` responses | `>= 5` auth failures within 1 minute | `jonzim-cmd` | 5 min ack / 15 min decision |
+| DB latency / connection errors | Supabase + API logs (`Circuit breaker open`, connection failures) | any DB connection error in 5 minutes OR sustained latency breach for 5 minutes | `jonzim-cmd` | 5 min ack / 15 min decision |
+| API 5xx | `kura-proxy` status codes + gateway health probes | `>= 5` 5xx responses in 5 minutes OR healthcheck failing >= 2 minutes | `jonzim-cmd` | 5 min ack / 15 min decision |
+| Worker dead jobs | `background_jobs` dead count + worker logs | `dead_jobs > 0` for 15 minutes OR repeated dead-job spikes in one hour | `jonzim-cmd` | 5 min ack / 15 min decision |
 
-1. PITR is currently not enabled (`pitr_enabled=false` as of 2026-02-15); enablement is a launch gate.
-2. Spend alert thresholds and org hard cap must be manually confirmed in dashboard before launch sign-off.
+## 11. Alert Drill Evidence (2026-02-15)
+
+Evidence report: `docs/reports/supabase-monitoring-drill-2026-02-15.md`
+
+1. Auth failure-rate drill:
+   - timestamp: 2026-02-15 22:33 UTC
+   - result: six invalid login attempts returned six `401` responses in under one minute
+   - threshold status: breach detected as expected
+2. DB connection-error drill:
+   - timestamp: 2026-02-15 22:31 UTC
+   - result: API emitted `Circuit breaker open: Failed to retrieve database credentials` warnings (3 events)
+   - threshold status: breach detected as expected
+3. API 5xx drill:
+   - timestamp: 2026-02-15 (preliminary rollback run)
+   - result: proxy returned `502` after API recreation without proxy recreate
+   - threshold status: breach detected as expected, mitigation validated (`--force-recreate kura-proxy`)
+4. Worker dead-jobs signal validation:
+   - timestamp: 2026-02-13
+   - result: repeated dead projection jobs from schema drift (`external_import_jobs` missing)
+   - threshold status: historical breach validates dead-job alert necessity
+
+## 12. Go/No-Go Gates
+
+| Gate | Threshold | Evidence | Status |
+| --- | --- | --- | --- |
+| Rollback readiness | rollback `<= 30 min` | timed rollback `73s` on 2026-02-15 | PASS |
+| Restore readiness | restore-to-Supabase `<= 15 min` | timed restore `74s` on 2026-02-15 | PASS |
+| Runtime health | API + worker healthy after cutover | healthy containers + gateway `status=ok` | PASS |
+| Data integrity | key table spot checks unchanged | `users/events/projections/oauth_clients/user_identities/api_keys` parity | PASS |
+| Auth compatibility | Strategy B auth tests pass | `cargo test -p kura-api routes::auth::tests` 15/15 pass | PASS |
+| PITR gate | `pitr_enabled=true` | `pitr_enabled=false` (2026-02-15) | NO-GO |
+| Spend guardrail gate | alerts 50/80/95 + hard cap configured | not configurable in current org state (see baseline report) | NO-GO |
+
+## 13. 24h Post-Cutover Checklist
+
+1. Re-check API and worker health every hour for first 6h, then every 4h.
+2. Confirm no sustained auth-failure spikes outside expected user mistakes.
+3. Confirm no recurring DB connection warnings (`Circuit breaker open`, auth failures to pooler).
+4. Confirm worker queue stays stable (no dead-job accumulation).
+5. Re-run key data parity query set (`users/events/projections/oauth_*`) at +24h.
+6. Record any anomalies and decision trail in launch log.
+
+## 14. Communication Templates
+
+Cutover start:
+
+> `2026-02-15 HH:MM UTC` Cutover started. Write-freeze active. Runtime switch to Supabase in progress. Next status in 10 minutes.
+
+Rollback triggered:
+
+> `2026-02-15 HH:MM UTC` Rollback triggered due to `<trigger>`. API/worker DB URLs are being reverted to VPS Postgres. Recovery ETA: 15 minutes.
+
+Cutover complete:
+
+> `2026-02-15 HH:MM UTC` Cutover complete. API/worker healthy, data parity checks passed, monitoring watch window active for 24h.
+
+## 15. Current Launch Blockers
+
+1. Organization billing plan is currently `free`; PITR and spend-guardrail requirements are not yet satisfied.
+2. PITR remains disabled (`pitr_enabled=false`) as of 2026-02-15.
+3. Spend-alert thresholds and monthly hard cap are not configured in this org state.
