@@ -1010,6 +1010,54 @@ pub struct AgentCounterfactualRecommendation {
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentAdvisoryScores {
+    pub schema_version: String,
+    /// advisory_only (nudge layer, never hard-blocking)
+    pub policy_role: String,
+    /// 0..1 (higher = more person-specific grounding)
+    pub specificity_score: f64,
+    /// 0..1 (higher = higher hallucination likelihood)
+    pub hallucination_risk: f64,
+    /// 0..1 (higher = higher persistence/data integrity risk)
+    pub data_quality_risk: f64,
+    /// 0..1 (higher = higher overall confidence)
+    pub confidence_score: f64,
+    /// low | medium | high
+    pub specificity_band: String,
+    /// low | medium | high
+    pub hallucination_risk_band: String,
+    /// low | medium | high
+    pub data_quality_risk_band: String,
+    /// low | medium | high
+    pub confidence_band: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub specificity_reason_codes: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hallucination_reason_codes: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub data_quality_reason_codes: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub confidence_reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentAdvisoryActionPlan {
+    pub schema_version: String,
+    /// advisory_only (never blocks autonomy)
+    pub policy_role: String,
+    /// grounded_personalized | hypothesis_personalized | general_guidance
+    pub response_mode_hint: String,
+    /// persist_now | draft_preferred | ask_first
+    pub persist_action: String,
+    /// 0 or 1 additional clarification questions allowed
+    pub clarification_question_budget: usize,
+    pub requires_uncertainty_note: bool,
+    pub assistant_instruction: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AgentPersistIntentGroupedItem {
     /// training_set | training_session | session_feedback | plan_update | preference | observation | other
     pub topic: String,
@@ -1053,6 +1101,8 @@ pub struct AgentWriteWithProofResponse {
     pub response_mode_policy: AgentResponseModePolicy,
     pub personal_failure_profile: AgentPersonalFailureProfile,
     pub sidecar_assessment: AgentSidecarAssessment,
+    pub advisory_scores: AgentAdvisoryScores,
+    pub advisory_action_plan: AgentAdvisoryActionPlan,
     pub counterfactual_recommendation: AgentCounterfactualRecommendation,
     pub persist_intent: AgentPersistIntent,
 }
@@ -3327,6 +3377,38 @@ fn build_counterfactual_recommendation(
     )
 }
 
+fn build_advisory_scores(
+    claim_guard: &AgentWriteClaimGuard,
+    verification: &AgentWriteVerificationSummary,
+    session_audit: &AgentSessionAuditSummary,
+    response_mode_policy: &AgentResponseModePolicy,
+    sidecar_assessment: &AgentSidecarAssessment,
+    persist_intent: &AgentPersistIntent,
+) -> AgentAdvisoryScores {
+    policy_kernel::build_advisory_scores(
+        claim_guard,
+        verification,
+        session_audit,
+        response_mode_policy,
+        sidecar_assessment,
+        persist_intent,
+    )
+}
+
+fn build_advisory_action_plan(
+    claim_guard: &AgentWriteClaimGuard,
+    response_mode_policy: &AgentResponseModePolicy,
+    persist_intent: &AgentPersistIntent,
+    advisory_scores: &AgentAdvisoryScores,
+) -> AgentAdvisoryActionPlan {
+    policy_kernel::build_advisory_action_plan(
+        claim_guard,
+        response_mode_policy,
+        persist_intent,
+        advisory_scores,
+    )
+}
+
 fn build_counterfactual_learning_signal_event(
     user_id: Uuid,
     response_mode_policy: &AgentResponseModePolicy,
@@ -3358,6 +3440,44 @@ fn build_counterfactual_learning_signal_event(
             "retrieval_regret_threshold_exceeded": sidecar_assessment.retrieval_regret.threshold_exceeded,
         }),
         "learning:counterfactual-recommendation",
+    )
+}
+
+fn build_advisory_scoring_learning_signal_event(
+    user_id: Uuid,
+    advisory_scores: &AgentAdvisoryScores,
+    advisory_action_plan: &AgentAdvisoryActionPlan,
+) -> CreateEventRequest {
+    learning_signal_event_from_contract(
+        user_id,
+        "advisory_scoring_assessed",
+        "advisory_scoring_layer",
+        ADVISORY_SCORING_INVARIANT_ID,
+        "agent_write_with_proof",
+        advisory_scores.confidence_band.as_str(),
+        serde_json::json!({
+            "contract_schema_version": advisory_scores.schema_version.clone(),
+            "action_schema_version": advisory_action_plan.schema_version.clone(),
+            "policy_role": advisory_scores.policy_role.clone(),
+            "specificity_score": advisory_scores.specificity_score,
+            "hallucination_risk": advisory_scores.hallucination_risk,
+            "data_quality_risk": advisory_scores.data_quality_risk,
+            "confidence_score": advisory_scores.confidence_score,
+            "specificity_band": advisory_scores.specificity_band.clone(),
+            "hallucination_risk_band": advisory_scores.hallucination_risk_band.clone(),
+            "data_quality_risk_band": advisory_scores.data_quality_risk_band.clone(),
+            "confidence_band": advisory_scores.confidence_band.clone(),
+            "specificity_reason_codes": advisory_scores.specificity_reason_codes.clone(),
+            "hallucination_reason_codes": advisory_scores.hallucination_reason_codes.clone(),
+            "data_quality_reason_codes": advisory_scores.data_quality_reason_codes.clone(),
+            "confidence_reason_codes": advisory_scores.confidence_reason_codes.clone(),
+            "response_mode_hint": advisory_action_plan.response_mode_hint.clone(),
+            "persist_action": advisory_action_plan.persist_action.clone(),
+            "clarification_question_budget": advisory_action_plan.clarification_question_budget,
+            "requires_uncertainty_note": advisory_action_plan.requires_uncertainty_note,
+            "reason_codes": advisory_action_plan.reason_codes.clone(),
+        }),
+        "learning:advisory-scoring",
     )
 }
 
@@ -3622,6 +3742,21 @@ fn collect_machine_language_tokens(response: &AgentWriteWithProofResponse) -> Ha
     for code in &response.counterfactual_recommendation.reason_codes {
         insert_machine_token(&mut tokens, code);
     }
+    for code in &response.advisory_scores.specificity_reason_codes {
+        insert_machine_token(&mut tokens, code);
+    }
+    for code in &response.advisory_scores.hallucination_reason_codes {
+        insert_machine_token(&mut tokens, code);
+    }
+    for code in &response.advisory_scores.data_quality_reason_codes {
+        insert_machine_token(&mut tokens, code);
+    }
+    for code in &response.advisory_scores.confidence_reason_codes {
+        insert_machine_token(&mut tokens, code);
+    }
+    for code in &response.advisory_action_plan.reason_codes {
+        insert_machine_token(&mut tokens, code);
+    }
     for code in &response.persist_intent.reason_codes {
         insert_machine_token(&mut tokens, code);
     }
@@ -3778,6 +3913,7 @@ fn user_facing_text_fields(response: &AgentWriteWithProofResponse) -> Vec<&str> 
             .counterfactual_recommendation
             .explanation_summary
             .as_str(),
+        response.advisory_action_plan.assistant_instruction.as_str(),
     ];
     if let Some(question) = response.reliability_ux.clarification_question.as_deref() {
         texts.push(question);
@@ -3862,6 +3998,10 @@ fn rewrite_user_facing_fields_once(
     );
     response.counterfactual_recommendation.explanation_summary = rewrite_user_text_once(
         &response.counterfactual_recommendation.explanation_summary,
+        machine_tokens,
+    );
+    response.advisory_action_plan.assistant_instruction = rewrite_user_text_once(
+        &response.advisory_action_plan.assistant_instruction,
         machine_tokens,
     );
     if let Some(question) = response
@@ -4241,7 +4381,7 @@ fn build_session_audit_artifacts(
     let mut unresolved: Vec<SessionAuditUnresolved> = Vec::new();
     let mut repair_fields_by_target: BTreeMap<Uuid, BTreeMap<String, Value>> = BTreeMap::new();
     let mut session_id_by_target: HashMap<Uuid, Option<String>> = HashMap::new();
-    let mut session_feedback_repair_events: Vec<CreateEventRequest> = Vec::new();
+    let session_feedback_repair_events: Vec<CreateEventRequest> = Vec::new();
 
     for (index, event) in requested_events.iter().enumerate() {
         let event_type = event.event_type.trim().to_lowercase();
@@ -5840,6 +5980,20 @@ pub async fn write_with_proof(
         &session_audit_summary,
         &response_mode_policy,
     );
+    let advisory_scores = build_advisory_scores(
+        &claim_guard,
+        &verification,
+        &session_audit_summary,
+        &response_mode_policy,
+        &sidecar_assessment,
+        &persist_intent_computation.persist_intent,
+    );
+    let advisory_action_plan = build_advisory_action_plan(
+        &claim_guard,
+        &response_mode_policy,
+        &persist_intent_computation.persist_intent,
+        &advisory_scores,
+    );
     let counterfactual_recommendation = build_counterfactual_recommendation(
         &claim_guard,
         &verification,
@@ -5891,6 +6045,11 @@ pub async fn write_with_proof(
         &personal_failure_profile,
         &sidecar_assessment,
     ));
+    quality_events.push(build_advisory_scoring_learning_signal_event(
+        user_id,
+        &advisory_scores,
+        &advisory_action_plan,
+    ));
     quality_events.push(build_counterfactual_learning_signal_event(
         user_id,
         &response_mode_policy,
@@ -5939,6 +6098,8 @@ pub async fn write_with_proof(
         response_mode_policy,
         personal_failure_profile,
         sidecar_assessment,
+        advisory_scores,
+        advisory_action_plan,
         counterfactual_recommendation,
         persist_intent: persist_intent_computation.persist_intent,
     };
@@ -10235,6 +10396,36 @@ mod tests {
                     reason_codes: vec!["response_mode_general_guidance".to_string()],
                 },
             },
+            advisory_scores: super::AgentAdvisoryScores {
+                schema_version: super::ADVISORY_SCORING_LAYER_SCHEMA_VERSION.to_string(),
+                policy_role: super::SIDECAR_POLICY_ROLE_ADVISORY_ONLY.to_string(),
+                specificity_score: 0.41,
+                hallucination_risk: 0.62,
+                data_quality_risk: 0.68,
+                confidence_score: 0.36,
+                specificity_band: "medium".to_string(),
+                hallucination_risk_band: "medium".to_string(),
+                data_quality_risk_band: "high".to_string(),
+                confidence_band: "medium".to_string(),
+                specificity_reason_codes: vec!["response_mode_hypothesis_personalized".to_string()],
+                hallucination_reason_codes: vec!["retrieval_regret_high".to_string()],
+                data_quality_reason_codes: vec!["persist_intent_ask_first".to_string()],
+                confidence_reason_codes: vec![
+                    "confidence_from_specificity_and_risk_balance".to_string()
+                ],
+            },
+            advisory_action_plan: super::AgentAdvisoryActionPlan {
+                schema_version: super::ADVISORY_ACTION_PLAN_SCHEMA_VERSION.to_string(),
+                policy_role: super::SIDECAR_POLICY_ROLE_ADVISORY_ONLY.to_string(),
+                response_mode_hint: "hypothesis_personalized".to_string(),
+                persist_action: "ask_first".to_string(),
+                clarification_question_budget: 1,
+                requires_uncertainty_note: true,
+                assistant_instruction:
+                    "Use uncertainty-explicit wording and confirm before persistence."
+                        .to_string(),
+                reason_codes: vec!["persist_action_ask_first".to_string()],
+            },
             counterfactual_recommendation: super::AgentCounterfactualRecommendation {
                 schema_version: super::COUNTERFACTUAL_RECOMMENDATION_SCHEMA_VERSION.to_string(),
                 policy_role: super::SIDECAR_POLICY_ROLE_ADVISORY_ONLY.to_string(),
@@ -11509,6 +11700,149 @@ mod tests {
         assert!(counterfactual.ask_user_challenge_question);
     }
 
+    fn make_persist_intent_fixture(mode: &str, status_label: &str) -> super::AgentPersistIntent {
+        super::AgentPersistIntent {
+            schema_version: super::PERSIST_INTENT_SCHEMA_VERSION.to_string(),
+            mode: mode.to_string(),
+            status_label: status_label.to_string(),
+            reason_codes: Vec::new(),
+            grouped_items: Vec::new(),
+            user_prompt: None,
+            draft_event_count: usize::from(mode != "auto_save"),
+            draft_persisted_count: usize::from(mode == "auto_draft"),
+        }
+    }
+
+    #[test]
+    fn advisory_scoring_layer_contract_schema_version_is_pinned() {
+        assert_eq!(
+            super::ADVISORY_SCORING_LAYER_SCHEMA_VERSION,
+            "advisory_scoring_layer.v1"
+        );
+        assert_eq!(
+            super::ADVISORY_ACTION_PLAN_SCHEMA_VERSION,
+            "advisory_action_plan.v1"
+        );
+    }
+
+    #[test]
+    fn advisory_scoring_layer_contract_is_advisory_only_non_blocking() {
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("pending", "pending", "clean", None);
+        let persist_intent = make_persist_intent_fixture("auto_draft", "draft");
+        let mode = super::build_response_mode_policy(&claim_guard, &verification, None);
+        let sidecar =
+            super::build_sidecar_assessment(&claim_guard, &verification, &session_audit, &mode);
+        let advisory_scores = super::build_advisory_scores(
+            &claim_guard,
+            &verification,
+            &session_audit,
+            &mode,
+            &sidecar,
+            &persist_intent,
+        );
+        let action_plan = super::build_advisory_action_plan(
+            &claim_guard,
+            &mode,
+            &persist_intent,
+            &advisory_scores,
+        );
+
+        assert_eq!(
+            advisory_scores.policy_role,
+            super::SIDECAR_POLICY_ROLE_ADVISORY_ONLY
+        );
+        assert_eq!(
+            action_plan.policy_role,
+            super::SIDECAR_POLICY_ROLE_ADVISORY_ONLY
+        );
+        assert_ne!(action_plan.persist_action, "block");
+    }
+
+    #[test]
+    fn advisory_scoring_layer_contract_maps_risky_case_to_cautionary_actions() {
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("failed", "pending", "needs_clarification", None);
+        let persist_intent = make_persist_intent_fixture("ask_first", "not_saved");
+        let mode = super::build_response_mode_policy(&claim_guard, &verification, None);
+        let sidecar =
+            super::build_sidecar_assessment(&claim_guard, &verification, &session_audit, &mode);
+        let advisory_scores = super::build_advisory_scores(
+            &claim_guard,
+            &verification,
+            &session_audit,
+            &mode,
+            &sidecar,
+            &persist_intent,
+        );
+        let action_plan = super::build_advisory_action_plan(
+            &claim_guard,
+            &mode,
+            &persist_intent,
+            &advisory_scores,
+        );
+
+        assert!(advisory_scores.hallucination_risk >= 0.6);
+        assert!(advisory_scores.data_quality_risk >= 0.6);
+        assert!(advisory_scores.confidence_score <= 0.5);
+        assert_eq!(action_plan.persist_action, "ask_first");
+        assert_eq!(action_plan.clarification_question_budget, 1);
+        assert!(action_plan.requires_uncertainty_note);
+        assert_ne!(action_plan.response_mode_hint, "grounded_personalized");
+    }
+
+    #[test]
+    fn advisory_scoring_layer_contract_maps_stable_case_to_low_friction_actions() {
+        let (
+            _receipts,
+            _warnings,
+            verification,
+            claim_guard,
+            _workflow_gate,
+            session_audit,
+            _repair_feedback,
+        ) = make_trace_contract_artifacts("verified", "verified", "clean", None);
+        let persist_intent = make_persist_intent_fixture("auto_save", "saved");
+        let mode = super::build_response_mode_policy(&claim_guard, &verification, None);
+        let sidecar =
+            super::build_sidecar_assessment(&claim_guard, &verification, &session_audit, &mode);
+        let advisory_scores = super::build_advisory_scores(
+            &claim_guard,
+            &verification,
+            &session_audit,
+            &mode,
+            &sidecar,
+            &persist_intent,
+        );
+        let action_plan = super::build_advisory_action_plan(
+            &claim_guard,
+            &mode,
+            &persist_intent,
+            &advisory_scores,
+        );
+
+        assert!(advisory_scores.specificity_score >= 0.6);
+        assert!(advisory_scores.hallucination_risk <= 0.45);
+        assert!(advisory_scores.data_quality_risk <= 0.45);
+        assert!(advisory_scores.confidence_score >= 0.6);
+        assert_eq!(action_plan.persist_action, "persist_now");
+        assert_eq!(action_plan.clarification_question_budget, 0);
+    }
+
     #[test]
     fn personal_failure_profile_contract_is_deterministic_per_user_and_model() {
         let user_id = Uuid::now_v7();
@@ -11983,6 +12317,7 @@ mod tests {
                 "schema_capability_gate_v1": {"rules": ["capability checks"]},
                 "model_tier_registry_v1": {"tiers": {"strict": {"high_impact_write_policy": "block"}}},
                 "counterfactual_recommendation_v1": {"schema_version": "counterfactual_recommendation.v1"},
+                "advisory_scoring_layer_v1": {"schema_version": "advisory_scoring_layer.v1"},
                 "synthetic_adversarial_corpus_v1": {"schema_version": "synthetic_adversarial_corpus.v1"},
                 "temporal_grounding_v1": {"schema_version": "temporal_grounding.v1"},
                 "decision_brief_v1": {"schema_version": "decision_brief.v1"},
@@ -12022,6 +12357,7 @@ mod tests {
         assert!(conventions.contains_key("schema_capability_gate_v1"));
         assert!(conventions.contains_key("model_tier_registry_v1"));
         assert!(conventions.contains_key("counterfactual_recommendation_v1"));
+        assert!(conventions.contains_key("advisory_scoring_layer_v1"));
         assert!(conventions.contains_key("synthetic_adversarial_corpus_v1"));
         assert!(conventions.contains_key("temporal_grounding_v1"));
         assert!(conventions.contains_key("decision_brief_v1"));

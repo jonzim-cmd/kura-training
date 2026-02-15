@@ -29,6 +29,8 @@ pub(super) const RETRIEVAL_REGRET_SCHEMA_VERSION: &str = "retrieval_regret.v1";
 pub(super) const LAAJ_SIDECAR_SCHEMA_VERSION: &str = "laaj_sidecar.v1";
 pub(super) const COUNTERFACTUAL_RECOMMENDATION_SCHEMA_VERSION: &str =
     "counterfactual_recommendation.v1";
+pub(super) const ADVISORY_SCORING_LAYER_SCHEMA_VERSION: &str = "advisory_scoring_layer.v1";
+pub(super) const ADVISORY_ACTION_PLAN_SCHEMA_VERSION: &str = "advisory_action_plan.v1";
 pub(super) const DECISION_BRIEF_SCHEMA_VERSION: &str = "decision_brief.v1";
 pub(super) const RESPONSE_MODE_POLICY_ROLE_NUDGE_ONLY: &str = "nudge_only";
 pub(super) const SIDECAR_POLICY_ROLE_ADVISORY_ONLY: &str = "advisory_only";
@@ -37,6 +39,7 @@ pub(super) const PERSONAL_FAILURE_PROFILE_INVARIANT_ID: &str = "INV-011";
 pub(super) const RETRIEVAL_REGRET_INVARIANT_ID: &str = "INV-012";
 pub(super) const LAAJ_SIDECAR_INVARIANT_ID: &str = "INV-013";
 pub(super) const COUNTERFACTUAL_RECOMMENDATION_INVARIANT_ID: &str = "INV-014";
+pub(super) const ADVISORY_SCORING_INVARIANT_ID: &str = "INV-015";
 pub(super) const MODEL_IDENTITY_UNKNOWN_FALLBACK_REASON_CODE: &str =
     "model_identity_unknown_fallback_strict";
 pub(super) const MODEL_ATTESTATION_MISSING_REASON_CODE: &str = "model_attestation_missing_fallback";

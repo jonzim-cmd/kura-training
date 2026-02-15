@@ -599,3 +599,399 @@ pub(super) fn build_counterfactual_recommendation(
         ux_compact: true,
     }
 }
+
+fn score_band(value: f64) -> &'static str {
+    if value >= 0.66 {
+        "high"
+    } else if value >= 0.33 {
+        "medium"
+    } else {
+        "low"
+    }
+}
+
+pub(super) fn build_advisory_scores(
+    claim_guard: &AgentWriteClaimGuard,
+    verification: &AgentWriteVerificationSummary,
+    session_audit: &AgentSessionAuditSummary,
+    response_mode_policy: &AgentResponseModePolicy,
+    sidecar_assessment: &AgentSidecarAssessment,
+    persist_intent: &AgentPersistIntent,
+) -> AgentAdvisoryScores {
+    let mut specificity_reason_codes: Vec<String> = Vec::new();
+    let mut hallucination_reason_codes: Vec<String> = Vec::new();
+    let mut data_quality_reason_codes: Vec<String> = Vec::new();
+    let mut confidence_reason_codes: Vec<String> = Vec::new();
+
+    let mut specificity_score: f64 = 0.18;
+    match response_mode_policy.mode_code.as_str() {
+        "A" => {
+            specificity_score += 0.46;
+            specificity_reason_codes.push("response_mode_grounded_personalized".to_string());
+        }
+        "B" => {
+            specificity_score += 0.28;
+            specificity_reason_codes.push("response_mode_hypothesis_personalized".to_string());
+        }
+        _ => {
+            specificity_score += 0.12;
+            specificity_reason_codes.push("response_mode_general_guidance".to_string());
+        }
+    }
+    match verification.status.as_str() {
+        "verified" => {
+            specificity_score += 0.16;
+            specificity_reason_codes.push("verification_status_verified".to_string());
+        }
+        "pending" => {
+            specificity_score += 0.06;
+            specificity_reason_codes.push("verification_status_pending".to_string());
+        }
+        _ => {
+            specificity_score -= 0.12;
+            specificity_reason_codes.push("verification_status_failed".to_string());
+        }
+    }
+    if claim_guard.allow_saved_claim {
+        specificity_score += 0.18;
+        specificity_reason_codes.push("claim_guard_saved_claim".to_string());
+    } else {
+        specificity_score -= 0.08;
+        specificity_reason_codes.push("claim_guard_unsaved".to_string());
+    }
+    if response_mode_policy.outcome_signal_sample_ok {
+        specificity_score += 0.08;
+        specificity_reason_codes.push("outcome_signal_sample_ok".to_string());
+    } else {
+        specificity_score -= 0.04;
+        specificity_reason_codes.push("outcome_signal_sample_thin".to_string());
+    }
+    if sidecar_assessment.retrieval_regret.threshold_exceeded {
+        specificity_score -= 0.10;
+        specificity_reason_codes.push("retrieval_regret_threshold_exceeded".to_string());
+    }
+    if session_audit.mismatch_unresolved > 0 {
+        specificity_score -= 0.08;
+        specificity_reason_codes.push("session_mismatch_unresolved".to_string());
+    }
+    specificity_score = specificity_score.clamp(0.0, 1.0);
+
+    let mut hallucination_risk: f64 = 0.22;
+    if !claim_guard.allow_saved_claim {
+        hallucination_risk += 0.14;
+        hallucination_reason_codes.push("save_claim_not_verified".to_string());
+    }
+    match verification.status.as_str() {
+        "failed" => {
+            hallucination_risk += 0.28;
+            hallucination_reason_codes.push("write_proof_failed".to_string());
+        }
+        "pending" => {
+            hallucination_risk += 0.10;
+            hallucination_reason_codes.push("write_proof_pending".to_string());
+        }
+        _ => {}
+    }
+    match response_mode_policy.mode_code.as_str() {
+        "C" => {
+            hallucination_risk += 0.18;
+            hallucination_reason_codes.push("response_mode_general_guidance".to_string());
+        }
+        "B" => {
+            hallucination_risk += 0.08;
+            hallucination_reason_codes.push("response_mode_hypothesis_personalized".to_string());
+        }
+        _ => {
+            hallucination_risk -= 0.05;
+            hallucination_reason_codes.push("response_mode_grounded_personalized".to_string());
+        }
+    }
+    if sidecar_assessment.retrieval_regret.threshold_exceeded {
+        hallucination_risk += 0.16;
+        hallucination_reason_codes.push("retrieval_regret_high".to_string());
+    }
+    if sidecar_assessment.laaj.verdict != "pass" {
+        hallucination_risk += 0.12;
+        hallucination_reason_codes.push("laaj_verdict_review".to_string());
+    }
+    if session_audit.status == "needs_clarification" {
+        hallucination_risk += 0.10;
+        hallucination_reason_codes.push("session_audit_needs_clarification".to_string());
+    }
+    match response_mode_policy.calibration_status.as_str() {
+        "monitor" => {
+            hallucination_risk += 0.05;
+            hallucination_reason_codes.push("calibration_monitor".to_string());
+        }
+        "degraded" => {
+            hallucination_risk += 0.12;
+            hallucination_reason_codes.push("calibration_degraded".to_string());
+        }
+        _ => {}
+    }
+    match response_mode_policy.integrity_slo_status.as_str() {
+        "monitor" => {
+            hallucination_risk += 0.04;
+            hallucination_reason_codes.push("integrity_monitor".to_string());
+        }
+        "degraded" => {
+            hallucination_risk += 0.10;
+            hallucination_reason_codes.push("integrity_degraded".to_string());
+        }
+        _ => {}
+    }
+    if response_mode_policy.outcome_signal_sample_ok
+        && response_mode_policy.historical_follow_through_rate_pct >= 70.0
+        && response_mode_policy.historical_regret_exceeded_rate_pct <= 12.0
+    {
+        hallucination_risk -= 0.06;
+        hallucination_reason_codes.push("historical_outcomes_stable".to_string());
+    }
+    hallucination_risk = hallucination_risk.clamp(0.0, 1.0);
+
+    let mut data_quality_risk: f64 = 0.16;
+    if !claim_guard.allow_saved_claim {
+        data_quality_risk += 0.24;
+        data_quality_reason_codes.push("claim_guard_unsaved".to_string());
+    }
+    match verification.status.as_str() {
+        "failed" => {
+            data_quality_risk += 0.26;
+            data_quality_reason_codes.push("verification_failed".to_string());
+        }
+        "pending" => {
+            data_quality_risk += 0.12;
+            data_quality_reason_codes.push("verification_pending".to_string());
+        }
+        _ => {
+            data_quality_risk -= 0.04;
+            data_quality_reason_codes.push("verification_verified".to_string());
+        }
+    }
+    if session_audit.mismatch_unresolved > 0 {
+        data_quality_risk += 0.20;
+        data_quality_reason_codes.push("session_mismatch_unresolved".to_string());
+    }
+    if session_audit.status == "needs_clarification" {
+        data_quality_risk += 0.08;
+        data_quality_reason_codes.push("session_audit_needs_clarification".to_string());
+    }
+    match persist_intent.mode.as_str() {
+        "ask_first" => {
+            data_quality_risk += 0.14;
+            data_quality_reason_codes.push("persist_intent_ask_first".to_string());
+        }
+        "auto_draft" => {
+            data_quality_risk += 0.08;
+            data_quality_reason_codes.push("persist_intent_auto_draft".to_string());
+        }
+        "auto_save" => {
+            data_quality_risk -= 0.04;
+            data_quality_reason_codes.push("persist_intent_auto_save".to_string());
+        }
+        _ => {}
+    }
+    match persist_intent.status_label.as_str() {
+        "not_saved" => {
+            data_quality_risk += 0.12;
+            data_quality_reason_codes.push("persist_status_not_saved".to_string());
+        }
+        "saved" => {
+            data_quality_risk -= 0.05;
+            data_quality_reason_codes.push("persist_status_saved".to_string());
+        }
+        _ => {}
+    }
+    if persist_intent.draft_event_count > 0 {
+        data_quality_risk += 0.04;
+        data_quality_reason_codes.push("persist_draft_events_present".to_string());
+    }
+    if sidecar_assessment.retrieval_regret.threshold_exceeded {
+        data_quality_risk += 0.06;
+        data_quality_reason_codes.push("retrieval_regret_high".to_string());
+    }
+    data_quality_risk = data_quality_risk.clamp(0.0, 1.0);
+
+    let mut confidence_score: f64 =
+        (specificity_score + (1.0 - hallucination_risk) + (1.0 - data_quality_risk)) / 3.0;
+    confidence_reason_codes.push("confidence_from_specificity_and_risk_balance".to_string());
+    match response_mode_policy.mode_code.as_str() {
+        "A" => {
+            confidence_score += 0.05;
+            confidence_reason_codes.push("response_mode_grounded_bonus".to_string());
+        }
+        "C" => {
+            confidence_score -= 0.05;
+            confidence_reason_codes.push("response_mode_general_penalty".to_string());
+        }
+        _ => {}
+    }
+    match verification.status.as_str() {
+        "verified" => {
+            confidence_score += 0.03;
+            confidence_reason_codes.push("verification_verified_bonus".to_string());
+        }
+        "failed" => {
+            confidence_score -= 0.08;
+            confidence_reason_codes.push("verification_failed_penalty".to_string());
+        }
+        _ => {}
+    }
+    match response_mode_policy.outcome_signal_sample_confidence.as_str() {
+        "high" => {
+            confidence_score += 0.04;
+            confidence_reason_codes.push("outcome_sample_confidence_high".to_string());
+        }
+        "medium" => {
+            confidence_score += 0.01;
+            confidence_reason_codes.push("outcome_sample_confidence_medium".to_string());
+        }
+        _ => {
+            confidence_score -= 0.02;
+            confidence_reason_codes.push("outcome_sample_confidence_low".to_string());
+        }
+    }
+    if session_audit.status == "needs_clarification" {
+        confidence_score -= 0.08;
+        confidence_reason_codes.push("session_audit_clarification_penalty".to_string());
+    }
+    confidence_score = confidence_score.clamp(0.0, 1.0);
+
+    dedupe_reason_codes(&mut specificity_reason_codes);
+    dedupe_reason_codes(&mut hallucination_reason_codes);
+    dedupe_reason_codes(&mut data_quality_reason_codes);
+    dedupe_reason_codes(&mut confidence_reason_codes);
+
+    AgentAdvisoryScores {
+        schema_version: ADVISORY_SCORING_LAYER_SCHEMA_VERSION.to_string(),
+        policy_role: SIDECAR_POLICY_ROLE_ADVISORY_ONLY.to_string(),
+        specificity_score,
+        hallucination_risk,
+        data_quality_risk,
+        confidence_score,
+        specificity_band: score_band(specificity_score).to_string(),
+        hallucination_risk_band: score_band(hallucination_risk).to_string(),
+        data_quality_risk_band: score_band(data_quality_risk).to_string(),
+        confidence_band: score_band(confidence_score).to_string(),
+        specificity_reason_codes,
+        hallucination_reason_codes,
+        data_quality_reason_codes,
+        confidence_reason_codes,
+    }
+}
+
+pub(super) fn build_advisory_action_plan(
+    claim_guard: &AgentWriteClaimGuard,
+    response_mode_policy: &AgentResponseModePolicy,
+    persist_intent: &AgentPersistIntent,
+    advisory_scores: &AgentAdvisoryScores,
+) -> AgentAdvisoryActionPlan {
+    let mut reason_codes: Vec<String> = Vec::new();
+
+    let mut response_mode_hint = if advisory_scores.specificity_score >= 0.72
+        && advisory_scores.hallucination_risk <= 0.40
+        && advisory_scores.data_quality_risk <= 0.42
+    {
+        "grounded_personalized".to_string()
+    } else if advisory_scores.hallucination_risk >= 0.65
+        || advisory_scores.confidence_score <= 0.45
+        || advisory_scores.data_quality_risk >= 0.62
+    {
+        "general_guidance".to_string()
+    } else {
+        "hypothesis_personalized".to_string()
+    };
+    if response_mode_hint != response_mode_policy.mode {
+        reason_codes.push("response_mode_hint_adjusted_by_advisory_scores".to_string());
+    }
+
+    let mut persist_action = if advisory_scores.data_quality_risk >= 0.72
+        || advisory_scores.hallucination_risk >= 0.72
+    {
+        "ask_first".to_string()
+    } else if advisory_scores.data_quality_risk >= 0.48 || !claim_guard.allow_saved_claim {
+        "draft_preferred".to_string()
+    } else {
+        "persist_now".to_string()
+    };
+
+    if persist_intent.mode == "ask_first" {
+        persist_action = "ask_first".to_string();
+        reason_codes.push("persist_intent_requires_ask_first".to_string());
+    } else if persist_intent.mode == "auto_draft" && persist_action == "persist_now" {
+        persist_action = "draft_preferred".to_string();
+        reason_codes.push("persist_intent_prefers_draft".to_string());
+    }
+    if persist_intent.status_label == "not_saved" && persist_action == "persist_now" {
+        persist_action = "draft_preferred".to_string();
+        reason_codes.push("persist_status_not_saved".to_string());
+    }
+
+    let clarification_question_budget =
+        usize::from(advisory_scores.hallucination_risk >= 0.55 || advisory_scores.data_quality_risk >= 0.55);
+    if clarification_question_budget == 1 {
+        reason_codes.push("clarification_budget_enabled_by_risk".to_string());
+    }
+
+    let requires_uncertainty_note = response_mode_policy.requires_transparency_note
+        || advisory_scores.hallucination_risk >= 0.45
+        || advisory_scores.confidence_score < 0.62;
+    if requires_uncertainty_note {
+        reason_codes.push("uncertainty_note_required".to_string());
+    }
+
+    if response_mode_hint == "general_guidance" {
+        reason_codes.push("response_mode_hint_general_guidance".to_string());
+    } else if response_mode_hint == "grounded_personalized" {
+        reason_codes.push("response_mode_hint_grounded_personalized".to_string());
+    } else {
+        reason_codes.push("response_mode_hint_hypothesis_personalized".to_string());
+    }
+    if persist_action == "ask_first" {
+        reason_codes.push("persist_action_ask_first".to_string());
+    } else if persist_action == "draft_preferred" {
+        reason_codes.push("persist_action_draft_preferred".to_string());
+    } else {
+        reason_codes.push("persist_action_persist_now".to_string());
+    }
+
+    let assistant_instruction = match (response_mode_hint.as_str(), persist_action.as_str()) {
+        ("grounded_personalized", "persist_now") => {
+            "Deliver evidence-anchored personalization and proceed with persistence normally."
+        }
+        ("general_guidance", "ask_first") => {
+            "Stay conservative: disclose uncertainty, ask one focused clarification, and request explicit save confirmation."
+        }
+        ("general_guidance", _) => {
+            "Favor general guidance with explicit uncertainty and one high-value clarification before specific claims."
+        }
+        (_, "ask_first") => {
+            "Keep personalization cautious and ask explicit save confirmation before persisting."
+        }
+        (_, "draft_preferred") => {
+            "Use hypothesis-style personalization and prefer draft persistence until evidence strengthens."
+        }
+        _ => {
+            "Use hypothesis-driven personalization with explicit evidence boundaries."
+        }
+    }
+    .to_string();
+
+    if response_mode_hint == "general_guidance" && response_mode_policy.mode_code == "A" {
+        response_mode_hint = "hypothesis_personalized".to_string();
+        reason_codes.push("grounded_mode_relaxed_to_hypothesis_for_consistency".to_string());
+    }
+
+    dedupe_reason_codes(&mut reason_codes);
+
+    AgentAdvisoryActionPlan {
+        schema_version: ADVISORY_ACTION_PLAN_SCHEMA_VERSION.to_string(),
+        policy_role: SIDECAR_POLICY_ROLE_ADVISORY_ONLY.to_string(),
+        response_mode_hint,
+        persist_action,
+        clarification_question_budget,
+        requires_uncertainty_note,
+        assistant_instruction,
+        reason_codes,
+    }
+}

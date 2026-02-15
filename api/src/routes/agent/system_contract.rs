@@ -41,6 +41,7 @@ pub(super) fn classify_system_convention_field(key: &str) -> SystemConventionFie
         | "response_mode_policy_v1"
         | "personal_failure_profile_v1"
         | "sidecar_retrieval_regret_v1"
+        | "advisory_scoring_layer_v1"
         | "counterfactual_recommendation_v1"
         | "synthetic_adversarial_corpus_v1"
         | "temporal_grounding_v1"

@@ -67,6 +67,11 @@ pub struct AdminAgentLearningSignalSummary {
     pub laaj_non_pass: i64,
     pub laaj_non_pass_rate_pct: f64,
     pub response_mode_selected: i64,
+    pub advisory_scoring_assessed: i64,
+    pub advisory_high_hallucination_risk: i64,
+    pub advisory_high_hallucination_risk_rate_pct: f64,
+    pub advisory_high_data_quality_risk: i64,
+    pub advisory_high_data_quality_risk_rate_pct: f64,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -161,6 +166,9 @@ struct LearningSignalSummaryRow {
     laaj_assessed: i64,
     laaj_non_pass: i64,
     response_mode_selected: i64,
+    advisory_scoring_assessed: i64,
+    advisory_high_hallucination_risk: i64,
+    advisory_high_data_quality_risk: i64,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -344,6 +352,52 @@ fn build_anomalies(
             threshold: 25.0,
             recommendation:
                 "Review failing sessions and refine prompts/context before considering stricter controls."
+                    .to_string(),
+        });
+    }
+
+    if overview.learning_signals.advisory_scoring_assessed >= 10
+        && overview
+            .learning_signals
+            .advisory_high_hallucination_risk_rate_pct
+            >= 35.0
+    {
+        anomalies.push(AdminAgentTelemetryAnomaly {
+            code: "advisory_hallucination_risk_high".to_string(),
+            severity: "warning".to_string(),
+            title: "Advisory hallucination risk is frequently high".to_string(),
+            detail:
+                "A large share of advisory scoring runs reports high hallucination risk, indicating weak grounding before responses."
+                    .to_string(),
+            metric_value: overview
+                .learning_signals
+                .advisory_high_hallucination_risk_rate_pct,
+            threshold: 35.0,
+            recommendation:
+                "Inspect high-risk sessions and tighten evidence packaging before personalization."
+                    .to_string(),
+        });
+    }
+
+    if overview.learning_signals.advisory_scoring_assessed >= 10
+        && overview
+            .learning_signals
+            .advisory_high_data_quality_risk_rate_pct
+            >= 35.0
+    {
+        anomalies.push(AdminAgentTelemetryAnomaly {
+            code: "advisory_data_quality_risk_high".to_string(),
+            severity: "warning".to_string(),
+            title: "Advisory data-quality risk is frequently high".to_string(),
+            detail:
+                "Advisory scoring often flags elevated persistence risk, which can degrade backend data integrity if ignored."
+                    .to_string(),
+            metric_value: overview
+                .learning_signals
+                .advisory_high_data_quality_risk_rate_pct,
+            threshold: 35.0,
+            recommendation:
+                "Prefer draft/ask-first persistence in risky paths and verify proof coverage gaps."
                     .to_string(),
         });
     }
@@ -545,7 +599,17 @@ async fn load_overview(
                   AND LOWER(COALESCE(e.data#>>'{attributes,verdict}', 'pass')) <> 'pass'
             )::bigint AS laaj_non_pass,
             COUNT(*) FILTER (WHERE e.data->>'signal_type' = 'response_mode_selected')::bigint
-                AS response_mode_selected
+                AS response_mode_selected,
+            COUNT(*) FILTER (WHERE e.data->>'signal_type' = 'advisory_scoring_assessed')::bigint
+                AS advisory_scoring_assessed,
+            COUNT(*) FILTER (
+                WHERE e.data->>'signal_type' = 'advisory_scoring_assessed'
+                  AND LOWER(COALESCE(e.data#>>'{attributes,hallucination_risk_band}', 'low')) = 'high'
+            )::bigint AS advisory_high_hallucination_risk,
+            COUNT(*) FILTER (
+                WHERE e.data->>'signal_type' = 'advisory_scoring_assessed'
+                  AND LOWER(COALESCE(e.data#>>'{attributes,data_quality_risk_band}', 'low')) = 'high'
+            )::bigint AS advisory_high_data_quality_risk
         FROM events e
         WHERE e.event_type = 'learning.signal.logged'
           AND e.timestamp >= NOW() - make_interval(hours => $1)
@@ -703,6 +767,17 @@ async fn load_overview(
             laaj_non_pass: learning.laaj_non_pass,
             laaj_non_pass_rate_pct: rate_pct(learning.laaj_non_pass, learning.laaj_assessed),
             response_mode_selected: learning.response_mode_selected,
+            advisory_scoring_assessed: learning.advisory_scoring_assessed,
+            advisory_high_hallucination_risk: learning.advisory_high_hallucination_risk,
+            advisory_high_hallucination_risk_rate_pct: rate_pct(
+                learning.advisory_high_hallucination_risk,
+                learning.advisory_scoring_assessed,
+            ),
+            advisory_high_data_quality_risk: learning.advisory_high_data_quality_risk,
+            advisory_high_data_quality_risk_rate_pct: rate_pct(
+                learning.advisory_high_data_quality_risk,
+                learning.advisory_scoring_assessed,
+            ),
         },
         requests: AdminAgentRequestSummary {
             total_agent_requests: requests.total_agent_requests,
@@ -921,6 +996,11 @@ mod tests {
                 laaj_non_pass: 6,
                 laaj_non_pass_rate_pct,
                 response_mode_selected: 30,
+                advisory_scoring_assessed: 24,
+                advisory_high_hallucination_risk: 6,
+                advisory_high_hallucination_risk_rate_pct: 25.0,
+                advisory_high_data_quality_risk: 5,
+                advisory_high_data_quality_risk_rate_pct: 20.8,
             },
             requests: AdminAgentRequestSummary {
                 total_agent_requests: 100,
@@ -991,6 +1071,28 @@ mod tests {
             anomalies
                 .iter()
                 .any(|item| item.code == "context_read_coverage_low")
+        );
+    }
+
+    #[test]
+    fn build_anomalies_flags_advisory_risk_spikes() {
+        let mut overview = make_overview(10.0, 10.0, 2.0);
+        overview.learning_signals.advisory_scoring_assessed = 25;
+        overview.learning_signals.advisory_high_hallucination_risk = 11;
+        overview.learning_signals.advisory_high_hallucination_risk_rate_pct = 44.0;
+        overview.learning_signals.advisory_high_data_quality_risk = 10;
+        overview.learning_signals.advisory_high_data_quality_risk_rate_pct = 40.0;
+
+        let anomalies = build_anomalies(&overview, 10);
+        assert!(
+            anomalies
+                .iter()
+                .any(|item| item.code == "advisory_hallucination_risk_high")
+        );
+        assert!(
+            anomalies
+                .iter()
+                .any(|item| item.code == "advisory_data_quality_risk_high")
         );
     }
 

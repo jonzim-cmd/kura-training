@@ -565,6 +565,87 @@ def _get_conventions() -> dict[str, Any]:
                 "policy_mode": "advisory_only",
             },
         },
+        "advisory_scoring_layer_v1": {
+            "rules": [
+                "Compute four deterministic advisory scores before final response/persist wording.",
+                "Scores must stay transparent (reason codes) and bounded to 0..1.",
+                "Action mapping is nudge-only and must never hard-block autonomy gates.",
+                "Risk spikes should increase uncertainty disclosure and reduce persistence aggressiveness.",
+            ],
+            "schema_version": "advisory_scoring_layer.v1",
+            "action_schema_version": "advisory_action_plan.v1",
+            "policy_role": "advisory_only",
+            "scores": {
+                "specificity_score": {
+                    "range": [0.0, 1.0],
+                    "direction": "higher_is_better",
+                    "description": "Evidence-anchored personalization strength for this user/context.",
+                },
+                "hallucination_risk": {
+                    "range": [0.0, 1.0],
+                    "direction": "higher_is_riskier",
+                    "description": "Likelihood that claims overrun available evidence.",
+                },
+                "data_quality_risk": {
+                    "range": [0.0, 1.0],
+                    "direction": "higher_is_riskier",
+                    "description": "Risk that persistence degrades backend integrity.",
+                },
+                "confidence_score": {
+                    "range": [0.0, 1.0],
+                    "direction": "higher_is_better",
+                    "description": "Composite confidence after balancing specificity vs risks.",
+                },
+            },
+            "bands": {
+                "low": "< 0.33",
+                "medium": ">= 0.33 and < 0.66",
+                "high": ">= 0.66",
+            },
+            "action_map": {
+                "response_mode_hint_values": [
+                    "grounded_personalized",
+                    "hypothesis_personalized",
+                    "general_guidance",
+                ],
+                "persist_action_values": [
+                    "persist_now",
+                    "draft_preferred",
+                    "ask_first",
+                ],
+                "clarification_question_budget_max": 1,
+                "requires_uncertainty_note_conditions": [
+                    "hallucination_risk >= 0.45",
+                    "confidence_score < 0.62",
+                    "response_mode_policy.requires_transparency_note == true",
+                ],
+            },
+            "calibration": {
+                "window_days": 14,
+                "sample_floor": 12,
+                "metrics": [
+                    "advisory_high_hallucination_risk_rate_pct",
+                    "advisory_high_data_quality_risk_rate_pct",
+                    "follow_through_rate_pct",
+                    "retrieval_regret_exceeded_rate_pct",
+                ],
+                "principle": (
+                    "Tune conservatively: tighten persistence guidance when high-risk rates rise; "
+                    "relax only after stable follow-through and low regret."
+                ),
+            },
+            "event_contract": {
+                "event_type": "learning.signal.logged",
+                "signal_type": "advisory_scoring_assessed",
+                "delivery_channel": "events.learning.signal.logged",
+            },
+            "safety": {
+                "advisory_only": True,
+                "must_not_block_autonomy": True,
+                "must_reconcile_with_persist_intent": True,
+                "must_keep_saved_wording_proof_bound": True,
+            },
+        },
         "counterfactual_recommendation_v1": {
             "rules": [
                 "Expose recommendation rationale as first-principles alternatives, not opaque scores.",
