@@ -59,6 +59,11 @@ REQUIRED_AGENT_CONTRACT_MATRIX: dict[str, dict[str, str]] = {
         "positive_case": "routes::agent::tests::counterfactual_recommendation_signal_contract_emits_quality_signal",
         "negative_case": "routes::agent::tests::counterfactual_recommendation_contract_keeps_ux_compact",
     },
+    "policy_kernel": {
+        "schema_pin": "routes::agent::tests::policy_kernel_contract_keeps_response_mode_threshold_defaults_in_sync_with_conventions",
+        "positive_case": "routes::agent::tests::policy_kernel_contract_matches_reference_legacy_calculation_for_risky_case",
+        "negative_case": "routes::agent::tests::policy_kernel_contract_keeps_sidecar_and_counterfactual_advisory",
+    },
     "decision_brief": {
         "schema_pin": "routes::agent::tests::decision_brief_contract_exposes_required_blocks",
         "positive_case": "routes::agent::tests::decision_brief_contract_highlights_high_impact_decisions_from_consistency_inbox",
@@ -100,6 +105,7 @@ def test_required_agent_contract_matrix_keys_are_explicit() -> None:
         "personal_failure_profile",
         "sidecar_retrieval_regret",
         "counterfactual_recommendation",
+        "policy_kernel",
         "decision_brief",
         "high_impact_plan_update",
         "temporal_grounding",
