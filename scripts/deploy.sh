@@ -58,6 +58,11 @@ require_env() {
 require_env "KURA_DB_PASSWORD" "Generate with: openssl rand -hex 24"
 require_env "KURA_API_KEY" "Run scripts/setup-user.sh and copy the generated key."
 require_env "KURA_AGENT_MODEL_ATTESTATION_SECRET" "Generate with: openssl rand -hex 32"
+require_env "KURA_API_DATABASE_URL" "Set Supabase DB URL for API runtime."
+require_env "KURA_WORKER_DATABASE_URL" "Set Supabase DB URL for worker runtime."
+
+# Resolve target DB URL for migration drift preflight.
+TARGET_DATABASE_URL="${KURA_API_DATABASE_URL}"
 
 # Check moltbot-internal network exists
 if ! docker network inspect moltbot-internal >/dev/null 2>&1; then
@@ -69,6 +74,12 @@ fi
 
 info "Building Docker images..."
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build
+
+# Block deploy when DB migration state drifts from repository migrations.
+info "Running migration drift preflight..."
+"${ROOT_DIR}/scripts/check-migration-drift.sh" \
+    --database-url "$TARGET_DATABASE_URL" \
+    --migrations-dir "${ROOT_DIR}/migrations"
 
 # ── Start ─────────────────────────────────────────────
 

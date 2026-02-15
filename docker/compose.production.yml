@@ -8,9 +8,10 @@
 #
 # Requires: .env.production in docker/ with KURA_DB_PASSWORD, KURA_API_KEY,
 # and KURA_AGENT_MODEL_ATTESTATION_SECRET.
-# Optional overrides:
+# Required DB URLs:
 #   KURA_API_DATABASE_URL
 #   KURA_WORKER_DATABASE_URL
+# Optional override:
 #   KURA_WORKER_LISTEN_DATABASE_URL
 
 services:
@@ -38,7 +39,7 @@ services:
       dockerfile: Dockerfile
       target: api
     environment:
-      DATABASE_URL: ${KURA_API_DATABASE_URL:-postgresql://kura:${KURA_DB_PASSWORD}@kura-postgres:5432/kura}
+      DATABASE_URL: ${KURA_API_DATABASE_URL:?KURA_API_DATABASE_URL must be set}
       PORT: "3000"
       RUST_LOG: "kura_api=info,tower_http=info"
       KURA_AGENT_MODEL_ATTESTATION_SECRET: ${KURA_AGENT_MODEL_ATTESTATION_SECRET}
@@ -76,7 +77,7 @@ services:
       context: ../workers
       dockerfile: Dockerfile
     environment:
-      DATABASE_URL: ${KURA_WORKER_DATABASE_URL:-postgresql://kura:${KURA_DB_PASSWORD}@kura-postgres:5432/kura}
+      DATABASE_URL: ${KURA_WORKER_DATABASE_URL:?KURA_WORKER_DATABASE_URL must be set}
       KURA_WORKER_LISTEN_DATABASE_URL: ${KURA_WORKER_LISTEN_DATABASE_URL:-}
       KURA_POLL_INTERVAL: "5.0"
       KURA_BATCH_SIZE: "10"

@@ -30,13 +30,17 @@ Note: direct endpoint was not reachable from current VPS network path at cutover
 - `KURA_API_KEY`
 - `KURA_DB_PASSWORD` (legacy local fallback path; still present in compose)
 
+Production guardrail: `docker/compose.production.yml` requires `KURA_API_DATABASE_URL` and `KURA_WORKER_DATABASE_URL` explicitly (no local DB fallback for API/worker).
+
 ## 5. Preflight Checklist
 
 1. Confirm Supabase project reachable from VPS.
 2. Confirm migration role setup exists (`app_reader`, `app_writer`, `app_worker`, `app_migrator`, `kura`).
 3. Confirm `SET ROLE app_worker` works for runtime login role (`postgres`).
-4. Confirm all services healthy before freeze window.
-5. Confirm source row counts snapshot for key tables (`users`, `events`, `projections`, auth tables).
+4. Run schema drift gate:
+   - `scripts/check-migration-drift.sh --database-url "$KURA_API_DATABASE_URL" --migrations-dir migrations`
+5. Confirm all services healthy before freeze window.
+6. Confirm source row counts snapshot for key tables (`users`, `events`, `projections`, auth tables).
 
 ## 6. Cutover Procedure
 
@@ -55,6 +59,8 @@ Note: direct endpoint was not reachable from current VPS network path at cutover
    - set `KURA_WORKER_DATABASE_URL` to Supabase session pooler URL
 5. Redeploy services:
    - `docker compose -f docker/compose.production.yml --env-file docker/.env.production up -d kura-api kura-worker kura-proxy`
+
+Note: `scripts/deploy.sh` now runs the migration drift gate automatically before starting services.
 
 ## 7. Post-Cutover Validation
 
@@ -85,6 +91,5 @@ Note: direct endpoint was not reachable from current VPS network path at cutover
 
 ## 10. Known Gaps
 
-1. Architecture tests for Supabase decision invariants are still missing.
-2. Deploy-time migration drift preflight gate is still missing.
-3. Formal rollback drill with measured recovery time is still missing.
+1. Formal rollback drill with measured recovery time is still missing.
+2. Baseline artifact still needs explicit PITR retention, spend cap, and restore drill owner/date.

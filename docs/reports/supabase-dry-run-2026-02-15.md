@@ -51,5 +51,4 @@ A full source-to-target migration was executed from VPS Postgres to Supabase, fo
 ## Remaining Work
 
 1. Run and record formal timed rollback probe.
-2. Add deploy-time migration drift preflight gate.
-3. Add architecture tests for Supabase decision invariants.
+2. Complete baseline guardrail metadata (PITR/spend/restore drill owner+date).

@@ -15,6 +15,7 @@
 
 - Production API and worker run on session pooler URL.
 - Direct endpoint was not reachable from VPS network path at cutover time, so direct mode was not used in production runtime.
+- Production compose now requires explicit `KURA_API_DATABASE_URL` / `KURA_WORKER_DATABASE_URL` (no implicit local DB fallback for API/worker).
 
 ## Roles Created on Supabase
 
