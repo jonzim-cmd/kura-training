@@ -9,9 +9,12 @@ Auth strategy is fixed to `AUTH_STRATEGY=B`: auth logic remains in Kura API (`us
 
 - Supabase project ref: `slawzzhovquintrsmfby`
 - Region: EU
+- Auth issuer: `https://slawzzhovquintrsmfby.supabase.co/auth/v1`
+- Auth JWKS: `https://slawzzhovquintrsmfby.supabase.co/auth/v1/.well-known/jwks.json`
 - Primary DB name: `postgres`
 - Direct endpoint (5432): `db.slawzzhovquintrsmfby.supabase.co`
 - Session pooler endpoint (5432): `aws-1-eu-west-1.pooler.supabase.com`
+- DB SSL enforcement: enabled
 
 ## 3. Connection Policy (Current Production)
 
@@ -92,4 +95,5 @@ Note: `scripts/deploy.sh` now runs the migration drift gate automatically before
 ## 10. Known Gaps
 
 1. Formal rollback drill with measured recovery time is still missing.
-2. Baseline artifact still needs explicit PITR retention, spend cap, and restore drill owner/date.
+2. PITR is currently not enabled (`pitr_enabled=false` as of 2026-02-15); enablement is a launch gate.
+3. Spend alert thresholds and org hard cap must be manually confirmed in dashboard before launch sign-off.
