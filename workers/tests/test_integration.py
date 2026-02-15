@@ -870,6 +870,61 @@ class TestInferenceIntegration:
         assert readiness_run["status"] == "success"
         assert readiness_run["engine"] == "normal_normal"
 
+    async def test_readiness_inference_uses_timezone_first_day_grouping(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "preference.set", {
+            "key": "timezone", "value": "America/Los_Angeles",
+        })
+
+        # 2026-02-02T07:30:00Z -> 2026-02-01 local (LA, UTC-8)
+        await insert_event(
+            db,
+            test_user_id,
+            "sleep.logged",
+            {"duration_hours": 7.2},
+            "TIMESTAMP '2026-02-02 07:30:00+00'",
+        )
+        await insert_event(
+            db,
+            test_user_id,
+            "energy.logged",
+            {"level": 7},
+            "TIMESTAMP '2026-02-02 07:35:00+00'",
+        )
+
+        # 2026-02-02T08:30:00Z -> 2026-02-02 local (LA, UTC-8)
+        await insert_event(
+            db,
+            test_user_id,
+            "sleep.logged",
+            {"duration_hours": 7.4},
+            "TIMESTAMP '2026-02-02 08:30:00+00'",
+        )
+        await insert_event(
+            db,
+            test_user_id,
+            "energy.logged",
+            {"level": 8},
+            "TIMESTAMP '2026-02-02 08:35:00+00'",
+        )
+
+        await db.execute("SET ROLE app_worker")
+        await update_readiness_inference(db, {
+            "user_id": test_user_id,
+            "event_type": "sleep.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        readiness = await get_projection(db, test_user_id, "readiness_inference")
+        assert readiness is not None
+        data = readiness["data"]
+        assert data["timezone_context"]["timezone"] == "America/Los_Angeles"
+        assert data["timezone_context"]["source"] == "preference"
+        assert data["timezone_context"]["assumed"] is False
+        dates = [entry["date"] for entry in data["daily_scores"]]
+        assert "2026-02-01" in dates
+        assert "2026-02-02" in dates
+
     async def test_inference_runs_mark_insufficient_data_as_skipped(self, db, test_user_id):
         await create_test_user(db, test_user_id)
         last_set_event_id = None

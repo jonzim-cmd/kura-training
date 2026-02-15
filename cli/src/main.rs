@@ -72,9 +72,15 @@ enum Commands {
         /// Max exercise_progression projections to include (default: 5)
         #[arg(long)]
         exercise_limit: Option<u32>,
+        /// Max strength_inference projections to include (default: 5)
+        #[arg(long)]
+        strength_limit: Option<u32>,
         /// Max custom projections to include (default: 10)
         #[arg(long)]
         custom_limit: Option<u32>,
+        /// Optional task intent used for context ranking
+        #[arg(long)]
+        task_intent: Option<String>,
     },
 
     /// Legacy alias for `kura agent write-with-proof`
@@ -160,11 +166,20 @@ async fn main() {
 
         Commands::Context {
             exercise_limit,
+            strength_limit,
             custom_limit,
+            task_intent,
         } => {
             let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
-            commands::agent::context(&cli.api_url, token.as_deref(), exercise_limit, custom_limit)
-                .await
+            commands::agent::context(
+                &cli.api_url,
+                token.as_deref(),
+                exercise_limit,
+                strength_limit,
+                custom_limit,
+                task_intent,
+            )
+            .await
         }
 
         Commands::WriteWithProof(args) => {

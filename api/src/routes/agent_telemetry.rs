@@ -80,6 +80,7 @@ pub struct AdminAgentRequestSummary {
     pub write_with_proof_avg_response_time_ms: f64,
     pub write_with_proof_p95_response_time_ms: f64,
     pub context_reads: i64,
+    pub context_read_coverage_pct: f64,
     pub visualization_resolve_calls: i64,
 }
 
@@ -90,6 +91,9 @@ pub struct AdminAgentQualityHealthSummary {
     pub monitor_users: i64,
     pub degraded_users: i64,
     pub degraded_share_pct: f64,
+    pub timezone_context_users: i64,
+    pub assumed_timezone_context_users: i64,
+    pub assumed_timezone_context_share_pct: f64,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -177,6 +181,12 @@ struct QualityHealthSummaryRow {
     healthy_users: i64,
     monitor_users: i64,
     degraded_users: i64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct TemporalContextSummaryRow {
+    timezone_context_users: i64,
+    assumed_timezone_context_users: i64,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -421,6 +431,42 @@ fn build_anomalies(
         });
     }
 
+    if overview.requests.write_with_proof_requests >= 5
+        && overview.requests.context_read_coverage_pct < 80.0
+    {
+        anomalies.push(AdminAgentTelemetryAnomaly {
+            code: "context_read_coverage_low".to_string(),
+            severity: "warning".to_string(),
+            title: "Context-read coverage before writes is low".to_string(),
+            detail:
+                "A notable share of write-with-proof calls is not paired with context reads in the same window."
+                    .to_string(),
+            metric_value: overview.requests.context_read_coverage_pct,
+            threshold: 80.0,
+            recommendation:
+                "Enforce fresh /v1/agent/context fetches before temporal or high-impact writes."
+                    .to_string(),
+        });
+    }
+
+    if overview.quality_health.timezone_context_users >= 10
+        && overview.quality_health.assumed_timezone_context_share_pct >= 25.0
+    {
+        anomalies.push(AdminAgentTelemetryAnomaly {
+            code: "assumed_timezone_share_high".to_string(),
+            severity: "info".to_string(),
+            title: "Many users still run on assumed timezone context".to_string(),
+            detail:
+                "A high share of timeline projections uses UTC fallback assumptions instead of explicit user timezone preferences."
+                    .to_string(),
+            metric_value: overview.quality_health.assumed_timezone_context_share_pct,
+            threshold: 25.0,
+            recommendation:
+                "Prompt timezone preference capture and reduce temporal ambiguity before coaching recommendations."
+                    .to_string(),
+        });
+    }
+
     anomalies.sort_by(|left, right| {
         severity_rank(&left.severity)
             .cmp(&severity_rank(&right.severity))
@@ -577,6 +623,22 @@ async fn load_overview(
     .await
     .map_err(AppError::Database)?;
 
+    let temporal_context = sqlx::query_as::<_, TemporalContextSummaryRow>(
+        r#"
+        SELECT
+            COUNT(*)::bigint AS timezone_context_users,
+            COUNT(*) FILTER (
+                WHERE LOWER(COALESCE(data#>>'{timezone_context,assumed}', 'false')) = 'true'
+            )::bigint AS assumed_timezone_context_users
+        FROM projections
+        WHERE projection_type = 'training_timeline'
+          AND key = 'overview'
+        "#,
+    )
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(AppError::Database)?;
+
     let plans = sqlx::query_as::<_, PlanUpdateSummaryRow>(
         r#"
         SELECT
@@ -666,6 +728,10 @@ async fn load_overview(
                     .unwrap_or(0.0),
             ),
             context_reads: requests.context_reads,
+            context_read_coverage_pct: rate_pct(
+                requests.context_reads,
+                requests.write_with_proof_requests,
+            ),
             visualization_resolve_calls: requests.visualization_resolve_calls,
         },
         quality_health: AdminAgentQualityHealthSummary {
@@ -674,6 +740,12 @@ async fn load_overview(
             monitor_users: quality.monitor_users,
             degraded_users: quality.degraded_users,
             degraded_share_pct: rate_pct(quality.degraded_users, quality.users_with_projection),
+            timezone_context_users: temporal_context.timezone_context_users,
+            assumed_timezone_context_users: temporal_context.assumed_timezone_context_users,
+            assumed_timezone_context_share_pct: rate_pct(
+                temporal_context.assumed_timezone_context_users,
+                temporal_context.timezone_context_users,
+            ),
         },
         plan_updates: AdminAgentPlanUpdateSummary {
             total_training_plan_updates: plans.total_training_plan_updates,
@@ -860,6 +932,7 @@ mod tests {
                 write_with_proof_avg_response_time_ms: 130.0,
                 write_with_proof_p95_response_time_ms: 260.0,
                 context_reads: 40,
+                context_read_coverage_pct: 100.0,
                 visualization_resolve_calls: 10,
             },
             quality_health: AdminAgentQualityHealthSummary {
@@ -868,6 +941,9 @@ mod tests {
                 monitor_users: 20,
                 degraded_users: 10,
                 degraded_share_pct: 20.0,
+                timezone_context_users: 40,
+                assumed_timezone_context_users: 8,
+                assumed_timezone_context_share_pct: 20.0,
             },
             plan_updates: AdminAgentPlanUpdateSummary {
                 total_training_plan_updates: 8,
@@ -900,6 +976,21 @@ mod tests {
             anomalies
                 .iter()
                 .any(|item| item.code == "retrieval_regret_rate_high")
+        );
+    }
+
+    #[test]
+    fn build_anomalies_flags_low_context_read_coverage() {
+        let mut overview = make_overview(10.0, 10.0, 2.0);
+        overview.requests.write_with_proof_requests = 12;
+        overview.requests.context_reads = 6;
+        overview.requests.context_read_coverage_pct = 50.0;
+
+        let anomalies = build_anomalies(&overview, 10);
+        assert!(
+            anomalies
+                .iter()
+                .any(|item| item.code == "context_read_coverage_low")
         );
     }
 

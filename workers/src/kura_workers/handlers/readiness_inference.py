@@ -22,7 +22,12 @@ from ..inference_telemetry import (
 )
 from ..population_priors import resolve_population_prior
 from ..registry import projection_handler
-from ..utils import get_retracted_event_ids
+from ..utils import (
+    get_retracted_event_ids,
+    load_timezone_preference,
+    normalize_temporal_point,
+    resolve_timezone_context,
+)
 
 
 def _median(values: list[float]) -> float:
@@ -68,6 +73,12 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "training_frequency",
     ],
     "output_schema": {
+        "timezone_context": {
+            "timezone": "IANA timezone used for day/week grouping (e.g. Europe/Berlin)",
+            "source": "preference|assumed_default",
+            "assumed": "boolean",
+            "assumption_disclosure": "string|null",
+        },
         "readiness_today": {
             "mean": "number",
             "ci95": "[number, number]",
@@ -125,6 +136,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "data_quality": {
             "days_with_observations": "integer",
             "insufficient_data": "boolean",
+            "temporal_conflicts": {"<conflict_type>": "integer"},
         },
     },
     "manifest_contribution": _manifest_contribution,
@@ -159,11 +171,14 @@ async def update_readiness_inference(
 
     try:
         retracted_ids = await get_retracted_event_ids(conn, user_id)
+        timezone_pref = await load_timezone_preference(conn, user_id, retracted_ids)
+        timezone_context = resolve_timezone_context(timezone_pref)
+        timezone_name = timezone_context["timezone"]
 
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                SELECT id, timestamp, event_type, data
+                SELECT id, timestamp, event_type, data, metadata
                 FROM events
                 WHERE user_id = %s
                   AND event_type IN ('set.logged', 'sleep.logged', 'soreness.logged', 'energy.logged')
@@ -196,10 +211,18 @@ async def update_readiness_inference(
 
         per_day: dict[str, dict[str, Any]] = defaultdict(dict)
         load_values: list[float] = []
+        temporal_conflicts: dict[str, int] = {}
 
         for row in rows:
-            ts = row["timestamp"]
-            d: date = ts.date()
+            temporal = normalize_temporal_point(
+                row["timestamp"],
+                timezone_name=timezone_name,
+                data=row.get("data") or {},
+                metadata=row.get("metadata") or {},
+            )
+            d: date = temporal.local_date
+            for conflict in temporal.conflicts:
+                temporal_conflicts[conflict] = temporal_conflicts.get(conflict, 0) + 1
             key = d.isoformat()
             data = row["data"] or {}
             row_event_type = row["event_type"]
@@ -296,6 +319,7 @@ async def update_readiness_inference(
         latest_day = daily_scores[-1]["date"] if daily_scores else None
 
         projection_data: dict[str, Any] = {
+            "timezone_context": timezone_context,
             "daily_scores": daily_scores[-60:],
             "dynamics": {"readiness": dynamics_snapshot},
             "phase": {
@@ -308,6 +332,7 @@ async def update_readiness_inference(
             "data_quality": {
                 "days_with_observations": len(observations),
                 "insufficient_data": inference.get("status") == "insufficient_data",
+                "temporal_conflicts": temporal_conflicts,
             },
         }
 

@@ -561,6 +561,136 @@ pub(super) fn validate_intent_handshake(
     Ok(())
 }
 
+pub(super) fn validate_temporal_basis(
+    handshake: &AgentIntentHandshake,
+    temporal_context: &AgentTemporalContext,
+    required: bool,
+    now: DateTime<Utc>,
+) -> Result<(), AppError> {
+    let Some(temporal_basis) = handshake.temporal_basis.as_ref() else {
+        if required {
+            return Err(AppError::Validation {
+                message:
+                    "intent_handshake.temporal_basis is required for temporal high-impact writes"
+                        .to_string(),
+                field: Some("intent_handshake.temporal_basis".to_string()),
+                received: None,
+                docs_hint: Some(
+                    "Fetch fresh /v1/agent/context and include meta.temporal_context as intent_handshake.temporal_basis."
+                        .to_string(),
+                ),
+            });
+        }
+        return Ok(());
+    };
+
+    if temporal_basis.schema_version.trim() != AGENT_TEMPORAL_BASIS_SCHEMA_VERSION {
+        return Err(AppError::Validation {
+            message: "intent_handshake.temporal_basis.schema_version is not supported".to_string(),
+            field: Some("intent_handshake.temporal_basis.schema_version".to_string()),
+            received: Some(json!(temporal_basis.schema_version)),
+            docs_hint: Some(format!(
+                "Use schema_version '{AGENT_TEMPORAL_BASIS_SCHEMA_VERSION}'."
+            )),
+        });
+    }
+
+    let age = now.signed_duration_since(temporal_basis.context_generated_at);
+    if age > chrono::Duration::minutes(AGENT_TEMPORAL_BASIS_MAX_AGE_MINUTES)
+        || age < chrono::Duration::minutes(-AGENT_TEMPORAL_BASIS_MAX_FUTURE_SKEW_MINUTES)
+    {
+        return Err(AppError::Validation {
+            message: "intent_handshake.temporal_basis is stale".to_string(),
+            field: Some("intent_handshake.temporal_basis.context_generated_at".to_string()),
+            received: Some(json!(temporal_basis.context_generated_at)),
+            docs_hint: Some(format!(
+                "Use temporal_basis generated within {AGENT_TEMPORAL_BASIS_MAX_AGE_MINUTES} minutes."
+            )),
+        });
+    }
+
+    if temporal_basis.timezone.trim() != temporal_context.timezone {
+        return Err(AppError::Validation {
+            message: "intent_handshake.temporal_basis.timezone does not match current context"
+                .to_string(),
+            field: Some("intent_handshake.temporal_basis.timezone".to_string()),
+            received: Some(json!({
+                "temporal_basis": temporal_basis.timezone,
+                "current_context": temporal_context.timezone,
+            })),
+            docs_hint: Some(
+                "Refresh /v1/agent/context and reuse its temporal_context.timezone."
+                    .to_string(),
+            ),
+        });
+    }
+
+    if temporal_basis.today_local_date.trim() != temporal_context.today_local_date {
+        return Err(AppError::Validation {
+            message:
+                "intent_handshake.temporal_basis.today_local_date does not match current context"
+                    .to_string(),
+            field: Some("intent_handshake.temporal_basis.today_local_date".to_string()),
+            received: Some(json!({
+                "temporal_basis": temporal_basis.today_local_date,
+                "current_context": temporal_context.today_local_date,
+            })),
+            docs_hint: Some(
+                "Refresh /v1/agent/context and reuse its temporal_context.today_local_date."
+                    .to_string(),
+            ),
+        });
+    }
+
+    if let (Some(last_training_date), Some(days_since)) = (
+        temporal_basis.last_training_date_local.as_deref(),
+        temporal_basis.days_since_last_training,
+    ) {
+        let Some(today_local) =
+            chrono::NaiveDate::parse_from_str(&temporal_basis.today_local_date, "%Y-%m-%d").ok()
+        else {
+            return Err(AppError::Validation {
+                message:
+                    "intent_handshake.temporal_basis.today_local_date must be ISO 8601 (YYYY-MM-DD)"
+                        .to_string(),
+                field: Some("intent_handshake.temporal_basis.today_local_date".to_string()),
+                received: Some(json!(temporal_basis.today_local_date)),
+                docs_hint: Some("Use date format YYYY-MM-DD.".to_string()),
+            });
+        };
+        let Some(last_local) = chrono::NaiveDate::parse_from_str(last_training_date, "%Y-%m-%d")
+            .ok()
+        else {
+            return Err(AppError::Validation {
+                message:
+                    "intent_handshake.temporal_basis.last_training_date_local must be ISO 8601 (YYYY-MM-DD)"
+                        .to_string(),
+                field: Some("intent_handshake.temporal_basis.last_training_date_local".to_string()),
+                received: Some(json!(last_training_date)),
+                docs_hint: Some("Use date format YYYY-MM-DD.".to_string()),
+            });
+        };
+        let expected_days = today_local.signed_duration_since(last_local).num_days();
+        if expected_days != days_since {
+            return Err(AppError::Validation {
+                message: "intent_handshake.temporal_basis.days_since_last_training is inconsistent"
+                    .to_string(),
+                field: Some("intent_handshake.temporal_basis.days_since_last_training".to_string()),
+                received: Some(json!({
+                    "provided": days_since,
+                    "expected": expected_days,
+                })),
+                docs_hint: Some(
+                    "Recompute from today_local_date and last_training_date_local from /v1/agent/context."
+                        .to_string(),
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 pub(super) fn build_intent_handshake_confirmation(
     handshake: &AgentIntentHandshake,
 ) -> AgentIntentHandshakeConfirmation {

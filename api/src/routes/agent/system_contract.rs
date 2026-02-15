@@ -43,6 +43,7 @@ pub(super) fn classify_system_convention_field(key: &str) -> SystemConventionFie
         | "sidecar_retrieval_regret_v1"
         | "counterfactual_recommendation_v1"
         | "synthetic_adversarial_corpus_v1"
+        | "temporal_grounding_v1"
         | "decision_brief_v1"
         | "high_impact_plan_update_v1" => SystemConventionFieldClass::PublicContract,
         "learning_clustering_v1"

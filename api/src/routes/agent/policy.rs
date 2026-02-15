@@ -2,9 +2,16 @@ use super::*;
 
 pub(super) const AGENT_CAPABILITIES_SCHEMA_VERSION: &str = "agent_capabilities.v2.self_model";
 pub(super) const AGENT_CONTEXT_CONTRACT_VERSION: &str =
-    "agent_context.v7.self_model.challenge_memory.decision_brief_detail_caps";
+    "agent_context.v8.temporal_grounding.challenge_memory.decision_brief_detail_caps";
 pub(super) const AGENT_CONTEXT_SYSTEM_CONTRACT_VERSION: &str = "agent_context.system.v1";
 pub(super) const AGENT_CONTEXT_SYSTEM_PROFILE: &str = "redacted_v1";
+pub(super) const AGENT_TEMPORAL_CONTEXT_SCHEMA_VERSION: &str = "temporal_context.v1";
+pub(super) const AGENT_TEMPORAL_BASIS_SCHEMA_VERSION: &str = "temporal_basis.v1";
+pub(super) const AGENT_TEMPORAL_BASIS_MAX_AGE_MINUTES: i64 = 45;
+pub(super) const AGENT_TEMPORAL_BASIS_MAX_FUTURE_SKEW_MINUTES: i64 = 2;
+pub(super) const AGENT_DEFAULT_ASSUMED_TIMEZONE: &str = "UTC";
+pub(super) const AGENT_TIMEZONE_ASSUMPTION_DISCLOSURE: &str =
+    "No explicit timezone preference found; using UTC until the user confirms one.";
 pub(super) const AGENT_CHALLENGE_MODE_SCHEMA_VERSION: &str = "challenge_mode.v1";
 pub(super) const AGENT_CHALLENGE_MODE_ONBOARDING_HINT: &str = "Challenge Mode ist standardmäßig auf auto aktiv. Sag 'Challenge Mode aus', wenn ich weniger challengen soll.";
 pub(super) const AGENT_MEMORY_TIER_CONTRACT_VERSION: &str = "memory_tier_contract.v1";

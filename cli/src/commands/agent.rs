@@ -11,9 +11,15 @@ pub enum AgentCommands {
         /// Max exercise_progression projections to include (default: 5)
         #[arg(long)]
         exercise_limit: Option<u32>,
+        /// Max strength_inference projections to include (default: 5)
+        #[arg(long)]
+        strength_limit: Option<u32>,
         /// Max custom projections to include (default: 10)
         #[arg(long)]
         custom_limit: Option<u32>,
+        /// Optional task intent used for context ranking (e.g. "dunk progression")
+        #[arg(long)]
+        task_intent: Option<String>,
     },
     /// Write events with receipts + read-after-write verification
     WriteWithProof(WriteWithProofArgs),
@@ -100,8 +106,18 @@ pub async fn run(api_url: &str, token: Option<&str>, command: AgentCommands) -> 
     match command {
         AgentCommands::Context {
             exercise_limit,
+            strength_limit,
             custom_limit,
-        } => context(api_url, token, exercise_limit, custom_limit).await,
+            task_intent,
+        } => context(
+            api_url,
+            token,
+            exercise_limit,
+            strength_limit,
+            custom_limit,
+            task_intent,
+        )
+        .await,
         AgentCommands::WriteWithProof(args) => write_with_proof(api_url, token, args).await,
         AgentCommands::Evidence { command } => match command {
             AgentEvidenceCommands::Event { event_id } => {
@@ -116,14 +132,22 @@ pub async fn context(
     api_url: &str,
     token: Option<&str>,
     exercise_limit: Option<u32>,
+    strength_limit: Option<u32>,
     custom_limit: Option<u32>,
+    task_intent: Option<String>,
 ) -> i32 {
     let mut query = Vec::new();
     if let Some(v) = exercise_limit {
         query.push(("exercise_limit".to_string(), v.to_string()));
     }
+    if let Some(v) = strength_limit {
+        query.push(("strength_limit".to_string(), v.to_string()));
+    }
     if let Some(v) = custom_limit {
         query.push(("custom_limit".to_string(), v.to_string()));
+    }
+    if let Some(v) = task_intent {
+        query.push(("task_intent".to_string(), v));
     }
 
     api_request(

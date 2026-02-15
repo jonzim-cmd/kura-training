@@ -30,6 +30,7 @@ utoipa-swagger-ui = { version = "9", features = ["axum"] }
 # Types
 uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 
 # Error handling
 thiserror = "2"

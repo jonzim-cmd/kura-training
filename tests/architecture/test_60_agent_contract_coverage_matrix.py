@@ -69,6 +69,16 @@ REQUIRED_AGENT_CONTRACT_MATRIX: dict[str, dict[str, str]] = {
         "positive_case": "routes::agent::tests::high_impact_classification_escalates_large_plan_shift",
         "negative_case": "routes::agent::tests::high_impact_classification_keeps_routine_plan_update_low_impact",
     },
+    "temporal_grounding": {
+        "schema_pin": "routes::agent::tests::temporal_grounding_contract_schema_version_is_pinned",
+        "positive_case": "routes::agent::tests::temporal_grounding_contract_computes_days_since_last_training",
+        "negative_case": "routes::agent::tests::temporal_grounding_contract_falls_back_to_utc_when_timezone_missing",
+    },
+    "temporal_phrase_regression": {
+        "schema_pin": "routes::agent::tests::temporal_phrase_regression_contract_covers_five_natural_language_scenarios",
+        "positive_case": "routes::agent::tests::temporal_phrase_regression_contract_keeps_plus_five_hours_on_same_local_day",
+        "negative_case": "routes::agent::tests::temporal_phrase_regression_contract_adjusts_day_delta_after_timezone_switch",
+    },
 }
 
 
@@ -87,6 +97,8 @@ def test_required_agent_contract_matrix_keys_are_explicit() -> None:
         "counterfactual_recommendation",
         "decision_brief",
         "high_impact_plan_update",
+        "temporal_grounding",
+        "temporal_phrase_regression",
     }
     for contract_name, scenarios in REQUIRED_AGENT_CONTRACT_MATRIX.items():
         assert set(scenarios) == {"schema_pin", "positive_case", "negative_case"}, contract_name

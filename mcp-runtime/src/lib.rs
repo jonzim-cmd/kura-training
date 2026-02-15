@@ -637,8 +637,19 @@ impl McpServer {
                     }
                     if has_high_impact_events(&normalized_events) {
                         let handshake = match args.get("intent_handshake") {
-                            Some(Value::Object(_)) => {
-                                args.get("intent_handshake").cloned().unwrap_or(Value::Null)
+                            Some(Value::Object(raw_handshake)) => {
+                                let mut handshake = Value::Object(raw_handshake.clone());
+                                if handshake
+                                    .as_object()
+                                    .and_then(|obj| obj.get("temporal_basis"))
+                                    .is_none()
+                                {
+                                    let temporal_basis =
+                                        self.resolve_temporal_basis_for_high_impact_write(args)
+                                            .await?;
+                                    handshake["temporal_basis"] = temporal_basis;
+                                }
+                                handshake
                             }
                             Some(_) => {
                                 return Err(ToolError::new(
@@ -649,7 +660,14 @@ impl McpServer {
                             }
                             None => {
                                 let goal = arg_optional_string(args, "intent_goal")?;
-                                build_default_intent_handshake(&normalized_events, goal.as_deref())
+                                let temporal_basis =
+                                    self.resolve_temporal_basis_for_high_impact_write(args)
+                                        .await?;
+                                build_default_intent_handshake(
+                                    &normalized_events,
+                                    goal.as_deref(),
+                                    temporal_basis,
+                                )
                             }
                         };
                         body["intent_handshake"] = handshake;
@@ -877,6 +895,124 @@ impl McpServer {
                 "notes": compatibility_notes
             }
         }))
+    }
+
+    async fn resolve_temporal_basis_for_high_impact_write(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        if let Some(raw_basis) = args.get("temporal_basis") {
+            if !raw_basis.is_object() {
+                return Err(ToolError::new(
+                    "validation_failed",
+                    "temporal_basis must be an object when provided",
+                )
+                .with_field("temporal_basis"));
+            }
+            return Ok(raw_basis.clone());
+        }
+
+        if self.capability_profile.mode != CapabilityMode::PreferredContract {
+            return Err(
+                ToolError::new(
+                    "validation_failed",
+                    "temporal_basis is required for high-impact write_with_proof in legacy fallback mode",
+                )
+                .with_field("temporal_basis")
+                .with_docs_hint(
+                    "Provide temporal_basis explicitly from a recent /v1/agent/context response.",
+                ),
+            );
+        }
+
+        let response = self
+            .send_api_request(
+                Method::GET,
+                self.capability_profile.effective_read_endpoint(),
+                &[],
+                None,
+                true,
+                false,
+            )
+            .await?;
+        if response.status >= 400 {
+            return Err(
+                ToolError::new(
+                    "temporal_context_unavailable",
+                    format!(
+                        "Failed to fetch fresh agent context for temporal_basis (HTTP {})",
+                        response.status
+                    ),
+                )
+                .with_field("temporal_basis")
+                .with_docs_hint(
+                    "Retry after GET /v1/agent/context succeeds, or provide temporal_basis explicitly.",
+                ),
+            );
+        }
+
+        let temporal_context = response
+            .body
+            .get("meta")
+            .and_then(|meta| meta.get("temporal_context"))
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                ToolError::new(
+                    "temporal_context_missing",
+                    "Agent context response does not contain meta.temporal_context",
+                )
+                .with_field("temporal_basis")
+                .with_docs_hint(
+                    "Upgrade API/runtime to agent_context temporal grounding contract before high-impact writes.",
+                )
+            })?;
+
+        let context_generated_at = temporal_context
+            .get("now_utc")
+            .cloned()
+            .ok_or_else(|| {
+                ToolError::new(
+                    "temporal_context_missing",
+                    "meta.temporal_context.now_utc is required",
+                )
+                .with_field("temporal_basis.context_generated_at")
+            })?;
+        let timezone = temporal_context.get("timezone").cloned().ok_or_else(|| {
+            ToolError::new(
+                "temporal_context_missing",
+                "meta.temporal_context.timezone is required",
+            )
+            .with_field("temporal_basis.timezone")
+        })?;
+        let today_local_date = temporal_context
+            .get("today_local_date")
+            .cloned()
+            .ok_or_else(|| {
+                ToolError::new(
+                    "temporal_context_missing",
+                    "meta.temporal_context.today_local_date is required",
+                )
+                .with_field("temporal_basis.today_local_date")
+            })?;
+
+        let mut temporal_basis = json!({
+            "schema_version": "temporal_basis.v1",
+            "context_generated_at": context_generated_at,
+            "timezone": timezone,
+            "today_local_date": today_local_date
+        });
+        if let Some(value) = temporal_context.get("last_training_date_local") {
+            if !value.is_null() {
+                temporal_basis["last_training_date_local"] = value.clone();
+            }
+        }
+        if let Some(value) = temporal_context.get("days_since_last_training") {
+            if !value.is_null() {
+                temporal_basis["days_since_last_training"] = value.clone();
+            }
+        }
+
+        Ok(temporal_basis)
     }
 
     async fn tool_semantic_resolve(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
@@ -1340,7 +1476,11 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                     "intent_goal": { "type": "string", "description": "Optional high-level goal used when auto-generating intent_handshake for high-impact write_with_proof calls." },
                     "intent_handshake": {
                         "type": "object",
-                        "description": "Optional full intent_handshake.v1 payload. When omitted for high-impact write_with_proof calls, MCP auto-generates one."
+                        "description": "Optional full intent_handshake.v1 payload. For high-impact write_with_proof calls MCP auto-generates one with temporal_basis when omitted."
+                    },
+                    "temporal_basis": {
+                        "type": "object",
+                        "description": "Optional temporal_basis.v1 payload. When omitted for high-impact write_with_proof calls in preferred-contract mode, MCP fetches /v1/agent/context and derives it automatically."
                     }
                 },
                 "required": ["events"],
@@ -2118,7 +2258,11 @@ fn has_high_impact_events(events: &[Value]) -> bool {
     })
 }
 
-fn build_default_intent_handshake(events: &[Value], intent_goal: Option<&str>) -> Value {
+fn build_default_intent_handshake(
+    events: &[Value],
+    intent_goal: Option<&str>,
+    temporal_basis: Value,
+) -> Value {
     let event_types: Vec<String> = events
         .iter()
         .filter_map(|event| {
@@ -2145,6 +2289,7 @@ fn build_default_intent_handshake(events: &[Value], intent_goal: Option<&str>) -
         "success_criteria": "write_with_proof returns verification and claim_guard for this action",
         "created_at": chrono::Utc::now().to_rfc3339(),
         "handshake_id": format!("mcp-hs-{}", Uuid::now_v7()),
+        "temporal_basis": temporal_basis,
     })
 }
 

@@ -695,6 +695,57 @@ def _get_conventions() -> dict[str, Any]:
                 "must_not_expand_into_long_raw_data_dumps": True,
             },
         },
+        "temporal_grounding_v1": {
+            "rules": [
+                "Temporal context is mandatory for time-sensitive coaching or planning outputs.",
+                "Current time and local date must be server-computed per turn; never guessed from model memory.",
+                "Relative terms (today, yesterday, last Friday) must resolve to explicit absolute dates before reasoning.",
+                "If timezone is missing, expose explicit UTC assumption disclosure and avoid hidden precision.",
+                "For high-impact temporal writes, require explicit temporal_basis in intent_handshake for verification.",
+            ],
+            "schema_version": "temporal_grounding.v1",
+            "required_agent_context_fields": [
+                "meta.temporal_context.schema_version",
+                "meta.temporal_context.now_utc",
+                "meta.temporal_context.now_local",
+                "meta.temporal_context.today_local_date",
+                "meta.temporal_context.weekday_local",
+                "meta.temporal_context.timezone",
+                "meta.temporal_context.timezone_source",
+                "meta.temporal_context.timezone_assumed",
+            ],
+            "optional_agent_context_fields": [
+                "meta.temporal_context.assumption_disclosure",
+                "meta.temporal_context.last_training_date_local",
+                "meta.temporal_context.days_since_last_training",
+            ],
+            "intent_handshake_temporal_basis": {
+                "required_for_event_classes": [
+                    "planning_or_coaching_write",
+                ],
+                "schema_version": "temporal_basis.v1",
+                "required_fields": [
+                    "schema_version",
+                    "context_generated_at",
+                    "timezone",
+                    "today_local_date",
+                ],
+                "max_age_minutes": 45,
+                "max_future_skew_minutes": 2,
+            },
+            "natural_language_regression_scenarios_required": [
+                "same_day",
+                "plus_five_hour_gap",
+                "day_rollover",
+                "week_rollover",
+                "timezone_switch",
+            ],
+            "safety": {
+                "must_not_infer_time_from_old_chat_state": True,
+                "must_not_hide_timezone_assumptions": True,
+                "must_fail_closed_on_temporal_mismatch_for_high_impact_writes": True,
+            },
+        },
         "high_impact_plan_update_v1": {
             "rules": [
                 "Do not classify every training_plan.updated event as high impact.",
