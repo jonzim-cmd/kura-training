@@ -4487,7 +4487,7 @@ fn build_session_audit_artifacts(
 
         if let Some(context) = extract_session_feedback_context(event) {
             let has_positive = contains_any_hint(&context, &SESSION_POSITIVE_HINTS);
-            let has_negative = contains_any_hint(&context, &SESSION_NEGATIVE_HINTS);
+            let has_negative = contains_any_negative_hint(&context);
             let has_easy = contains_any_hint(&context, &SESSION_EASY_HINTS);
             let has_hard = contains_any_hint(&context, &SESSION_HARD_HINTS);
 
@@ -7979,6 +7979,86 @@ mod tests {
         assert_eq!(artifacts.summary.mismatch_unresolved, 0);
         assert!(artifacts.summary.mismatch_classes.is_empty());
         assert!(artifacts.repair_events.is_empty());
+    }
+
+    #[test]
+    fn session_audit_session_feedback_negated_negative_phrase_stays_clean() {
+        let user_id = Uuid::now_v7();
+        let requested = vec![make_event(
+            "session.completed",
+            json!({
+                "enjoyment": 5,
+                "perceived_quality": 5,
+                "perceived_exertion": 6,
+                "notes": "session was not bad"
+            }),
+            "k-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "session.completed".to_string(),
+            idempotency_key: "k-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let policy = default_autonomy_policy();
+
+        let artifacts = build_session_audit_artifacts(user_id, &requested, &receipts, &policy);
+        assert_eq!(artifacts.summary.status, "clean");
+        assert_eq!(artifacts.summary.mismatch_unresolved, 0);
+        assert!(artifacts.summary.clarification_question.is_none());
+    }
+
+    #[test]
+    fn session_audit_session_feedback_partial_word_negative_hint_stays_clean() {
+        let user_id = Uuid::now_v7();
+        let requested = vec![make_event(
+            "session.completed",
+            json!({
+                "enjoyment": 5,
+                "perceived_quality": 5,
+                "perceived_exertion": 6,
+                "notes": "badminton drills felt controlled"
+            }),
+            "k-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "session.completed".to_string(),
+            idempotency_key: "k-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let policy = default_autonomy_policy();
+
+        let artifacts = build_session_audit_artifacts(user_id, &requested, &receipts, &policy);
+        assert_eq!(artifacts.summary.status, "clean");
+        assert_eq!(artifacts.summary.mismatch_unresolved, 0);
+        assert!(artifacts.summary.clarification_question.is_none());
+    }
+
+    #[test]
+    fn session_audit_session_feedback_ascii_umlaut_variant_triggers_contradiction() {
+        let user_id = Uuid::now_v7();
+        let requested = vec![make_event(
+            "session.completed",
+            json!({
+                "enjoyment": 5,
+                "perceived_quality": 5,
+                "perceived_exertion": 7,
+                "notes": "war heute muede und schwach"
+            }),
+            "k-1",
+        )];
+        let receipts = vec![AgentWriteReceipt {
+            event_id: Uuid::now_v7(),
+            event_type: "session.completed".to_string(),
+            idempotency_key: "k-1".to_string(),
+            event_timestamp: Utc::now(),
+        }];
+        let policy = default_autonomy_policy();
+
+        let artifacts = build_session_audit_artifacts(user_id, &requested, &receipts, &policy);
+        assert_eq!(artifacts.summary.status, "needs_clarification");
+        assert!(artifacts.summary.mismatch_unresolved >= 1);
     }
 
     #[test]

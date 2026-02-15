@@ -22,12 +22,14 @@ pub(super) const SESSION_FEEDBACK_CONTEXT_KEYS: [&str; 6] = [
     "notes",
     "feeling",
 ];
-pub(super) const SESSION_POSITIVE_HINTS: [&str; 9] = [
-    "good", "great", "fun", "strong", "solid", "leicht", "easy", "well", "locker",
+pub(super) const SESSION_POSITIVE_HINTS: [&str; 10] = [
+    "good", "great", "fun", "spass", "strong", "solid", "leicht", "easy", "well",
+    "locker",
 ];
 pub(super) const SESSION_NEGATIVE_HINTS: [&str; 10] = [
     "bad", "terrible", "schlecht", "pain", "hurt", "injury", "müde", "tired", "awful", "weak",
 ];
+pub(super) const SESSION_NEGATED_NEGATIVE_PHRASES: [&str; 2] = ["nicht schlecht", "not bad"];
 pub(super) const SESSION_EASY_HINTS: [&str; 5] = ["easy", "leicht", "locker", "chill", "smooth"];
 pub(super) const SESSION_HARD_HINTS: [&str; 8] = [
     "hard",
@@ -74,6 +76,8 @@ static REST_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
 static SET_TYPE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(warm[\s-]?up|back[\s-]?off|amrap|working)\b").expect("valid set type regex")
 });
+static WHITESPACE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s+").expect("valid whitespace regex"));
 
 #[derive(Debug, Clone)]
 pub(super) struct MentionValueWithSpan {
@@ -502,8 +506,40 @@ pub(super) fn extract_feedback_scale_value(event: &CreateEventRequest, field: &s
     event.data.get(field).and_then(Value::as_f64)
 }
 
+fn normalize_hint_text(text: &str) -> String {
+    let lowered = text.to_lowercase();
+    let normalized = lowered
+        .replace('ä', "ae")
+        .replace('ö', "oe")
+        .replace('ü', "ue")
+        .replace('ß', "ss");
+    WHITESPACE_RE.replace_all(&normalized, " ").trim().to_string()
+}
+
+fn contains_hint_token(text: &str, hint: &str) -> bool {
+    let normalized_hint = normalize_hint_text(hint);
+    let escaped = regex::escape(&normalized_hint);
+    let pattern = format!(r"\b{escaped}\b");
+    Regex::new(&pattern)
+        .map(|compiled| compiled.is_match(text))
+        .unwrap_or(false)
+}
+
 pub(super) fn contains_any_hint(text: &str, hints: &[&str]) -> bool {
-    hints.iter().any(|hint| text.contains(hint))
+    let normalized = normalize_hint_text(text);
+    hints.iter().any(|hint| contains_hint_token(&normalized, hint))
+}
+
+pub(super) fn contains_any_negative_hint(text: &str) -> bool {
+    let mut normalized = normalize_hint_text(text);
+    for phrase in SESSION_NEGATED_NEGATIVE_PHRASES {
+        let phrase_normalized = normalize_hint_text(phrase);
+        normalized = normalized.replace(&phrase_normalized, " ");
+    }
+    let normalized = WHITESPACE_RE.replace_all(&normalized, " ").trim().to_string();
+    SESSION_NEGATIVE_HINTS
+        .iter()
+        .any(|hint| contains_hint_token(&normalized, hint))
 }
 
 pub(super) fn has_unsupported_inferred_value(event: &CreateEventRequest, field: &str) -> bool {
