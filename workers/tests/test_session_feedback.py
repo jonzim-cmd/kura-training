@@ -90,6 +90,42 @@ def test_normalize_feedback_infers_mild_negative_legacy_text():
     assert normalized["enjoyment"] == 4.0
 
 
+def test_normalize_feedback_negated_negative_phrase_stays_neutral():
+    normalized = _normalize_session_feedback_payload(
+        {
+            "summary": "Training war nicht schlecht.",
+        }
+    )
+    assert normalized["enjoyment"] is None
+
+
+def test_normalize_feedback_infers_negative_without_umlaut_variant():
+    normalized = _normalize_session_feedback_payload(
+        {
+            "summary": "Training war heute muede und schlecht.",
+        }
+    )
+    assert normalized["enjoyment"] == 2.0
+
+
+def test_normalize_feedback_mixed_signals_remain_unresolved():
+    normalized = _normalize_session_feedback_payload(
+        {
+            "summary": "Session was good but tired.",
+        }
+    )
+    assert normalized["enjoyment"] is None
+
+
+def test_normalize_feedback_does_not_match_partial_word_tokens():
+    normalized = _normalize_session_feedback_payload(
+        {
+            "summary": "Badminton drills liefen ok.",
+        }
+    )
+    assert normalized["enjoyment"] is None
+
+
 def test_compute_enjoyment_trend_detects_improving():
     entries = [
         {"enjoyment": 2.0},

@@ -6,6 +6,7 @@ coaching/planning can adapt to subjective session quality over time.
 
 import json
 import logging
+import re
 from collections import defaultdict
 from datetime import datetime
 from statistics import mean
@@ -63,7 +64,7 @@ _POSITIVE_HINTS = (
     "good",
     "great",
     "fun",
-    "spa",
+    "spass",
     "strong",
     "solid",
     "leicht",
@@ -76,10 +77,12 @@ _NEGATIVE_HINTS = (
     "pain",
     "hurt",
     "injury",
-    "m\u00fcde",
+    "muede",
     "tired",
 )
 _PAIN_HINTS = ("pain", "hurt", "schmerz", "ache", "injury")
+_NEGATED_NEGATIVE_PHRASES = ("nicht schlecht", "not bad")
+_HINT_NORMALIZATION_TABLE = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
 _CERTAINTY_STATES = {"confirmed", "inferred", "unresolved"}
 _CONFIRMED_SOURCES = {"explicit", "user_confirmed", "estimated"}
 
@@ -151,12 +154,29 @@ def _resolve_field_state(data: dict[str, Any], field: str) -> str | None:
     return _certainty_state_from_source(data.get(f"{field}_source"))
 
 
+def _normalize_text_for_hint_matching(text: str) -> str:
+    normalized = text.lower().translate(_HINT_NORMALIZATION_TABLE)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _count_token_hits(text: str, tokens: tuple[str, ...]) -> int:
+    hits = 0
+    for token in tokens:
+        if re.search(rf"\b{re.escape(token)}\b", text):
+            hits += 1
+    return hits
+
+
 def _infer_enjoyment_from_text(text: str | None) -> float | None:
     if not text:
         return None
-    normalized = text.lower()
-    positive_hits = sum(1 for token in _POSITIVE_HINTS if token in normalized)
-    negative_hits = sum(1 for token in _NEGATIVE_HINTS if token in normalized)
+    normalized = _normalize_text_for_hint_matching(text)
+    for phrase in _NEGATED_NEGATIVE_PHRASES:
+        normalized = normalized.replace(phrase, " ")
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+
+    positive_hits = _count_token_hits(normalized, _POSITIVE_HINTS)
+    negative_hits = _count_token_hits(normalized, _NEGATIVE_HINTS)
 
     if positive_hits > 0 and negative_hits == 0:
         return 8.0
