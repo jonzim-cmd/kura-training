@@ -195,7 +195,7 @@ PLAUSIBILITY_RANGES: dict[str, dict[str, tuple[float, float]]] = {
         "duration_hours": (0.0, 20.0),
     },
     "soreness.logged": {
-        "severity": (1, 5),
+        "severity": (0, 10),
     },
     "energy.logged": {
         "level": (1.0, 10.0),

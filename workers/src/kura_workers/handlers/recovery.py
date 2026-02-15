@@ -88,8 +88,8 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         },
         "soreness": {
             "total_entries": "integer",
-            "current": [{"area": "string", "severity": "integer (1-5)", "date": "ISO 8601 date", "notes": "string (optional)"}],
-            "recent_entries": [{"date": "ISO 8601 date", "area": "string", "severity": "integer (1-5)", "notes": "string (optional)"}],
+            "current": [{"area": "string", "severity": "integer (0-10)", "date": "ISO 8601 date", "notes": "string (optional)"}],
+            "recent_entries": [{"date": "ISO 8601 date", "area": "string", "severity": "integer (0-10)", "notes": "string (optional)"}],
         },
         "energy": {
             "recent_entries": [{"date": "ISO 8601 date", "level": "number (1-10)", "time_of_day": "string (optional)"}],
@@ -241,13 +241,13 @@ async def update_recovery(
                 continue
 
             # Anomaly detection: severity bounds
-            if severity < 1 or severity > 5:
+            if severity < 0 or severity > 10:
                 anomalies.append({
                     "event_id": str(row["id"]),
                     "field": "severity",
                     "value": severity,
-                    "expected_range": [1, 5],
-                    "message": f"Soreness severity {severity} outside 1-5 scale on {d.isoformat()}",
+                    "expected_range": [0, 10],
+                    "message": f"Soreness severity {severity} outside 0-10 scale on {d.isoformat()}",
                 })
 
             sentry: dict[str, Any] = {

@@ -4854,29 +4854,13 @@ fn build_session_audit_artifacts(
             continue;
         }
 
-        let mut normalized_updates: BTreeMap<String, Value> = BTreeMap::new();
-        for (field, max_scale, allow_ten_to_five) in [
-            ("enjoyment", 5.0_f64, true),
-            ("perceived_quality", 5.0_f64, true),
-            ("perceived_exertion", 10.0_f64, false),
+        for (field, min_scale, max_scale) in [
+            ("enjoyment", 1.0_f64, 10.0_f64),
+            ("perceived_quality", 1.0_f64, 10.0_f64),
+            ("perceived_exertion", 1.0_f64, 10.0_f64),
         ] {
             if let Some(raw) = extract_feedback_scale_value(event, field) {
-                if allow_ten_to_five && raw > 5.0 && raw <= 10.0 {
-                    mismatch_detected += 1;
-                    mismatch_classes.insert(AUDIT_CLASS_SCALE_NORMALIZED_TO_FIVE.to_string(), ());
-                    let normalized = round_to_two(raw / 2.0);
-                    if auto_repair_allowed {
-                        normalized_updates.insert(field.to_string(), json!(normalized));
-                        mismatch_repaired += 1;
-                    } else {
-                        mismatch_unresolved += 1;
-                        unresolved.push(SessionAuditUnresolved {
-                            exercise_label: "Session-Feedback".to_string(),
-                            field: field.to_string(),
-                            candidates: vec![format!("{normalized:.2}")],
-                        });
-                    }
-                } else if raw < 1.0 || raw > max_scale {
+                if raw < min_scale || raw > max_scale {
                     mismatch_detected += 1;
                     mismatch_unresolved += 1;
                     mismatch_classes.insert(AUDIT_CLASS_SCALE_OUT_OF_BOUNDS.to_string(), ());
@@ -4944,81 +4928,6 @@ fn build_session_audit_artifacts(
             }
         }
 
-        if auto_repair_allowed && !normalized_updates.is_empty() {
-            let mut normalized_seed = normalized_updates
-                .iter()
-                .map(|(field, value)| format!("{field}:{}", canonical_mention_value(value)))
-                .collect::<Vec<_>>();
-            normalized_seed.sort();
-            let seed = format!(
-                "session_feedback_audit|{}|{}",
-                receipt.event_id,
-                normalized_seed.join("|")
-            );
-            let retract_key = format!("session-audit-retract-{}", stable_hash_suffix(&seed, 20));
-            let replace_key = format!(
-                "session-audit-replacement-{}",
-                stable_hash_suffix(&(seed.clone() + "|replace"), 20)
-            );
-            let session_id = event
-                .metadata
-                .session_id
-                .clone()
-                .or_else(|| Some("session_audit".to_string()));
-
-            session_feedback_repair_events.push(CreateEventRequest {
-                timestamp: Utc::now(),
-                event_type: "event.retracted".to_string(),
-                data: serde_json::json!({
-                    "retracted_event_id": receipt.event_id,
-                    "retracted_event_type": "session.completed",
-                    "reason": "Session audit deterministic scale normalization."
-                }),
-                metadata: EventMetadata {
-                    source: Some("agent_write_with_proof".to_string()),
-                    agent: Some("api".to_string()),
-                    device: None,
-                    session_id: session_id.clone(),
-                    idempotency_key: retract_key,
-                },
-            });
-
-            let mut replacement_payload = event
-                .data
-                .as_object()
-                .cloned()
-                .unwrap_or_else(serde_json::Map::new);
-            for (field, value) in normalized_updates {
-                replacement_payload.insert(field, value);
-            }
-            replacement_payload.insert(
-                "repair_provenance".to_string(),
-                serde_json::json!({
-                    "source_type": "inferred",
-                    "confidence": 0.98,
-                    "confidence_band": "high",
-                    "applies_scope": "session",
-                    "reason": "Session audit deterministic scale normalization (1..10 -> 1..5)."
-                }),
-            );
-            replacement_payload.insert(
-                "audit_repair_of_event_id".to_string(),
-                serde_json::json!(receipt.event_id),
-            );
-
-            session_feedback_repair_events.push(CreateEventRequest {
-                timestamp: Utc::now(),
-                event_type: "session.completed".to_string(),
-                data: Value::Object(replacement_payload),
-                metadata: EventMetadata {
-                    source: Some("agent_write_with_proof".to_string()),
-                    agent: Some("api".to_string()),
-                    device: None,
-                    session_id,
-                    idempotency_key: replace_key,
-                },
-            });
-        }
     }
 
     let mut repair_events = Vec::new();
@@ -8383,25 +8292,10 @@ mod tests {
         let policy = default_autonomy_policy();
 
         let artifacts = build_session_audit_artifacts(user_id, &requested, &receipts, &policy);
-        assert_eq!(artifacts.summary.status, "repaired");
-        assert_eq!(artifacts.summary.mismatch_detected, 2);
-        assert_eq!(artifacts.summary.mismatch_repaired, 2);
+        assert_eq!(artifacts.summary.status, "clean");
+        assert_eq!(artifacts.summary.mismatch_detected, 0);
         assert_eq!(artifacts.summary.mismatch_unresolved, 0);
-        assert!(
-            artifacts
-                .summary
-                .mismatch_classes
-                .iter()
-                .any(|c| c == "scale_normalized_to_five")
-        );
-        assert_eq!(artifacts.repair_events.len(), 2);
-        assert_eq!(artifacts.repair_events[0].event_type, "event.retracted");
-        assert_eq!(artifacts.repair_events[1].event_type, "session.completed");
-        assert_eq!(artifacts.repair_events[1].data["enjoyment"], json!(4.0));
-        assert_eq!(
-            artifacts.repair_events[1].data["perceived_quality"],
-            json!(4.5)
-        );
+        assert!(artifacts.repair_events.is_empty());
     }
 
     #[test]

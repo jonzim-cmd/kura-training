@@ -108,13 +108,10 @@ def _normalize_scale(
     *,
     lower: float,
     upper: float,
-    ten_scale_to_five: bool = False,
 ) -> float | None:
     parsed = _as_optional_float(value)
     if parsed is None:
         return None
-    if ten_scale_to_five and parsed > 5:
-        parsed = parsed / 2.0
     parsed = max(lower, min(upper, parsed))
     return _round2(parsed)
 
@@ -161,9 +158,9 @@ def _infer_enjoyment_from_text(text: str | None) -> float | None:
     has_positive = any(token in normalized for token in _POSITIVE_HINTS)
     has_negative = any(token in normalized for token in _NEGATIVE_HINTS)
     if has_positive and not has_negative:
-        return 4.0
+        return 8.0
     if has_negative and not has_positive:
-        return 2.0
+        return 4.0
     return None
 
 
@@ -203,15 +200,14 @@ def _normalize_session_feedback_payload(data: dict[str, Any]) -> dict[str, Any]:
         enjoyment = _normalize_scale(
             data.get(key),
             lower=1,
-            upper=5,
-            ten_scale_to_five=True,
+            upper=10,
         )
         if enjoyment is not None:
             break
     if enjoyment_state == "unresolved":
         enjoyment = None
     elif enjoyment is None and isinstance(data.get("felt_good"), bool):
-        enjoyment = 4.0 if data.get("felt_good") else 2.0
+        enjoyment = 8.0 if data.get("felt_good") else 4.0
     if enjoyment is None and enjoyment_state in {None, "inferred"}:
         enjoyment = _infer_enjoyment_from_text(context)
 
@@ -220,8 +216,7 @@ def _normalize_session_feedback_payload(data: dict[str, Any]) -> dict[str, Any]:
         perceived_quality = _normalize_scale(
             data.get(key),
             lower=1,
-            upper=5,
-            ten_scale_to_five=True,
+            upper=10,
         )
         if perceived_quality is not None:
             break
@@ -291,9 +286,9 @@ def _compute_enjoyment_trend(entries: list[dict[str, Any]]) -> str:
         return "insufficient_data"
 
     delta = mean(recent) - mean(baseline)
-    if delta >= 0.35:
+    if delta >= 0.7:
         return "improving"
-    if delta <= -0.35:
+    if delta <= -0.7:
         return "declining"
     return "stable"
 
@@ -495,8 +490,8 @@ def _build_session_feedback_projection(
                     "timestamp": "ISO 8601 datetime",
                     "date": "ISO 8601 date",
                     "session_id": "string (optional)",
-                    "enjoyment": "number (optional, 1..5)",
-                    "perceived_quality": "number (optional, 1..5)",
+                    "enjoyment": "number (optional, 1..10)",
+                    "perceived_quality": "number (optional, 1..10)",
                     "perceived_exertion": "number (optional, 1..10)",
                     "pain_discomfort": "number (optional, 0..10)",
                     "pain_signal": "boolean (optional)",

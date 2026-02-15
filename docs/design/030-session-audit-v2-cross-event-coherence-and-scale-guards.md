@@ -49,10 +49,12 @@ events include the same class set.
 Current mismatch classes:
 
 - `missing_mention_bound_field`
-- `scale_normalized_to_five`
 - `scale_out_of_bounds`
 - `narrative_structured_contradiction`
 - `unsupported_inferred_value`
+
+Note: `scale_normalized_to_five` was removed when all subjective scales were
+unified to 1-10 (soreness 0-10). Silent auto-conversion is no longer needed.
 
 ## Test Coverage
 

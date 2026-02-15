@@ -8,7 +8,6 @@ pub(super) const EVIDENCE_CLAIM_EVENT_TYPE: &str = "evidence.claim.logged";
 pub(super) const AUDIT_CLASS_MISSING_MENTION_FIELD: &str = "missing_mention_bound_field";
 pub(super) const AUDIT_CLASS_SESSION_BLOCK_REQUIRED_FIELD: &str =
     "session_block_required_field_missing";
-pub(super) const AUDIT_CLASS_SCALE_NORMALIZED_TO_FIVE: &str = "scale_normalized_to_five";
 pub(super) const AUDIT_CLASS_SCALE_OUT_OF_BOUNDS: &str = "scale_out_of_bounds";
 pub(super) const AUDIT_CLASS_NARRATIVE_CONTRADICTION: &str = "narrative_structured_contradiction";
 pub(super) const AUDIT_CLASS_UNSUPPORTED_INFERRED: &str = "unsupported_inferred_value";

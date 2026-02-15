@@ -100,16 +100,16 @@ def generate_soreness(
 
     for group in groups:
         # Base severity from volume (more sets = more sore)
-        base_severity = rng.uniform(1.5, 3.0)
+        base_severity = rng.uniform(3.0, 6.0)
 
         # Deload week → less soreness
         if state.mesocycle_week == 4:
             base_severity *= 0.6
 
         # High fatigue → more soreness
-        base_severity += state.fatigue * 0.5
+        base_severity += state.fatigue * 1.0
 
-        severity = max(1, min(5, round(base_severity)))
+        severity = max(0, min(10, round(base_severity)))
 
         # Update state soreness for fatigue model
         state.soreness[group] = max(state.soreness.get(group, 0), float(severity))

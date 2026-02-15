@@ -403,12 +403,12 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "session quality, exertion summary, pain/discomfort, and context."
             ),
             "fields": {
-                "enjoyment": "number (optional, 1..5)",
+                "enjoyment": "number (optional, 1..10)",
                 "enjoyment_state": "string (optional: confirmed|inferred|unresolved)",
                 "enjoyment_source": "string (optional: explicit|user_confirmed|estimated|inferred)",
                 "enjoyment_evidence_claim_id": "string (required when enjoyment_state/source is inferred)",
                 "enjoyment_unresolved_reason": "string (required when enjoyment_state=unresolved)",
-                "perceived_quality": "number (optional, 1..5)",
+                "perceived_quality": "number (optional, 1..10)",
                 "perceived_quality_state": "string (optional: confirmed|inferred|unresolved)",
                 "perceived_quality_source": "string (optional: explicit|user_confirmed|estimated|inferred)",
                 "perceived_quality_evidence_claim_id": "string (required when perceived_quality_state/source is inferred)",
@@ -431,9 +431,9 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 ),
             },
             "example": {
-                "enjoyment": 4,
+                "enjoyment": 8,
                 "enjoyment_state": "confirmed",
-                "perceived_quality": 4,
+                "perceived_quality": 7,
                 "perceived_quality_state": "confirmed",
                 "perceived_exertion": 7,
                 "perceived_exertion_state": "confirmed",
@@ -580,7 +580,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             "description": "Muscle soreness report",
             "fields": {
                 "area": "string (required: chest, back, shoulders, legs, etc.)",
-                "severity": "number (required, 1-5 scale)",
+                "severity": "number (required, 0-10 scale)",
                 "notes": "string (optional)",
             },
             "example": {"area": "chest", "severity": 3},

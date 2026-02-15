@@ -42,7 +42,7 @@ def test_normalize_feedback_maps_legacy_text_without_data_loss():
         }
     )
     assert normalized["context"] == "Training felt good and fun."
-    assert normalized["enjoyment"] == 4.0
+    assert normalized["enjoyment"] == 8.0
     assert normalized["perceived_quality"] is None
 
 
@@ -140,7 +140,7 @@ def test_build_projection_includes_ingestion_output_and_trends():
 
     assert projection["counts"]["sessions_with_feedback"] == 2
     assert recent[0]["session_id"] == "s1"
-    assert recent[0]["enjoyment"] == 4.0  # inferred from legacy summary text
+    assert recent[0]["enjoyment"] == 8.0  # inferred from legacy summary text
     assert recent[0]["session_load"]["total_sets"] == 1
     assert recent[1]["perceived_quality"] == 4.0
     assert projection["trends"]["enjoyment_trend"] == "insufficient_data"

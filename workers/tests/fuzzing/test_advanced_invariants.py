@@ -124,9 +124,8 @@ class TestCertaintyContract:
         """
         data: dict = {f"{field_name}_state": state, f"{field_name}_source": source}
 
-        max_val = 5 if field_name != "perceived_exertion" else 10
         if has_value:
-            data[field_name] = 4 if max_val >= 4 else 2
+            data[field_name] = 7
         if has_evidence:
             data[f"{field_name}_evidence_claim_id"] = f"claim_{uuid.uuid4().hex[:24]}"
         if has_reason:

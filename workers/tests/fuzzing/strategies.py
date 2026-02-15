@@ -275,11 +275,9 @@ def session_completed_data(draw: st.DrawFn, *, valid: bool = True) -> dict[str, 
             data[f"{field_name}_source"] = draw(st.sampled_from(CERTAINTY_SOURCES))
 
             if state == "confirmed":
-                max_val = 5 if field_name != "perceived_exertion" else 10
-                data[field_name] = draw(st.integers(min_value=1, max_value=max_val))
+                data[field_name] = draw(st.integers(min_value=1, max_value=10))
             elif state == "inferred":
-                max_val = 5 if field_name != "perceived_exertion" else 10
-                data[field_name] = draw(st.integers(min_value=1, max_value=max_val))
+                data[field_name] = draw(st.integers(min_value=1, max_value=10))
                 data[f"{field_name}_evidence_claim_id"] = f"claim_{uuid.uuid4().hex[:24]}"
             elif state == "unresolved":
                 data[f"{field_name}_unresolved_reason"] = "User declined to rate"
@@ -440,7 +438,7 @@ def valid_event(draw: st.DrawFn, event_type: str | None = None) -> CreateEventRe
         }),
         "soreness.logged": st.fixed_dictionaries({
             "area": st.sampled_from(["chest", "back", "shoulders", "legs"]),
-            "severity": st.integers(min_value=1, max_value=5),
+            "severity": st.integers(min_value=0, max_value=10),
         }),
         "energy.logged": st.fixed_dictionaries({
             "level": st.integers(min_value=1, max_value=10),

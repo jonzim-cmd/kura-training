@@ -102,7 +102,7 @@ class TestPlausibility:
         for event in events:
             if event["event_type"] == "soreness.logged":
                 sev = event["data"]["severity"]
-                assert 1 <= sev <= 5, f"Soreness severity {sev} out of range"
+                assert 0 <= sev <= 10, f"Soreness severity {sev} out of range"
 
     def test_meal_calories_in_range(self):
         engine = SimulationEngine(INTERMEDIATE)

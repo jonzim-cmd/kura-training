@@ -983,7 +983,7 @@ def build_causal_projection_from_event_rows(rows: list[dict[str, Any]]) -> dict[
 
         sleep_score = _clamp(sleep_hours / 8.0, 0.0, 1.2)
         energy_score = _clamp(energy / 10.0, 0.0, 1.0)
-        soreness_penalty = _clamp(soreness_avg / 5.0, 0.0, 1.0)
+        soreness_penalty = _clamp(soreness_avg / 10.0, 0.0, 1.0)
         load_penalty = _clamp(load_volume / load_baseline, 0.0, 1.4)
 
         readiness_score = _clamp(
@@ -1677,7 +1677,7 @@ def build_readiness_daily_scores_from_event_rows(rows: list[dict[str, Any]]) -> 
         soreness_avg = 0.0
         if values.get("soreness_count", 0):
             soreness_avg = float(values.get("soreness_sum", 0.0)) / float(values["soreness_count"])
-        soreness_penalty = _clamp(soreness_avg / 5.0, 0.0, 1.0)
+        soreness_penalty = _clamp(soreness_avg / 10.0, 0.0, 1.0)
 
         load = float(values.get("load_volume", 0.0))
         load_penalty = _clamp(load / load_baseline, 0.0, 1.4)

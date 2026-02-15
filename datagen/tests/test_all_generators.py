@@ -94,7 +94,7 @@ class TestSoreness:
         assert len(events) > 0
         for event in events:
             assert event["event_type"] == "soreness.logged"
-            assert 1 <= event["data"]["severity"] <= 5
+            assert 0 <= event["data"]["severity"] <= 10
 
     def test_soreness_updates_state(self):
         p = _make_profile()

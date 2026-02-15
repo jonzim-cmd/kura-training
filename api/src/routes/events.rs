@@ -1344,10 +1344,10 @@ fn check_event_plausibility(event_type: &str, data: &serde_json::Value) -> Vec<E
         }
         "soreness.logged" => {
             if let Some(s) = data.get("severity").and_then(|v| v.as_f64()) {
-                if s < 1.0 || s > 5.0 {
+                if s < 0.0 || s > 10.0 {
                     warnings.push(EventWarning {
                         field: "severity".to_string(),
-                        message: format!("severity={s} outside plausible range [1, 5]"),
+                        message: format!("severity={s} outside plausible range [0, 10]"),
                         severity: "warning".to_string(),
                     });
                 }
@@ -1370,6 +1370,28 @@ fn check_event_plausibility(event_type: &str, data: &serde_json::Value) -> Vec<E
                     warnings.push(EventWarning {
                         field: "value_cm".to_string(),
                         message: format!("value_cm={v} outside plausible range [1, 300]"),
+                        severity: "warning".to_string(),
+                    });
+                }
+            }
+        }
+        "session.completed" => {
+            for field in &["enjoyment", "perceived_quality", "perceived_exertion"] {
+                if let Some(v) = data.get(*field).and_then(parse_flexible_float) {
+                    if !(1.0..=10.0).contains(&v) {
+                        warnings.push(EventWarning {
+                            field: field.to_string(),
+                            message: format!("{field}={v} outside plausible range [1, 10]"),
+                            severity: "warning".to_string(),
+                        });
+                    }
+                }
+            }
+            if let Some(v) = data.get("pain_discomfort").and_then(parse_flexible_float) {
+                if !(0.0..=10.0).contains(&v) {
+                    warnings.push(EventWarning {
+                        field: "pain_discomfort".to_string(),
+                        message: format!("pain_discomfort={v} outside plausible range [0, 10]"),
                         severity: "warning".to_string(),
                     });
                 }
@@ -3526,17 +3548,67 @@ mod tests {
     }
 
     #[test]
-    fn test_soreness_out_of_range() {
+    fn test_soreness_zero_valid() {
         let w = check_event_plausibility("soreness.logged", &json!({"severity": 0}));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_soreness_ten_valid() {
+        let w = check_event_plausibility("soreness.logged", &json!({"severity": 10.0}));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_soreness_out_of_range_above() {
+        let w = check_event_plausibility("soreness.logged", &json!({"severity": 11}));
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].field, "severity");
     }
 
     #[test]
-    fn test_soreness_out_of_range_float() {
-        let w = check_event_plausibility("soreness.logged", &json!({"severity": 6.0}));
+    fn test_soreness_out_of_range_below() {
+        let w = check_event_plausibility("soreness.logged", &json!({"severity": -1}));
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].field, "severity");
+    }
+
+    #[test]
+    fn test_session_completed_normal() {
+        let w = check_event_plausibility(
+            "session.completed",
+            &json!({"enjoyment": 8, "perceived_quality": 7, "perceived_exertion": 6}),
+        );
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_session_completed_enjoyment_out_of_range() {
+        let w = check_event_plausibility(
+            "session.completed",
+            &json!({"enjoyment": 15}),
+        );
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].field, "enjoyment");
+    }
+
+    #[test]
+    fn test_session_completed_pain_zero_valid() {
+        let w = check_event_plausibility(
+            "session.completed",
+            &json!({"pain_discomfort": 0}),
+        );
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_session_completed_pain_out_of_range() {
+        let w = check_event_plausibility(
+            "session.completed",
+            &json!({"pain_discomfort": 11}),
+        );
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].field, "pain_discomfort");
     }
 
     #[test]

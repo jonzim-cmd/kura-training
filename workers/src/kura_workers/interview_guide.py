@@ -92,7 +92,7 @@ def get_interview_guide() -> dict[str, Any]:
             ],
             "examples": [
                 "set.logged: 'Squat 5x100kg @8,5 RPE, pause 120s, felt heavy on last rep'",
-                "session.completed: 'enjoyment 4/5, exertion 8/10, context: slept badly, left knee slightly sore'",
+                "session.completed: 'enjoyment 8/10, exertion 8/10, context: slept badly, left knee slightly sore'",
                 "correction: 'Earlier set had 90s rest, not 120s' -> emit set.corrected instead of rewriting history",
             ],
         },

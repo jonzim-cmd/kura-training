@@ -738,7 +738,7 @@ async def update_causal_inference(
 
             sleep_score = _clamp(sleep_hours / 8.0, 0.0, 1.2)
             energy_score = _clamp(energy / 10.0, 0.0, 1.0)
-            soreness_penalty = _clamp(soreness_avg / 5.0, 0.0, 1.0)
+            soreness_penalty = _clamp(soreness_avg / 10.0, 0.0, 1.0)
             load_penalty = _clamp(load_volume / load_baseline, 0.0, 1.4)
 
             readiness_score = _clamp(
