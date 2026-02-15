@@ -1231,7 +1231,7 @@ async fn fetch_user_profile_projection_data(
     Ok(row.map(|(data,)| data))
 }
 
-async fn enforce_legacy_domain_invariants(
+pub(crate) async fn enforce_legacy_domain_invariants(
     state: &AppState,
     user_id: Uuid,
     events: &[CreateEventRequest],

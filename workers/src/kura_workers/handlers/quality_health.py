@@ -66,6 +66,8 @@ _INVARIANT_SOURCE_EVENT_TYPES = (
     "workflow.onboarding.closed",
     "workflow.onboarding.override_granted",
     "external.activity_imported",
+    "observation.logged",
+    "event.retracted",
 )
 
 _QUALITY_SIGNAL_EVENT_TYPES = (
@@ -133,6 +135,12 @@ _INV004_ENFORCEMENT_CUTOFF_DEFAULT = "2026-02-14T00:00:00+00:00"
 _SLO_REPAIR_LATENCY_HOURS_HEALTHY_MAX = 24.0
 _SLO_REPAIR_LATENCY_HOURS_MONITOR_MAX = 48.0
 _STATUS_ORDER = {"healthy": 0, "monitor": 1, "degraded": 2}
+_PERSIST_INTENT_DRAFT_DIMENSION_PREFIX = "provisional.persist_intent."
+_DRAFT_HYGIENE_WINDOW_DAYS = 7
+_DRAFT_HYGIENE_BACKLOG_MONITOR_MIN = 2
+_DRAFT_HYGIENE_BACKLOG_DEGRADED_MIN = 5
+_DRAFT_HYGIENE_MEDIAN_AGE_MONITOR_HOURS = 8.0
+_DRAFT_HYGIENE_MEDIAN_AGE_DEGRADED_HOURS = 24.0
 _RESPONSE_MODE_OUTCOME_SIGNAL_TYPES = (
     "response_mode_selected",
     "retrieval_regret_observed",
@@ -2034,10 +2042,109 @@ def _autonomy_policy_from_slos(
     }
 
 
+def _is_persist_intent_draft_observation(row: dict[str, Any]) -> bool:
+    if str(row.get("event_type") or "").strip().lower() != "observation.logged":
+        return False
+    data = row.get("data") or {}
+    if not isinstance(data, dict):
+        return False
+    dimension = str(data.get("dimension") or "").strip().lower()
+    return dimension.startswith(_PERSIST_INTENT_DRAFT_DIMENSION_PREFIX)
+
+
+def _compute_draft_hygiene_metrics(
+    raw_event_rows: list[dict[str, Any]],
+    active_event_rows: list[dict[str, Any]],
+    evaluated_at: datetime,
+) -> dict[str, Any]:
+    open_draft_rows = [
+        row for row in active_event_rows if _is_persist_intent_draft_observation(row)
+    ]
+    backlog_open = len(open_draft_rows)
+
+    ages_hours: list[float] = []
+    for row in open_draft_rows:
+        timestamp = row.get("timestamp")
+        if not isinstance(timestamp, datetime):
+            continue
+        age_hours = max(0.0, (evaluated_at - timestamp).total_seconds() / 3600.0)
+        ages_hours.append(round(age_hours, 2))
+
+    median_age_hours = round(statistics.median(ages_hours), 2) if ages_hours else 0.0
+    oldest_age_hours = round(max(ages_hours), 2) if ages_hours else 0.0
+
+    window_start = evaluated_at - timedelta(days=_DRAFT_HYGIENE_WINDOW_DAYS)
+    draft_ids = {
+        str(row.get("id"))
+        for row in raw_event_rows
+        if _is_persist_intent_draft_observation(row) and row.get("id") is not None
+    }
+
+    opened_7d = 0
+    closed_7d = 0
+    for row in raw_event_rows:
+        timestamp = row.get("timestamp")
+        if not isinstance(timestamp, datetime) or timestamp < window_start:
+            continue
+
+        event_type = str(row.get("event_type") or "").strip().lower()
+        if event_type == "observation.logged" and _is_persist_intent_draft_observation(row):
+            opened_7d += 1
+            continue
+        if event_type != "event.retracted":
+            continue
+
+        data = row.get("data") or {}
+        if not isinstance(data, dict):
+            continue
+        retracted_id = str(data.get("retracted_event_id") or "").strip()
+        retracted_type = str(data.get("retracted_event_type") or "").strip().lower()
+        if retracted_type != "observation.logged":
+            continue
+        if retracted_id and retracted_id in draft_ids:
+            closed_7d += 1
+
+    resolution_rate_7d = (
+        round((closed_7d / opened_7d) * 100.0, 2) if opened_7d > 0 else 0.0
+    )
+
+    status = "healthy"
+    if (
+        backlog_open >= _DRAFT_HYGIENE_BACKLOG_DEGRADED_MIN
+        or median_age_hours >= _DRAFT_HYGIENE_MEDIAN_AGE_DEGRADED_HOURS
+    ):
+        status = "degraded"
+    elif (
+        backlog_open >= _DRAFT_HYGIENE_BACKLOG_MONITOR_MIN
+        or median_age_hours >= _DRAFT_HYGIENE_MEDIAN_AGE_MONITOR_HOURS
+    ):
+        status = "monitor"
+
+    return {
+        "status": status,
+        "window_days": _DRAFT_HYGIENE_WINDOW_DAYS,
+        "backlog_open": backlog_open,
+        "median_age_hours": median_age_hours,
+        "oldest_age_hours": oldest_age_hours,
+        "opened_7d": opened_7d,
+        "closed_7d": closed_7d,
+        "resolution_rate_7d": resolution_rate_7d,
+        "targets": {
+            "backlog_monitor_min": _DRAFT_HYGIENE_BACKLOG_MONITOR_MIN,
+            "backlog_degraded_min": _DRAFT_HYGIENE_BACKLOG_DEGRADED_MIN,
+            "median_age_monitor_hours": _DRAFT_HYGIENE_MEDIAN_AGE_MONITOR_HOURS,
+            "median_age_degraded_hours": _DRAFT_HYGIENE_MEDIAN_AGE_DEGRADED_HOURS,
+        },
+    }
+
+
 def _evaluate_read_only_invariants(
     event_rows: list[dict[str, Any]],
     alias_map: dict[str, str],
     import_job_rows: list[dict[str, Any]] | None = None,
+    *,
+    raw_event_rows: list[dict[str, Any]] | None = None,
+    evaluated_at: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Evaluate Phase-0 invariants from event data.
 
@@ -2495,6 +2602,13 @@ def _evaluate_read_only_invariants(
             )
         )
 
+    evaluated_dt = evaluated_at or datetime.now(timezone.utc)
+    draft_hygiene = _compute_draft_hygiene_metrics(
+        raw_event_rows if raw_event_rows is not None else event_rows,
+        event_rows,
+        evaluated_dt,
+    )
+
     metrics = {
         "total_events": len(event_rows),
         "set_logged_total": total_set_logged,
@@ -2534,6 +2648,10 @@ def _evaluate_read_only_invariants(
         "external_unsupported_fields_total": external_unsupported_fields_total,
         "external_temporal_uncertainty_total": external_temporal_uncertainty_total,
         "external_unit_conversion_fields": external_unit_conversion_fields,
+        "draft_hygiene": draft_hygiene,
+        "draft_backlog_open": draft_hygiene["backlog_open"],
+        "draft_resolution_rate_7d": draft_hygiene["resolution_rate_7d"],
+        "draft_median_age_hours": draft_hygiene["median_age_hours"],
     }
     return issues, metrics
 
@@ -2633,11 +2751,31 @@ def _build_quality_projection_data(
         for issue in sorted_issues
     ]
 
+    draft_hygiene = metrics.get("draft_hygiene")
+    if not isinstance(draft_hygiene, dict):
+        draft_hygiene = {
+            "status": "healthy",
+            "window_days": _DRAFT_HYGIENE_WINDOW_DAYS,
+            "backlog_open": 0,
+            "median_age_hours": 0.0,
+            "oldest_age_hours": 0.0,
+            "opened_7d": 0,
+            "closed_7d": 0,
+            "resolution_rate_7d": 0.0,
+            "targets": {
+                "backlog_monitor_min": _DRAFT_HYGIENE_BACKLOG_MONITOR_MIN,
+                "backlog_degraded_min": _DRAFT_HYGIENE_BACKLOG_DEGRADED_MIN,
+                "median_age_monitor_hours": _DRAFT_HYGIENE_MEDIAN_AGE_MONITOR_HOURS,
+                "median_age_degraded_hours": _DRAFT_HYGIENE_MEDIAN_AGE_DEGRADED_HOURS,
+            },
+        }
+
     return {
         "score": score,
         "quality_status": quality_status,
         "integrity_slo_status": integrity_status,
         "status": status,
+        "draft_hygiene": draft_hygiene,
         "issues_open": len(enriched_issues),
         "issues_by_severity": issues_by_severity,
         "top_issues": top_issues,
@@ -2749,6 +2887,11 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         "quality_status": data.get("status"),
         "quality_score": data.get("score"),
         "quality_open_issues": data.get("issues_open"),
+        "quality_draft_hygiene_status": data.get("draft_hygiene", {}).get("status"),
+        "quality_draft_backlog_open": data.get("draft_hygiene", {}).get("backlog_open"),
+        "quality_draft_resolution_rate_7d": data.get("draft_hygiene", {}).get(
+            "resolution_rate_7d"
+        ),
         "quality_repair_apply_ready": len(data.get("repair_apply_ready_ids") or []),
         "quality_repair_applied": data.get("repair_apply_results_by_decision", {}).get(
             "applied"
@@ -2792,6 +2935,16 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "status": "string — healthy|monitor|degraded",
             "quality_status": "string — healthy|monitor|degraded",
             "integrity_slo_status": "string — healthy|monitor|degraded",
+            "draft_hygiene": {
+                "status": "string — healthy|monitor|degraded",
+                "window_days": "integer",
+                "backlog_open": "integer",
+                "median_age_hours": "number",
+                "oldest_age_hours": "number",
+                "opened_7d": "integer",
+                "closed_7d": "integer",
+                "resolution_rate_7d": "number (percent)",
+            },
             "issues_open": "integer",
             "issues_by_severity": {"high": "integer", "medium": "integer", "low": "integer", "info": "integer"},
             "top_issues": [{"issue_id": "string", "type": "string", "severity": "string", "invariant_id": "string"}],
@@ -2944,8 +3097,8 @@ async def update_quality_health(
 ) -> None:
     user_id = payload["user_id"]
     retracted_ids = await get_retracted_event_ids(conn, user_id)
-    rows = await _load_quality_source_rows(conn, user_id)
-    rows = [r for r in rows if str(r["id"]) not in retracted_ids]
+    rows_all = await _load_quality_source_rows(conn, user_id)
+    rows = [r for r in rows_all if str(r["id"]) not in retracted_ids]
     relation_capabilities = await detect_relation_capabilities(
         conn,
         ["external_import_jobs"],
@@ -2979,6 +3132,8 @@ async def update_quality_health(
         rows,
         alias_map,
         import_job_rows=import_job_rows,
+        raw_event_rows=rows_all,
+        evaluated_at=datetime.now(timezone.utc),
     )
     metrics["response_mode_outcomes"] = response_mode_outcomes
     latest_quality_issue_signal_rows = await _load_latest_quality_issue_signals(
@@ -3020,8 +3175,8 @@ async def update_quality_health(
     last_repair_at: str | None = None
     if has_applied:
         retracted_ids = await get_retracted_event_ids(conn, user_id)
-        rows = await _load_quality_source_rows(conn, user_id)
-        rows = [r for r in rows if str(r["id"]) not in retracted_ids]
+        rows_all = await _load_quality_source_rows(conn, user_id)
+        rows = [r for r in rows_all if str(r["id"]) not in retracted_ids]
         if not rows:
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -3034,6 +3189,8 @@ async def update_quality_health(
             rows,
             alias_map,
             import_job_rows=import_job_rows,
+            raw_event_rows=rows_all,
+            evaluated_at=datetime.now(timezone.utc),
         )
         metrics["response_mode_outcomes"] = response_mode_outcomes
         verified_at = datetime.now(timezone.utc).isoformat()

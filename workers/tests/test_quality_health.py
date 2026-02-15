@@ -21,12 +21,17 @@ def _row(event_type: str, data: dict) -> dict:
     return {"event_type": event_type, "data": data}
 
 
-def _event_row(event_type: str, data: dict, iso_ts: str) -> dict:
-    return {
+def _event_row(
+    event_type: str, data: dict, iso_ts: str, event_id: str | None = None
+) -> dict:
+    row = {
         "event_type": event_type,
         "data": data,
         "timestamp": datetime.fromisoformat(iso_ts),
     }
+    if event_id is not None:
+        row["id"] = event_id
+    return row
 
 
 class TestEvaluateReadOnlyInvariants:
@@ -359,6 +364,65 @@ class TestEvaluateReadOnlyInvariants:
         issue_types = {issue["type"] for issue in issues}
         assert "external_parse_fail_rate" in issue_types
 
+    def test_draft_hygiene_metrics_track_backlog_and_resolution(self):
+        raw_rows = [
+            _event_row(
+                "observation.logged",
+                {
+                    "dimension": "provisional.persist_intent.training_session",
+                    "context_text": "Draft A",
+                },
+                "2026-02-15T06:00:00+00:00",
+                event_id="11111111-1111-1111-1111-111111111111",
+            ),
+            _event_row(
+                "observation.logged",
+                {
+                    "dimension": "provisional.persist_intent.training_session",
+                    "context_text": "Draft B",
+                },
+                "2026-02-15T07:00:00+00:00",
+                event_id="22222222-2222-2222-2222-222222222222",
+            ),
+            _event_row(
+                "event.retracted",
+                {
+                    "retracted_event_id": "11111111-1111-1111-1111-111111111111",
+                    "retracted_event_type": "observation.logged",
+                },
+                "2026-02-15T08:00:00+00:00",
+            ),
+            _event_row(
+                "preference.set",
+                {"key": "timezone", "value": "Europe/Berlin"},
+                "2026-02-15T08:05:00+00:00",
+            ),
+            _event_row(
+                "profile.updated",
+                {"age_deferred": True, "bodyweight_deferred": True},
+                "2026-02-15T08:10:00+00:00",
+            ),
+        ]
+        active_rows = [
+            row
+            for row in raw_rows
+            if row.get("id") != "11111111-1111-1111-1111-111111111111"
+        ]
+
+        _, metrics = _evaluate_read_only_invariants(
+            active_rows,
+            alias_map={},
+            raw_event_rows=raw_rows,
+            evaluated_at=datetime.fromisoformat("2026-02-15T09:00:00+00:00"),
+        )
+
+        draft_hygiene = metrics["draft_hygiene"]
+        assert draft_hygiene["backlog_open"] == 1
+        assert draft_hygiene["opened_7d"] == 2
+        assert draft_hygiene["closed_7d"] == 1
+        assert draft_hygiene["resolution_rate_7d"] == 50.0
+        assert draft_hygiene["status"] in {"healthy", "monitor", "degraded"}
+
 
 class TestQualityProjectionData:
     def test_quality_score_penalizes_by_severity(self):
@@ -388,6 +452,7 @@ class TestQualityProjectionData:
         )
 
         assert data["status"] == "degraded"
+        assert "draft_hygiene" in data
         assert data["issues_open"] == 1
         assert data["issues_by_severity"]["high"] == 1
         assert data["top_issues"][0]["invariant_id"] == "INV-003"

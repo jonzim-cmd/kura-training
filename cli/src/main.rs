@@ -48,6 +48,12 @@ enum Commands {
         command: commands::agent::AgentCommands,
     },
 
+    /// Observation workflows (draft visibility + promotion)
+    Observation {
+        #[command(subcommand)]
+        command: commands::observation::ObservationCommands,
+    },
+
     /// MCP server operations (Model Context Protocol over stdio)
     Mcp {
         #[command(subcommand)]
@@ -148,6 +154,11 @@ async fn main() {
         Commands::Agent { command } => {
             let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
             commands::agent::run(&cli.api_url, token.as_deref(), command).await
+        }
+
+        Commands::Observation { command } => {
+            let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
+            commands::observation::run(&cli.api_url, token.as_deref(), command).await
         }
 
         Commands::Mcp { command } => commands::mcp::run(&cli.api_url, cli.no_auth, command).await,

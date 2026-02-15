@@ -692,6 +692,42 @@ class TestAgentBehavior:
         assert policy["anti_spam"]["max_save_confirmation_prompts_per_turn"] == 1
         assert policy["fail_safe"]["no_saved_wording_without_proof"] is True
 
+    def test_operational_has_observation_draft_context_contract(self):
+        result = _get_agent_behavior()
+        contract = result["operational"]["observation_draft_context_v1"]
+        assert contract["schema_version"] == "observation_draft_context.v1"
+        source = contract["source_contract"]
+        assert source["event_type"] == "observation.logged"
+        assert source["dimension_prefix"] == "provisional.persist_intent."
+        assert source["projection_type"] == "open_observations"
+        assert contract["context_fields"] == [
+            "open_count",
+            "oldest_draft_age_hours",
+            "recent_drafts[]",
+        ]
+
+    def test_operational_has_observation_draft_promotion_contract(self):
+        result = _get_agent_behavior()
+        contract = result["operational"]["observation_draft_promotion_v1"]
+        assert contract["schema_version"] == "observation_draft_promote.v1"
+        api_contract = contract["api_contract"]
+        assert api_contract["list_endpoint"] == "GET /v1/agent/observation-drafts"
+        assert api_contract["detail_endpoint"] == "GET /v1/agent/observation-drafts/{observation_id}"
+        assert api_contract["promote_endpoint"] == (
+            "POST /v1/agent/observation-drafts/{observation_id}/promote"
+        )
+        guards = contract["promote_write_guards"]
+        assert guards["enforce_legacy_domain_invariants"] is True
+        assert guards["atomic_formal_write_plus_retract"] is True
+
+    def test_operational_has_draft_hygiene_feedback_contract(self):
+        result = _get_agent_behavior()
+        contract = result["operational"]["draft_hygiene_feedback_v1"]
+        assert contract["schema_version"] == "draft_hygiene_feedback.v1"
+        assert contract["status_levels"] == ["healthy", "monitor", "degraded"]
+        assert contract["window_days"] == 7
+        assert "draft_hygiene.backlog_open" in contract["quality_health_fields"]
+
     def test_operational_has_scenario_library_with_required_categories(self):
         result = _get_agent_behavior()
         library = result["operational"]["scenario_library_v1"]

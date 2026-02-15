@@ -1472,6 +1472,63 @@ def _get_agent_behavior() -> dict[str, Any]:
                     "require_explicit_status_label": True,
                 },
             },
+            "observation_draft_context_v1": {
+                "schema_version": "observation_draft_context.v1",
+                "goal": (
+                    "Make open persist-intent drafts visible in standard agent context so "
+                    "follow-up questions survive chat compaction."
+                ),
+                "source_contract": {
+                    "event_type": "observation.logged",
+                    "dimension_prefix": "provisional.persist_intent.",
+                    "projection_type": "open_observations",
+                },
+                "context_fields": [
+                    "open_count",
+                    "oldest_draft_age_hours",
+                    "recent_drafts[]",
+                ],
+                "recent_drafts_item_fields": [
+                    "observation_id",
+                    "timestamp",
+                    "summary",
+                ],
+            },
+            "observation_draft_promotion_v1": {
+                "schema_version": "observation_draft_promote.v1",
+                "goal": (
+                    "Enable low-friction conversion from draft observation to formal event "
+                    "without silent data loss."
+                ),
+                "api_contract": {
+                    "list_endpoint": "GET /v1/agent/observation-drafts",
+                    "detail_endpoint": "GET /v1/agent/observation-drafts/{observation_id}",
+                    "promote_endpoint": (
+                        "POST /v1/agent/observation-drafts/{observation_id}/promote"
+                    ),
+                },
+                "promote_write_guards": {
+                    "requires_formal_event_type": True,
+                    "reject_retraction_as_formal_target": True,
+                    "enforce_legacy_domain_invariants": True,
+                    "atomic_formal_write_plus_retract": True,
+                },
+            },
+            "draft_hygiene_feedback_v1": {
+                "schema_version": "draft_hygiene_feedback.v1",
+                "goal": (
+                    "Track draft backlog quality with actionable hygiene signals "
+                    "(not simplistic blame metrics)."
+                ),
+                "quality_health_fields": [
+                    "draft_hygiene.status",
+                    "draft_hygiene.backlog_open",
+                    "draft_hygiene.median_age_hours",
+                    "draft_hygiene.resolution_rate_7d",
+                ],
+                "status_levels": ["healthy", "monitor", "degraded"],
+                "window_days": 7,
+            },
             "reliability_ux_protocol": {
                 "goal": (
                     "Prevent certainty inflation by labeling every post-write response as "

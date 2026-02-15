@@ -21,7 +21,7 @@ use kura_core::projections::{Projection, ProjectionFreshness, ProjectionMeta, Pr
 
 use crate::auth::{AuthMethod, AuthenticatedUser, require_scopes};
 use crate::error::AppError;
-use crate::routes::events::create_events_batch_internal;
+use crate::routes::events::{create_events_batch_internal, enforce_legacy_domain_invariants};
 use crate::routes::system::SystemConfigResponse;
 use crate::state::AppState;
 
@@ -29,6 +29,15 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/agent/capabilities", get(get_agent_capabilities))
         .route("/v1/agent/context", get(get_agent_context))
+        .route("/v1/agent/observation-drafts", get(list_observation_drafts))
+        .route(
+            "/v1/agent/observation-drafts/{observation_id}",
+            get(get_observation_draft),
+        )
+        .route(
+            "/v1/agent/observation-drafts/{observation_id}/promote",
+            post(promote_observation_draft),
+        )
         .route(
             "/v1/agent/evidence/event/{event_id}",
             get(get_event_evidence_lineage),
@@ -236,7 +245,118 @@ pub struct AgentContextResponse {
     pub strength_inference: Vec<ProjectionResponse>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub custom: Vec<ProjectionResponse>,
+    pub observations_draft: AgentObservationsDraftContext,
     pub meta: AgentContextMeta,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentObservationDraftPreview {
+    pub observation_id: Uuid,
+    pub timestamp: DateTime<Utc>,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentObservationsDraftContext {
+    pub schema_version: String,
+    pub open_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_draft_age_hours: Option<f64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub recent_drafts: Vec<AgentObservationDraftPreview>,
+}
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct AgentObservationDraftListQuery {
+    /// Max number of drafts to return (default: 20, max: 100)
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentObservationDraftListItem {
+    pub observation_id: Uuid,
+    pub timestamp: DateTime<Utc>,
+    pub topic: String,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_event_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentObservationDraftListResponse {
+    pub schema_version: String,
+    pub open_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_draft_age_hours: Option<f64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<AgentObservationDraftListItem>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentObservationDraftDetail {
+    pub observation_id: Uuid,
+    pub timestamp: DateTime<Utc>,
+    pub topic: String,
+    pub summary: String,
+    pub value: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_event_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<Value>,
+    pub promotion_hint: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentObservationDraftDetailResponse {
+    pub schema_version: String,
+    pub draft: AgentObservationDraftDetail,
+}
+
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
+pub struct AgentObservationDraftPromoteRequest {
+    pub event_type: String,
+    pub data: Value,
+    #[serde(default)]
+    pub timestamp: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub device: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+    #[serde(default)]
+    pub retract_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentObservationDraftPromoteResponse {
+    pub schema_version: String,
+    pub draft_observation_id: Uuid,
+    pub promoted_event_id: Uuid,
+    pub retraction_event_id: Uuid,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<BatchEventWarning>,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -976,6 +1096,20 @@ struct WorkflowMarkerEventRow {
 #[derive(sqlx::FromRow)]
 struct RetractedMarkerRow {
     retracted_event_id: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct DraftObservationEventRow {
+    id: Uuid,
+    timestamp: DateTime<Utc>,
+    data: Value,
+    metadata: Value,
+}
+
+#[derive(sqlx::FromRow)]
+struct DraftObservationOverviewRow {
+    open_count: i64,
+    oldest_timestamp: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug)]
@@ -1852,6 +1986,277 @@ async fn fetch_projection_list(
     Ok(rows.into_iter().map(|r| r.into_response(now)).collect())
 }
 
+fn draft_topic_from_dimension(dimension: &str) -> String {
+    dimension
+        .trim()
+        .strip_prefix(OBSERVATION_DRAFT_DIMENSION_PREFIX)
+        .unwrap_or("other")
+        .to_string()
+}
+
+fn trim_or_none(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    for (idx, ch) in value.chars().enumerate() {
+        if idx >= max_chars {
+            out.push_str("...");
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn compact_json_summary(value: &Value) -> String {
+    match value {
+        Value::Null => "Draft ohne Nutzdaten".to_string(),
+        Value::String(text) => truncate_chars(text.trim(), 140),
+        Value::Number(number) => number.to_string(),
+        Value::Bool(flag) => {
+            if *flag {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }
+        Value::Array(items) => format!("{} Einträge", items.len()),
+        Value::Object(_) => {
+            let serialized = serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string());
+            truncate_chars(&serialized, 140)
+        }
+    }
+}
+
+fn draft_summary_from_data(data: &Value) -> String {
+    let context_text = data
+        .get("context_text")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| truncate_chars(text, 160));
+    if let Some(text) = context_text {
+        return text;
+    }
+    compact_json_summary(data.get("value").unwrap_or(&Value::Null))
+}
+
+fn draft_age_hours(timestamp: DateTime<Utc>, now: DateTime<Utc>) -> f64 {
+    let age_seconds = now.signed_duration_since(timestamp).num_seconds().max(0) as f64;
+    ((age_seconds / 3600.0) * 100.0).round() / 100.0
+}
+
+fn draft_context_from_rows(
+    rows: &[DraftObservationEventRow],
+    open_count: i64,
+    oldest_timestamp: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> AgentObservationsDraftContext {
+    let recent_drafts = rows
+        .iter()
+        .map(|row| AgentObservationDraftPreview {
+            observation_id: row.id,
+            timestamp: row.timestamp,
+            summary: draft_summary_from_data(&row.data),
+        })
+        .collect();
+
+    AgentObservationsDraftContext {
+        schema_version: OBSERVATION_DRAFT_CONTEXT_SCHEMA_VERSION.to_string(),
+        open_count,
+        oldest_draft_age_hours: oldest_timestamp.map(|ts| draft_age_hours(ts, now)),
+        recent_drafts,
+    }
+}
+
+fn draft_list_item_from_row(row: &DraftObservationEventRow) -> AgentObservationDraftListItem {
+    let dimension = row
+        .data
+        .get("dimension")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let topic = draft_topic_from_dimension(dimension);
+    let provenance = row.data.get("provenance");
+    AgentObservationDraftListItem {
+        observation_id: row.id,
+        timestamp: row.timestamp,
+        topic,
+        summary: draft_summary_from_data(&row.data),
+        source_event_type: provenance
+            .and_then(|value| value.get("source_event_type"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        claim_status: row
+            .data
+            .get("tags")
+            .and_then(Value::as_array)
+            .and_then(|tags| {
+                tags.iter().find_map(|tag| {
+                    let text = tag.as_str()?.trim();
+                    text.strip_prefix("claim_status:")
+                        .map(|suffix| suffix.to_string())
+                })
+            }),
+        mode: row
+            .data
+            .get("tags")
+            .and_then(Value::as_array)
+            .and_then(|tags| {
+                tags.iter().find_map(|tag| {
+                    let text = tag.as_str()?.trim();
+                    text.strip_prefix("mode:").map(|suffix| suffix.to_string())
+                })
+            }),
+        confidence: row.data.get("confidence").and_then(Value::as_f64),
+    }
+}
+
+async fn fetch_draft_observations_overview(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+) -> Result<DraftObservationOverviewRow, AppError> {
+    let row = sqlx::query_as::<_, DraftObservationOverviewRow>(
+        r#"
+        SELECT
+            COUNT(*)::bigint AS open_count,
+            MIN(e.timestamp) AS oldest_timestamp
+        FROM events e
+        WHERE e.user_id = $1
+          AND e.event_type = 'observation.logged'
+          AND e.data->>'dimension' LIKE $2
+          AND NOT EXISTS (
+            SELECT 1
+            FROM events r
+            WHERE r.user_id = e.user_id
+              AND r.event_type = 'event.retracted'
+              AND r.data->>'retracted_event_id' = e.id::text
+          )
+        "#,
+    )
+    .bind(user_id)
+    .bind(format!("{OBSERVATION_DRAFT_DIMENSION_PREFIX}%"))
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(row)
+}
+
+async fn fetch_draft_observations(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+    limit: i64,
+) -> Result<Vec<DraftObservationEventRow>, AppError> {
+    let rows = sqlx::query_as::<_, DraftObservationEventRow>(
+        r#"
+        SELECT e.id, e.timestamp, e.data, e.metadata
+        FROM events e
+        WHERE e.user_id = $1
+          AND e.event_type = 'observation.logged'
+          AND e.data->>'dimension' LIKE $2
+          AND NOT EXISTS (
+            SELECT 1
+            FROM events r
+            WHERE r.user_id = e.user_id
+              AND r.event_type = 'event.retracted'
+              AND r.data->>'retracted_event_id' = e.id::text
+          )
+        ORDER BY e.timestamp DESC, e.id DESC
+        LIMIT $3
+        "#,
+    )
+    .bind(user_id)
+    .bind(format!("{OBSERVATION_DRAFT_DIMENSION_PREFIX}%"))
+    .bind(limit.max(1))
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows)
+}
+
+async fn fetch_draft_observation_by_id(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+    observation_id: Uuid,
+) -> Result<Option<DraftObservationEventRow>, AppError> {
+    let row = sqlx::query_as::<_, DraftObservationEventRow>(
+        r#"
+        SELECT e.id, e.timestamp, e.data, e.metadata
+        FROM events e
+        WHERE e.user_id = $1
+          AND e.id = $2
+          AND e.event_type = 'observation.logged'
+          AND e.data->>'dimension' LIKE $3
+          AND NOT EXISTS (
+            SELECT 1
+            FROM events r
+            WHERE r.user_id = e.user_id
+              AND r.event_type = 'event.retracted'
+              AND r.data->>'retracted_event_id' = e.id::text
+          )
+        "#,
+    )
+    .bind(user_id)
+    .bind(observation_id)
+    .bind(format!("{OBSERVATION_DRAFT_DIMENSION_PREFIX}%"))
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row)
+}
+
+fn is_plan_event_type(event_type: &str) -> bool {
+    event_type
+        .trim()
+        .to_lowercase()
+        .starts_with("training_plan.")
+}
+
+fn draft_promotion_hint(event_type: &str) -> String {
+    if is_plan_event_type(event_type) {
+        return "training_plan.* requires /v1/agent/write-with-proof; promote with a non-plan event here or route through write-with-proof.".to_string();
+    }
+    "Promote schreibt ein formales Event und retractet den Draft in einem atomaren Batch."
+        .to_string()
+}
+
+fn validate_observation_draft_promote_event_type(raw_event_type: &str) -> Result<String, AppError> {
+    let event_type = raw_event_type.trim().to_lowercase();
+    if event_type.is_empty() {
+        return Err(AppError::Validation {
+            message: "event_type must not be empty".to_string(),
+            field: Some("event_type".to_string()),
+            received: None,
+            docs_hint: Some("Provide a formal target event type (e.g. set.logged).".to_string()),
+        });
+    }
+    if event_type == "event.retracted" {
+        return Err(AppError::Validation {
+            message: "event_type must not be event.retracted".to_string(),
+            field: Some("event_type".to_string()),
+            received: Some(Value::String(event_type)),
+            docs_hint: Some(
+                "Use a formal domain event and let promote handle the retraction step.".to_string(),
+            ),
+        });
+    }
+    if is_plan_event_type(&event_type) {
+        return Err(AppError::Validation {
+            message: "training_plan.* must be promoted via /v1/agent/write-with-proof".to_string(),
+            field: Some("event_type".to_string()),
+            received: Some(Value::String(event_type)),
+            docs_hint: Some(
+                "Use POST /v1/agent/write-with-proof for planning/coaching events.".to_string(),
+            ),
+        });
+    }
+    Ok(event_type)
+}
+
 fn clamp_verify_timeout_ms(value: Option<u64>) -> u64 {
     value.unwrap_or(1200).clamp(100, 10_000)
 }
@@ -2139,6 +2544,11 @@ const DECISION_BRIEF_BALANCED_ITEMS_PER_BLOCK: usize = 4;
 const DECISION_BRIEF_DETAILED_ITEMS_PER_BLOCK: usize = 5;
 const DECISION_BRIEF_MAX_ITEMS_PER_BLOCK: usize = 6;
 const DECISION_BRIEF_CHAT_TEMPLATE_ID: &str = "decision_brief.chat.context.v1";
+const OBSERVATION_DRAFT_CONTEXT_SCHEMA_VERSION: &str = "observation_draft_context.v1";
+const OBSERVATION_DRAFT_LIST_SCHEMA_VERSION: &str = "observation_draft_list.v1";
+const OBSERVATION_DRAFT_DETAIL_SCHEMA_VERSION: &str = "observation_draft_detail.v1";
+const OBSERVATION_DRAFT_PROMOTE_SCHEMA_VERSION: &str = "observation_draft_promote.v1";
+const OBSERVATION_DRAFT_DIMENSION_PREFIX: &str = "provisional.persist_intent.";
 
 fn read_value_string(value: Option<&Value>) -> Option<String> {
     value
@@ -5102,6 +5512,265 @@ pub async fn get_event_evidence_lineage(
     Ok(Json(AgentEventEvidenceResponse { event_id, claims }))
 }
 
+/// List open persist-intent draft observations.
+#[utoipa::path(
+    get,
+    path = "/v1/agent/observation-drafts",
+    params(AgentObservationDraftListQuery),
+    responses(
+        (status = 200, description = "Open observation drafts", body = AgentObservationDraftListResponse),
+        (status = 401, description = "Unauthorized", body = ApiError)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "system"
+)]
+pub async fn list_observation_drafts(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Query(query): Query<AgentObservationDraftListQuery>,
+) -> Result<Json<AgentObservationDraftListResponse>, AppError> {
+    require_scopes(&auth, &["agent:read"], "GET /v1/agent/observation-drafts")?;
+    let user_id = auth.user_id;
+    let limit = clamp_limit(query.limit, 20, 100);
+
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+    let overview = fetch_draft_observations_overview(&mut tx, user_id).await?;
+    let rows = fetch_draft_observations(&mut tx, user_id, limit).await?;
+    tx.commit().await?;
+
+    let now = Utc::now();
+    let items = rows.iter().map(draft_list_item_from_row).collect();
+    Ok(Json(AgentObservationDraftListResponse {
+        schema_version: OBSERVATION_DRAFT_LIST_SCHEMA_VERSION.to_string(),
+        open_count: overview.open_count,
+        oldest_draft_age_hours: overview.oldest_timestamp.map(|ts| draft_age_hours(ts, now)),
+        items,
+    }))
+}
+
+/// Load one open persist-intent draft observation by event ID.
+#[utoipa::path(
+    get,
+    path = "/v1/agent/observation-drafts/{observation_id}",
+    params(
+        ("observation_id" = Uuid, Path, description = "Draft observation event ID")
+    ),
+    responses(
+        (status = 200, description = "Draft observation detail", body = AgentObservationDraftDetailResponse),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 404, description = "Draft not found", body = ApiError)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "system"
+)]
+pub async fn get_observation_draft(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Path(observation_id): Path<Uuid>,
+) -> Result<Json<AgentObservationDraftDetailResponse>, AppError> {
+    require_scopes(
+        &auth,
+        &["agent:read"],
+        "GET /v1/agent/observation-drafts/{observation_id}",
+    )?;
+    let user_id = auth.user_id;
+
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let row = fetch_draft_observation_by_id(&mut tx, user_id, observation_id).await?;
+    tx.commit().await?;
+
+    let row = row.ok_or_else(|| AppError::NotFound {
+        resource: format!("observation draft '{}'", observation_id),
+    })?;
+
+    let dimension = row
+        .data
+        .get("dimension")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let provenance = row.data.get("provenance").cloned();
+    let source_event_type = provenance
+        .as_ref()
+        .and_then(|value| value.get("source_event_type"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    Ok(Json(AgentObservationDraftDetailResponse {
+        schema_version: OBSERVATION_DRAFT_DETAIL_SCHEMA_VERSION.to_string(),
+        draft: AgentObservationDraftDetail {
+            observation_id: row.id,
+            timestamp: row.timestamp,
+            topic: draft_topic_from_dimension(dimension),
+            summary: draft_summary_from_data(&row.data),
+            value: row.data.get("value").cloned().unwrap_or(Value::Null),
+            context_text: trim_or_none(row.data.get("context_text").and_then(Value::as_str)),
+            source_event_type: source_event_type.clone(),
+            claim_status: row
+                .data
+                .get("tags")
+                .and_then(Value::as_array)
+                .and_then(|tags| {
+                    tags.iter().find_map(|tag| {
+                        let text = tag.as_str()?.trim();
+                        text.strip_prefix("claim_status:")
+                            .map(|suffix| suffix.to_string())
+                    })
+                }),
+            mode: row
+                .data
+                .get("tags")
+                .and_then(Value::as_array)
+                .and_then(|tags| {
+                    tags.iter().find_map(|tag| {
+                        let text = tag.as_str()?.trim();
+                        text.strip_prefix("mode:").map(|suffix| suffix.to_string())
+                    })
+                }),
+            confidence: row.data.get("confidence").and_then(Value::as_f64),
+            provenance,
+            scope: row.data.get("scope").cloned(),
+            promotion_hint: draft_promotion_hint(source_event_type.as_deref().unwrap_or("")),
+        },
+    }))
+}
+
+/// Promote one open draft observation into a formal event and retract the draft.
+#[utoipa::path(
+    post,
+    path = "/v1/agent/observation-drafts/{observation_id}/promote",
+    params(
+        ("observation_id" = Uuid, Path, description = "Draft observation event ID")
+    ),
+    request_body = AgentObservationDraftPromoteRequest,
+    responses(
+        (status = 201, description = "Draft promoted and retracted", body = AgentObservationDraftPromoteResponse),
+        (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 404, description = "Draft not found", body = ApiError),
+        (status = 409, description = "Idempotency conflict", body = ApiError),
+        (status = 422, description = "Policy violation", body = ApiError)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "system"
+)]
+pub async fn promote_observation_draft(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Path(observation_id): Path<Uuid>,
+    Json(req): Json<AgentObservationDraftPromoteRequest>,
+) -> Result<(StatusCode, Json<AgentObservationDraftPromoteResponse>), AppError> {
+    require_scopes(
+        &auth,
+        &["agent:write"],
+        "POST /v1/agent/observation-drafts/{observation_id}/promote",
+    )?;
+    let user_id = auth.user_id;
+    let event_type = validate_observation_draft_promote_event_type(&req.event_type)?;
+
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let draft = fetch_draft_observation_by_id(&mut tx, user_id, observation_id).await?;
+    tx.commit().await?;
+
+    let draft = draft.ok_or_else(|| AppError::NotFound {
+        resource: format!("observation draft '{}'", observation_id),
+    })?;
+    let draft_session_id = draft
+        .metadata
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let formal_timestamp = req.timestamp.unwrap_or_else(Utc::now);
+    let formal_source =
+        trim_or_none(req.source.as_deref()).or_else(|| Some("agent_draft_promote".to_string()));
+    let formal_agent = trim_or_none(req.agent.as_deref()).or_else(|| Some("agent-api".to_string()));
+    let formal_device = trim_or_none(req.device.as_deref());
+    let formal_session_id = trim_or_none(req.session_id.as_deref()).or(draft_session_id);
+    let formal_idempotency_key =
+        trim_or_none(req.idempotency_key.as_deref()).unwrap_or_else(|| {
+            let seed = format!(
+                "{}|{}|{}|{}",
+                user_id,
+                observation_id,
+                event_type,
+                serde_json::to_string(&req.data).unwrap_or_else(|_| "{}".to_string())
+            );
+            format!("draft-promote-{}", stable_hash_suffix(&seed, 20))
+        });
+
+    let formal_event = CreateEventRequest {
+        timestamp: formal_timestamp,
+        event_type: event_type.clone(),
+        data: req.data,
+        metadata: EventMetadata {
+            source: formal_source,
+            agent: formal_agent,
+            device: formal_device,
+            session_id: formal_session_id.clone(),
+            idempotency_key: formal_idempotency_key,
+        },
+    };
+
+    let retract_reason =
+        trim_or_none(req.retract_reason.as_deref()).unwrap_or_else(|| "promoted".to_string());
+    let retract_seed = format!(
+        "{}|{}|{}|{}",
+        user_id, observation_id, formal_event.metadata.idempotency_key, retract_reason
+    );
+    let retract_event = CreateEventRequest {
+        timestamp: Utc::now(),
+        event_type: "event.retracted".to_string(),
+        data: json!({
+            "retracted_event_id": observation_id,
+            "retracted_event_type": "observation.logged",
+            "reason": retract_reason,
+            "promoted_event_type": event_type,
+        }),
+        metadata: EventMetadata {
+            source: Some("agent_draft_promote".to_string()),
+            agent: Some("agent-api".to_string()),
+            device: None,
+            session_id: formal_session_id,
+            idempotency_key: format!(
+                "draft-promote-retract-{}",
+                stable_hash_suffix(&retract_seed, 20)
+            ),
+        },
+    };
+    let events = vec![formal_event, retract_event];
+    enforce_legacy_domain_invariants(&state, user_id, &events).await?;
+    let batch = create_events_batch_internal(&state, user_id, &events).await?;
+    if batch.events.len() < 2 {
+        return Err(AppError::Internal(
+            "promotion batch did not return both formal and retraction events".to_string(),
+        ));
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(AgentObservationDraftPromoteResponse {
+            schema_version: OBSERVATION_DRAFT_PROMOTE_SCHEMA_VERSION.to_string(),
+            draft_observation_id: observation_id,
+            promoted_event_id: batch.events[0].id,
+            retraction_event_id: batch.events[1].id,
+            warnings: batch.warnings,
+        }),
+    ))
+}
+
 /// Write events with durable receipts and read-after-write verification.
 ///
 /// This endpoint enforces Decision 13.5 protocol semantics:
@@ -5751,6 +6420,8 @@ pub async fn get_agent_context(
         ranking_candidate_limit(custom_limit),
     )
     .await?;
+    let draft_overview = fetch_draft_observations_overview(&mut tx, user_id).await?;
+    let draft_rows = fetch_draft_observations(&mut tx, user_id, 5).await?;
 
     tx.commit().await?;
 
@@ -5760,6 +6431,12 @@ pub async fn get_agent_context(
         rank_projection_list(strength_candidates, strength_limit, &ranking_context);
     let custom = rank_projection_list(custom_candidates, custom_limit, &ranking_context);
     let generated_at = Utc::now();
+    let observations_draft = draft_context_from_rows(
+        &draft_rows,
+        draft_overview.open_count,
+        draft_overview.oldest_timestamp,
+        generated_at,
+    );
     let challenge_mode = resolve_challenge_mode(Some(&user_profile));
     let temporal_context =
         build_agent_temporal_context(&user_profile, training_timeline.as_ref(), generated_at);
@@ -5795,6 +6472,7 @@ pub async fn get_agent_context(
         exercise_progression,
         strength_inference,
         custom,
+        observations_draft,
         meta: AgentContextMeta {
             generated_at,
             exercise_limit,
@@ -12485,5 +13163,133 @@ mod tests {
 
         assert_eq!(action_class, "high_impact_write");
         assert_eq!(summary, vec!["training_plan.updated:1".to_string()]);
+    }
+
+    #[test]
+    fn observation_draft_context_contract_schema_version_is_pinned() {
+        assert_eq!(
+            super::OBSERVATION_DRAFT_CONTEXT_SCHEMA_VERSION,
+            "observation_draft_context.v1"
+        );
+        assert_eq!(
+            super::OBSERVATION_DRAFT_LIST_SCHEMA_VERSION,
+            "observation_draft_list.v1"
+        );
+        assert_eq!(
+            super::OBSERVATION_DRAFT_DETAIL_SCHEMA_VERSION,
+            "observation_draft_detail.v1"
+        );
+        assert_eq!(
+            super::OBSERVATION_DRAFT_PROMOTE_SCHEMA_VERSION,
+            "observation_draft_promote.v1"
+        );
+        assert_eq!(
+            super::OBSERVATION_DRAFT_DIMENSION_PREFIX,
+            "provisional.persist_intent."
+        );
+    }
+
+    #[test]
+    fn observation_draft_context_contract_maps_recent_drafts_and_age() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-02-15T12:00:00Z")
+            .expect("valid now")
+            .with_timezone(&Utc);
+        let oldest_timestamp = chrono::DateTime::parse_from_rfc3339("2026-02-15T08:00:00Z")
+            .expect("valid oldest")
+            .with_timezone(&Utc);
+        let newest_timestamp = chrono::DateTime::parse_from_rfc3339("2026-02-15T11:30:00Z")
+            .expect("valid newest")
+            .with_timezone(&Utc);
+        let rows = vec![
+            super::DraftObservationEventRow {
+                id: Uuid::now_v7(),
+                timestamp: newest_timestamp,
+                data: json!({
+                    "dimension": "provisional.persist_intent.training_plan",
+                    "context_text": "Empfehlung: Sprungtraining Bern (noch nicht formalisiert)"
+                }),
+                metadata: json!({}),
+            },
+            super::DraftObservationEventRow {
+                id: Uuid::now_v7(),
+                timestamp: oldest_timestamp,
+                data: json!({
+                    "dimension": "provisional.persist_intent.other",
+                    "value": {"foo": "bar"}
+                }),
+                metadata: json!({}),
+            },
+        ];
+
+        let context = super::draft_context_from_rows(&rows, 2, Some(oldest_timestamp), now);
+        assert_eq!(context.schema_version, "observation_draft_context.v1");
+        assert_eq!(context.open_count, 2);
+        assert_eq!(context.recent_drafts.len(), 2);
+        assert!(
+            context.recent_drafts[0]
+                .summary
+                .contains("Empfehlung: Sprungtraining Bern")
+        );
+        assert_eq!(context.oldest_draft_age_hours, Some(4.0));
+    }
+
+    #[test]
+    fn observation_draft_context_contract_maps_list_item_contract() {
+        let row = super::DraftObservationEventRow {
+            id: Uuid::now_v7(),
+            timestamp: Utc::now(),
+            data: json!({
+                "dimension": "provisional.persist_intent.training_plan",
+                "context_text": "Mikrozyklus Vorschlag",
+                "tags": ["claim_status:draft", "mode:ask_first"],
+                "confidence": 0.67,
+                "provenance": {"source_event_type": "session.logged"}
+            }),
+            metadata: json!({}),
+        };
+
+        let item = super::draft_list_item_from_row(&row);
+        assert_eq!(item.topic, "training_plan");
+        assert_eq!(item.summary, "Mikrozyklus Vorschlag");
+        assert_eq!(item.source_event_type.as_deref(), Some("session.logged"));
+        assert_eq!(item.claim_status.as_deref(), Some("draft"));
+        assert_eq!(item.mode.as_deref(), Some("ask_first"));
+        assert_eq!(item.confidence, Some(0.67));
+    }
+
+    #[test]
+    fn observation_draft_promotion_contract_requires_non_plan_formal_event_type() {
+        let ok = super::validate_observation_draft_promote_event_type(" set.logged ");
+        assert_eq!(ok.expect("set.logged should be valid"), "set.logged");
+
+        let plan_error =
+            super::validate_observation_draft_promote_event_type("training_plan.updated")
+                .expect_err("plan event should be rejected");
+        match plan_error {
+            AppError::Validation {
+                field,
+                docs_hint,
+                message,
+                ..
+            } => {
+                assert_eq!(field.as_deref(), Some("event_type"));
+                assert!(message.contains("/v1/agent/write-with-proof"));
+                assert_eq!(
+                    docs_hint.as_deref(),
+                    Some("Use POST /v1/agent/write-with-proof for planning/coaching events.")
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        let retract_error = super::validate_observation_draft_promote_event_type("event.retracted")
+            .expect_err("event.retracted should be rejected");
+        match retract_error {
+            AppError::Validation { field, message, .. } => {
+                assert_eq!(field.as_deref(), Some("event_type"));
+                assert!(message.contains("must not be event.retracted"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }
