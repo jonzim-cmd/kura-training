@@ -1,3 +1,4 @@
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
@@ -4880,6 +4881,19 @@ async fn verify_read_after_write_until_timeout(
     Ok((checks, waited_ms))
 }
 
+fn map_json_rejection_to_validation(
+    rejection: JsonRejection,
+    endpoint: &str,
+    docs_hint: &str,
+) -> AppError {
+    AppError::Validation {
+        message: format!("Invalid JSON request payload: {}", rejection.body_text()),
+        field: Some("body".to_string()),
+        received: None,
+        docs_hint: Some(format!("{} ({endpoint})", docs_hint)),
+    }
+}
+
 /// Resolve whether a visualization should be shown and validate data-bound specs.
 ///
 /// Decision 13 + pdc.6 semantics:
@@ -4902,13 +4916,22 @@ async fn verify_read_after_write_until_timeout(
 pub async fn resolve_visualization(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
-    Json(req): Json<AgentResolveVisualizationRequest>,
+    req: Result<Json<AgentResolveVisualizationRequest>, JsonRejection>,
 ) -> Result<Json<AgentResolveVisualizationResponse>, AppError> {
     require_scopes(
         &auth,
         &["agent:resolve"],
         "POST /v1/agent/visualization/resolve",
     )?;
+    let req = req
+        .map_err(|rejection| {
+            map_json_rejection_to_validation(
+                rejection,
+                "POST /v1/agent/visualization/resolve",
+                "Provide JSON with task_intent and optional visualization_spec/user_preference_override/complexity_hint fields.",
+            )
+        })?
+        .0;
     let user_id = auth.user_id;
     let task_intent = req.task_intent.trim();
     if task_intent.is_empty() {
@@ -7330,7 +7353,7 @@ mod tests {
             telemetry_session_id: Some("viz-e2e-visualize".to_string()),
         };
 
-        let response = resolve_visualization(State(state.clone()), auth.clone(), Json(req))
+        let response = resolve_visualization(State(state.clone()), auth.clone(), Ok(Json(req)))
             .await
             .expect("resolve visualization should succeed")
             .0;
@@ -7413,7 +7436,7 @@ mod tests {
             telemetry_session_id: Some("viz-e2e-invalid".to_string()),
         };
 
-        let error = resolve_visualization(State(state), auth, Json(req))
+        let error = resolve_visualization(State(state), auth, Ok(Json(req)))
             .await
             .expect_err("invalid json_path must fail");
 
@@ -7478,14 +7501,14 @@ mod tests {
         let rich_response = resolve_visualization(
             State(state.clone()),
             auth.clone(),
-            Json(AgentResolveVisualizationRequest {
+            Ok(Json(AgentResolveVisualizationRequest {
                 task_intent: "compare weekly trend".to_string(),
                 user_preference_override: None,
                 complexity_hint: None,
                 allow_rich_rendering: true,
                 visualization_spec: Some(base_spec.clone()),
                 telemetry_session_id: Some("viz-e2e-rich".to_string()),
-            }),
+            })),
         )
         .await
         .expect("rich rendering should succeed")
@@ -7499,14 +7522,14 @@ mod tests {
         let fallback_response = resolve_visualization(
             State(state.clone()),
             auth.clone(),
-            Json(AgentResolveVisualizationRequest {
+            Ok(Json(AgentResolveVisualizationRequest {
                 task_intent: "compare weekly trend".to_string(),
                 user_preference_override: None,
                 complexity_hint: None,
                 allow_rich_rendering: false,
                 visualization_spec: Some(base_spec),
                 telemetry_session_id: Some("viz-e2e-fallback".to_string()),
-            }),
+            })),
         )
         .await
         .expect("fallback rendering should succeed")
@@ -7540,14 +7563,14 @@ mod tests {
         let response = resolve_visualization(
             State(state.clone()),
             auth.clone(),
-            Json(AgentResolveVisualizationRequest {
+            Ok(Json(AgentResolveVisualizationRequest {
                 task_intent: "what is my latest bodyweight entry".to_string(),
                 user_preference_override: None,
                 complexity_hint: None,
                 allow_rich_rendering: true,
                 visualization_spec: None,
                 telemetry_session_id: Some("viz-e2e-skipped".to_string()),
-            }),
+            })),
         )
         .await
         .expect("skip path should succeed")

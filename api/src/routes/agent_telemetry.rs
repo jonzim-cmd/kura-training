@@ -228,20 +228,22 @@ struct LearningSignalEventRow {
 }
 
 async fn ensure_admin(state: &AppState, auth: &AuthenticatedUser) -> Result<(), AppError> {
-    let is_admin: bool = sqlx::query_scalar("SELECT is_admin FROM users WHERE id = $1")
+    let is_admin = sqlx::query_scalar::<_, bool>("SELECT is_admin FROM users WHERE id = $1")
         .bind(auth.user_id)
-        .fetch_one(&state.db)
+        .fetch_optional(&state.db)
         .await
         .map_err(AppError::Database)?;
+    ensure_admin_flag(is_admin)
+}
 
-    if is_admin {
-        Ok(())
-    } else {
-        Err(AppError::Forbidden {
-            message: "Admin privileges required".to_string(),
-            docs_hint: Some("Only admin users can view agent telemetry.".to_string()),
-        })
+fn ensure_admin_flag(is_admin: Option<bool>) -> Result<(), AppError> {
+    if is_admin.unwrap_or(false) {
+        return Ok(());
     }
+    Err(AppError::Forbidden {
+        message: "Admin privileges required".to_string(),
+        docs_hint: Some("Only admin users can view agent telemetry.".to_string()),
+    })
 }
 
 async fn begin_admin_worker_tx<'a>(
@@ -1146,6 +1148,20 @@ mod tests {
     fn rate_pct_handles_zero_denominator() {
         assert_eq!(rate_pct(3, 0), 0.0);
         assert_eq!(rate_pct(5, 20), 25.0);
+    }
+
+    #[test]
+    fn ensure_admin_flag_denies_missing_user_record() {
+        let err = ensure_admin_flag(None).expect_err("missing users row must not pass");
+        match err {
+            AppError::Forbidden { message, .. } => assert_eq!(message, "Admin privileges required"),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ensure_admin_flag_allows_admin_user() {
+        ensure_admin_flag(Some(true)).expect("admin user should be allowed");
     }
 
     #[test]
