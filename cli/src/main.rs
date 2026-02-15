@@ -42,7 +42,7 @@ enum Commands {
         command: commands::projection::ProjectionCommands,
     },
 
-    /// Agent operations (context, write-with-proof, evidence)
+    /// Agent operations (capabilities, context, write-with-proof, evidence, preferences)
     Agent {
         #[command(subcommand)]
         command: commands::agent::AgentCommands,
@@ -198,7 +198,14 @@ async fn main() {
             commands::account::run(&cli.api_url, token.as_deref(), command).await
         }
 
-        Commands::Admin { command } => commands::admin::run(&cli.api_url, command).await,
+        Commands::Admin { command } => {
+            let token = if commands::admin::requires_api_auth(&command) {
+                resolve_or_exit(&cli.api_url, cli.no_auth).await
+            } else {
+                None
+            };
+            commands::admin::run(&cli.api_url, token.as_deref(), command).await
+        }
 
         Commands::Login { device } => {
             if let Err(e) = commands::auth::login(&cli.api_url, device).await {

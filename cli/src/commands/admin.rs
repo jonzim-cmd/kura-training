@@ -87,9 +87,55 @@ pub enum AdminCommands {
         #[arg(long)]
         expires_at: Option<String>,
     },
+    /// Agent telemetry endpoints (admin only, via API)
+    Telemetry {
+        #[command(subcommand)]
+        command: AdminTelemetryCommands,
+    },
 }
 
-pub async fn run(api_url: &str, command: AdminCommands) -> i32 {
+#[derive(Subcommand)]
+pub enum AdminTelemetryCommands {
+    /// Overview metrics for a rolling window
+    Overview {
+        /// Window size in hours (default: 24, max: 720)
+        #[arg(long)]
+        window_hours: Option<i32>,
+    },
+    /// Derived anomaly feed from telemetry overview
+    Anomalies {
+        /// Window size in hours (default: 24, max: 720)
+        #[arg(long)]
+        window_hours: Option<i32>,
+        /// Max anomalies to return (default: 10, max: 30)
+        #[arg(long)]
+        limit: Option<i64>,
+    },
+    /// Raw learning-signal feed
+    Signals {
+        /// Window size in hours (default: 24, max: 720)
+        #[arg(long)]
+        window_hours: Option<i32>,
+        /// Max events to return (default: 120, max: 500)
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Optional signal_type filter
+        #[arg(long)]
+        signal_type: Option<String>,
+        /// Optional user filter (UUID)
+        #[arg(long)]
+        user_id: Option<uuid::Uuid>,
+    },
+}
+
+pub fn requires_api_auth(command: &AdminCommands) -> bool {
+    !matches!(
+        command,
+        AdminCommands::CreateUser { .. } | AdminCommands::CreateKey { .. }
+    )
+}
+
+pub async fn run(api_url: &str, token: Option<&str>, command: AdminCommands) -> i32 {
     match command {
         AdminCommands::CreateUser {
             email,
@@ -110,7 +156,7 @@ pub async fn run(api_url: &str, command: AdminCommands) -> i32 {
                 api_url,
                 reqwest::Method::GET,
                 "/v1/admin/access-requests",
-                None,
+                token,
                 None,
                 &query,
                 &[],
@@ -124,7 +170,7 @@ pub async fn run(api_url: &str, command: AdminCommands) -> i32 {
                 api_url,
                 reqwest::Method::POST,
                 &format!("/v1/admin/access-requests/{id}/approve"),
-                None,
+                token,
                 None,
                 &[],
                 &[],
@@ -138,7 +184,7 @@ pub async fn run(api_url: &str, command: AdminCommands) -> i32 {
                 api_url,
                 reqwest::Method::POST,
                 &format!("/v1/admin/access-requests/{id}/reject"),
-                None,
+                token,
                 None,
                 &[],
                 &[],
@@ -159,7 +205,7 @@ pub async fn run(api_url: &str, command: AdminCommands) -> i32 {
                 api_url,
                 reqwest::Method::POST,
                 "/v1/admin/invites",
-                None,
+                token,
                 Some(body),
                 &[],
                 &[],
@@ -176,7 +222,7 @@ pub async fn run(api_url: &str, command: AdminCommands) -> i32 {
                 api_url,
                 reqwest::Method::GET,
                 "/v1/admin/invites",
-                None,
+                token,
                 None,
                 &query,
                 &[],
@@ -199,6 +245,86 @@ pub async fn run(api_url: &str, command: AdminCommands) -> i32 {
                 &ticket_id,
                 requested_mode.as_deref(),
                 expires_at.as_deref(),
+            )
+            .await
+        }
+        AdminCommands::Telemetry { command } => telemetry(api_url, token, command).await,
+    }
+}
+
+async fn telemetry(api_url: &str, token: Option<&str>, command: AdminTelemetryCommands) -> i32 {
+    match command {
+        AdminTelemetryCommands::Overview { window_hours } => {
+            let mut query = Vec::new();
+            if let Some(hours) = window_hours {
+                query.push(("window_hours".to_string(), hours.to_string()));
+            }
+            api_request(
+                api_url,
+                reqwest::Method::GET,
+                "/v1/admin/agent/telemetry/overview",
+                token,
+                None,
+                &query,
+                &[],
+                false,
+                false,
+            )
+            .await
+        }
+        AdminTelemetryCommands::Anomalies {
+            window_hours,
+            limit,
+        } => {
+            let mut query = Vec::new();
+            if let Some(hours) = window_hours {
+                query.push(("window_hours".to_string(), hours.to_string()));
+            }
+            if let Some(limit) = limit {
+                query.push(("limit".to_string(), limit.to_string()));
+            }
+            api_request(
+                api_url,
+                reqwest::Method::GET,
+                "/v1/admin/agent/telemetry/anomalies",
+                token,
+                None,
+                &query,
+                &[],
+                false,
+                false,
+            )
+            .await
+        }
+        AdminTelemetryCommands::Signals {
+            window_hours,
+            limit,
+            signal_type,
+            user_id,
+        } => {
+            let mut query = Vec::new();
+            if let Some(hours) = window_hours {
+                query.push(("window_hours".to_string(), hours.to_string()));
+            }
+            if let Some(limit) = limit {
+                query.push(("limit".to_string(), limit.to_string()));
+            }
+            if let Some(signal_type) = signal_type {
+                query.push(("signal_type".to_string(), signal_type));
+            }
+            if let Some(user_id) = user_id {
+                query.push(("user_id".to_string(), user_id.to_string()));
+            }
+            api_request(
+                api_url,
+                reqwest::Method::GET,
+                "/v1/admin/agent/telemetry/signals",
+                token,
+                None,
+                &query,
+                &[],
+                false,
+                false,
             )
             .await
         }

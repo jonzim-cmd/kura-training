@@ -1,4 +1,5 @@
-use clap::{Args, Subcommand};
+use chrono::Utc;
+use clap::{Args, Subcommand, ValueEnum};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -6,6 +7,8 @@ use crate::util::{api_request, exit_error, read_json_from_file};
 
 #[derive(Subcommand)]
 pub enum AgentCommands {
+    /// Get negotiated agent capabilities manifest
+    Capabilities,
     /// Get agent context bundle (system + user profile + key dimensions)
     Context {
         /// Max exercise_progression projections to include (default: 5)
@@ -28,8 +31,31 @@ pub enum AgentCommands {
         #[command(subcommand)]
         command: AgentEvidenceCommands,
     },
+    /// Set user save-confirmation preference (persist-intent override)
+    SetSaveConfirmationMode {
+        /// auto | always | never
+        #[arg(value_enum)]
+        mode: SaveConfirmationMode,
+    },
     /// Direct agent API access under /v1/agent/*
     Request(AgentRequestArgs),
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum SaveConfirmationMode {
+    Auto,
+    Always,
+    Never,
+}
+
+impl SaveConfirmationMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            SaveConfirmationMode::Auto => "auto",
+            SaveConfirmationMode::Always => "always",
+            SaveConfirmationMode::Never => "never",
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -104,6 +130,7 @@ pub struct WriteWithProofArgs {
 
 pub async fn run(api_url: &str, token: Option<&str>, command: AgentCommands) -> i32 {
     match command {
+        AgentCommands::Capabilities => capabilities(api_url, token).await,
         AgentCommands::Context {
             exercise_limit,
             strength_limit,
@@ -126,8 +153,26 @@ pub async fn run(api_url: &str, token: Option<&str>, command: AgentCommands) -> 
                 evidence_event(api_url, token, event_id).await
             }
         },
+        AgentCommands::SetSaveConfirmationMode { mode } => {
+            set_save_confirmation_mode(api_url, token, mode).await
+        }
         AgentCommands::Request(args) => request(api_url, token, args).await,
     }
+}
+
+async fn capabilities(api_url: &str, token: Option<&str>) -> i32 {
+    api_request(
+        api_url,
+        reqwest::Method::GET,
+        "/v1/agent/capabilities",
+        token,
+        None,
+        &[],
+        &[],
+        false,
+        false,
+    )
+    .await
 }
 
 pub async fn context(
@@ -174,6 +219,38 @@ async fn evidence_event(api_url: &str, token: Option<&str>, event_id: Uuid) -> i
         &path,
         token,
         None,
+        &[],
+        &[],
+        false,
+        false,
+    )
+    .await
+}
+
+async fn set_save_confirmation_mode(
+    api_url: &str,
+    token: Option<&str>,
+    mode: SaveConfirmationMode,
+) -> i32 {
+    let body = json!({
+        "timestamp": Utc::now().to_rfc3339(),
+        "event_type": "preference.set",
+        "data": {
+            "key": "save_confirmation_mode",
+            "value": mode.as_str(),
+        },
+        "metadata": {
+            "source": "cli",
+            "agent": "kura-cli",
+            "idempotency_key": Uuid::now_v7().to_string(),
+        }
+    });
+    api_request(
+        api_url,
+        reqwest::Method::POST,
+        "/v1/events",
+        token,
+        Some(body),
         &[],
         &[],
         false,
@@ -444,8 +521,8 @@ fn build_write_with_proof_request(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_write_with_proof_request, extract_events_array, normalize_agent_path, parse_method,
-        parse_targets,
+        SaveConfirmationMode, build_write_with_proof_request, extract_events_array,
+        normalize_agent_path, parse_method, parse_targets,
     };
     use serde_json::json;
 
@@ -520,5 +597,12 @@ mod tests {
             1
         );
         assert_eq!(request["verify_timeout_ms"], 1200);
+    }
+
+    #[test]
+    fn save_confirmation_mode_serializes_expected_values() {
+        assert_eq!(SaveConfirmationMode::Auto.as_str(), "auto");
+        assert_eq!(SaveConfirmationMode::Always.as_str(), "always");
+        assert_eq!(SaveConfirmationMode::Never.as_str(), "never");
     }
 }
