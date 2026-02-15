@@ -50,6 +50,24 @@ A full source-to-target migration was executed from VPS Postgres to Supabase, fo
   - post-cleanup check: `users_total = 1`, test-prefixed users/clients = `0`
 - Detailed evidence: `docs/reports/supabase-auth-compatibility-2026-02-15.md`
 
+## Timed Rollback Drill (Formal)
+
+- Drill window: 2026-02-15 22:09:42Z -> 22:12:09Z
+- Phase durations:
+  - rollback to VPS Postgres runtime: `73s`
+  - restore to Supabase runtime: `74s`
+- Service switch sequence per phase:
+  - `docker compose ... up -d kura-api kura-worker`
+  - `docker compose ... up -d --force-recreate kura-proxy`
+- Data-integrity checks (before/after):
+  - Supabase before restore and after restore:
+    - `users=1`, `events=270`, `projections=35`, `oauth_clients=2`, `user_identities=1`, `api_keys=1`
+  - Local Postgres before and after rollback:
+    - `users=1`, `events=270`, `projections=35`, `oauth_clients=2`, `user_identities=1`, `api_keys=1`
+- Operational note:
+  - A preliminary run showed `502` on `kura-proxy` after API recreation when proxy was not recreated.
+  - Mitigation validated in timed drill: force-recreate `kura-proxy` after API/worker redeploy.
+
 ## Incident During Cutover
 
 - Worker crash loop occurred with `permission denied to set role "app_worker"`.
@@ -59,12 +77,11 @@ A full source-to-target migration was executed from VPS Postgres to Supabase, fo
 
 ## Gate Status
 
-- Downtime <= 15 min: NOT formally measured yet
-- Rollback <= 30 min: NOT drilled yet
+- Downtime proxy <= 15 min (restore phase): PASS (`74s`)
+- Rollback <= 30 min: PASS (`73s`)
 - Data integrity parity: PASS for migration checks performed
 - Runtime health (API/worker): PASS
 
 ## Remaining Work
 
-1. Run and record formal timed rollback probe.
-2. Complete baseline guardrail metadata (PITR/spend/restore drill owner+date).
+1. Complete baseline guardrail metadata (PITR/spend/restore drill owner+date).

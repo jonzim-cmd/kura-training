@@ -61,7 +61,8 @@ Production guardrail: `docker/compose.production.yml` requires `KURA_API_DATABAS
    - set `KURA_API_DATABASE_URL` to Supabase session pooler URL
    - set `KURA_WORKER_DATABASE_URL` to Supabase session pooler URL
 5. Redeploy services:
-   - `docker compose -f docker/compose.production.yml --env-file docker/.env.production up -d kura-api kura-worker kura-proxy`
+   - `docker compose -f docker/compose.production.yml --env-file docker/.env.production up -d kura-api kura-worker`
+   - `docker compose -f docker/compose.production.yml --env-file docker/.env.production up -d --force-recreate kura-proxy`
 
 Note: `scripts/deploy.sh` now runs the migration drift gate automatically before starting services.
 
@@ -81,23 +82,37 @@ Note: `scripts/deploy.sh` now runs the migration drift gate automatically before
    - verify login, PKCE exchange, refresh rotation, and device token flows pass without Supabase Auth token issuance
    - evidence report: `docs/reports/supabase-auth-compatibility-2026-02-15.md`
 
-## 8. Rollback Procedure (pending timed drill)
+## 8. Rollback Procedure
 
 1. Set `KURA_API_DATABASE_URL` and `KURA_WORKER_DATABASE_URL` back to previous VPS Postgres URL.
-2. Redeploy API/worker/proxy via compose.
+2. Redeploy runtime:
+   - `docker compose -f docker/compose.production.yml --env-file docker/.env.production up -d kura-api kura-worker`
+   - `docker compose -f docker/compose.production.yml --env-file docker/.env.production up -d --force-recreate kura-proxy`
 3. Run health + key auth/projection smoke tests.
 4. Confirm worker processes pending jobs.
+5. Roll-forward to Supabase after probe/fix with the same service sequence (API/worker, then forced proxy recreate).
 
-## 9. Go/No-Go Gates
+## 9. Rollback Trigger Matrix
 
-- Dry-run downtime <= 15 min: pending formal timed measurement
-- Rollback <= 30 min: pending formal drill
+1. Trigger: sustained API 5xx after cutover (>= 5 minutes)
+   - Action: execute full rollback procedure immediately
+2. Trigger: worker cannot process jobs after role/grant verification
+   - Action: rollback runtime DB URLs, then investigate Supabase role/session path offline
+3. Trigger: auth regression in login/refresh/device/PKCE smoke suite
+   - Action: rollback and freeze new writes until parity confirmed
+4. Trigger: data integrity mismatch in key table spot checks (`users/events/projections/oauth_*`)
+   - Action: rollback and run source-vs-target diff before reattempt
+
+## 10. Go/No-Go Gates
+
+- Timed rollback drill (2026-02-15): `73s` (PASS, threshold `<= 30 min`)
+- Timed restore-to-Supabase drill (2026-02-15): `74s` (PASS, dry-run downtime proxy `<= 15 min`)
 - P0/P1 defects in cutover path: none currently open from runtime switch itself
 - API health after cutover: pass
 - Worker health after cutover: pass (after role grant fix)
+- Data-integrity spot checks during rollback drill: PASS (`users/events/projections/oauth_clients/user_identities/api_keys` unchanged)
 
-## 10. Known Gaps
+## 11. Known Gaps
 
-1. Formal rollback drill with measured recovery time is still missing.
-2. PITR is currently not enabled (`pitr_enabled=false` as of 2026-02-15); enablement is a launch gate.
-3. Spend alert thresholds and org hard cap must be manually confirmed in dashboard before launch sign-off.
+1. PITR is currently not enabled (`pitr_enabled=false` as of 2026-02-15); enablement is a launch gate.
+2. Spend alert thresholds and org hard cap must be manually confirmed in dashboard before launch sign-off.

@@ -83,8 +83,13 @@ info "Running migration drift preflight..."
 
 # ── Start ─────────────────────────────────────────────
 
-info "Starting services..."
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d
+info "Starting core services..."
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d kura-postgres kura-api kura-worker
+
+# nginx resolves upstream IPs on startup. Force proxy recreation so it always picks
+# up the latest kura-api container IP after API recreation during deploy/rollback.
+info "Recreating kura-proxy to refresh upstream binding..."
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --force-recreate kura-proxy
 
 # ── Wait for healthy ──────────────────────────────────
 
