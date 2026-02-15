@@ -315,6 +315,7 @@ def _get_conventions() -> dict[str, Any]:
             "false_positive_controls": {
                 "min_support_default": 3,
                 "min_unique_users_default": 2,
+                "max_events_per_user_per_bucket_default": 3,
                 "include_low_confidence_default": False,
                 "confidence_band_policy": "exclude low confidence by default",
             },
@@ -877,6 +878,7 @@ def _get_conventions() -> dict[str, Any]:
                 "window_days": 30,
                 "min_support": 3,
                 "min_unique_users": 2,
+                "max_events_per_user_per_cluster": 3,
                 "max_proposals_per_run": 12,
             },
             "backlog_bridge_integration": {

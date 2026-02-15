@@ -53,6 +53,7 @@ class UnknownDimensionMiningSettings:
     window_days: int
     min_support: int
     min_unique_users: int
+    max_events_per_user_per_cluster: int
     frequency_reference_count: int
     reproducibility_reference_users: int
     representative_examples: int
@@ -89,6 +90,9 @@ def unknown_dimension_mining_settings() -> UnknownDimensionMiningSettings:
         window_days=_int_env("KURA_UNKNOWN_DIMENSION_WINDOW_DAYS", 30, 1),
         min_support=_int_env("KURA_UNKNOWN_DIMENSION_MIN_SUPPORT", 3, 1),
         min_unique_users=_int_env("KURA_UNKNOWN_DIMENSION_MIN_UNIQUE_USERS", 2, 1),
+        max_events_per_user_per_cluster=_int_env(
+            "KURA_UNKNOWN_DIMENSION_MAX_EVENTS_PER_USER_PER_CLUSTER", 3, 1
+        ),
         frequency_reference_count=_int_env(
             "KURA_UNKNOWN_DIMENSION_FREQUENCY_REFERENCE_COUNT", 10, 1
         ),
@@ -328,6 +332,7 @@ def build_unknown_dimension_proposals(
     proposals: list[dict[str, Any]] = []
     filtered_min_support = 0
     filtered_unique_users = 0
+    dominance_dropped_events = 0
 
     for key in sorted(grouped.keys()):
         period_key, cluster_signature = key
@@ -335,8 +340,20 @@ def build_unknown_dimension_proposals(
             grouped[key],
             key=lambda item: (item.captured_at, item.event_id),
         )
-        event_count = len(bucket)
-        unique_users = len({sample.pseudonymized_user_id for sample in bucket})
+        per_user_counts: dict[str, int] = {}
+        capped_bucket: list[UnknownObservationSample] = []
+        dropped_for_bucket = 0
+        for sample in bucket:
+            current = per_user_counts.get(sample.pseudonymized_user_id, 0)
+            if current >= settings.max_events_per_user_per_cluster:
+                dropped_for_bucket += 1
+                continue
+            per_user_counts[sample.pseudonymized_user_id] = current + 1
+            capped_bucket.append(sample)
+        dominance_dropped_events += dropped_for_bucket
+
+        event_count = len(capped_bucket)
+        unique_users = len({sample.pseudonymized_user_id for sample in capped_bucket})
         if event_count < settings.min_support:
             filtered_min_support += 1
             continue
@@ -345,10 +362,10 @@ def build_unknown_dimension_proposals(
             continue
 
         schema, schema_diag = _suggested_dimension_schema(
-            bucket,
-            semantic_fingerprint=bucket[0].semantic_fingerprint,
+            capped_bucket,
+            semantic_fingerprint=capped_bucket[0].semantic_fingerprint,
         )
-        scope_counter = Counter(sample.scope_level for sample in bucket)
+        scope_counter = Counter(sample.scope_level for sample in capped_bucket)
         scope_impact = sum(
             _SCOPE_IMPACT_WEIGHT.get(scope, 0.72) * count
             for scope, count in scope_counter.items()
@@ -372,7 +389,7 @@ def build_unknown_dimension_proposals(
             risk_notes.append("unit_inconsistency_detected")
         if confidence < 0.55:
             risk_notes.append("low_confidence_dimension_hypothesis")
-        if any(sample.tier == "provisional" for sample in bucket):
+        if any(sample.tier == "provisional" for sample in capped_bucket):
             risk_notes.append("provisional_prefix_inputs_present")
 
         representatives = [
@@ -385,10 +402,10 @@ def build_unknown_dimension_proposals(
                 "value": sample.value,
                 "unit": sample.unit,
             }
-            for sample in bucket[: settings.representative_examples]
+            for sample in capped_bucket[: settings.representative_examples]
         ]
         context_counter = Counter(
-            sample.context_text for sample in bucket if sample.context_text
+            sample.context_text for sample in capped_bucket if sample.context_text
         )
         sample_utterances = [
             text
@@ -402,10 +419,11 @@ def build_unknown_dimension_proposals(
             "event_count": event_count,
             "unique_users": unique_users,
             "scope_distribution": dict(sorted(scope_counter.items())),
-            "sample_event_ids": [sample.event_id for sample in bucket[:10]],
+            "sample_event_ids": [sample.event_id for sample in capped_bucket[:10]],
             "sample_utterances": sample_utterances,
             "representative_examples": representatives,
             "schema_diagnostics": schema_diag,
+            "dominance_dropped_events": dropped_for_bucket,
         }
         root_cause_hypothesis = (
             "Recurring unknown/provisional observations share semantic and workflow "
@@ -436,6 +454,12 @@ def build_unknown_dimension_proposals(
                     "source_type": "unknown_dimension",
                     "dedupe_key": "proposal_key",
                 },
+            },
+            "false_positive_controls": {
+                "min_support": settings.min_support,
+                "min_unique_users": settings.min_unique_users,
+                "max_events_per_user_per_cluster": settings.max_events_per_user_per_cluster,
+                "dominance_dropped_events": dropped_for_bucket,
             },
         }
         proposal_key = _stable_proposal_key(cluster_signature)
@@ -470,6 +494,7 @@ def build_unknown_dimension_proposals(
         "proposals_generated": len(limited),
         "filtered_min_support": filtered_min_support,
         "filtered_unique_users": filtered_unique_users,
+        "dominance_dropped_events": dominance_dropped_events,
         "limited_by_run_cap": max(0, len(ordered) - len(limited)),
     }
 

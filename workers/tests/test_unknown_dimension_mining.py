@@ -14,6 +14,7 @@ def _settings() -> UnknownDimensionMiningSettings:
         window_days=30,
         min_support=3,
         min_unique_users=2,
+        max_events_per_user_per_cluster=3,
         frequency_reference_count=10,
         reproducibility_reference_users=4,
         representative_examples=3,
@@ -106,3 +107,34 @@ def test_build_unknown_dimension_proposals_is_deterministic_for_input_order():
     )
     assert proposals_a == proposals_b
     assert stats_a == stats_b
+
+
+def test_build_unknown_dimension_proposals_caps_per_user_contributions() -> None:
+    settings = UnknownDimensionMiningSettings(
+        window_days=30,
+        min_support=3,
+        min_unique_users=2,
+        max_events_per_user_per_cluster=2,
+        frequency_reference_count=10,
+        reproducibility_reference_users=4,
+        representative_examples=3,
+        max_proposals_per_run=10,
+    )
+    samples = [
+        _sample(event_id="c1", pseudo_user="u_a", value=3.0),
+        _sample(event_id="c2", pseudo_user="u_a", value=3.1),
+        _sample(event_id="c3", pseudo_user="u_a", value=3.2),
+        _sample(event_id="c4", pseudo_user="u_a", value=3.3),
+        _sample(event_id="c5", pseudo_user="u_b", value=4.0),
+        _sample(event_id="c6", pseudo_user="u_b", value=4.1),
+    ]
+
+    proposals, stats = build_unknown_dimension_proposals(samples, settings=settings)
+
+    assert len(proposals) == 1
+    proposal = proposals[0]
+    assert proposal["event_count"] == 4
+    controls = proposal["proposal_payload"]["false_positive_controls"]
+    assert controls["max_events_per_user_per_cluster"] == 2
+    assert controls["dominance_dropped_events"] == 2
+    assert stats["dominance_dropped_events"] == 2

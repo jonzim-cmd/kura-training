@@ -69,6 +69,7 @@ class IssueClusterSettings:
     window_days: int
     min_support: int
     min_unique_users: int
+    max_events_per_user_per_bucket: int
     include_low_confidence: bool
     frequency_reference_count: int
     reproducibility_reference_users: int
@@ -117,6 +118,9 @@ def issue_cluster_settings() -> IssueClusterSettings:
         window_days=_int_env("KURA_ISSUE_CLUSTER_WINDOW_DAYS", 30, 1),
         min_support=_int_env("KURA_ISSUE_CLUSTER_MIN_SUPPORT", 3, 1),
         min_unique_users=_int_env("KURA_ISSUE_CLUSTER_MIN_UNIQUE_USERS", 2, 1),
+        max_events_per_user_per_bucket=_int_env(
+            "KURA_ISSUE_CLUSTER_MAX_EVENTS_PER_USER_PER_BUCKET", 3, 1
+        ),
         include_low_confidence=_bool_env(
             "KURA_ISSUE_CLUSTER_INCLUDE_LOW_CONFIDENCE", False
         ),
@@ -335,6 +339,7 @@ def build_issue_clusters(
     clusters: list[dict[str, Any]] = []
     filtered_min_support = 0
     filtered_unique_users = 0
+    dominance_dropped_events = 0
 
     for key in sorted(grouped.keys()):
         granularity, period_key, cluster_signature = key
@@ -342,8 +347,20 @@ def build_issue_clusters(
             grouped[key],
             key=lambda item: (item.captured_at, item.event_id),
         )
-        event_count = len(bucket)
-        unique_users = len({item.pseudonymized_user_id for item in bucket})
+        per_user_counts: dict[str, int] = {}
+        capped_bucket: list[LearningSignalSample] = []
+        dropped_for_bucket = 0
+        for item in bucket:
+            current = per_user_counts.get(item.pseudonymized_user_id, 0)
+            if current >= settings.max_events_per_user_per_bucket:
+                dropped_for_bucket += 1
+                continue
+            per_user_counts[item.pseudonymized_user_id] = current + 1
+            capped_bucket.append(item)
+        dominance_dropped_events += dropped_for_bucket
+
+        event_count = len(capped_bucket)
+        unique_users = len({item.pseudonymized_user_id for item in capped_bucket})
 
         if event_count < settings.min_support:
             filtered_min_support += 1
@@ -354,11 +371,11 @@ def build_issue_clusters(
 
         severity = sum(
             _severity_weight(item.signal_type, item.confidence_band, item.attributes)
-            for item in bucket
+            for item in capped_bucket
         ) / float(event_count)
         impact = sum(
             _impact_weight(item.signal_type, item.category, item.attributes)
-            for item in bucket
+            for item in capped_bucket
         ) / float(event_count)
         factors = compute_priority_score(
             event_count=event_count,
@@ -369,11 +386,11 @@ def build_issue_clusters(
             reproducibility_reference_users=settings.reproducibility_reference_users,
         )
 
-        signal_counts = Counter(item.signal_type for item in bucket)
-        phase_counts = Counter(item.workflow_phase for item in bucket)
+        signal_counts = Counter(item.signal_type for item in capped_bucket)
+        phase_counts = Counter(item.workflow_phase for item in capped_bucket)
         top_signal = sorted(signal_counts.items(), key=lambda pair: (-pair[1], pair[0]))[0][0]
-        first_seen = bucket[0].captured_at.isoformat()
-        last_seen = bucket[-1].captured_at.isoformat()
+        first_seen = capped_bucket[0].captured_at.isoformat()
+        last_seen = capped_bucket[-1].captured_at.isoformat()
         representatives = [
             {
                 "event_id": item.event_id,
@@ -384,7 +401,7 @@ def build_issue_clusters(
                 "invariant_id": item.invariant_id,
                 "attributes": item.attributes,
             }
-            for item in bucket[: settings.representative_examples]
+            for item in capped_bucket[: settings.representative_examples]
         ]
         cluster_data = {
             "summary": (
@@ -424,7 +441,9 @@ def build_issue_clusters(
             "false_positive_controls": {
                 "min_support": settings.min_support,
                 "min_unique_users": settings.min_unique_users,
+                "max_events_per_user_per_bucket": settings.max_events_per_user_per_bucket,
                 "include_low_confidence": settings.include_low_confidence,
+                "dominance_dropped_events": dropped_for_bucket,
                 "status": "passed",
             },
         }
@@ -454,6 +473,7 @@ def build_issue_clusters(
         "clusters_written": len(clusters),
         "filtered_min_support": filtered_min_support,
         "filtered_unique_users": filtered_unique_users,
+        "dominance_dropped_events": dominance_dropped_events,
     }
 
 

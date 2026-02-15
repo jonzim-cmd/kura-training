@@ -79,6 +79,28 @@ fn normalize_email(email: &str) -> String {
     email.trim().to_lowercase()
 }
 
+fn validate_invite_email_binding(
+    bound_email: Option<&str>,
+    signup_email_normalized: &str,
+) -> Result<(), AppError> {
+    let Some(bound_email_raw) = bound_email else {
+        return Ok(());
+    };
+    let bound_email_normalized = normalize_email(bound_email_raw);
+    if bound_email_normalized.is_empty() {
+        return Ok(());
+    }
+    if bound_email_normalized != signup_email_normalized {
+        return Err(AppError::Forbidden {
+            message: "This invite is bound to a different email address.".to_string(),
+            docs_hint: Some(
+                "Register with the invited email address or request a new invite.".to_string(),
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn normalize_user_code(user_code: &str) -> String {
     user_code
         .trim()
@@ -218,12 +240,10 @@ pub async fn register(
                 });
             }
 
-            let (token_id, _bound_email) =
+            let (token_id, bound_email) =
                 super::invite::validate_invite_token(&state.db, token_str).await?;
 
-            // Token is the gate, not the email. User can sign up with any
-            // method (email/password, Google, Apple) regardless of which
-            // email the invite was sent to.
+            validate_invite_email_binding(bound_email.as_deref(), &email_norm)?;
 
             // Require consent in invite mode
             if req.consent_anonymized_learning != Some(true) {
@@ -1891,7 +1911,8 @@ struct RefreshTokenRow {
 mod tests {
     use super::{
         AppError, generate_user_code, is_valid_loopback_redirect, normalize_email,
-        normalize_user_code, oidc_email_verified, validate_oauth_client,
+        normalize_user_code, oidc_email_verified, validate_invite_email_binding,
+        validate_oauth_client,
     };
     use serde_json::json;
     use sqlx::postgres::PgPoolOptions;
@@ -1922,6 +1943,25 @@ mod tests {
             normalize_email("  Alice.Example@Mail.TLD  "),
             "alice.example@mail.tld"
         );
+    }
+
+    #[test]
+    fn invite_email_binding_accepts_matching_email() {
+        let result =
+            validate_invite_email_binding(Some("  Alice.Example@Mail.TLD "), "alice.example@mail.tld");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn invite_email_binding_rejects_mismatch() {
+        let err = validate_invite_email_binding(Some("invited@example.com"), "other@example.com")
+            .expect_err("mismatch must be rejected");
+        match err {
+            AppError::Forbidden { message, .. } => {
+                assert!(message.contains("bound to a different email"));
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
     }
 
     #[test]

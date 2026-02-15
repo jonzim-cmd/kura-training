@@ -45,6 +45,7 @@ def _settings() -> IssueClusterSettings:
         window_days=30,
         min_support=3,
         min_unique_users=2,
+        max_events_per_user_per_bucket=3,
         include_low_confidence=False,
         frequency_reference_count=12,
         reproducibility_reference_users=4,
@@ -120,3 +121,35 @@ def test_cluster_output_contains_summary_examples_and_workflow_phases():
     assert data["score_factors"]["formula"] == (
         "frequency * severity * impact * reproducibility"
     )
+
+
+def test_build_issue_clusters_caps_per_user_contributions() -> None:
+    settings = _settings()
+    settings = IssueClusterSettings(
+        window_days=settings.window_days,
+        min_support=settings.min_support,
+        min_unique_users=settings.min_unique_users,
+        max_events_per_user_per_bucket=2,
+        include_low_confidence=settings.include_low_confidence,
+        frequency_reference_count=settings.frequency_reference_count,
+        reproducibility_reference_users=settings.reproducibility_reference_users,
+        representative_examples=settings.representative_examples,
+    )
+    samples = [
+        _sample(event_id="d1", user_ref="u_a"),
+        _sample(event_id="d2", user_ref="u_a"),
+        _sample(event_id="d3", user_ref="u_a"),
+        _sample(event_id="d4", user_ref="u_a"),
+        _sample(event_id="d5", user_ref="u_b"),
+        _sample(event_id="d6", user_ref="u_b"),
+    ]
+
+    rows, stats = build_issue_clusters(samples, settings=settings)
+
+    assert rows, "day/week clusters should still be emitted"
+    assert stats["dominance_dropped_events"] == 4  # two dropped per bucket, day+week
+    assert all(row["event_count"] == 4 for row in rows)
+    for row in rows:
+        controls = row["cluster_data"]["false_positive_controls"]
+        assert controls["max_events_per_user_per_bucket"] == 2
+        assert controls["dominance_dropped_events"] == 2

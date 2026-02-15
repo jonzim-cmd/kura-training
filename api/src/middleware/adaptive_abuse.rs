@@ -19,12 +19,17 @@ use crate::auth::AuthenticatedUser;
 use crate::security_profile::{SecurityProfile, resolve_security_profile};
 
 const BURST_REQUEST_THRESHOLD_60S: i32 = 25;
-const DENIED_RATIO_THRESHOLD_60S: f64 = 0.35;
+const DENIED_RATIO_THRESHOLD_60S: f64 = 0.45;
+const DENIED_RATIO_BLOCK_THRESHOLD_60S: f64 = 0.55;
 const MIN_REQUESTS_FOR_DENIED_RATIO: i32 = 10;
+const MIN_REQUESTS_FOR_DENIED_RATIO_BLOCK: i32 = 30;
 const UNIQUE_PATH_THRESHOLD_60S: i32 = 5;
 const CONTEXT_READ_THRESHOLD_60S: i32 = 8;
 const WRITE_BURST_THRESHOLD_60S: i32 = 12;
 const ALLOW_TELEMETRY_SAMPLE_BUCKET_THRESHOLD: i16 = 20;
+const DENIED_RATIO_PRIOR_DENIED: f64 = 2.0;
+const DENIED_RATIO_PRIOR_TOTAL: f64 = 8.0;
+const NOT_FOUND_DENIED_WEIGHT: f64 = 0.35;
 
 #[derive(Clone)]
 pub struct AdaptiveAbuseLayer {
@@ -341,6 +346,8 @@ struct AbuseDecision {
 struct AccessSignalSnapshot {
     total_requests_60s: i32,
     denied_requests_60s: i32,
+    denied_authz_requests_60s: i32,
+    denied_not_found_requests_60s: i32,
     unique_paths_60s: i32,
     context_reads_60s: i32,
     write_requests_60s: i32,
@@ -353,6 +360,17 @@ impl AccessSignalSnapshot {
         } else {
             self.denied_requests_60s as f64 / self.total_requests_60s as f64
         }
+    }
+
+    fn smoothed_weighted_denied_ratio_60s(&self) -> f64 {
+        let total = self.total_requests_60s.max(0) as f64;
+        let weighted_denied = self.denied_authz_requests_60s.max(0) as f64
+            + self.denied_not_found_requests_60s.max(0) as f64 * NOT_FOUND_DENIED_WEIGHT;
+        let denominator = total + DENIED_RATIO_PRIOR_TOTAL;
+        if denominator <= 0.0 {
+            return 0.0;
+        }
+        (weighted_denied + DENIED_RATIO_PRIOR_DENIED) / denominator
     }
 }
 
@@ -369,6 +387,8 @@ struct AbuseRiskAssessment {
 struct AccessSignalAggregateRow {
     total_requests_60s: i32,
     denied_requests_60s: i32,
+    denied_authz_requests_60s: i32,
+    denied_not_found_requests_60s: i32,
     unique_paths_60s: i32,
     context_reads_60s: i32,
     write_requests_60s: i32,
@@ -405,6 +425,8 @@ async fn fetch_recent_agent_access_snapshot(
         SELECT
             COUNT(*)::int AS total_requests_60s,
             COUNT(*) FILTER (WHERE status_code IN (401, 403, 404))::int AS denied_requests_60s,
+            COUNT(*) FILTER (WHERE status_code IN (401, 403))::int AS denied_authz_requests_60s,
+            COUNT(*) FILTER (WHERE status_code = 404)::int AS denied_not_found_requests_60s,
             COUNT(DISTINCT CASE
                 WHEN path LIKE '/v1/agent/evidence/event/%' THEN '/v1/agent/evidence/event/{event_id}'
                 ELSE path
@@ -424,6 +446,8 @@ async fn fetch_recent_agent_access_snapshot(
     Ok(AccessSignalSnapshot {
         total_requests_60s: row.total_requests_60s,
         denied_requests_60s: row.denied_requests_60s,
+        denied_authz_requests_60s: row.denied_authz_requests_60s,
+        denied_not_found_requests_60s: row.denied_not_found_requests_60s,
         unique_paths_60s: row.unique_paths_60s,
         context_reads_60s: row.context_reads_60s,
         write_requests_60s: row.write_requests_60s,
@@ -445,7 +469,7 @@ fn evaluate_abuse_risk(
     let tuning = profile_tuning(profile);
     let mut score = 0;
     let mut signals = Vec::new();
-    let denied_ratio = snapshot.denied_ratio_60s();
+    let smoothed_denied_ratio = snapshot.smoothed_weighted_denied_ratio_60s();
 
     if snapshot.total_requests_60s >= BURST_REQUEST_THRESHOLD_60S {
         score += 30;
@@ -453,10 +477,20 @@ fn evaluate_abuse_risk(
     }
 
     if snapshot.total_requests_60s >= MIN_REQUESTS_FOR_DENIED_RATIO
-        && denied_ratio >= DENIED_RATIO_THRESHOLD_60S
+        && smoothed_denied_ratio >= DENIED_RATIO_THRESHOLD_60S
     {
-        score += 35;
+        score += 20;
         signals.push("denied_ratio_spike_60s".to_string());
+    }
+    if snapshot.total_requests_60s >= MIN_REQUESTS_FOR_DENIED_RATIO_BLOCK
+        && smoothed_denied_ratio >= DENIED_RATIO_BLOCK_THRESHOLD_60S
+    {
+        score += 25;
+        signals.push("denied_ratio_high_confidence_60s".to_string());
+    }
+    if snapshot.total_requests_60s >= 12 && snapshot.denied_authz_requests_60s >= 8 {
+        score += 20;
+        signals.push("authz_denied_burst_60s".to_string());
     }
 
     if snapshot.unique_paths_60s >= UNIQUE_PATH_THRESHOLD_60S
@@ -744,6 +778,8 @@ mod tests {
         let snapshot = AccessSignalSnapshot {
             total_requests_60s: 26,
             denied_requests_60s: 0,
+            denied_authz_requests_60s: 0,
+            denied_not_found_requests_60s: 0,
             unique_paths_60s: 2,
             context_reads_60s: 9,
             write_requests_60s: 0,
@@ -765,6 +801,8 @@ mod tests {
         let snapshot = AccessSignalSnapshot {
             total_requests_60s: 38,
             denied_requests_60s: 20,
+            denied_authz_requests_60s: 20,
+            denied_not_found_requests_60s: 0,
             unique_paths_60s: 8,
             context_reads_60s: 10,
             write_requests_60s: 13,
@@ -780,6 +818,8 @@ mod tests {
         let snapshot = AccessSignalSnapshot {
             total_requests_60s: 4,
             denied_requests_60s: 0,
+            denied_authz_requests_60s: 0,
+            denied_not_found_requests_60s: 0,
             unique_paths_60s: 2,
             context_reads_60s: 1,
             write_requests_60s: 0,
@@ -795,6 +835,8 @@ mod tests {
         let snapshot = AccessSignalSnapshot {
             total_requests_60s: 26,
             denied_requests_60s: 2,
+            denied_authz_requests_60s: 2,
+            denied_not_found_requests_60s: 0,
             unique_paths_60s: 3,
             context_reads_60s: 8,
             write_requests_60s: 0,
@@ -830,6 +872,49 @@ mod tests {
         let decision = apply_cooldown_policy(&state, user_id, &assessment, now).await;
         assert_eq!(decision.action, AbuseAction::Throttle);
         assert!(decision.cooldown_active);
+    }
+
+    #[test]
+    fn denied_ratio_signal_is_tempered_for_small_samples() {
+        let snapshot = AccessSignalSnapshot {
+            total_requests_60s: 10,
+            denied_requests_60s: 4,
+            denied_authz_requests_60s: 2,
+            denied_not_found_requests_60s: 2,
+            unique_paths_60s: 2,
+            context_reads_60s: 0,
+            write_requests_60s: 0,
+        };
+        let assessment = evaluate_abuse_risk(&snapshot, SecurityProfile::Adaptive);
+        assert!(
+            !assessment
+                .signals
+                .iter()
+                .any(|signal| signal == "denied_ratio_spike_60s"),
+            "small sample with mixed 404s should not trigger denied-ratio spike"
+        );
+        assert_eq!(assessment.base_action, AbuseAction::Allow);
+    }
+
+    #[test]
+    fn denied_ratio_high_volume_triggers_high_confidence_signal() {
+        let snapshot = AccessSignalSnapshot {
+            total_requests_60s: 40,
+            denied_requests_60s: 30,
+            denied_authz_requests_60s: 28,
+            denied_not_found_requests_60s: 2,
+            unique_paths_60s: 3,
+            context_reads_60s: 0,
+            write_requests_60s: 0,
+        };
+        let assessment = evaluate_abuse_risk(&snapshot, SecurityProfile::Adaptive);
+        assert!(
+            assessment
+                .signals
+                .iter()
+                .any(|signal| signal == "denied_ratio_high_confidence_60s")
+        );
+        assert!(assessment.score >= profile_tuning(SecurityProfile::Adaptive).throttle_score_threshold);
     }
 
     #[tokio::test]
