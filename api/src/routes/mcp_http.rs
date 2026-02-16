@@ -17,7 +17,7 @@ use crate::error::AppError;
 use crate::state::AppState;
 
 const MCP_PATH: &str = "/mcp";
-const OAUTH_SCOPES: [&str; 3] = ["agent:read", "agent:write", "agent:resolve"];
+const OAUTH_SCOPES: [&str; 2] = ["read", "read-write"];
 const OAUTH_REQUEST_ID_HEADER: &str = "x-kura-oauth-request-id";
 const DCR_TOKEN_AUTH_METHODS: [&str; 2] = ["none", "client_secret_post"];
 
@@ -242,11 +242,12 @@ async fn oauth_authorization_server_metadata(
         "token_endpoint": format!("{base}/oauth/token"),
         "registration_endpoint": format!("{base}/oauth/register"),
         "revocation_endpoint": format!("{base}/oauth/revoke"),
+        "device_authorization_endpoint": format!("{base}/oauth/device/start"),
         "response_types_supported": ["code"],
-        "response_modes_supported": ["query"],
         "grant_types_supported": [
             "authorization_code",
-            "refresh_token"
+            "refresh_token",
+            "urn:ietf:params:oauth:grant-type:device_code"
         ],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": DCR_TOKEN_AUTH_METHODS,
