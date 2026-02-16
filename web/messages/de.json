@@ -181,7 +181,13 @@
       "email": "E-Mail",
       "memberSince": "Mitglied seit",
       "plan": "Tarif",
-      "free": "Kostenlos"
+      "free": "Kostenlos",
+      "newEmail": "Neue Anmelde-E-Mail",
+      "passwordForEmailChange": "Passwort zur Bestätigung",
+      "changeEmail": "Anmelde-E-Mail ändern",
+      "changeEmailSaving": "Wird aktualisiert...",
+      "changeEmailSuccess": "Anmelde-E-Mail wurde aktualisiert.",
+      "changeEmailError": "Anmelde-E-Mail konnte nicht aktualisiert werden. Bitte versuche es erneut."
     },
     "apiKeys": {
       "title": "API-Schlüssel",

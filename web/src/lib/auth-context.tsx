@@ -36,6 +36,7 @@ interface AuthContextType {
     inviteToken: string,
     displayName?: string,
   ) => Promise<void>;
+  refreshUser: () => Promise<void>;
   logout: () => void;
   token: string | null;
 }
@@ -237,6 +238,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     clearAuth();
   }, [clearAuth]);
 
+  const refreshUser = useCallback(async () => {
+    if (!accessToken) return;
+    const u = await fetchUser(accessToken);
+    if (u) setUser(u);
+  }, [accessToken, fetchUser]);
+
   const value = useMemo(
     () => ({
       user,
@@ -244,10 +251,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       login,
       loginWithSupabaseToken,
       register,
+      refreshUser,
       logout,
       token: accessToken,
     }),
-    [user, loading, login, loginWithSupabaseToken, register, logout, accessToken],
+    [
+      user,
+      loading,
+      login,
+      loginWithSupabaseToken,
+      register,
+      refreshUser,
+      logout,
+      accessToken,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

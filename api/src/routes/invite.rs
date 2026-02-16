@@ -634,8 +634,12 @@ async fn send_admin_notification(
     request_id: &Uuid,
 ) {
     let (api_key, from, admin_email) = match (
-        std::env::var("RESEND_API_KEY").ok().filter(|k| !k.is_empty()),
-        std::env::var("ADMIN_NOTIFY_EMAIL").ok().filter(|k| !k.is_empty()),
+        std::env::var("RESEND_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty()),
+        std::env::var("ADMIN_NOTIFY_EMAIL")
+            .ok()
+            .filter(|k| !k.is_empty()),
     ) {
         (Some(key), Some(admin)) => {
             let from = std::env::var("EMAIL_FROM")
@@ -643,14 +647,14 @@ async fn send_admin_notification(
             (key, from, admin)
         }
         _ => {
-            tracing::debug!("RESEND_API_KEY or ADMIN_NOTIFY_EMAIL not set, skipping admin notification");
+            tracing::debug!(
+                "RESEND_API_KEY or ADMIN_NOTIFY_EMAIL not set, skipping admin notification"
+            );
             return;
         }
     };
 
-    let name_line = name
-        .map(|n| format!("Name: {n}\n"))
-        .unwrap_or_default();
+    let name_line = name.map(|n| format!("Name: {n}\n")).unwrap_or_default();
     let context_line = context
         .map(|c| format!("Kontext: {c}\n"))
         .unwrap_or_default();

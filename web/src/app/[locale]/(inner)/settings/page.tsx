@@ -24,7 +24,7 @@ const SECURITY_2FA_ENABLED = process.env.NEXT_PUBLIC_KURA_SECURITY_2FA_ENABLED =
 export default function SettingsPage() {
   const t = useTranslations('settings');
   const tc = useTranslations('common');
-  const { user, token, loading, logout } = useAuth();
+  const { user, token, loading, logout, refreshUser } = useAuth();
   const router = useRouter();
 
   const [keys, setKeys] = useState<ApiKeyInfo[]>([]);
@@ -37,6 +37,11 @@ export default function SettingsPage() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [activeSection, setActiveSection] = useState<SectionId>('account');
+  const [newEmail, setNewEmail] = useState('');
+  const [emailPassword, setEmailPassword] = useState('');
+  const [emailSaving, setEmailSaving] = useState(false);
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [emailSuccess, setEmailSuccess] = useState<string | null>(null);
 
   // Redirect if not logged in
   useEffect(() => {
@@ -88,6 +93,34 @@ export default function SettingsPage() {
     await navigator.clipboard.writeText(key);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleChangeLoginEmail = async () => {
+    if (!token || !newEmail.trim() || !emailPassword) return;
+    setEmailError(null);
+    setEmailSuccess(null);
+    setEmailSaving(true);
+    try {
+      const res = await apiAuth('/v1/account/email', token, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          new_email: newEmail.trim(),
+          password: emailPassword,
+        }),
+      });
+      if (res.ok) {
+        const body = await res.json().catch(() => null);
+        setNewEmail('');
+        setEmailPassword('');
+        setEmailSuccess(body?.message || t('account.changeEmailSuccess'));
+        await refreshUser();
+      } else {
+        const body = await res.json().catch(() => null);
+        setEmailError(body?.message || body?.error || t('account.changeEmailError'));
+      }
+    } finally {
+      setEmailSaving(false);
+    }
   };
 
   const handleDeleteAccount = async () => {
@@ -189,6 +222,43 @@ export default function SettingsPage() {
                 <div className={styles.settingRow}>
                   <span className={styles.settingLabel}>{t('account.plan')}</span>
                   <span className="kura-badge">{t('account.free')}</span>
+                </div>
+
+                <div className={styles.divider}>
+                  <div className={styles.accountForm}>
+                    <label htmlFor="newLoginEmail" className="kura-label">
+                      {t('account.newEmail')}
+                    </label>
+                    <input
+                      id="newLoginEmail"
+                      type="email"
+                      className="kura-input"
+                      value={newEmail}
+                      onChange={(e) => setNewEmail(e.target.value)}
+                      autoComplete="email"
+                    />
+                    <label htmlFor="emailChangePassword" className="kura-label">
+                      {t('account.passwordForEmailChange')}
+                    </label>
+                    <input
+                      id="emailChangePassword"
+                      type="password"
+                      className="kura-input"
+                      value={emailPassword}
+                      onChange={(e) => setEmailPassword(e.target.value)}
+                      autoComplete="current-password"
+                    />
+                    {emailError && <p className={styles.settingHint}>{emailError}</p>}
+                    {emailSuccess && <p className={styles.settingHint}>{emailSuccess}</p>}
+                    <button
+                      className="kura-btn kura-btn--secondary"
+                      onClick={handleChangeLoginEmail}
+                      disabled={emailSaving || !newEmail.trim() || !emailPassword}
+                      data-testid="settings-change-email-submit"
+                    >
+                      {emailSaving ? t('account.changeEmailSaving') : t('account.changeEmail')}
+                    </button>
+                  </div>
                 </div>
               </section>
             )}

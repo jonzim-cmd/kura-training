@@ -181,7 +181,13 @@
       "email": "Email",
       "memberSince": "Member since",
       "plan": "Plan",
-      "free": "Free"
+      "free": "Free",
+      "newEmail": "New login email",
+      "passwordForEmailChange": "Current password",
+      "changeEmail": "Change login email",
+      "changeEmailSaving": "Updating...",
+      "changeEmailSuccess": "Login email updated.",
+      "changeEmailError": "Could not update login email. Please try again."
     },
     "apiKeys": {
       "title": "API Keys",

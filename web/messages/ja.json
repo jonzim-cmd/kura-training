@@ -181,7 +181,13 @@
       "email": "メールアドレス",
       "memberSince": "登録日",
       "plan": "プラン",
-      "free": "無料"
+      "free": "無料",
+      "newEmail": "新しいログインメール",
+      "passwordForEmailChange": "現在のパスワード",
+      "changeEmail": "ログインメールを変更",
+      "changeEmailSaving": "更新中...",
+      "changeEmailSuccess": "ログインメールを更新しました。",
+      "changeEmailError": "ログインメールを更新できませんでした。もう一度お試しください。"
     },
     "apiKeys": {
       "title": "APIキー",

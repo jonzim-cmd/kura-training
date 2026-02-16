@@ -1,7 +1,7 @@
 use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,18 @@ pub struct DeleteOwnAccountRequest {
     pub password: String,
     #[serde(default)]
     pub confirm_email: Option<String>,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct UpdateLoginEmailRequest {
+    pub new_email: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct UpdateLoginEmailResponse {
+    pub email: String,
+    pub message: String,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -63,6 +75,166 @@ pub struct SupportReidentifyResponse {
     pub display_name: Option<String>,
     pub analysis_subject_id: String,
     pub audited_at: DateTime<Utc>,
+}
+
+/// PATCH /v1/account/email — change email used for email/password login
+#[utoipa::path(
+    patch,
+    path = "/v1/account/email",
+    request_body = UpdateLoginEmailRequest,
+    responses(
+        (status = 200, description = "Login email updated", body = UpdateLoginEmailResponse),
+        (status = 400, description = "Validation error", body = kura_core::error::ApiError),
+        (status = 401, description = "Not authenticated or invalid password", body = kura_core::error::ApiError),
+        (status = 403, description = "Account cannot change login email", body = kura_core::error::ApiError),
+    ),
+    security(("bearer_auth" = []))
+)]
+pub async fn update_login_email(
+    user: AuthenticatedUser,
+    state: axum::extract::State<AppState>,
+    Json(req): Json<UpdateLoginEmailRequest>,
+) -> Result<Json<UpdateLoginEmailResponse>, AppError> {
+    let new_email_norm = normalize_email(&req.new_email);
+    if new_email_norm.is_empty() {
+        return Err(AppError::Validation {
+            message: "new_email must not be empty".to_string(),
+            field: Some("new_email".to_string()),
+            received: None,
+            docs_hint: None,
+        });
+    }
+    if req.password.is_empty() {
+        return Err(AppError::Validation {
+            message: "password must not be empty".to_string(),
+            field: Some("password".to_string()),
+            received: None,
+            docs_hint: None,
+        });
+    }
+
+    let mut tx = state.db.begin().await.map_err(AppError::Database)?;
+    let row = sqlx::query_as::<_, AccountEmailChangeRow>(
+        "SELECT u.email, u.password_hash, u.is_active, \
+                EXISTS( \
+                    SELECT 1 FROM user_identities ui \
+                    WHERE ui.user_id = u.id AND ui.provider = 'email_password' \
+                ) AS has_email_password_identity \
+         FROM users u \
+         WHERE u.id = $1 \
+         FOR UPDATE",
+    )
+    .bind(user.user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::Unauthorized {
+        message: "Account not found".to_string(),
+        docs_hint: None,
+    })?;
+
+    if !row.is_active {
+        return Err(AppError::Forbidden {
+            message: "Inactive accounts cannot change login email".to_string(),
+            docs_hint: Some(
+                "Reactivate your account first via POST /v1/auth/reactivate-account.".to_string(),
+            ),
+        });
+    }
+    if !row.has_email_password_identity {
+        return Err(AppError::Forbidden {
+            message: "This account has no email/password login identity".to_string(),
+            docs_hint: Some(
+                "Use your identity provider login or contact support for account linking."
+                    .to_string(),
+            ),
+        });
+    }
+
+    let valid =
+        auth::verify_password(&req.password, &row.password_hash).map_err(AppError::Internal)?;
+    if !valid {
+        return Err(AppError::Unauthorized {
+            message: "Invalid password".to_string(),
+            docs_hint: None,
+        });
+    }
+
+    let current_email_norm = normalize_email(&row.email);
+    if new_email_norm == current_email_norm {
+        return Err(AppError::Validation {
+            message: "new_email must be different from the current email".to_string(),
+            field: Some("new_email".to_string()),
+            received: Some(serde_json::Value::String(req.new_email)),
+            docs_hint: Some("Provide a different email address.".to_string()),
+        });
+    }
+
+    let update_user_result =
+        sqlx::query("UPDATE users SET email = $2, updated_at = NOW() WHERE id = $1")
+            .bind(user.user_id)
+            .bind(&new_email_norm)
+            .execute(&mut *tx)
+            .await;
+    if let Err(err) = update_user_result {
+        if is_unique_violation(&err) {
+            return Err(AppError::Validation {
+                message: format!("Email '{}' is already registered", req.new_email),
+                field: Some("new_email".to_string()),
+                received: Some(serde_json::Value::String(req.new_email)),
+                docs_hint: Some("Use a different email address.".to_string()),
+            });
+        }
+        return Err(AppError::Database(err));
+    }
+
+    let update_identity_result = sqlx::query(
+        "UPDATE user_identities \
+         SET provider_subject = $2, email_norm = $2, email_verified_at = NOW(), updated_at = NOW() \
+         WHERE user_id = $1 AND provider = 'email_password'",
+    )
+    .bind(user.user_id)
+    .bind(&new_email_norm)
+    .execute(&mut *tx)
+    .await;
+    match update_identity_result {
+        Ok(result) => {
+            if result.rows_affected() == 0 {
+                return Err(AppError::Forbidden {
+                    message: "This account has no email/password login identity".to_string(),
+                    docs_hint: Some(
+                        "Use your identity provider login or contact support for account linking."
+                            .to_string(),
+                    ),
+                });
+            }
+        }
+        Err(err) => {
+            if is_unique_violation(&err) {
+                return Err(AppError::Validation {
+                    message: format!("Email '{}' is already registered", req.new_email),
+                    field: Some("new_email".to_string()),
+                    received: Some(serde_json::Value::String(req.new_email)),
+                    docs_hint: Some("Use a different email address.".to_string()),
+                });
+            }
+            return Err(AppError::Database(err));
+        }
+    }
+
+    tx.commit().await.map_err(AppError::Database)?;
+
+    tracing::info!(
+        user_id = %user.user_id,
+        old_email = %current_email_norm,
+        new_email = %new_email_norm,
+        "User changed login email"
+    );
+
+    Ok(Json(UpdateLoginEmailResponse {
+        email: new_email_norm,
+        message: "Login email updated.".to_string(),
+    }))
 }
 
 /// DELETE /v1/account — schedule deletion of your own account (30-day grace)
@@ -439,12 +611,27 @@ fn normalize_email(email: &str) -> String {
     email.trim().to_lowercase()
 }
 
+fn is_unique_violation(err: &sqlx::Error) -> bool {
+    match err {
+        sqlx::Error::Database(db_err) => db_err.code().as_deref() == Some("23505"),
+        _ => false,
+    }
+}
+
 #[derive(sqlx::FromRow)]
 struct AccountCredentialRow {
     email: String,
     password_hash: String,
     is_active: bool,
     deletion_scheduled_for: Option<DateTime<Utc>>,
+}
+
+#[derive(sqlx::FromRow)]
+struct AccountEmailChangeRow {
+    email: String,
+    password_hash: String,
+    is_active: bool,
+    has_email_password_identity: bool,
 }
 
 async fn ensure_admin(pool: &sqlx::PgPool, user_id: Uuid) -> Result<(), AppError> {
@@ -681,6 +868,7 @@ pub async fn revoke_api_key(
 pub fn self_router() -> Router<AppState> {
     Router::new()
         .route("/v1/account", delete(delete_own_account))
+        .route("/v1/account/email", patch(update_login_email))
         .route("/v1/account/analysis-subject", get(get_analysis_subject))
         .route(
             "/v1/account/api-keys",
@@ -696,4 +884,176 @@ pub fn admin_router() -> Router<AppState> {
             "/v1/admin/support/reidentify",
             post(admin_support_reidentify),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::extract::State;
+    use sqlx::postgres::PgPoolOptions;
+
+    use super::*;
+    use crate::auth::AuthMethod;
+    use crate::state::SignupGate;
+
+    async fn db_pool_if_available() -> Option<sqlx::PgPool> {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            return None;
+        };
+
+        PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .ok()
+    }
+
+    async fn db_pool_with_migrations_if_available() -> Option<sqlx::PgPool> {
+        let pool = db_pool_if_available().await?;
+        sqlx::migrate!("../migrations")
+            .run(&pool)
+            .await
+            .expect("migrations should run");
+        Some(pool)
+    }
+
+    async fn seed_email_password_user(pool: &sqlx::PgPool, email: &str, password: &str) -> Uuid {
+        let user_id = Uuid::now_v7();
+        let password_hash = auth::hash_password(password).expect("hash password");
+        let email_norm = normalize_email(email);
+
+        sqlx::query(
+            "INSERT INTO users (id, email, password_hash, is_active) \
+             VALUES ($1, $2, $3, TRUE)",
+        )
+        .bind(user_id)
+        .bind(&email_norm)
+        .bind(&password_hash)
+        .execute(pool)
+        .await
+        .expect("insert user");
+
+        sqlx::query(
+            "INSERT INTO user_identities \
+             (user_id, provider, provider_subject, email_norm, email_verified_at) \
+             VALUES ($1, 'email_password', $2, $2, NOW())",
+        )
+        .bind(user_id)
+        .bind(&email_norm)
+        .execute(pool)
+        .await
+        .expect("insert email identity");
+
+        user_id
+    }
+
+    fn test_auth_user(user_id: Uuid) -> AuthenticatedUser {
+        AuthenticatedUser {
+            user_id,
+            auth_method: AuthMethod::ApiKey {
+                key_id: Uuid::now_v7(),
+            },
+            scopes: vec!["*".to_string()],
+        }
+    }
+
+    #[tokio::test]
+    async fn update_login_email_updates_users_and_identity_rows() {
+        let Some(pool) = db_pool_with_migrations_if_available().await else {
+            return;
+        };
+
+        let old_email = format!("old-email-{}@example.com", Uuid::now_v7());
+        let password = "Email-Change-Password-123!";
+        let user_id = seed_email_password_user(&pool, &old_email, password).await;
+
+        let state = AppState {
+            db: pool.clone(),
+            signup_gate: SignupGate::Open,
+        };
+        let req = UpdateLoginEmailRequest {
+            new_email: "  New.Email@Test.Example  ".to_string(),
+            password: password.to_string(),
+        };
+
+        let Json(response) = update_login_email(test_auth_user(user_id), State(state), Json(req))
+            .await
+            .expect("email change should succeed");
+        assert_eq!(response.email, "new.email@test.example");
+
+        let user_email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("load updated user email");
+        assert_eq!(user_email, "new.email@test.example");
+
+        let identity_row: (String, String) = sqlx::query_as(
+            "SELECT provider_subject, email_norm \
+             FROM user_identities \
+             WHERE user_id = $1 AND provider = 'email_password'",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load updated identity");
+        assert_eq!(identity_row.0, "new.email@test.example");
+        assert_eq!(identity_row.1, "new.email@test.example");
+    }
+
+    #[tokio::test]
+    async fn update_login_email_rejects_invalid_password() {
+        let Some(pool) = db_pool_with_migrations_if_available().await else {
+            return;
+        };
+
+        let email = format!("invalid-pw-{}@example.com", Uuid::now_v7());
+        let user_id = seed_email_password_user(&pool, &email, "Correct-Password-123!").await;
+
+        let state = AppState {
+            db: pool.clone(),
+            signup_gate: SignupGate::Open,
+        };
+        let req = UpdateLoginEmailRequest {
+            new_email: format!("new-{}@example.com", Uuid::now_v7()),
+            password: "wrong-password".to_string(),
+        };
+
+        let err = update_login_email(test_auth_user(user_id), State(state), Json(req))
+            .await
+            .expect_err("invalid password must fail");
+        assert!(matches!(err, AppError::Unauthorized { .. }));
+    }
+
+    #[tokio::test]
+    async fn update_login_email_rejects_duplicate_email() {
+        let Some(pool) = db_pool_with_migrations_if_available().await else {
+            return;
+        };
+
+        let source_email = format!("source-email-{}@example.com", Uuid::now_v7());
+        let target_email = format!("taken-email-{}@example.com", Uuid::now_v7());
+        let source_user_id =
+            seed_email_password_user(&pool, &source_email, "Source-Password-123!").await;
+        let _other_user_id =
+            seed_email_password_user(&pool, &target_email, "Target-Password-123!").await;
+
+        let state = AppState {
+            db: pool.clone(),
+            signup_gate: SignupGate::Open,
+        };
+        let req = UpdateLoginEmailRequest {
+            new_email: target_email.clone(),
+            password: "Source-Password-123!".to_string(),
+        };
+
+        let err = update_login_email(test_auth_user(source_user_id), State(state), Json(req))
+            .await
+            .expect_err("duplicate email must fail");
+        match err {
+            AppError::Validation { field, .. } => {
+                assert_eq!(field.as_deref(), Some("new_email"));
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
 }
