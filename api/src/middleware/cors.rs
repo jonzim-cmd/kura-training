@@ -4,6 +4,7 @@ use tower_http::cors::CorsLayer;
 const CONNECTOR_ORIGINS: &[&str] = &[
     "https://chatgpt.com",
     "https://chat.openai.com",
+    "https://platform.openai.com",
     "https://claude.ai",
 ];
 
