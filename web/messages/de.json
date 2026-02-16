@@ -313,9 +313,14 @@
       "step2Prompt": "Installiere die Kura CLI (cargo install kura-cli) und verbinde mein Konto mit kura login. Kura API: https://api.withkura.com"
     },
     "expert": {
-      "toggle": "Du nutzt Claude Code, Gemini CLI, Codex oder ein anderes Terminal-Tool?",
-      "description": "Gib das deiner KI:",
-      "prompt": "Verbinde dich mit meinem Kura-Konto. MCP-Server-URL: https://api.withkura.com/mcp — Nutze OAuth zur Authentifizierung."
+      "toggle": "Du nutzt Claude Desktop, Claude Code, Gemini CLI, Codex oder ein anderes Tool mit MCP-Unterstützung?",
+      "mcpTitle": "MCP-Verbindung",
+      "mcpDescription": "Gib das deiner KI — sie richtet die Verbindung selbst ein:",
+      "mcpPrompt": "Verbinde dich mit meinem Kura-Konto. MCP-Server-URL: https://api.withkura.com/mcp — Nutze OAuth zur Authentifizierung.",
+      "cliTitle": "CLI statt MCP",
+      "cliDescription": "Wenn dein Tool kein MCP unterstützt, kann deine KI stattdessen die Kura CLI nutzen. Installiere sie oder sag deiner KI:",
+      "cliInstall": "cargo install kura-cli",
+      "cliPrompt": "Installiere die Kura CLI (cargo install kura-cli) und verbinde mein Konto mit kura login. Kura API: https://api.withkura.com"
     }
   },
   "footer": {

@@ -158,16 +158,36 @@ export default function SetupPage() {
 
           {expertOpen && (
             <div className={styles.expertContent}>
-              <p className={styles.expertDescription}>{t('expert.description')}</p>
-              <div className={styles.codeBlock} style={{ paddingLeft: 0 }}>
-                <code className={styles.codeValue}>{t('expert.prompt')}</code>
-                <button
-                  type="button"
-                  className="kura-btn kura-btn--ghost"
-                  onClick={() => copyText(t('expert.prompt'), 'expert-prompt')}
-                >
-                  {copyLabel('expert-prompt')}
-                </button>
+              {/* MCP */}
+              <div className={styles.expertBlock}>
+                <div className={styles.expertBlockTitle}>{t('expert.mcpTitle')}</div>
+                <p className={styles.expertDescription}>{t('expert.mcpDescription')}</p>
+                <div className={styles.codeBlock} style={{ paddingLeft: 0 }}>
+                  <code className={styles.codeValue}>{t('expert.mcpPrompt')}</code>
+                  <button
+                    type="button"
+                    className="kura-btn kura-btn--ghost"
+                    onClick={() => copyText(t('expert.mcpPrompt'), 'expert-mcp')}
+                  >
+                    {copyLabel('expert-mcp')}
+                  </button>
+                </div>
+              </div>
+
+              {/* CLI */}
+              <div className={styles.expertBlock}>
+                <div className={styles.expertBlockTitle}>{t('expert.cliTitle')}</div>
+                <p className={styles.expertDescription}>{t('expert.cliDescription')}</p>
+                <div className={styles.codeBlock} style={{ paddingLeft: 0 }}>
+                  <code className={styles.codeValue}>{t('expert.cliPrompt')}</code>
+                  <button
+                    type="button"
+                    className="kura-btn kura-btn--ghost"
+                    onClick={() => copyText(t('expert.cliPrompt'), 'expert-cli')}
+                  >
+                    {copyLabel('expert-cli')}
+                  </button>
+                </div>
               </div>
             </div>
           )}

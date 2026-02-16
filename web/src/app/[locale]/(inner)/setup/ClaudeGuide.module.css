@@ -18,6 +18,14 @@
   --cai-green: #4ade80;
 }
 
+/* --- Direct Link --- */
+.directLink {
+  display: block;
+  text-align: center;
+  font-size: var(--text-sm);
+  margin-bottom: var(--space-lg);
+}
+
 /* --- Progress Bar --- */
 .progressBar {
   display: flex;

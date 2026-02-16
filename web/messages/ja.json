@@ -313,9 +313,14 @@
       "step2Prompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with kura login. Kura API: https://api.withkura.com"
     },
     "expert": {
-      "toggle": "Claude Code、Gemini CLI、Codex、その他のターミナルツールを使っていますか？",
-      "description": "AIにこれを渡してください：",
-      "prompt": "Connect to my Kura account. MCP server URL: https://api.withkura.com/mcp — Use OAuth for authentication."
+      "toggle": "Claude Desktop、Claude Code、Gemini CLI、Codex、その他のMCP対応ツールを使っていますか？",
+      "mcpTitle": "MCP接続",
+      "mcpDescription": "AIにこれを渡してください — 接続は自動で設定されます：",
+      "mcpPrompt": "Connect to my Kura account. MCP server URL: https://api.withkura.com/mcp — Use OAuth for authentication.",
+      "cliTitle": "MCPの代わりにCLI",
+      "cliDescription": "MCPに対応していない場合、Kura CLIを使用できます。インストールするか、AIに伝えてください：",
+      "cliInstall": "cargo install kura-cli",
+      "cliPrompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with kura login. Kura API: https://api.withkura.com"
     }
   },
   "footer": {

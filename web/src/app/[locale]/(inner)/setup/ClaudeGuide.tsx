@@ -355,6 +355,11 @@ export function ClaudeGuide() {
 
   return (
     <div className={styles.guide}>
+      {/* Direct link */}
+      <a href="https://claude.ai" target="_blank" rel="noreferrer" className={styles.directLink}>
+        claude.ai &rarr;
+      </a>
+
       {/* Progress dots */}
       <div className={styles.progressBar}>
         {Array.from({ length: TOTAL_STEPS }).map((_, i) => (

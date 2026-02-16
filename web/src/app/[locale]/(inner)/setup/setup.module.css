@@ -47,7 +47,7 @@
   padding: var(--space-xl) var(--space-lg);
   background: none;
   border: 1px solid var(--thread);
-  border-radius: 6px;
+  border-radius: 4px;
   cursor: pointer;
   transition: all 0.2s ease;
   color: var(--ink-faint);
@@ -55,7 +55,7 @@
 }
 
 .aiCard:hover {
-  border-color: var(--ink-ghost);
+  border-color: var(--ink-faint);
   color: var(--ink);
 }
 
@@ -237,9 +237,25 @@
   padding-left: var(--space-lg);
 }
 
+.expertBlock {
+  margin-bottom: var(--space-xl);
+}
+
+.expertBlock:last-child {
+  margin-bottom: 0;
+}
+
+.expertBlockTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: var(--space-xs);
+}
+
 .expertDescription {
   color: var(--ink-faint);
-  font-size: var(--text-base);
+  font-size: var(--text-sm);
   margin-bottom: var(--space-md);
 }
 
