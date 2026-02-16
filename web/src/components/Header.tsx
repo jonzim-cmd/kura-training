@@ -60,6 +60,7 @@ export function Header({ variant = 'default' }: HeaderProps) {
       {variant !== 'landing' && (
         <Link href="/start" className={styles.link} onClick={closeMenu}>{t('home')}</Link>
       )}
+      <Link href="/setup" className={styles.link} onClick={closeMenu}>{t('setup')}</Link>
       <Link href="/login" className={styles.link} onClick={closeMenu}>{t('login')}</Link>
       <Link href="/request-access" className={styles.link} onClick={closeMenu}>{t('requestAccess')}</Link>
     </>

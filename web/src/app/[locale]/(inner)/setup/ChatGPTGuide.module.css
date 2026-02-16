@@ -852,10 +852,43 @@
 
 /* --- Responsive --- */
 @media (max-width: 640px) {
-  .uiSidebar { width: 120px; padding: 10px; font-size: 11px; }
-  .settingsTabs { width: 130px; padding: 10px; }
-  .settingsModal { width: 100%; }
-  .modal { width: 90%; padding: 20px; }
-  .mockupBody { min-height: 280px; }
+  /* Let mockup grow vertically — prevent clipping tall modals */
+  .mockup {
+    overflow: visible;
+  }
+
+  .mockupBar {
+    border-radius: 12px 12px 0 0;
+  }
+
+  .mockupBody {
+    min-height: auto !important;
+    flex-direction: column;
+  }
+
+  .uiSidebar { width: 100%; padding: 10px 14px; font-size: 11px; flex-direction: row; flex-wrap: wrap; gap: 4px; border-right: none; border-bottom: 1px solid var(--gpt-border-dim); }
+  .uiSidebarLogo { margin-bottom: 0; }
+  .uiSidebarItem { padding: 4px 8px; }
+  .uiProfile { margin-top: 0; border-top: none; padding-top: 0; }
+
+  .settingsModal { width: 100%; min-height: auto; flex-direction: column; }
+  .settingsTabs { width: 100%; flex-direction: row; flex-wrap: wrap; gap: 2px; padding: 10px; border-right: none; border-bottom: 1px solid var(--gpt-border-dim); }
+  .stItem { padding: 4px 8px; font-size: 11px; }
+
+  .modal { width: 95%; padding: 18px; }
+  .modalInput { padding: 8px 12px; font-size: 13px; margin-bottom: 10px; }
+  .modalSelect { padding: 8px 12px; font-size: 13px; margin-bottom: 10px; }
+  .modalTitle { font-size: 16px; margin-bottom: 14px; }
+  .modalFieldLabel { font-size: 12px; margin-bottom: 4px; }
+  .warningCheckDesc { font-size: 11px; }
+
   .featuredCard { width: 100%; }
+
+  /* Overlay: relative on mobile so mockup grows with content */
+  .modalOverlay {
+    position: relative;
+    inset: auto;
+    min-height: 420px;
+    border-radius: 0 0 12px 12px;
+  }
 }

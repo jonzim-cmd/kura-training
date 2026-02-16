@@ -693,12 +693,45 @@
 
 /* --- Responsive --- */
 @media (max-width: 640px) {
-  .uiSidebar { width: 120px; padding: 10px; font-size: 11px; }
-  .settingsSidebar { width: 100px; padding: 10px; }
-  .modal { width: 90%; padding: 20px; }
-  .mockupBody { min-height: 280px; }
+  /* Let mockup grow vertically — prevent clipping tall modals */
+  .mockup {
+    overflow: visible;
+  }
+
+  .mockupBar {
+    border-radius: 12px 12px 0 0;
+  }
+
+  .mockupBody {
+    min-height: auto !important;
+    flex-direction: column;
+  }
+
+  .uiSidebar { width: 100%; padding: 10px 14px; font-size: 11px; flex-direction: row; flex-wrap: wrap; gap: 4px; border-right: none; border-bottom: 1px solid var(--cai-border-dim); }
+  .uiSidebarLogo { margin-bottom: 0; }
+  .uiSidebarItem { padding: 4px 8px; }
+  .uiProfile { margin-top: 0; border-top: none; padding-top: 0; }
+
+  .settingsSidebar { width: 100%; padding: 10px 14px; border-bottom: 1px solid var(--cai-border-dim); }
+  .ssItem { display: inline-block; padding: 4px 8px; font-size: 11px; }
+
+  .settingsContent { border-left: none; }
+
+  .modal { width: 95%; padding: 18px; }
+  .modalInput { padding: 8px 12px; font-size: 13px; margin-bottom: 8px; }
+  .modalTitle { font-size: 16px; }
+
   .connName { font-size: 11px; }
   .connBtn { font-size: 10px; padding: 4px 10px; }
+  .connIcon { width: 28px; height: 28px; margin-right: 8px; }
+
+  /* Overlay: relative on mobile so mockup grows with content */
+  .modalOverlay {
+    position: relative;
+    inset: auto;
+    min-height: 380px;
+    border-radius: 0 0 12px 12px;
+  }
 }
 
 /* --- Profile form fields (step 3) --- */
