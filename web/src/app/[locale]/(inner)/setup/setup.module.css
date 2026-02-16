@@ -85,47 +85,6 @@
   margin-bottom: var(--space-3xl);
 }
 
-/* --- ChatGPT Placeholder --- */
-.chatgptPlaceholder {
-  text-align: center;
-  padding: var(--space-3xl) var(--space-xl);
-}
-
-.chatgptTitle {
-  font-family: var(--font-display);
-  font-size: var(--text-lg);
-  font-weight: 700;
-  margin-bottom: var(--space-sm);
-  color: var(--ink);
-}
-
-.chatgptHint {
-  color: var(--ink-faint);
-  font-size: var(--text-md);
-  margin-bottom: var(--space-lg);
-  max-width: 32em;
-  margin-left: auto;
-  margin-right: auto;
-}
-
-.mcpUrlField {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-sm);
-  margin-bottom: var(--space-lg);
-}
-
-.mcpUrlValue {
-  font-family: var(--font-mono);
-  font-size: var(--text-base);
-  background: rgba(255, 255, 255, 0.04);
-  padding: 0.5rem 0.875rem;
-  border-radius: 4px;
-  color: var(--ink);
-  border: 1px solid var(--thread);
-}
-
 /* --- OpenClaw Section --- */
 .openclawGuide {
   max-width: var(--content-width);

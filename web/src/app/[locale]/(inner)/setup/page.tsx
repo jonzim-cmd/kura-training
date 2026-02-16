@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl';
 import { useAuth } from '@/lib/auth-context';
 import { SETUP_SEEN_STORAGE_KEY } from '@/lib/onboarding';
 import { ClaudeGuide } from './ClaudeGuide';
+import { ChatGPTGuide } from './ChatGPTGuide';
 import styles from './setup.module.css';
 
 type AI = 'claude' | 'chatgpt' | 'openclaw';
@@ -77,22 +78,7 @@ export default function SetupPage() {
           <div className={styles.guideContent}>
             {selectedAI === 'claude' && <ClaudeGuide />}
 
-            {selectedAI === 'chatgpt' && (
-              <div className={styles.chatgptPlaceholder}>
-                <div className={styles.chatgptTitle}>{t('chatgpt.comingSoon')}</div>
-                <p className={styles.chatgptHint}>{t('chatgpt.comingSoonHint')}</p>
-                <div className={styles.mcpUrlField}>
-                  <code className={styles.mcpUrlValue}>{MCP_URL}</code>
-                  <button
-                    type="button"
-                    className="kura-btn kura-btn--ghost"
-                    onClick={() => copyText(MCP_URL, 'chatgpt-mcp-url')}
-                  >
-                    {copyLabel('chatgpt-mcp-url')}
-                  </button>
-                </div>
-              </div>
-            )}
+            {selectedAI === 'chatgpt' && <ChatGPTGuide />}
 
             {selectedAI === 'openclaw' && (
               <div className={styles.openclawGuide}>
