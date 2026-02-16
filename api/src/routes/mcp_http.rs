@@ -242,12 +242,11 @@ async fn oauth_authorization_server_metadata(
         "token_endpoint": format!("{base}/oauth/token"),
         "registration_endpoint": format!("{base}/oauth/register"),
         "revocation_endpoint": format!("{base}/oauth/revoke"),
-        "device_authorization_endpoint": format!("{base}/oauth/device/start"),
         "response_types_supported": ["code"],
+        "response_modes_supported": ["query"],
         "grant_types_supported": [
             "authorization_code",
-            "refresh_token",
-            "urn:ietf:params:oauth:grant-type:device_code"
+            "refresh_token"
         ],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": DCR_TOKEN_AUTH_METHODS,
