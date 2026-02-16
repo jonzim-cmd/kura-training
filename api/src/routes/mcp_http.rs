@@ -10,6 +10,7 @@ use axum::routing::{get, post};
 use axum::{Form, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tower_http::normalize_path::NormalizePathLayer;
 use url::Url;
 use uuid::Uuid;
 
@@ -74,6 +75,8 @@ pub fn router() -> Router<AppState> {
         .route("/oauth/register", post(oauth_register))
         .route("/mcp/oauth/register", post(oauth_register))
         .layer(axum::middleware::from_fn(log_oauth_http_flow))
+        // Accept both `/path` and `/path/` to match client quirks.
+        .layer(NormalizePathLayer::trim_trailing_slash())
 }
 
 async fn mcp_get() -> Response {
@@ -190,11 +193,11 @@ async fn oauth_authorization_server_metadata(
     log_oauth_discovery_request("authorization_server", &headers, &original_uri, &base);
     Json(json!({
         "issuer": base,
-        "authorization_endpoint": format!("{base}/mcp/oauth/authorize"),
-        "token_endpoint": format!("{base}/mcp/oauth/token"),
-        "registration_endpoint": format!("{base}/mcp/oauth/register"),
-        "revocation_endpoint": format!("{base}/mcp/oauth/revoke"),
-        "device_authorization_endpoint": format!("{base}/mcp/oauth/device/start"),
+        "authorization_endpoint": format!("{base}/oauth/authorize"),
+        "token_endpoint": format!("{base}/oauth/token"),
+        "registration_endpoint": format!("{base}/oauth/register"),
+        "revocation_endpoint": format!("{base}/oauth/revoke"),
+        "device_authorization_endpoint": format!("{base}/oauth/device/start"),
         "response_types_supported": ["code"],
         "grant_types_supported": [
             "authorization_code",
