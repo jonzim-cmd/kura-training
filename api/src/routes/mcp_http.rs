@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use axum::body::Bytes;
 use axum::extract::{OriginalUri, Query, Request, State};
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, HOST, WWW_AUTHENTICATE};
+use axum::http::header::{
+    AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, EXPIRES, HOST, PRAGMA, WWW_AUTHENTICATE,
+};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -33,28 +35,11 @@ pub fn router() -> Router<AppState> {
             get(oauth_authorization_server_metadata),
         )
         .route(
-            "/.well-known/oauth-authorization-server/mcp",
-            get(oauth_authorization_server_metadata),
-        )
-        .route(
-            "/.well-known/oauth-authorization-server/mcp/",
-            get(oauth_authorization_server_metadata),
-        )
-        // Compatibility aliases for clients that resolve well-known from the MCP path.
-        .route(
             "/mcp/.well-known/oauth-authorization-server",
             get(oauth_authorization_server_metadata),
         )
         .route(
             "/mcp/.well-known/oauth-authorization-server/",
-            get(oauth_authorization_server_metadata),
-        )
-        .route(
-            "/mcp/.well-known/oauth-authorization-server/mcp",
-            get(oauth_authorization_server_metadata),
-        )
-        .route(
-            "/mcp/.well-known/oauth-authorization-server/mcp/",
             get(oauth_authorization_server_metadata),
         )
         .route(
@@ -124,8 +109,12 @@ pub fn router() -> Router<AppState> {
         .layer(axum::middleware::from_fn(log_oauth_http_flow))
 }
 
-async fn mcp_get() -> Response {
-    StatusCode::METHOD_NOT_ALLOWED.into_response()
+async fn mcp_get(headers: HeaderMap) -> Response {
+    let public_base_url = request_base_url(&headers);
+    match extract_bearer_token(&headers) {
+        Ok(_) => StatusCode::METHOD_NOT_ALLOWED.into_response(),
+        Err(description) => mcp_oauth_challenge(&public_base_url, description),
+    }
 }
 
 async fn log_oauth_http_flow(req: Request, next: Next) -> Response {
@@ -136,6 +125,10 @@ async fn log_oauth_http_flow(req: Request, next: Next) -> Response {
     let origin = header_value(req.headers(), "origin");
     let user_agent = header_value(req.headers(), "user-agent");
     let forwarded_for = first_header_token(req.headers(), "x-forwarded-for");
+    let host = header_value(req.headers(), "host");
+    let cf_ray = header_value(req.headers(), "cf-ray");
+    let cf_connecting_ip = header_value(req.headers(), "cf-connecting-ip");
+    let cf_ipcountry = header_value(req.headers(), "cf-ipcountry");
     let content_type = header_value(req.headers(), "content-type");
     let ac_request_method = header_value(req.headers(), "access-control-request-method");
     let ac_request_headers = header_value(req.headers(), "access-control-request-headers");
@@ -148,6 +141,10 @@ async fn log_oauth_http_flow(req: Request, next: Next) -> Response {
             origin = ?origin,
             user_agent = ?user_agent,
             forwarded_for = ?forwarded_for,
+            host = ?host,
+            cf_ray = ?cf_ray,
+            cf_connecting_ip = ?cf_connecting_ip,
+            cf_ipcountry = ?cf_ipcountry,
             content_type = ?content_type,
             access_control_request_method = ?ac_request_method,
             access_control_request_headers = ?ac_request_headers,
@@ -163,6 +160,8 @@ async fn log_oauth_http_flow(req: Request, next: Next) -> Response {
             method = %method,
             path = %path,
             status = response.status().as_u16(),
+            host = ?host,
+            cf_ray = ?cf_ray,
             content_type = ?header_value(response.headers(), "content-type"),
             access_control_allow_origin = ?header_value(response.headers(), "access-control-allow-origin"),
             access_control_allow_methods = ?header_value(response.headers(), "access-control-allow-methods"),
@@ -234,39 +233,45 @@ async fn mcp_post(headers: HeaderMap, body: Bytes) -> Response {
 async fn oauth_authorization_server_metadata(
     headers: HeaderMap,
     original_uri: OriginalUri,
-) -> Json<Value> {
+) -> Response {
     let base = request_base_url(&headers);
     log_oauth_discovery_request("authorization_server", &headers, &original_uri, &base);
-    Json(json!({
-        "issuer": base,
-        "authorization_endpoint": format!("{base}/oauth/authorize"),
-        "token_endpoint": format!("{base}/oauth/token"),
-        "registration_endpoint": format!("{base}/oauth/register"),
-        "revocation_endpoint": format!("{base}/oauth/revoke"),
-        "device_authorization_endpoint": format!("{base}/oauth/device/start"),
-        "response_types_supported": ["code"],
-        "grant_types_supported": [
-            "authorization_code",
-            "refresh_token",
-            "urn:ietf:params:oauth:grant-type:device_code"
-        ],
-        "code_challenge_methods_supported": ["S256"],
-        "token_endpoint_auth_methods_supported": DCR_TOKEN_AUTH_METHODS,
-        "scopes_supported": OAUTH_SCOPES,
-    }))
+    with_no_store(
+        Json(json!({
+            "issuer": base,
+            "authorization_endpoint": format!("{base}/oauth/authorize"),
+            "token_endpoint": format!("{base}/oauth/token"),
+            "registration_endpoint": format!("{base}/oauth/register"),
+            "revocation_endpoint": format!("{base}/oauth/revoke"),
+            "device_authorization_endpoint": format!("{base}/oauth/device/start"),
+            "response_types_supported": ["code"],
+            "grant_types_supported": [
+                "authorization_code",
+                "refresh_token",
+                "urn:ietf:params:oauth:grant-type:device_code"
+            ],
+            "code_challenge_methods_supported": ["S256"],
+            "token_endpoint_auth_methods_supported": DCR_TOKEN_AUTH_METHODS,
+            "scopes_supported": OAUTH_SCOPES,
+        }))
+        .into_response(),
+    )
 }
 
 async fn oauth_protected_resource_metadata(
     headers: HeaderMap,
     original_uri: OriginalUri,
-) -> Json<Value> {
+) -> Response {
     let base = request_base_url(&headers);
     log_oauth_discovery_request("protected_resource", &headers, &original_uri, &base);
-    Json(json!({
-        "resource": format!("{base}{MCP_PATH}"),
-        "authorization_servers": [base],
-        "scopes_supported": OAUTH_SCOPES,
-    }))
+    with_no_store(
+        Json(json!({
+            "resource": format!("{base}{MCP_PATH}"),
+            "authorization_servers": [base],
+            "scopes_supported": OAUTH_SCOPES,
+        }))
+        .into_response(),
+    )
 }
 
 async fn oauth_authorize_get(
@@ -392,7 +397,7 @@ async fn oauth_register(
 
     match oauth_register_inner(&state, req, &log_context).await {
         Ok(registration) => {
-            let response = (StatusCode::CREATED, Json(registration)).into_response();
+            let response = with_no_store((StatusCode::CREATED, Json(registration)).into_response());
             with_oauth_request_id_header(response, &log_context.request_id)
         }
         Err(err) => {
@@ -618,9 +623,13 @@ fn log_oauth_discovery_request(
         metadata_kind = metadata_kind,
         path = %original_uri.0.path(),
         base_url = %base_url,
+        host = ?header_value(headers, "host"),
         origin = ?header_value(headers, "origin"),
         user_agent = ?header_value(headers, "user-agent"),
         forwarded_for = ?first_header_token(headers, "x-forwarded-for"),
+        cf_ray = ?header_value(headers, "cf-ray"),
+        cf_connecting_ip = ?header_value(headers, "cf-connecting-ip"),
+        cf_ipcountry = ?header_value(headers, "cf-ipcountry"),
         "MCP OAuth discovery metadata served"
     );
 }
@@ -750,14 +759,16 @@ fn oauth_error_response(
     description: &str,
     retry_after: Option<u64>,
 ) -> Response {
-    let mut response = (
-        status,
-        Json(json!({
-            "error": code,
-            "error_description": description,
-        })),
-    )
-        .into_response();
+    let mut response = with_no_store(
+        (
+            status,
+            Json(json!({
+                "error": code,
+                "error_description": description,
+            })),
+        )
+            .into_response(),
+    );
 
     if let Some(seconds) = retry_after {
         if let Ok(value) = HeaderValue::from_str(&seconds.to_string()) {
@@ -795,14 +806,16 @@ fn mcp_oauth_challenge(base_url: &str, description: &str) -> Response {
     let challenge = format!(
         "Bearer realm=\"kura-mcp\", error=\"invalid_token\", error_description=\"{description}\", resource_metadata=\"{resource_metadata}\""
     );
-    let mut response = (
-        StatusCode::UNAUTHORIZED,
-        Json(json!({
-            "error": "invalid_token",
-            "error_description": description,
-        })),
-    )
-        .into_response();
+    let mut response = with_no_store(
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "invalid_token",
+                "error_description": description,
+            })),
+        )
+            .into_response(),
+    );
     if let Ok(value) = HeaderValue::from_str(&challenge) {
         response.headers_mut().insert(WWW_AUTHENTICATE, value);
     }
@@ -842,6 +855,20 @@ fn request_base_url(headers: &HeaderMap) -> String {
     }
 
     runtime_api_base_url()
+}
+
+fn with_no_store(mut response: Response) -> Response {
+    apply_no_store_headers(response.headers_mut());
+    response
+}
+
+fn apply_no_store_headers(headers: &mut HeaderMap) {
+    headers.insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, max-age=0"),
+    );
+    headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+    headers.insert(EXPIRES, HeaderValue::from_static("0"));
 }
 
 fn header_value(headers: &HeaderMap, key: &str) -> Option<String> {
