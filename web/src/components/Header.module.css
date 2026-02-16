@@ -46,7 +46,7 @@
 .link {
   font-family: var(--font-mono);
   font-weight: 300;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   letter-spacing: 0.04em;
   color: var(--ink-faint);
   text-decoration: none;
@@ -126,7 +126,7 @@
   }
 
   .dropdown .link {
-    font-size: 0.8125rem;
+    font-size: 0.875rem;
     padding: 0.625rem 0;
     border-bottom: 1px solid var(--thread);
   }

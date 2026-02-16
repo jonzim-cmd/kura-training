@@ -87,7 +87,7 @@
 }
 
 .sectionDescription {
-  font-size: var(--text-base);
+  font-size: var(--text-md);
   color: var(--ink-mid);
   line-height: 1.6;
 }
@@ -132,7 +132,7 @@
 }
 
 .settingHint {
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   color: var(--ink-faint);
   line-height: 1.5;
   margin-top: var(--space-xs);
@@ -165,7 +165,7 @@
   padding: var(--space-sm) 0;
   border-bottom: 2px solid var(--thread);
   color: var(--ink-faint);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   font-weight: 500;
 }
 
@@ -184,16 +184,16 @@
 }
 
 .keyValue {
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
 }
 
 .keyDate {
   color: var(--ink-faint);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
 }
 
 .emptyState {
-  font-size: var(--text-base);
+  font-size: var(--text-md);
   color: var(--ink-faint);
 }
 
@@ -248,7 +248,7 @@
 /* --- Danger Zone --- */
 
 .dangerDescription {
-  font-size: var(--text-base);
+  font-size: var(--text-md);
   color: var(--ink-mid);
   line-height: 1.6;
   margin-bottom: var(--space-lg);
@@ -306,7 +306,7 @@
   .sidebarLink {
     white-space: nowrap;
     padding: var(--space-sm) var(--space-lg);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
   }
 
   .sectionHeader {

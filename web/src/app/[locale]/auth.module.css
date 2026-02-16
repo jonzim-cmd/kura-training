@@ -40,7 +40,7 @@
   width: 100%;
   padding: 0.875rem 1rem;
   font-family: var(--font-display);
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
   font-weight: 400;
   letter-spacing: 0.02em;
   color: var(--ink);
@@ -120,7 +120,7 @@
 }
 
 .forgotLink {
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
   color: var(--ink-faint);
   padding: 0.5rem 0;
 }
@@ -150,7 +150,7 @@
 
 .consentText {
   font-family: var(--font-body);
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
   line-height: 1.5;
   color: var(--ink-mid);
 }
@@ -163,7 +163,7 @@
 
 .errorBanner {
   font-family: var(--font-body);
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
   line-height: 1.5;
   color: #e85d5d;
   padding: 0.75rem 1rem;
@@ -178,7 +178,7 @@
   text-align: center;
   margin-top: 1rem;
   padding: 0.75rem 0;
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
   color: var(--ink-faint);
 }
 

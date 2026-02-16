@@ -246,7 +246,7 @@ h1, h2, h3, h4 {
 
 .kura-code {
   font-family: var(--font-mono);
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
   font-weight: 300;
   background: rgba(255, 255, 255, 0.04);
   padding: 1rem 1.25rem;
@@ -257,7 +257,7 @@ h1, h2, h3, h4 {
 
 .kura-code-inline {
   font-family: var(--font-mono);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 300;
   background: rgba(255, 255, 255, 0.04);
   padding: 0.15em 0.4em;
