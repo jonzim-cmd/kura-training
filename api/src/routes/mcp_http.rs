@@ -10,7 +10,6 @@ use axum::routing::{get, post};
 use axum::{Form, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tower_http::normalize_path::NormalizePathLayer;
 use url::Url;
 use uuid::Uuid;
 
@@ -30,7 +29,15 @@ pub fn router() -> Router<AppState> {
             get(oauth_authorization_server_metadata),
         )
         .route(
+            "/.well-known/oauth-authorization-server/",
+            get(oauth_authorization_server_metadata),
+        )
+        .route(
             "/.well-known/oauth-authorization-server/mcp",
+            get(oauth_authorization_server_metadata),
+        )
+        .route(
+            "/.well-known/oauth-authorization-server/mcp/",
             get(oauth_authorization_server_metadata),
         )
         // Compatibility aliases for clients that resolve well-known from the MCP path.
@@ -39,7 +46,15 @@ pub fn router() -> Router<AppState> {
             get(oauth_authorization_server_metadata),
         )
         .route(
+            "/mcp/.well-known/oauth-authorization-server/",
+            get(oauth_authorization_server_metadata),
+        )
+        .route(
             "/mcp/.well-known/oauth-authorization-server/mcp",
+            get(oauth_authorization_server_metadata),
+        )
+        .route(
+            "/mcp/.well-known/oauth-authorization-server/mcp/",
             get(oauth_authorization_server_metadata),
         )
         .route(
@@ -47,7 +62,15 @@ pub fn router() -> Router<AppState> {
             get(oauth_protected_resource_metadata),
         )
         .route(
+            "/.well-known/oauth-protected-resource/",
+            get(oauth_protected_resource_metadata),
+        )
+        .route(
             "/.well-known/oauth-protected-resource/mcp",
+            get(oauth_protected_resource_metadata),
+        )
+        .route(
+            "/.well-known/oauth-protected-resource/mcp/",
             get(oauth_protected_resource_metadata),
         )
         .route(
@@ -55,7 +78,15 @@ pub fn router() -> Router<AppState> {
             get(oauth_protected_resource_metadata),
         )
         .route(
+            "/mcp/.well-known/oauth-protected-resource/",
+            get(oauth_protected_resource_metadata),
+        )
+        .route(
             "/mcp/.well-known/oauth-protected-resource/mcp",
+            get(oauth_protected_resource_metadata),
+        )
+        .route(
+            "/mcp/.well-known/oauth-protected-resource/mcp/",
             get(oauth_protected_resource_metadata),
         )
         .route(
@@ -63,20 +94,34 @@ pub fn router() -> Router<AppState> {
             get(oauth_authorize_get).post(oauth_authorize_post),
         )
         .route(
+            "/oauth/authorize/",
+            get(oauth_authorize_get).post(oauth_authorize_post),
+        )
+        .route(
             "/mcp/oauth/authorize",
             get(oauth_authorize_get).post(oauth_authorize_post),
         )
+        .route(
+            "/mcp/oauth/authorize/",
+            get(oauth_authorize_get).post(oauth_authorize_post),
+        )
         .route("/oauth/token", post(oauth_token))
+        .route("/oauth/token/", post(oauth_token))
         .route("/mcp/oauth/token", post(oauth_token))
+        .route("/mcp/oauth/token/", post(oauth_token))
         .route("/oauth/revoke", post(oauth_revoke))
+        .route("/oauth/revoke/", post(oauth_revoke))
         .route("/mcp/oauth/revoke", post(oauth_revoke))
+        .route("/mcp/oauth/revoke/", post(oauth_revoke))
         .route("/oauth/device/start", post(oauth_device_start))
+        .route("/oauth/device/start/", post(oauth_device_start))
         .route("/mcp/oauth/device/start", post(oauth_device_start))
+        .route("/mcp/oauth/device/start/", post(oauth_device_start))
         .route("/oauth/register", post(oauth_register))
+        .route("/oauth/register/", post(oauth_register))
         .route("/mcp/oauth/register", post(oauth_register))
+        .route("/mcp/oauth/register/", post(oauth_register))
         .layer(axum::middleware::from_fn(log_oauth_http_flow))
-        // Accept both `/path` and `/path/` to match client quirks.
-        .layer(NormalizePathLayer::trim_trailing_slash())
 }
 
 async fn mcp_get() -> Response {
