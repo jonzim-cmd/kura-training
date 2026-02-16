@@ -29,6 +29,15 @@ pub fn router() -> Router<AppState> {
             "/.well-known/oauth-authorization-server/mcp",
             get(oauth_authorization_server_metadata),
         )
+        // Compatibility aliases for clients that resolve well-known from the MCP path.
+        .route(
+            "/mcp/.well-known/oauth-authorization-server",
+            get(oauth_authorization_server_metadata),
+        )
+        .route(
+            "/mcp/.well-known/oauth-authorization-server/mcp",
+            get(oauth_authorization_server_metadata),
+        )
         .route(
             "/.well-known/oauth-protected-resource",
             get(oauth_protected_resource_metadata),
@@ -38,11 +47,25 @@ pub fn router() -> Router<AppState> {
             get(oauth_protected_resource_metadata),
         )
         .route(
+            "/mcp/.well-known/oauth-protected-resource",
+            get(oauth_protected_resource_metadata),
+        )
+        .route(
+            "/mcp/.well-known/oauth-protected-resource/mcp",
+            get(oauth_protected_resource_metadata),
+        )
+        .route(
             "/oauth/authorize",
             get(oauth_authorize_get).post(oauth_authorize_post),
         )
+        .route(
+            "/mcp/oauth/authorize",
+            get(oauth_authorize_get).post(oauth_authorize_post),
+        )
         .route("/oauth/token", post(oauth_token))
+        .route("/mcp/oauth/token", post(oauth_token))
         .route("/oauth/register", post(oauth_register))
+        .route("/mcp/oauth/register", post(oauth_register))
 }
 
 async fn mcp_get() -> Response {
