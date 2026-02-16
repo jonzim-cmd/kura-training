@@ -1,7 +1,7 @@
 # Kura Training — Production Compose
 #
 # Joins the moltbot-internal network so Fred (gateway) can reach kura-api.
-# No ports exposed to the host — access only via Docker network.
+# Localhost-only ports are exposed for Cloudflare Tunnel ingress.
 #
 # Usage:
 #   docker compose -f docker/compose.production.yml up -d
@@ -11,6 +11,10 @@
 # Required DB URLs:
 #   KURA_API_DATABASE_URL
 #   KURA_WORKER_DATABASE_URL
+# Required web/public routing values:
+#   KURA_WEB_PUBLIC_API_URL
+#   KURA_FRONTEND_URL
+#   KURA_CORS_ORIGINS
 # Optional override:
 #   KURA_WORKER_LISTEN_DATABASE_URL
 
@@ -43,11 +47,15 @@ services:
       PORT: "3000"
       RUST_LOG: "kura_api=info,tower_http=info"
       KURA_AGENT_MODEL_ATTESTATION_SECRET: ${KURA_AGENT_MODEL_ATTESTATION_SECRET}
+      FRONTEND_URL: ${KURA_FRONTEND_URL:?KURA_FRONTEND_URL must be set}
+      KURA_CORS_ORIGINS: ${KURA_CORS_ORIGINS:?KURA_CORS_ORIGINS must be set}
     depends_on:
       kura-postgres:
         condition: service_healthy
     networks:
       - moltbot-internal
+    ports:
+      - "127.0.0.1:${KURA_API_PUBLIC_PORT:-8330}:3000"
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:3000/health || exit 1"]
       interval: 30s
@@ -90,6 +98,35 @@ services:
       - moltbot-internal
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8081/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  kura-web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${KURA_WEB_PUBLIC_API_URL:?KURA_WEB_PUBLIC_API_URL must be set}
+    environment:
+      NODE_ENV: "production"
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      NEXT_PUBLIC_API_URL: ${KURA_WEB_PUBLIC_API_URL:?KURA_WEB_PUBLIC_API_URL must be set}
+    depends_on:
+      kura-api:
+        condition: service_healthy
+    networks:
+      - moltbot-internal
+    ports:
+      - "127.0.0.1:${KURA_WEB_PORT:-3001}:3000"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://localhost:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3

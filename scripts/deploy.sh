@@ -60,6 +60,9 @@ require_env "KURA_API_KEY" "Run scripts/setup-user.sh and copy the generated key
 require_env "KURA_AGENT_MODEL_ATTESTATION_SECRET" "Generate with: openssl rand -hex 32"
 require_env "KURA_API_DATABASE_URL" "Set Supabase DB URL for API runtime."
 require_env "KURA_WORKER_DATABASE_URL" "Set Supabase DB URL for worker runtime."
+require_env "KURA_WEB_PUBLIC_API_URL" "Set public API base URL for web runtime (e.g. https://api.withkura.com)."
+require_env "KURA_FRONTEND_URL" "Set canonical web URL for auth/reset links (e.g. https://withkura.com)."
+require_env "KURA_CORS_ORIGINS" "Set allowed browser origins (comma-separated, e.g. https://withkura.com,https://www.withkura.com)."
 
 # Resolve target DB URL for migration drift preflight.
 TARGET_DATABASE_URL="${KURA_API_DATABASE_URL}"
@@ -85,6 +88,7 @@ info "Running migration drift preflight..."
 
 info "Starting core services..."
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d kura-postgres kura-api kura-worker
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d kura-web
 
 # nginx resolves upstream IPs on startup. Force proxy recreation so it always picks
 # up the latest kura-api container IP after API recreation during deploy/rollback.
@@ -115,6 +119,19 @@ for i in $(seq 1 30); do
     fi
     if [ "$i" -eq 30 ]; then
         warn "kura-worker not healthy yet — it may still be starting. Check logs."
+    fi
+    sleep 1
+done
+
+info "Waiting for kura-web to become healthy..."
+for i in $(seq 1 30); do
+    if docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T kura-web \
+        node -e "fetch('http://localhost:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
+        info "kura-web is healthy!"
+        break
+    fi
+    if [ "$i" -eq 30 ]; then
+        warn "kura-web not healthy yet — it may still be starting. Check logs."
     fi
     sleep 1
 done
