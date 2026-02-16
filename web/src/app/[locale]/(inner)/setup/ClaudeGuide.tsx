@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useTranslations } from 'next-intl';
 import styles from './ClaudeGuide.module.css';
 
@@ -372,6 +372,18 @@ export function ClaudeGuide() {
     return () => window.removeEventListener('keydown', handler);
   }, [go]);
 
+  // Swipe navigation
+  const touchStartX = useRef<number | null>(null);
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0].clientX;
+  }, []);
+  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
+    if (touchStartX.current === null) return;
+    const dx = e.changedTouches[0].clientX - touchStartX.current;
+    if (Math.abs(dx) > 50) go(dx < 0 ? 1 : -1);
+    touchStartX.current = null;
+  }, [go]);
+
   return (
     <div className={styles.guide}>
       {/* Direct link to claude.ai */}
@@ -421,11 +433,15 @@ export function ClaudeGuide() {
         <div className={styles.mcpHint}>{t('mcpCopyHint')}</div>
       </div>
 
-      {/* Step content */}
+      {/* Step content — click or swipe to advance */}
       {STEPS.map((StepComp, i) => (
         <div
           key={i}
           className={`${styles.stepWrapper} ${i === current ? styles.stepWrapperActive : ''}`}
+          onClick={() => go(1)}
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+          style={{ cursor: 'pointer' }}
         >
           <div className={styles.stepLabel}>
             <BoldQuoted text={stepLabels[i]} />

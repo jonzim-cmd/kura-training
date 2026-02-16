@@ -354,8 +354,8 @@
     "openclaw": {
       "step1Title": "OpenClaw installieren",
       "step1Hint": "Falls du es noch nicht hast:",
-      "step2Title": "Sag OpenClaw, es soll Kura einrichten",
-      "step2Hint": "Kopiere das in deinen OpenClaw-Chat:",
+      "step2Title": "Sag deiner KI, sie soll Kura einrichten",
+      "step2Hint": "Kopiere das in deinen Chat:",
       "step2Prompt": "Installiere die Kura CLI (cargo install kura-cli) und verbinde mein Konto mit kura login. Kura API: https://api.withkura.com"
     },
     "expert": {
@@ -364,7 +364,7 @@
       "mcpDescription": "Gib das deiner KI — sie richtet die Verbindung selbst ein:",
       "mcpPrompt": "Verbinde dich mit meinem Kura-Konto. MCP-Server-URL: https://api.withkura.com/mcp — Nutze OAuth zur Authentifizierung.",
       "cliTitle": "CLI statt MCP",
-      "cliDescription": "Wenn dein Tool kein MCP unterstützt, kann deine KI stattdessen die Kura CLI nutzen. Installiere sie oder sag deiner KI:",
+      "cliDescription": "Wenn du lieber CLI nutzen möchtest, kann deine KI die Kura CLI installieren und einrichten. Sag deiner KI:",
       "cliInstall": "cargo install kura-cli",
       "cliPrompt": "Installiere die Kura CLI (cargo install kura-cli) und verbinde mein Konto mit kura login. Kura API: https://api.withkura.com"
     }

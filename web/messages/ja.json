@@ -354,8 +354,8 @@
     "openclaw": {
       "step1Title": "OpenClawをインストール",
       "step1Hint": "まだインストールしていない場合：",
-      "step2Title": "OpenClawにKuraのセットアップを依頼",
-      "step2Hint": "OpenClawチャットにコピーしてください：",
+      "step2Title": "AIにKuraのセットアップを依頼",
+      "step2Hint": "チャットにコピーしてください：",
       "step2Prompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with kura login. Kura API: https://api.withkura.com"
     },
     "expert": {
@@ -364,7 +364,7 @@
       "mcpDescription": "AIにこれを渡してください — 接続は自動で設定されます：",
       "mcpPrompt": "Connect to my Kura account. MCP server URL: https://api.withkura.com/mcp — Use OAuth for authentication.",
       "cliTitle": "MCPの代わりにCLI",
-      "cliDescription": "MCPに対応していない場合、Kura CLIを使用できます。インストールするか、AIに伝えてください：",
+      "cliDescription": "CLIを使いたい場合、AIがKura CLIをインストール・設定できます。AIに伝えてください：",
       "cliInstall": "cargo install kura-cli",
       "cliPrompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with kura login. Kura API: https://api.withkura.com"
     }

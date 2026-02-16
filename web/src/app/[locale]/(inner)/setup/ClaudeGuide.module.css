@@ -635,7 +635,7 @@
 .doneText {
   font-family: var(--font-display);
   font-size: var(--text-lg);
-  color: var(--cai-green);
+  color: var(--amber);
   margin-bottom: var(--space-sm);
 }
 
