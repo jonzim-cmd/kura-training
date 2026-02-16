@@ -50,7 +50,7 @@ services:
       FRONTEND_URL: ${KURA_FRONTEND_URL:?KURA_FRONTEND_URL must be set}
       KURA_CORS_ORIGINS: ${KURA_CORS_ORIGINS:?KURA_CORS_ORIGINS must be set}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
-      EMAIL_FROM: ${EMAIL_FROM:-Kura <noreply@send.withkura.com>}
+      EMAIL_FROM: ${EMAIL_FROM:-Kura <noreply@withkura.com>}
       ADMIN_NOTIFY_EMAIL: ${ADMIN_NOTIFY_EMAIL:-}
       KURA_WEB_PUBLIC_API_URL: ${KURA_WEB_PUBLIC_API_URL:-https://api.withkura.com}
     depends_on:
