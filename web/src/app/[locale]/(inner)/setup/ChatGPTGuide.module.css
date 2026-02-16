@@ -858,34 +858,48 @@
     z-index: 101;
   }
 
-  .mockupBody {
-    min-height: auto !important;
-    flex-direction: column;
-  }
+  /* Sidebar stays sidebar — just narrower. Instructions reference sidebar. */
+  .uiSidebar { width: 90px; padding: 8px; font-size: 10px; }
+  .uiSidebarLogo { margin-bottom: 10px; }
+  .uiSidebarItem { padding: 4px 6px; gap: 4px; }
+  .sidebarIcon { width: 14px; font-size: 11px; }
+  .avatar { width: 26px; height: 26px; font-size: 12px; }
+  .userName { font-size: 11px; }
 
-  .uiSidebar { width: 100%; padding: 10px 14px; font-size: 11px; flex-direction: row; flex-wrap: wrap; gap: 4px; border-right: none; border-bottom: 1px solid var(--gpt-border-dim); }
-  .uiSidebarLogo { margin-bottom: 0; }
-  .uiSidebarItem { padding: 4px 8px; }
-  .uiProfile { margin-top: 0; border-top: none; padding-top: 0; }
+  /* Settings tabs: icons only on mobile — German words too long */
+  .settingsTabs { width: 46px; padding: 8px 6px; }
+  .stItem { font-size: 0; padding: 6px; justify-content: center; }
+  .stIcon { font-size: 16px; }
+  .closeX { font-size: 16px; }
 
-  .settingsModal { width: 100%; min-height: auto; flex-direction: column; }
-  .settingsTabs { width: 100%; flex-direction: row; flex-wrap: wrap; gap: 2px; padding: 10px; border-right: none; border-bottom: 1px solid var(--gpt-border-dim); }
-  .stItem { padding: 4px 8px; font-size: 11px; }
+  .mockupBody { min-height: 280px; }
 
-  .modal { width: 95%; padding: 18px; }
-  .modalInput { padding: 8px 12px; font-size: 13px; margin-bottom: 10px; }
-  .modalSelect { padding: 8px 12px; font-size: 13px; margin-bottom: 10px; }
-  .modalTitle { font-size: 16px; margin-bottom: 14px; }
-  .modalFieldLabel { font-size: 12px; margin-bottom: 4px; }
-  .warningCheckDesc { font-size: 11px; }
+  .mainTitle { font-size: 18px; }
+  .chatBox { font-size: 11px; padding: 10px 14px; width: 85%; }
+  .appsHeader { font-size: 16px; }
+  .appsDesc { font-size: 11px; }
+  .searchAppsBtn { font-size: 10px; padding: 4px 8px; white-space: nowrap; }
+
+  .settingsContent { padding: 12px; }
+  .settingsContentTitle { font-size: 14px; }
+  .appsTabDesc { font-size: 11px; }
+  .advText { font-size: 11px; }
+  .devModeLabel { font-size: 11px; }
+  .devModeDesc { font-size: 10px; }
 
   .featuredCard { width: 100%; }
+  .featuredCardTitle { font-size: 13px; }
+  .featuredCardDesc { font-size: 11px; }
 
-  /* Overlay: relative on mobile so mockup grows with content */
-  .modalOverlay {
-    position: relative;
-    inset: auto;
-    min-height: auto;
-    border-radius: 0 0 12px 12px;
-  }
+  .settingsModal { width: 100%; }
+  .modal { width: 92%; padding: 16px; }
+  .modalTitle { font-size: 14px; }
+  .modalInput { padding: 8px 10px; font-size: 12px; margin-bottom: 8px; }
+  .modalSelect { padding: 8px 10px; font-size: 12px; margin-bottom: 8px; }
+  .modalFieldLabel { font-size: 10px; margin-bottom: 2px; }
+  .warningCheckDesc { font-size: 10px; }
+  .warningCheckTitle { font-size: 11px; }
+  .warningHeader { font-size: 11px; }
+  .modalGuideLink { font-size: 11px; }
+  .modalBtnCreate { font-size: 12px; }
 }

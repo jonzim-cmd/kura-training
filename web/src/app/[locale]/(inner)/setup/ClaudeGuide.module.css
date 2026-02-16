@@ -699,36 +699,50 @@
     z-index: 101;
   }
 
-  .mockupBody {
-    min-height: auto !important;
-    flex-direction: column;
-  }
+  /* Sidebar stays sidebar — just narrower. Instructions reference "Seitenleiste". */
+  .uiSidebar { width: 90px; padding: 8px; font-size: 10px; }
+  .uiSidebarLogo { font-size: 14px; margin-bottom: 10px; }
+  .uiSidebarItem { padding: 4px 6px; gap: 4px; }
+  .sidebarIcon { width: 14px; font-size: 11px; }
+  .avatar { width: 26px; height: 26px; font-size: 12px; }
+  .userName { font-size: 11px; }
+  .userPlan { font-size: 9px; }
 
-  .uiSidebar { width: 100%; padding: 10px 14px; font-size: 11px; flex-direction: row; flex-wrap: wrap; gap: 4px; border-right: none; border-bottom: 1px solid var(--cai-border-dim); }
-  .uiSidebarLogo { margin-bottom: 0; }
-  .uiSidebarItem { padding: 4px 8px; }
-  .uiProfile { margin-top: 0; border-top: none; padding-top: 0; }
+  .settingsSidebar { width: 80px; padding: 8px; }
+  .settingsTitle { font-size: 14px; margin-bottom: 10px; }
+  .ssItem { padding: 4px 6px; font-size: 10px; }
 
-  .settingsSidebar { width: 100%; padding: 10px 14px; border-bottom: 1px solid var(--cai-border-dim); }
-  .ssItem { display: inline-block; padding: 4px 8px; font-size: 11px; }
+  .mockupBody { min-height: 280px; }
 
-  .settingsContent { border-left: none; }
+  .greeting { font-size: 16px; }
+  .chatBox { font-size: 11px; padding: 10px 12px; width: 90%; }
 
-  .modal { width: 95%; padding: 18px; }
-  .modalInput { padding: 8px 12px; font-size: 13px; margin-bottom: 8px; }
-  .modalTitle { font-size: 16px; }
+  .settingsContent { padding: 12px; }
+  .profileLabel { font-size: 10px; }
+  .profileValue { font-size: 12px; padding: 8px 10px; }
 
-  .connName { font-size: 11px; }
-  .connBtn { font-size: 10px; padding: 4px 10px; }
-  .connIcon { width: 28px; height: 28px; margin-right: 8px; }
+  .connHeader { flex-wrap: wrap; gap: 4px; }
+  .connTitle { font-size: 14px; }
+  .browseBtn { font-size: 9px; padding: 4px 8px; }
+  .connDesc { font-size: 10px; }
+  .connName { font-size: 10px; }
+  .connSub { font-size: 9px; }
+  .connBtn { font-size: 9px; padding: 4px 8px; }
+  .connBtnDots { padding: 4px; }
+  .connIcon { width: 24px; height: 24px; margin-right: 6px; font-size: 11px; }
+  .addConnectorBtn { font-size: 10px; padding: 6px 12px; }
 
-  /* Overlay: relative on mobile so mockup grows with content */
-  .modalOverlay {
-    position: relative;
-    inset: auto;
-    min-height: auto;
-    border-radius: 0 0 12px 12px;
-  }
+  .popup { width: 180px; }
+  .popupItem { font-size: 11px; padding: 6px 12px; gap: 6px; }
+  .popupEmail { font-size: 10px; padding: 6px 12px; }
+
+  .modal { width: 92%; padding: 16px; }
+  .modalTitle { font-size: 14px; }
+  .modalDesc { font-size: 11px; }
+  .modalInput { padding: 8px 10px; font-size: 12px; margin-bottom: 8px; }
+  .modalAdvanced { font-size: 11px; }
+  .modalDisclaimer { font-size: 10px; margin: 8px 0 12px; }
+  .modalBtn { font-size: 12px; padding: 6px 14px; }
 }
 
 /* --- Profile form fields (step 3) --- */

@@ -631,6 +631,43 @@
     min-width: 0;
   }
 
+  /* Inside section — hide decorative grid elements that overlap content on mobile */
+  .inside {
+    min-height: auto;
+  }
+
+  .eventLines {
+    opacity: 0.15;
+  }
+
+  .projBand {
+    display: none;
+  }
+
+  .threadsSvg {
+    display: none;
+  }
+
+  /* Deep section — hide clouds that overflow viewport */
+  .inferenceCloud {
+    display: none;
+  }
+
+  /* Override inline marginLeft on inference steps */
+  .inferenceStep {
+    margin-left: 0 !important;
+    max-width: 100%;
+  }
+
+  .inferenceStepContent {
+    font-size: 0.8125rem;
+    word-break: break-word;
+  }
+
+  /* Mesh background scales fine but reduce opacity for readability */
+  .mesh svg {
+    opacity: 0.5;
+  }
 }
 
 /* === CTA === */
