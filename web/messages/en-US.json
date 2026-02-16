@@ -252,6 +252,7 @@
       "step6Label": "Click \"Connect\" on your new Kura Training connector",
       "done": "Done! Your connector is now set up.",
       "doneHint": "Open a new chat and tell Claude about your training.",
+      "mcpCopyHint": "Paste into step 5 on claude.ai",
       "next": "Next",
       "back": "Back",
       "restart": "Restart",

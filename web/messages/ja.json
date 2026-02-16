@@ -252,6 +252,7 @@
       "step6Label": "新しいKura Trainingコネクターの「Connect」をクリック",
       "done": "完了！コネクターの設定が完了しました。",
       "doneHint": "新しいチャットを開いて、トレーニングについて話しましょう。",
+      "mcpCopyHint": "ステップ5でclaude.aiに貼り付け",
       "next": "次へ",
       "back": "戻る",
       "restart": "最初から",

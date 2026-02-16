@@ -374,17 +374,11 @@ export function ClaudeGuide() {
 
   return (
     <div className={styles.guide}>
-      {/* Direct link + MCP URL copy */}
-      <div className={styles.topBar}>
+      {/* Direct link to claude.ai */}
+      <div className={styles.directLinkWrap}>
         <a href="https://claude.ai" target="_blank" rel="noreferrer" className={styles.directLink}>
           claude.ai &rarr;
         </a>
-        <div className={styles.mcpCopy}>
-          <code className={styles.mcpUrl}>{MCP_URL}</code>
-          <button type="button" className="kura-btn kura-btn--ghost" onClick={copyUrl}>
-            {copied ? tc('copied') : tc('copy')}
-          </button>
-        </div>
       </div>
 
       {/* Progress dots */}
@@ -414,6 +408,17 @@ export function ClaudeGuide() {
         <button className={styles.ctrlBtn} onClick={() => go(1)}>
           {isLast ? `${t('restart')} \u21BB` : `${t('next')} \u2192`}
         </button>
+      </div>
+
+      {/* MCP URL copy */}
+      <div className={styles.mcpCopyWrap}>
+        <div className={styles.mcpCopy}>
+          <code className={styles.mcpUrl}>{MCP_URL}</code>
+          <button type="button" className="kura-btn kura-btn--ghost" onClick={copyUrl}>
+            {copied ? tc('copied') : tc('copy')}
+          </button>
+        </div>
+        <div className={styles.mcpHint}>{t('mcpCopyHint')}</div>
       </div>
 
       {/* Step content */}

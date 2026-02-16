@@ -18,18 +18,23 @@
   --cai-green: #4ade80;
 }
 
-/* --- Top Bar: link + MCP URL --- */
-.topBar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-xl);
+/* --- Direct link --- */
+.directLinkWrap {
+  text-align: center;
   margin-bottom: var(--space-lg);
-  flex-wrap: wrap;
 }
 
 .directLink {
   font-size: var(--text-base);
+}
+
+/* --- MCP URL Copy (below controls) --- */
+.mcpCopyWrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-xl);
 }
 
 .mcpCopy {
@@ -46,6 +51,11 @@
   border-radius: 4px;
   color: var(--ink);
   border: 1px solid var(--thread);
+}
+
+.mcpHint {
+  font-size: var(--text-sm);
+  color: var(--ink-faint);
 }
 
 /* --- Progress Bar --- */
