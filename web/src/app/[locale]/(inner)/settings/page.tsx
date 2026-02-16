@@ -50,6 +50,7 @@ export default function SettingsPage() {
   const [healthConsent, setHealthConsent] = useState(false);
   const [healthConsentSaving, setHealthConsentSaving] = useState(false);
   const [healthConsentError, setHealthConsentError] = useState<string | null>(null);
+  const [showHealthConsentDisableConfirm, setShowHealthConsentDisableConfirm] = useState(false);
 
   // Redirect if not logged in
   useEffect(() => {
@@ -184,10 +185,8 @@ export default function SettingsPage() {
     } catch { /* silently fail */ }
   };
 
-  const handleToggleHealthConsent = async () => {
+  const applyHealthConsentUpdate = async (nextConsent: boolean) => {
     if (!token || healthConsentSaving) return;
-
-    const nextConsent = !healthConsent;
     setHealthConsentError(null);
     setHealthConsentSaving(true);
     try {
@@ -208,6 +207,19 @@ export default function SettingsPage() {
     } finally {
       setHealthConsentSaving(false);
     }
+  };
+
+  const handleToggleHealthConsent = () => {
+    if (!healthConsent) {
+      void applyHealthConsentUpdate(true);
+      return;
+    }
+    setShowHealthConsentDisableConfirm(true);
+  };
+
+  const handleConfirmDisableHealthConsent = async () => {
+    setShowHealthConsentDisableConfirm(false);
+    await applyHealthConsentUpdate(false);
   };
 
   const handleContactSubmit = async () => {
@@ -452,6 +464,9 @@ export default function SettingsPage() {
                         ? t('privacy.healthConsentGrantedHint')
                         : t('privacy.healthConsentMissingHint')}
                     </p>
+                    {healthConsent && (
+                      <p className={styles.settingHint}>{t('privacy.healthConsentDisableHint')}</p>
+                    )}
                     {healthConsentError && (
                       <p className={styles.settingHint}>{healthConsentError}</p>
                     )}
@@ -617,6 +632,43 @@ export default function SettingsPage() {
           </div>
         </div>
       </div>
+      {showHealthConsentDisableConfirm && (
+        <div className={styles.modalBackdrop} role="presentation">
+          <div
+            className={styles.modal}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="health-consent-disable-title"
+          >
+            <h3 id="health-consent-disable-title" className={styles.modalTitle}>
+              {t('privacy.healthConsentDisableTitle')}
+            </h3>
+            <p className={styles.modalBody}>{t('privacy.healthConsentDisableBody')}</p>
+            <ul className={styles.modalList}>
+              <li>{t('privacy.healthConsentDisableConsequenceOne')}</li>
+              <li>{t('privacy.healthConsentDisableConsequenceTwo')}</li>
+              <li>{t('privacy.healthConsentDisableConsequenceThree')}</li>
+            </ul>
+            <div className={styles.modalActions}>
+              <button
+                className="kura-btn kura-btn--ghost"
+                onClick={() => setShowHealthConsentDisableConfirm(false)}
+              >
+                {tc('cancel')}
+              </button>
+              <button
+                className="kura-btn kura-btn--primary"
+                onClick={() => {
+                  void handleConfirmDisableHealthConsent();
+                }}
+                disabled={healthConsentSaving}
+              >
+                {t('privacy.healthConsentDisableConfirmButton')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

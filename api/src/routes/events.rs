@@ -34,6 +34,24 @@ pub fn read_router() -> Router<AppState> {
     Router::new().route("/v1/events", get(list_events))
 }
 
+const HEALTH_CONSENT_ERROR_CODE: &str = "health_consent_required";
+const HEALTH_CONSENT_NEXT_ACTION: &str = "open_settings_privacy";
+const HEALTH_CONSENT_SETTINGS_URL: &str = "/settings?section=privacy";
+
+fn health_consent_required_error() -> AppError {
+    AppError::ForbiddenAction {
+        message: "Processing health-related training data requires explicit consent (Art. 9 GDPR)."
+            .to_string(),
+        docs_hint: Some(
+            "Grant consent in Settings > Privacy & Data before creating health/training events."
+                .to_string(),
+        ),
+        error_code: Some(HEALTH_CONSENT_ERROR_CODE.to_string()),
+        next_action: Some(HEALTH_CONSENT_NEXT_ACTION.to_string()),
+        next_action_url: Some(HEALTH_CONSENT_SETTINGS_URL.to_string()),
+    }
+}
+
 fn event_requires_health_data_consent(event_type: &str) -> bool {
     if matches!(
         event_type,
@@ -86,15 +104,7 @@ async fn ensure_health_data_processing_consent(
     })?;
 
     if !consent {
-        return Err(AppError::Forbidden {
-            message:
-                "Processing health-related training data requires explicit consent (Art. 9 GDPR)."
-                    .to_string(),
-            docs_hint: Some(
-                "Grant consent in Settings > Privacy & Data before creating health/training events."
-                    .to_string(),
-            ),
-        });
+        return Err(health_consent_required_error());
     }
 
     Ok(())
@@ -4105,7 +4115,31 @@ mod tests {
 
     #[test]
     fn test_health_consent_not_required_for_projection_rule_events() {
-        assert!(!event_requires_health_data_consent("projection_rule.created"));
-        assert!(!event_requires_health_data_consent("workflow.onboarding.closed"));
+        assert!(!event_requires_health_data_consent(
+            "projection_rule.created"
+        ));
+        assert!(!event_requires_health_data_consent(
+            "workflow.onboarding.closed"
+        ));
+    }
+
+    #[test]
+    fn health_consent_forbidden_error_contract_is_machine_readable() {
+        match health_consent_required_error() {
+            AppError::ForbiddenAction {
+                error_code,
+                next_action,
+                next_action_url,
+                ..
+            } => {
+                assert_eq!(error_code.as_deref(), Some(HEALTH_CONSENT_ERROR_CODE));
+                assert_eq!(next_action.as_deref(), Some(HEALTH_CONSENT_NEXT_ACTION));
+                assert_eq!(
+                    next_action_url.as_deref(),
+                    Some(HEALTH_CONSENT_SETTINGS_URL)
+                );
+            }
+            _ => panic!("expected ForbiddenAction"),
+        }
     }
 }

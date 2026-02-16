@@ -294,6 +294,54 @@
   margin-top: var(--space-lg);
 }
 
+/* --- Confirm modal (health-consent disable) --- */
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 8, 14, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-lg);
+  z-index: 1000;
+}
+
+.modal {
+  width: min(100%, 36rem);
+  background: var(--paper);
+  border: 1px solid var(--thread);
+  border-radius: 8px;
+  padding: var(--space-xl);
+}
+
+.modalTitle {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  color: var(--ink);
+}
+
+.modalBody {
+  margin: var(--space-md) 0 var(--space-sm);
+  color: var(--ink-mid);
+  line-height: 1.55;
+}
+
+.modalList {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: var(--ink-faint);
+  line-height: 1.55;
+}
+
+.modalActions {
+  margin-top: var(--space-xl);
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+}
+
 /* ============================================================
    Mobile: horizontal scrolling nav
    ============================================================ */

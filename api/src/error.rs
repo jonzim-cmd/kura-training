@@ -37,6 +37,14 @@ pub enum AppError {
         message: String,
         docs_hint: Option<String>,
     },
+    /// Forbidden (403) with machine-readable remediation contract
+    ForbiddenAction {
+        message: String,
+        docs_hint: Option<String>,
+        error_code: Option<String>,
+        next_action: Option<String>,
+        next_action_url: Option<String>,
+    },
     /// Conflict (409) — generic resource conflict
     Conflict { message: String },
     /// Not found (404)
@@ -60,11 +68,14 @@ impl IntoResponse for AppError {
                 StatusCode::BAD_REQUEST,
                 ApiError {
                     error: error::codes::VALIDATION_FAILED.to_string(),
+                    error_code: None,
                     message,
                     field,
                     received,
                     request_id,
                     docs_hint,
+                    next_action: None,
+                    next_action_url: None,
                 },
             ),
             AppError::PolicyViolation {
@@ -77,28 +88,35 @@ impl IntoResponse for AppError {
                 StatusCode::UNPROCESSABLE_ENTITY,
                 ApiError {
                     error: code,
+                    error_code: None,
                     message,
                     field,
                     received,
                     request_id,
                     docs_hint,
+                    next_action: None,
+                    next_action_url: None,
                 },
             ),
             AppError::Unauthorized { message, docs_hint } => (
                 StatusCode::UNAUTHORIZED,
                 ApiError {
                     error: error::codes::UNAUTHORIZED.to_string(),
+                    error_code: None,
                     message,
                     field: None,
                     received: None,
                     request_id,
                     docs_hint,
+                    next_action: None,
+                    next_action_url: None,
                 },
             ),
             AppError::IdempotencyConflict { idempotency_key } => (
                 StatusCode::CONFLICT,
                 ApiError {
                     error: error::codes::IDEMPOTENCY_CONFLICT.to_string(),
+                    error_code: None,
                     message: format!(
                         "Event with idempotency_key '{}' already exists",
                         idempotency_key
@@ -111,6 +129,8 @@ impl IntoResponse for AppError {
                          If you're retrying a request, the original event was already created successfully."
                             .to_string(),
                     ),
+                    next_action: None,
+                    next_action_url: None,
                 },
             ),
             AppError::RateLimited { retry_after_secs } => {
@@ -118,6 +138,7 @@ impl IntoResponse for AppError {
                     StatusCode::TOO_MANY_REQUESTS,
                     Json(ApiError {
                         error: error::codes::RATE_LIMITED.to_string(),
+                        error_code: None,
                         message: format!(
                             "Too many requests. Retry after {} seconds.",
                             retry_after_secs
@@ -126,6 +147,8 @@ impl IntoResponse for AppError {
                         received: None,
                         request_id,
                         docs_hint: None,
+                        next_action: None,
+                        next_action_url: None,
                     }),
                 )
                     .into_response();
@@ -139,28 +162,55 @@ impl IntoResponse for AppError {
                 StatusCode::FORBIDDEN,
                 ApiError {
                     error: error::codes::FORBIDDEN.to_string(),
+                    error_code: None,
                     message,
                     field: None,
                     received: None,
                     request_id,
                     docs_hint,
+                    next_action: None,
+                    next_action_url: None,
+                },
+            ),
+            AppError::ForbiddenAction {
+                message,
+                docs_hint,
+                error_code,
+                next_action,
+                next_action_url,
+            } => (
+                StatusCode::FORBIDDEN,
+                ApiError {
+                    error: error::codes::FORBIDDEN.to_string(),
+                    error_code,
+                    message,
+                    field: None,
+                    received: None,
+                    request_id,
+                    docs_hint,
+                    next_action,
+                    next_action_url,
                 },
             ),
             AppError::Conflict { message } => (
                 StatusCode::CONFLICT,
                 ApiError {
                     error: error::codes::CONFLICT.to_string(),
+                    error_code: None,
                     message,
                     field: None,
                     received: None,
                     request_id,
                     docs_hint: None,
+                    next_action: None,
+                    next_action_url: None,
                 },
             ),
             AppError::NotFound { resource } => (
                 StatusCode::NOT_FOUND,
                 ApiError {
                     error: error::codes::NOT_FOUND.to_string(),
+                    error_code: None,
                     message: format!("{} not found", resource),
                     field: None,
                     received: None,
@@ -169,6 +219,8 @@ impl IntoResponse for AppError {
                         "The requested resource does not exist or has not been computed yet."
                             .to_string(),
                     ),
+                    next_action: None,
+                    next_action_url: None,
                 },
             ),
             AppError::Database(err) => {
@@ -188,11 +240,14 @@ impl IntoResponse for AppError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     ApiError {
                         error: error::codes::INTERNAL_ERROR.to_string(),
+                        error_code: None,
                         message: "An internal error occurred".to_string(),
                         field: None,
                         received: None,
                         request_id,
                         docs_hint: None,
+                        next_action: None,
+                        next_action_url: None,
                     },
                 )
             }
@@ -202,11 +257,14 @@ impl IntoResponse for AppError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     ApiError {
                         error: error::codes::INTERNAL_ERROR.to_string(),
+                        error_code: None,
                         message: "An internal error occurred".to_string(),
                         field: None,
                         received: None,
                         request_id,
                         docs_hint: None,
+                        next_action: None,
+                        next_action_url: None,
                     },
                 )
             }

@@ -8,6 +8,9 @@ use utoipa::ToSchema;
 pub struct ApiError {
     /// Machine-readable error code (e.g. "validation_failed", "not_found", "conflict")
     pub error: String,
+    /// Domain-specific machine code for deterministic remediation (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
     /// Human/agent-readable description of what went wrong
     pub message: String,
     /// Which field caused the error (if applicable)
@@ -21,6 +24,12 @@ pub struct ApiError {
     /// Hint about what the correct usage looks like
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docs_hint: Option<String>,
+    /// Recommended client action identifier (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_action: Option<String>,
+    /// Optional URL/deep-link target for remediation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_action_url: Option<String>,
 }
 
 /// Error codes used across the API

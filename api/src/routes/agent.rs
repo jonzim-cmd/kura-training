@@ -144,6 +144,22 @@ pub struct AgentMemoryTierContract {
     pub tiers: Vec<AgentMemoryTierSnapshot>,
 }
 
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentConsentWriteGate {
+    pub schema_version: String,
+    /// allowed | blocked
+    pub status: String,
+    pub health_data_processing_consent: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blocked_event_domains: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_action_url: Option<String>,
+}
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct AgentContextMeta {
     pub generated_at: DateTime<Utc>,
@@ -158,6 +174,7 @@ pub struct AgentContextMeta {
     pub temporal_context: AgentTemporalContext,
     pub challenge_mode: AgentChallengeMode,
     pub memory_tier_contract: AgentMemoryTierContract,
+    pub consent_write_gate: AgentConsentWriteGate,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -6156,6 +6173,37 @@ pub async fn get_agent_capabilities(
     Ok(Json(build_agent_capabilities_with_self_model(self_model)))
 }
 
+fn build_agent_consent_write_gate(health_data_processing_consent: bool) -> AgentConsentWriteGate {
+    if health_data_processing_consent {
+        return AgentConsentWriteGate {
+            schema_version: AGENT_CONSENT_WRITE_GATE_SCHEMA_VERSION.to_string(),
+            status: "allowed".to_string(),
+            health_data_processing_consent,
+            blocked_event_domains: Vec::new(),
+            reason_code: None,
+            next_action: None,
+            next_action_url: None,
+        };
+    }
+
+    AgentConsentWriteGate {
+        schema_version: AGENT_CONSENT_WRITE_GATE_SCHEMA_VERSION.to_string(),
+        status: "blocked".to_string(),
+        health_data_processing_consent,
+        blocked_event_domains: vec![
+            "training".to_string(),
+            "recovery".to_string(),
+            "sleep".to_string(),
+            "pain".to_string(),
+            "health".to_string(),
+            "nutrition".to_string(),
+        ],
+        reason_code: Some(AGENT_HEALTH_CONSENT_ERROR_CODE.to_string()),
+        next_action: Some(AGENT_HEALTH_CONSENT_NEXT_ACTION.to_string()),
+        next_action_url: Some(AGENT_HEALTH_CONSENT_SETTINGS_URL.to_string()),
+    }
+}
+
 /// Get agent context bundle in a single read call.
 ///
 /// Returns the deployment-static system config, user profile, and key
@@ -6216,6 +6264,16 @@ pub async fn get_agent_context(
     let user_profile = fetch_projection(&mut tx, user_id, "user_profile", "me")
         .await?
         .unwrap_or_else(|| bootstrap_user_profile(user_id));
+    let health_data_processing_consent = sqlx::query_scalar::<_, bool>(
+        "SELECT consent_health_data_processing FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| AppError::Unauthorized {
+        message: "Account not found".to_string(),
+        docs_hint: None,
+    })?;
 
     let training_timeline =
         fetch_projection(&mut tx, user_id, "training_timeline", "overview").await?;
@@ -6291,6 +6349,7 @@ pub async fn get_agent_context(
         consistency_inbox.as_ref(),
         ranking_context.intent.as_deref(),
     );
+    let consent_write_gate = build_agent_consent_write_gate(health_data_processing_consent);
 
     Ok(Json(AgentContextResponse {
         system,
@@ -6325,6 +6384,7 @@ pub async fn get_agent_context(
             temporal_context,
             challenge_mode,
             memory_tier_contract,
+            consent_write_gate,
         },
     }))
 }
@@ -11068,6 +11128,48 @@ mod tests {
             code == "memory_principles_missing_confirm_first"
                 || code == "memory_principles_stale_confirm_first"
         }));
+    }
+
+    #[test]
+    fn health_consent_write_gate_contract_schema_version_is_pinned() {
+        let blocked = super::build_agent_consent_write_gate(false);
+        assert_eq!(blocked.schema_version, "consent_write_gate.v1");
+    }
+
+    #[test]
+    fn health_consent_write_gate_is_blocked_without_consent_and_has_remediation() {
+        let blocked = super::build_agent_consent_write_gate(false);
+        let as_json = serde_json::to_value(&blocked).expect("serialize consent gate");
+
+        assert_eq!(blocked.status, "blocked");
+        assert!(!blocked.health_data_processing_consent);
+        assert_eq!(
+            blocked.reason_code.as_deref(),
+            Some("health_consent_required")
+        );
+        assert_eq!(
+            blocked.next_action.as_deref(),
+            Some("open_settings_privacy")
+        );
+        assert_eq!(
+            blocked.next_action_url.as_deref(),
+            Some("/settings?section=privacy")
+        );
+        assert!(as_json.get("blocked_event_domains").is_some());
+    }
+
+    #[test]
+    fn health_consent_write_gate_allows_writes_when_consent_is_present() {
+        let allowed = super::build_agent_consent_write_gate(true);
+        let as_json = serde_json::to_value(&allowed).expect("serialize consent gate");
+
+        assert_eq!(allowed.status, "allowed");
+        assert!(allowed.health_data_processing_consent);
+        assert!(allowed.blocked_event_domains.is_empty());
+        assert!(allowed.reason_code.is_none());
+        assert!(allowed.next_action.is_none());
+        assert!(allowed.next_action_url.is_none());
+        assert!(as_json.get("blocked_event_domains").is_none());
     }
 
     #[test]
