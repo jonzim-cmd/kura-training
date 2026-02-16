@@ -234,93 +234,88 @@
   },
   "setup": {
     "title": "Verbinde deine KI",
-    "subtitle": "Wähle deinen KI-Assistenten und folge der Einrichtungsanleitung.",
-    "cliTab": "CLI",
-    "mcpTab": "MCP",
-    "step": "Schritt {number}",
-    "ready": "Bereit",
-    "comingSoon": "Bald verfügbar",
-    "mcpReady": {
-      "title": "MCP-Integration",
-      "description": "Verbinde deine KI direkt per MCP. Nutze die Werte unten und waehle den OAuth-Flow (Mit Kura verbinden).",
-      "status": "MCP-Endpunkt konfiguriert."
+    "subtitle": "Waehle deine KI — wir zeigen dir Schritt fuer Schritt, wie es geht.",
+    "cards": {
+      "claude": "Claude",
+      "claudeSub": "claude.ai",
+      "chatgpt": "ChatGPT",
+      "chatgptSub": "chatgpt.com",
+      "openclaw": "OpenClaw",
+      "openclawSub": "openclaw.ai"
     },
     "claude": {
-      "title": "Claude",
-      "cliSteps": {
-        "install": {
-          "title": "Kura CLI installieren",
-          "description": "Lade das Kura-Kommandozeilentool herunter und installiere es."
-        },
-        "login": {
-          "title": "Authentifizieren",
-          "description": "Verbinde dein Kura-Konto per OAuth (kura login)."
-        },
-        "configure": {
-          "title": "Zu Claude hinzufügen",
-          "description": "Fuege Kura als Tool hinzu. Die Authentifizierung kommt aus deiner kura-login Sitzung."
-        }
+      "step1Label": "Klicke auf deinen Profilnamen unten links in der Seitenleiste",
+      "step2Label": "Klicke auf \"Einstellungen\" im aufklappenden Menue",
+      "step3Label": "Klicke auf \"Konnektoren\" in der Einstellungs-Seitenleiste",
+      "step4Label": "Klicke auf \"Benutzerdefinierten Connector hinzufuegen\" unter der Connector-Liste",
+      "step5Label": "Gib einen Namen und die MCP-Server-URL ein, dann klicke \"Hinzufuegen\"",
+      "step6Label": "Klicke auf \"Verbinden\" bei deinem neuen Kura Training Connector",
+      "done": "Fertig! Dein Connector ist jetzt eingerichtet.",
+      "doneHint": "Oeffne einen neuen Chat und erzaehl Claude von deinem Training.",
+      "next": "Weiter",
+      "back": "Zurueck",
+      "restart": "Neustart",
+      "mockup": {
+        "newChat": "Neuer Chat",
+        "search": "Suchen",
+        "chats": "Chats",
+        "projects": "Projekte",
+        "artifacts": "Artefakte",
+        "recents": "Zuletzt verwendet",
+        "settings": "Einstellungen",
+        "language": "Sprache",
+        "getHelp": "Hilfe erhalten",
+        "upgradePlan": "Tarif upgraden",
+        "getApps": "Apps und Erweiterungen",
+        "giftClaude": "Claude verschenken",
+        "learnMore": "Mehr erfahren",
+        "logOut": "Abmelden",
+        "general": "Allgemein",
+        "account": "Konto",
+        "privacy": "Datenschutz",
+        "billing": "Abrechnung",
+        "usage": "Nutzung",
+        "capabilities": "Faehigkeiten",
+        "connectors": "Konnektoren",
+        "connectorsDesc": "Erlaubt Claude, andere Apps und Dienste fuer mehr Kontext zu referenzieren.",
+        "browseConnectors": "Connectors durchsuchen",
+        "connected": "Verbunden",
+        "configure": "Konfigurieren",
+        "connect": "Verbinden",
+        "interactive": "Interaktiv",
+        "addCustomConnector": "Benutzerdefinierten Connector hinzufuegen",
+        "addConnectorTitle": "Benutzerdefinierten Connector hinzufuegen",
+        "addConnectorDesc": "Verbinde Claude mit deinen Daten und Tools. Erfahre mehr ueber Connectors oder beginne mit vorgefertigten.",
+        "advancedSettings": "Erweiterte Einstellungen",
+        "disclaimer": "Verwende nur Connectoren von Entwicklern, denen du vertraust. Anthropic hat keine Kontrolle darueber, welche Tools Entwickler zur Verfuegung stellen, und kann nicht ueberpruefen, ob sie wie vorgesehen funktionieren oder sich nicht aendern werden.",
+        "cancel": "Abbrechen",
+        "add": "Hinzufuegen",
+        "custom": "BENUTZERDEFINIERT",
+        "greeting": "Wieder dabei, {name}",
+        "chatPlaceholder": "Wie kann ich dir heute helfen?",
+        "fullName": "Vollstaendiger Name",
+        "whatShouldCall": "Wie soll Claude dich nennen?",
+        "whatDescribes": "Was beschreibt deine Arbeit am besten?",
+        "other": "Sonstiges",
+        "profile": "Profil"
       }
     },
     "chatgpt": {
-      "title": "ChatGPT",
-      "cliSteps": {
-        "install": {
-          "title": "Kura CLI installieren",
-          "description": "Lade das Kura-Kommandozeilentool herunter und installiere es."
-        },
-        "login": {
-          "title": "Authentifizieren",
-          "description": "Verbinde dein Kura-Konto per OAuth (kura login)."
-        },
-        "configure": {
-          "title": "Zu ChatGPT hinzufügen",
-          "description": "Konfiguriere Kura als Tool. Die Authentifizierung kommt aus deiner kura-login Sitzung."
-        }
-      }
+      "comingSoon": "Anleitung fuer ChatGPT wird gerade erstellt.",
+      "comingSoonHint": "Du kannst Kura in der Zwischenzeit als benutzerdefinierten MCP-Connector in den ChatGPT-Einstellungen einrichten. Nutze diese URL:",
+      "learnMore": "So fuegest du MCP-Connectoren in ChatGPT hinzu"
     },
-    "gemini": {
-      "title": "Gemini",
-      "cliSteps": {
-        "install": {
-          "title": "Kura CLI installieren",
-          "description": "Lade das Kura-Kommandozeilentool herunter und installiere es."
-        },
-        "login": {
-          "title": "Authentifizieren",
-          "description": "Verbinde dein Kura-Konto per OAuth (kura login)."
-        },
-        "configure": {
-          "title": "Zu Gemini hinzufügen",
-          "description": "Konfiguriere Kura als Tool. Die Authentifizierung kommt aus deiner kura-login Sitzung."
-        }
-      }
+    "openclaw": {
+      "step1Title": "OpenClaw installieren",
+      "step1Hint": "Falls du es noch nicht hast:",
+      "step2Title": "Sag OpenClaw, es soll Kura einrichten",
+      "step2Hint": "Kopiere das in deinen OpenClaw-Chat:",
+      "step2Prompt": "Installiere die Kura CLI (cargo install kura-cli) und verbinde mein Konto mit kura login. Kura API: https://api.withkura.com"
     },
-    "mcpComingSoon": {
-      "title": "MCP-Integration",
-      "description": "MCP ermöglicht direkte Integration ohne CLI. Deine KI verbindet sich nativ mit Kura.",
-      "status": "In Entwicklung. CLI ist aktuell der empfohlene Weg."
-    },
-    "accountGate": {
-      "title": "Mit Kura verbinden (empfohlen)",
-      "loggedOutDescription": "Melde dich zuerst bei Kura an. Danach verbindest du deinen Assistenten per OAuth - ohne manuelles Schluessel-Kopieren.",
-      "loggedInDescription": "Du bist angemeldet. Verbinde deinen Assistenten direkt per OAuth ueber Mit Kura verbinden.",
-      "connectButton": "Mit Kura verbinden",
-      "keyHintLoggedIn": "Erstelle den API-Schlüssel in den Einstellungen und trage ihn in deinem Agenten ein.",
-      "keyHintLoggedOut": "Du brauchst zuerst ein Kura-Konto. Danach erstellst du den API-Schlüssel in den Einstellungen.",
-      "mcpHintLoggedIn": "Nutze zuerst OAuth (Mit Kura verbinden). API-Schluessel nur, wenn dein Client noch kein OAuth unterstuetzt.",
-      "mcpHintLoggedOut": "Melde dich zuerst an. Danach kannst du OAuth fuer MCP nutzen."
-    },
-    "advanced": {
-      "title": "Experten-Fallback: API-Schluessel",
-      "description": "Nur wenn dein Tool keinen OAuth-Flow anbietet: Setze den API-Schluessel als Umgebungsvariable.",
-      "mcpDescription": "Nur falls dein MCP-Client noch keinen OAuth-Login anbietet: nutze Bearer mit API-Schluessel."
-    },
-    "mcpFields": {
-      "name": "Server-Name",
-      "url": "Server-URL",
-      "auth": "Authentifizierung",
-      "authValue": "OAuth (Mit Kura verbinden)"
+    "expert": {
+      "toggle": "Du nutzt Claude Code, Gemini CLI, Codex oder ein anderes Terminal-Tool?",
+      "description": "Gib das deiner KI:",
+      "prompt": "Verbinde dich mit meinem Kura-Konto. MCP-Server-URL: https://api.withkura.com/mcp — Nutze OAuth zur Authentifizierung."
     }
   },
   "footer": {

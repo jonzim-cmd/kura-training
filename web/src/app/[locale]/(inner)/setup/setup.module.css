@@ -1,15 +1,21 @@
+/* ============================================================
+   Setup Page — AI card selector + guide content
+   ============================================================ */
+
 .setupPage {
   padding: var(--space-3xl) 0;
 }
 
 .container {
-  max-width: var(--content-width);
+  max-width: var(--max-width);
   display: flex;
   flex-direction: column;
 }
 
+/* --- Header --- */
 .header {
   margin-bottom: var(--space-2xl);
+  text-align: center;
 }
 
 .title {
@@ -24,251 +30,241 @@
   font-size: var(--text-base);
 }
 
-.accountCard {
-  margin-bottom: var(--space-xl);
+/* --- AI Cards --- */
+.aiCards {
+  display: flex;
+  gap: var(--space-lg);
+  justify-content: center;
+  margin-bottom: var(--space-2xl);
+}
+
+.aiCard {
+  flex: 0 1 200px;
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: var(--space-sm);
-}
-
-.accountTitle {
-  font-family: var(--font-display);
-  font-size: var(--text-lg);
-  font-weight: 700;
-  margin: 0;
-}
-
-.accountDescription {
-  color: var(--ink-faint);
-  font-size: var(--text-base);
-  margin: 0;
-}
-
-.accountActions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-sm);
-}
-
-/* AI Selector */
-.aiSelector {
-  display: flex;
-  gap: var(--space-sm);
-  margin-bottom: var(--space-lg);
-}
-
-.aiTab {
-  font-family: var(--font-display);
-  font-size: var(--text-lg);
-  font-weight: 400;
-  padding: var(--space-sm) var(--space-lg);
+  padding: var(--space-xl) var(--space-lg);
   background: none;
   border: 1px solid var(--thread);
-  border-radius: 4px;
-  color: var(--ink-faint);
+  border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s ease;
+  color: var(--ink-faint);
+  font-family: var(--font-display);
 }
 
-.aiTab:hover {
+.aiCard:hover {
   border-color: var(--ink-ghost);
   color: var(--ink);
 }
 
-.aiTabActive {
+.aiCardActive {
   border-color: var(--amber);
   color: var(--amber);
-  background-color: rgba(255, 229, 102, 0.04);
+  background: rgba(255, 229, 102, 0.04);
 }
 
-/* Protocol Tabs */
-.protocolTabs {
-  display: flex;
-  gap: 0;
-  border-bottom: 2px solid var(--thread);
-  margin-bottom: var(--space-2xl);
-}
-
-.protocolTab {
-  display: flex;
-  align-items: center;
-  font-family: var(--font-body);
-  font-size: var(--text-base);
-  font-weight: 500;
-  padding: var(--space-sm) var(--space-lg);
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -2px;
-  color: var(--ink-faint);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.protocolTab:hover {
-  color: var(--ink);
-}
-
-.protocolTabActive {
-  color: var(--ink);
-  border-bottom-color: var(--amber);
-}
-
-/* Steps */
-.steps {
-  display: flex;
-  flex-direction: column;
-}
-
-.step {
-  display: flex;
-  gap: var(--space-xl);
-}
-
-.stepIndicator {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  flex-shrink: 0;
-}
-
-.stepDot {
-  width: 2rem;
-  height: 2rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-display);
-  font-size: var(--text-base);
+.aiCardName {
+  font-size: var(--text-lg);
   font-weight: 700;
-  color: var(--amber);
-  border: 2px solid var(--thread);
-  border-radius: 50%;
-  background-color: var(--paper);
-  flex-shrink: 0;
 }
 
-.stepLine {
-  width: 1px;
-  flex: 1;
-  background-color: var(--thread);
-  min-height: var(--space-lg);
+.aiCardSub {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
 }
 
-.stepContent {
-  padding-bottom: var(--space-2xl);
-  flex: 1;
-  min-width: 0;
+.aiCardActive .aiCardSub {
+  color: var(--amber-dim);
 }
 
-.stepTitle {
+/* --- Guide Content Area --- */
+.guideContent {
+  margin-bottom: var(--space-3xl);
+}
+
+/* --- ChatGPT Placeholder --- */
+.chatgptPlaceholder {
+  text-align: center;
+  padding: var(--space-3xl) var(--space-xl);
+}
+
+.chatgptTitle {
   font-family: var(--font-display);
   font-size: var(--text-lg);
   font-weight: 700;
-  margin-bottom: 0.375rem;
+  margin-bottom: var(--space-sm);
+  color: var(--ink);
 }
 
-.stepDescription {
+.chatgptHint {
+  color: var(--ink-faint);
   font-size: var(--text-base);
-  color: var(--ink-faint);
-  margin-bottom: var(--space-md);
+  margin-bottom: var(--space-lg);
+  max-width: 32em;
+  margin-left: auto;
+  margin-right: auto;
 }
 
-.stepHint {
-  margin-top: var(--space-sm);
-  margin-bottom: 0;
+.mcpUrlField {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-lg);
+}
+
+.mcpUrlValue {
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0.5rem 0.875rem;
+  border-radius: 4px;
+  color: var(--ink);
+  border: 1px solid var(--thread);
+}
+
+/* --- OpenClaw Section --- */
+.openclawGuide {
+  max-width: var(--content-width);
+  margin: 0 auto;
+}
+
+.openclawStep {
+  margin-bottom: var(--space-2xl);
+}
+
+.openclawStepTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: 700;
+  margin-bottom: var(--space-xs);
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.openclawStepNumber {
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--amber);
+  width: 1.5rem;
+  height: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--thread);
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.openclawHint {
   color: var(--ink-faint);
+  font-size: var(--text-sm);
+  margin-bottom: var(--space-sm);
+  padding-left: 2.25rem;
 }
 
 .codeBlock {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: var(--space-sm);
+  padding-left: 2.25rem;
 }
 
-.stepActions {
-  margin-top: 0.5rem;
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-sm);
-}
-
-.advancedCard {
-  margin-top: var(--space-lg);
-}
-
-/* MCP Coming Soon */
-.mcpCard {
-  text-align: left;
-  padding: var(--space-4xl) var(--space-xl);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-md);
-}
-
-.mcpTitle {
-  font-family: var(--font-display);
-  font-size: var(--text-xl);
-  font-weight: 700;
-  margin: 0;
-  text-align: center;
-}
-
-.mcpDescription {
-  color: var(--ink-faint);
-  font-size: var(--text-base);
-  max-width: 32em;
-  margin: 0 auto;
-  text-align: center;
-}
-
-.mcpStatus {
-  font-size: var(--text-base);
-  color: var(--ink-ghost);
-  font-style: italic;
-  text-align: center;
-}
-
-.mcpFields {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-}
-
-.mcpField {
+.codeValue {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0.75rem 1rem;
+  border-radius: 4px;
+  color: var(--ink);
+  flex: 1;
+  line-height: 1.6;
   border: 1px solid var(--thread);
-  border-radius: var(--radius);
-  padding: var(--space-sm);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.openclawLink {
+  display: inline-block;
+  margin-left: 2.25rem;
+  margin-top: var(--space-sm);
+  font-size: var(--text-sm);
+}
+
+/* --- Expert Section --- */
+.expertSection {
+  border-top: 1px solid var(--thread);
+  padding-top: var(--space-xl);
+}
+
+.expertToggle {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-md);
-}
-
-.mcpLabel {
+  gap: var(--space-sm);
+  font-family: var(--font-display);
+  font-size: var(--text-base);
   color: var(--ink-faint);
-  font-size: var(--text-sm);
-  margin-bottom: 0.25rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: var(--space-sm) 0;
+  transition: color 0.2s ease;
+  width: 100%;
+  text-align: left;
 }
 
-/* Mobile */
-@media (max-width: 640px) {
-  .aiSelector {
-    flex-direction: column;
-  }
+.expertToggle:hover {
+  color: var(--ink);
+}
 
-  .accountActions {
+.expertArrow {
+  font-size: var(--text-sm);
+  transition: transform 0.2s ease;
+  display: inline-block;
+}
+
+.expertArrowOpen {
+  transform: rotate(90deg);
+}
+
+.expertContent {
+  padding-top: var(--space-lg);
+  padding-left: var(--space-lg);
+}
+
+.expertDescription {
+  color: var(--ink-faint);
+  font-size: var(--text-base);
+  margin-bottom: var(--space-md);
+}
+
+/* --- Responsive --- */
+@media (max-width: 640px) {
+  .aiCards {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .step {
-    gap: var(--space-md);
+  .aiCard {
+    flex: 1;
   }
 
-  .mcpField {
+  .codeBlock {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
+    padding-left: 0;
+  }
+
+  .openclawHint {
+    padding-left: 0;
+  }
+
+  .openclawLink {
+    margin-left: 0;
   }
 }

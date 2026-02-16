@@ -45,7 +45,6 @@ export function Header({ variant = 'default' }: HeaderProps) {
 
   const navLinks = isLoggedIn ? (
     <>
-      <Link href="/start" className={styles.link} onClick={closeMenu}>{t('home')}</Link>
       <Link href="/setup" className={styles.link} onClick={closeMenu}>{t('setup')}</Link>
       <Link href="/settings" className={styles.link} onClick={closeMenu}>{t('settings')}</Link>
       <button
