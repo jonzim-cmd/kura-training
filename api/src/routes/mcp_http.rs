@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use axum::body::Bytes;
 use axum::extract::{OriginalUri, Query, Request, State};
@@ -120,7 +121,11 @@ async fn mcp_get(headers: HeaderMap) -> Response {
 async fn log_oauth_http_flow(req: Request, next: Next) -> Response {
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
-    let should_log = is_observed_path(&path);
+    let should_log = oauth_debug_logging_enabled() && is_observed_path(&path);
+
+    if !should_log {
+        return next.run(req).await;
+    }
 
     let origin = header_value(req.headers(), "origin");
     let user_agent = header_value(req.headers(), "user-agent");
@@ -618,6 +623,10 @@ fn log_oauth_discovery_request(
     original_uri: &OriginalUri,
     base_url: &str,
 ) {
+    if !oauth_debug_logging_enabled() {
+        return;
+    }
+
     tracing::info!(
         event = "mcp_oauth_discovery_request",
         metadata_kind = metadata_kind,
@@ -855,6 +864,21 @@ fn request_base_url(headers: &HeaderMap) -> String {
     }
 
     runtime_api_base_url()
+}
+
+fn oauth_debug_logging_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("KURA_MCP_OAUTH_DEBUG_LOGS")
+            .ok()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false)
+    })
 }
 
 fn with_no_store(mut response: Response) -> Response {
