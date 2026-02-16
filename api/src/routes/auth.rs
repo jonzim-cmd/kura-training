@@ -1,17 +1,19 @@
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Redirect};
+use axum::http::header::{COOKIE, SET_COOKIE};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use url::Url;
 use uuid::Uuid;
 
 use kura_core::auth;
 
-use crate::auth::AuthenticatedUser;
+use crate::auth::{AuthMethod, AuthenticatedUser};
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -70,6 +72,7 @@ const AGENT_ACCESS_TOKEN_TTL_MINUTES: i64 = 30;
 const DEVICE_CODE_TTL_MINUTES: i64 = 10;
 const DEVICE_CODE_POLL_INTERVAL_SECONDS: i32 = 5;
 const PASSWORD_RESET_TOKEN_TTL_MINUTES: i64 = 60;
+const OAUTH_BROWSER_SESSION_COOKIE: &str = "kura_oauth_session";
 
 fn default_agent_token_scopes() -> Vec<String> {
     vec![
@@ -818,16 +821,21 @@ pub struct AuthorizeParams {
 )]
 pub async fn authorize_form(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(params): Query<AuthorizeParams>,
 ) -> Result<Html<String>, AppError> {
     validate_authorize_params(&params)?;
     validate_oauth_client(&state.db, &params.client_id, &params.redirect_uri).await?;
+    let session_user_id = resolve_oauth_browser_session_user_id(&state.db, &headers).await?;
+    let login_url = build_oauth_login_url(&params);
 
-    let html = render_login_form(
+    let html = render_authorize_page(
         &params.client_id,
         &params.redirect_uri,
         &params.code_challenge,
         &params.state.as_deref().unwrap_or(""),
+        session_user_id.is_some(),
+        &login_url,
     );
 
     Ok(Html(html))
@@ -970,6 +978,143 @@ async fn validate_oauth_client(
     })
 }
 
+fn oauth_browser_session_cookie_value(user: &AuthenticatedUser) -> Option<String> {
+    let AuthMethod::AccessToken { token_id, .. } = user.auth_method else {
+        return None;
+    };
+    Some(format!(
+        "{OAUTH_BROWSER_SESSION_COOKIE}={token_id}; Max-Age={}; Path=/oauth; HttpOnly; Secure; SameSite=Lax",
+        AGENT_ACCESS_TOKEN_TTL_MINUTES * 60
+    ))
+}
+
+fn extract_cookie_value(headers: &HeaderMap, key: &str) -> Option<String> {
+    let raw = headers.get(COOKIE)?.to_str().ok()?;
+    raw.split(';')
+        .filter_map(|segment| {
+            let mut parts = segment.trim().splitn(2, '=');
+            let name = parts.next()?.trim();
+            let value = parts.next()?.trim();
+            Some((name, value))
+        })
+        .find_map(|(name, value)| (name == key).then(|| value.to_string()))
+}
+
+async fn resolve_oauth_browser_session_user_id(
+    pool: &sqlx::PgPool,
+    headers: &HeaderMap,
+) -> Result<Option<Uuid>, AppError> {
+    let Some(raw_token_id) = extract_cookie_value(headers, OAUTH_BROWSER_SESSION_COOKIE) else {
+        return Ok(None);
+    };
+    let Ok(token_id) = Uuid::parse_str(raw_token_id.trim()) else {
+        return Ok(None);
+    };
+
+    let user_id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT oat.user_id \
+         FROM oauth_access_tokens oat \
+         JOIN users u ON u.id = oat.user_id \
+         WHERE oat.id = $1 \
+           AND oat.is_revoked = FALSE \
+           AND oat.expires_at > NOW() \
+           AND u.is_active = TRUE",
+    )
+    .bind(token_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(AppError::Database)?;
+
+    Ok(user_id)
+}
+
+fn public_api_base_url() -> String {
+    std::env::var("KURA_WEB_PUBLIC_API_URL")
+        .unwrap_or_else(|_| "http://localhost:3000".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn frontend_base_url() -> String {
+    std::env::var("FRONTEND_URL")
+        .unwrap_or_else(|_| "http://localhost:3000".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn build_oauth_authorize_url(params: &AuthorizeParams) -> Option<String> {
+    let mut url = Url::parse(&format!("{}/oauth/authorize", public_api_base_url())).ok()?;
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("response_type", &params.response_type);
+        query.append_pair("client_id", &params.client_id);
+        query.append_pair("redirect_uri", &params.redirect_uri);
+        query.append_pair("code_challenge", &params.code_challenge);
+        query.append_pair("code_challenge_method", &params.code_challenge_method);
+        if let Some(state) = params.state.as_deref() {
+            query.append_pair("state", state);
+        }
+    }
+    Some(url.to_string())
+}
+
+fn build_oauth_login_url(params: &AuthorizeParams) -> String {
+    let mut login_url = match Url::parse(&format!("{}/login", frontend_base_url())) {
+        Ok(url) => url,
+        Err(_) => return "/login".to_string(),
+    };
+
+    if let Some(authorize_url) = build_oauth_authorize_url(params) {
+        login_url
+            .query_pairs_mut()
+            .append_pair("oauth_return_to", &authorize_url);
+    }
+
+    login_url.to_string()
+}
+
+async fn issue_authorization_code_redirect(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    client_id: &str,
+    redirect_uri: &str,
+    code_challenge: &str,
+    state: Option<&str>,
+) -> Result<Redirect, AppError> {
+    let (code, code_hash) = auth::generate_auth_code();
+    let code_id = Uuid::now_v7();
+    let expires_at = Utc::now() + Duration::minutes(10);
+
+    sqlx::query(
+        "INSERT INTO oauth_authorization_codes \
+         (id, user_id, code_hash, client_id, redirect_uri, code_challenge, expires_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(code_id)
+    .bind(user_id)
+    .bind(&code_hash)
+    .bind(client_id)
+    .bind(redirect_uri)
+    .bind(code_challenge)
+    .bind(expires_at)
+    .execute(pool)
+    .await
+    .map_err(AppError::Database)?;
+
+    let mut callback = Url::parse(redirect_uri).map_err(|e| AppError::Validation {
+        message: format!("Invalid redirect_uri: {e}"),
+        field: Some("redirect_uri".to_string()),
+        received: Some(serde_json::Value::String(redirect_uri.to_string())),
+        docs_hint: None,
+    })?;
+    callback.query_pairs_mut().append_pair("code", &code);
+    if let Some(state) = state {
+        callback.query_pairs_mut().append_pair("state", state);
+    }
+
+    Ok(Redirect::to(callback.as_str()))
+}
+
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -1006,14 +1151,38 @@ fn redirect_host(redirect_uri: &str) -> Option<String> {
     Some(host.to_string())
 }
 
-fn render_login_form(
+fn render_authorize_page(
     client_id: &str,
     redirect_uri: &str,
     code_challenge: &str,
     state: &str,
+    is_authenticated: bool,
+    login_url: &str,
 ) -> String {
     let app_name = oauth_app_name_from_redirect_uri(redirect_uri);
     let app_name_escaped = html_escape(&app_name);
+    let login_url_escaped = html_escape(login_url);
+    let auth_block = if is_authenticated {
+        format!(
+            r#"<form method="POST" action="/oauth/authorize">
+<input type="hidden" name="client_id" value="{client_id_escaped}">
+<input type="hidden" name="redirect_uri" value="{redirect_uri_escaped}">
+<input type="hidden" name="code_challenge" value="{code_challenge_escaped}">
+<input type="hidden" name="state" value="{state_escaped}">
+<button type="submit">Authorize</button>
+</form>
+<p class="hint">You're signed in to Kura. Approve to continue.</p>"#,
+            client_id_escaped = html_escape(client_id),
+            redirect_uri_escaped = html_escape(redirect_uri),
+            code_challenge_escaped = html_escape(code_challenge),
+            state_escaped = html_escape(state),
+        )
+    } else {
+        format!(
+            r#"<a class="loginButton" href="{login_url_escaped}">Sign in with Kura</a>
+<p class="hint">Sign in with Google, Apple, GitHub, or email/password on Kura, then return here to authorize.</p>"#
+        )
+    };
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -1195,6 +1364,27 @@ button:hover {{
   line-height: 1.35;
 }}
 
+.loginButton {{
+  display: block;
+  width: 100%;
+  margin-top: 18px;
+  padding: 11px 14px;
+  border: 1px solid var(--amber);
+  border-radius: 10px;
+  background: var(--amber);
+  color: #000;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-align: center;
+  text-decoration: none;
+}}
+
+.loginButton:hover {{
+  filter: brightness(0.96);
+}}
+
 @media (max-width: 500px) {{
   body {{ padding: 14px; }}
   .card {{ border-radius: 12px; padding: 18px; }}
@@ -1215,24 +1405,12 @@ button:hover {{
   <span class="appTagLabel">App</span>
   <p class="appTagValue">{app_name_escaped}</p>
 </div>
-<form method="POST" action="/oauth/authorize">
-<input type="hidden" name="client_id" value="{client_id_escaped}">
-<input type="hidden" name="redirect_uri" value="{redirect_uri_escaped}">
-<input type="hidden" name="code_challenge" value="{code_challenge_escaped}">
-<input type="hidden" name="state" value="{state_escaped}">
-<label>Email<input type="email" name="email" autocomplete="email" required autofocus></label>
-<label>Password<input type="password" name="password" autocomplete="current-password" required></label>
-<button type="submit">Continue</button>
-</form>
-<p class="hint">Only your Kura sign-in is used here. This app never sees your password.</p>
+{auth_block}
 </main>
 </body>
 </html>"#,
-        client_id_escaped = html_escape(client_id),
         app_name_escaped = app_name_escaped,
-        redirect_uri_escaped = html_escape(redirect_uri),
-        code_challenge_escaped = html_escape(code_challenge),
-        state_escaped = html_escape(state),
+        auth_block = auth_block,
     )
 }
 
@@ -1242,8 +1420,10 @@ button:hover {{
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct AuthorizeSubmit {
-    pub email: String,
-    pub password: String,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
     pub client_id: String,
     pub redirect_uri: String,
     pub code_challenge: String,
@@ -1262,17 +1442,9 @@ pub struct AuthorizeSubmit {
 )]
 pub async fn authorize_submit(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Form(form): Form<AuthorizeSubmit>,
 ) -> Result<impl IntoResponse, AppError> {
-    let email_norm = normalize_email(&form.email);
-    if email_norm.is_empty() {
-        return Err(AppError::Validation {
-            message: "email must not be empty".to_string(),
-            field: Some("email".to_string()),
-            received: None,
-            docs_hint: None,
-        });
-    }
     if form.code_challenge.is_empty() {
         return Err(AppError::Validation {
             message: "code_challenge is required".to_string(),
@@ -1283,45 +1455,41 @@ pub async fn authorize_submit(
     }
     validate_oauth_client(&state.db, &form.client_id, &form.redirect_uri).await?;
 
-    let user_id =
-        authenticate_email_password_user_id(&state.db, &email_norm, &form.password).await?;
+    let user_id = if let Some(user_id) =
+        resolve_oauth_browser_session_user_id(&state.db, &headers).await?
+    {
+        user_id
+    } else if let (Some(email), Some(password)) = (form.email.as_deref(), form.password.as_deref())
+    {
+        let email_norm = normalize_email(email);
+        if email_norm.is_empty() {
+            return Err(AppError::Validation {
+                message: "email must not be empty".to_string(),
+                field: Some("email".to_string()),
+                received: None,
+                docs_hint: None,
+            });
+        }
+        authenticate_email_password_user_id(&state.db, &email_norm, password).await?
+    } else {
+        return Err(AppError::Unauthorized {
+            message: "Sign in required before authorization.".to_string(),
+            docs_hint: Some(
+                "Open this authorize URL in a browser, sign in with Kura, then approve access."
+                    .to_string(),
+            ),
+        });
+    };
 
-    // Generate auth code (10 min expiry)
-    let (code, code_hash) = auth::generate_auth_code();
-    let code_id = Uuid::now_v7();
-    let expires_at = Utc::now() + Duration::minutes(10);
-
-    sqlx::query(
-        "INSERT INTO oauth_authorization_codes \
-         (id, user_id, code_hash, client_id, redirect_uri, code_challenge, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    issue_authorization_code_redirect(
+        &state.db,
+        user_id,
+        &form.client_id,
+        &form.redirect_uri,
+        &form.code_challenge,
+        form.state.as_deref(),
     )
-    .bind(code_id)
-    .bind(user_id)
-    .bind(&code_hash)
-    .bind(&form.client_id)
-    .bind(&form.redirect_uri)
-    .bind(&form.code_challenge)
-    .bind(expires_at)
-    .execute(&state.db)
     .await
-    .map_err(AppError::Database)?;
-
-    // Build redirect URL
-    let mut redirect_url =
-        url::Url::parse(&form.redirect_uri).map_err(|e| AppError::Validation {
-            message: format!("Invalid redirect_uri: {e}"),
-            field: Some("redirect_uri".to_string()),
-            received: Some(serde_json::Value::String(form.redirect_uri.clone())),
-            docs_hint: None,
-        })?;
-
-    redirect_url.query_pairs_mut().append_pair("code", &code);
-    if let Some(ref s) = form.state {
-        redirect_url.query_pairs_mut().append_pair("state", s);
-    }
-
-    Ok(Redirect::to(redirect_url.as_str()))
 }
 
 // ──────────────────────────────────────────────
@@ -2833,7 +3001,7 @@ struct MeRow {
 pub async fn get_me(
     user: AuthenticatedUser,
     State(state): State<AppState>,
-) -> Result<Json<MeResponse>, AppError> {
+) -> Result<Response, AppError> {
     let row = sqlx::query_as::<_, MeRow>(
         "SELECT id, email, display_name, is_admin, created_at FROM users WHERE id = $1",
     )
@@ -2842,13 +3010,22 @@ pub async fn get_me(
     .await
     .map_err(AppError::Database)?;
 
-    Ok(Json(MeResponse {
+    let mut response = Json(MeResponse {
         user_id: row.id,
         email: row.email,
         display_name: row.display_name,
         is_admin: row.is_admin,
         created_at: row.created_at,
-    }))
+    })
+    .into_response();
+
+    if let Some(cookie) = oauth_browser_session_cookie_value(&user) {
+        if let Ok(header_value) = HeaderValue::from_str(&cookie) {
+            response.headers_mut().append(SET_COOKIE, header_value);
+        }
+    }
+
+    Ok(response)
 }
 
 #[derive(sqlx::FromRow)]
@@ -2888,8 +3065,8 @@ mod tests {
         extract_supabase_identity, forgot_password, generate_user_code,
         is_supported_social_provider, is_valid_loopback_redirect, issue_tokens, normalize_email,
         normalize_user_code, oauth_app_name_from_redirect_uri, oidc_email_verified,
-        reactivate_account, refresh_tokens, reset_password, validate_invite_email_binding,
-        validate_oauth_client,
+        reactivate_account, refresh_tokens, render_authorize_page, reset_password,
+        validate_invite_email_binding, validate_oauth_client,
     };
     use crate::state::{AppState, SignupGate};
     use axum::{Json, extract::State};
@@ -2936,6 +3113,35 @@ mod tests {
             oauth_app_name_from_redirect_uri("not-a-valid-url"),
             "Connected app"
         );
+    }
+
+    #[test]
+    fn authorize_page_logged_out_uses_login_redirect_without_password_fields() {
+        let html = render_authorize_page(
+            "kura-mcp-123",
+            "https://chat.openai.com/aip/callback",
+            "pkce",
+            "state-1",
+            false,
+            "https://withkura.com/login?oauth_return_to=https%3A%2F%2Fapi.withkura.com%2Foauth%2Fauthorize",
+        );
+        assert!(html.contains("Sign in with Kura"));
+        assert!(!html.contains("name=\"email\""));
+        assert!(!html.contains("name=\"password\""));
+    }
+
+    #[test]
+    fn authorize_page_logged_in_shows_authorize_button() {
+        let html = render_authorize_page(
+            "kura-mcp-123",
+            "https://claude.ai/api/mcp/auth_callback",
+            "pkce",
+            "state-2",
+            true,
+            "https://withkura.com/login",
+        );
+        assert!(html.contains("method=\"POST\" action=\"/oauth/authorize\""));
+        assert!(html.contains(">Authorize<"));
     }
 
     #[test]

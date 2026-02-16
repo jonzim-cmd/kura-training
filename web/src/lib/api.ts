@@ -9,6 +9,7 @@ export async function apiFetch(
   const url = `${API_URL}${path}`;
   return fetch(url, {
     ...options,
+    credentials: options.credentials ?? 'include',
     headers: {
       'Content-Type': 'application/json',
       ...options.headers,

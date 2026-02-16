@@ -125,16 +125,18 @@ async fn oauth_protected_resource_metadata(headers: HeaderMap) -> Json<Value> {
 
 async fn oauth_authorize_get(
     state: State<AppState>,
+    headers: HeaderMap,
     query: Query<super::auth::AuthorizeParams>,
 ) -> Result<impl IntoResponse, AppError> {
-    super::auth::authorize_form(state, query).await
+    super::auth::authorize_form(state, headers, query).await
 }
 
 async fn oauth_authorize_post(
     state: State<AppState>,
+    headers: HeaderMap,
     form: Form<super::auth::AuthorizeSubmit>,
 ) -> Result<impl IntoResponse, AppError> {
-    super::auth::authorize_submit(state, form).await
+    super::auth::authorize_submit(state, headers, form).await
 }
 
 async fn oauth_token(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {

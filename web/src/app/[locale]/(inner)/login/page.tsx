@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Link, useRouter } from '@/i18n/routing';
+import { API_URL } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { SETUP_SEEN_STORAGE_KEY } from '@/lib/onboarding';
 import styles from '../../auth.module.css';
@@ -15,12 +16,26 @@ function postLoginRoute(): '/setup' | '/settings' {
 type SocialProvider = 'google' | 'github' | 'apple';
 
 const SOCIAL_AUTH_BASE_URL = process.env.NEXT_PUBLIC_SOCIAL_AUTH_BASE_URL?.trim() ?? '';
+const OAUTH_AUTHORIZE_PATH = '/oauth/authorize';
 
 function socialAuthorizeUrl(provider: SocialProvider, redirectTo: string): string {
   const authUrl = new URL('/auth/v1/authorize', SOCIAL_AUTH_BASE_URL);
   authUrl.searchParams.set('provider', provider);
   authUrl.searchParams.set('redirect_to', redirectTo);
   return authUrl.toString();
+}
+
+function resolveOauthReturnTo(rawValue: string | null): string | null {
+  if (!rawValue) return null;
+  try {
+    const target = new URL(rawValue);
+    const apiBase = new URL(API_URL);
+    if (target.origin !== apiBase.origin) return null;
+    if (target.pathname !== OAUTH_AUTHORIZE_PATH) return null;
+    return target.toString();
+  } catch {
+    return null;
+  }
 }
 
 function GoogleIcon() {
@@ -64,19 +79,43 @@ function AppleIcon() {
 
 export default function LoginPage() {
   const t = useTranslations('auth');
-  const { login, loginWithSupabaseToken, user, loading } = useAuth();
+  const { login, loginWithSupabaseToken, user, loading, refreshUser } = useAuth();
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [oauthReturnTo, setOauthReturnTo] = useState<string | null>(null);
+  const redirectingRef = useRef(false);
   const socialEnabled = SOCIAL_AUTH_BASE_URL.length > 0;
 
   useEffect(() => {
-    if (!loading && user) {
-      router.replace(postLoginRoute());
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    setOauthReturnTo(resolveOauthReturnTo(params.get('oauth_return_to')));
+  }, []);
+
+  const continueAfterLogin = useCallback(async () => {
+    if (redirectingRef.current) return;
+    redirectingRef.current = true;
+
+    if (oauthReturnTo) {
+      try {
+        await refreshUser();
+      } finally {
+        window.location.assign(oauthReturnTo);
+      }
+      return;
     }
-  }, [loading, user, router]);
+
+    router.replace(postLoginRoute());
+  }, [oauthReturnTo, refreshUser, router]);
+
+  useEffect(() => {
+    if (!loading && user) {
+      void continueAfterLogin();
+    }
+  }, [continueAfterLogin, loading, user]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -110,7 +149,7 @@ export default function LoginPage() {
       .then(() => {
         if (cancelled) return;
         clearHash();
-        router.push(postLoginRoute());
+        void continueAfterLogin();
       })
       .catch((err) => {
         if (cancelled) return;
@@ -125,7 +164,7 @@ export default function LoginPage() {
     return () => {
       cancelled = true;
     };
-  }, [loginWithSupabaseToken, router, t]);
+  }, [continueAfterLogin, loginWithSupabaseToken, t]);
 
   if (!loading && user) return null;
 
@@ -136,7 +175,7 @@ export default function LoginPage() {
       return;
     }
 
-    const redirectTo = `${window.location.origin}${window.location.pathname}`;
+    const redirectTo = `${window.location.origin}${window.location.pathname}${window.location.search}`;
     window.location.assign(socialAuthorizeUrl(provider, redirectTo));
   };
 
@@ -146,7 +185,7 @@ export default function LoginPage() {
     setSubmitting(true);
     try {
       await login(email, password);
-      router.push(postLoginRoute());
+      await continueAfterLogin();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
