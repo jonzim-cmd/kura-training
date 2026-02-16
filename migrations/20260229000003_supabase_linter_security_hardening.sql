@@ -12,7 +12,7 @@ BEGIN
     SELECT string_agg(quote_ident(rolname), ', ' ORDER BY rolname)
     INTO internal_roles
     FROM pg_roles
-    WHERE rolname IN ('app_reader', 'app_writer', 'app_worker', 'app_migrator');
+    WHERE rolname IN ('app_reader', 'app_writer', 'app_worker', 'app_migrator', 'service_role');
 
     IF internal_roles IS NULL THEN
         RAISE EXCEPTION 'Required app roles are missing; cannot create internal_access policies';
