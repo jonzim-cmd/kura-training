@@ -16,6 +16,7 @@ export default function SetupPage() {
   const tc = useTranslations('common');
   const [selectedAI, setSelectedAI] = useState<AI | null>(null);
   const [expertOpen, setExpertOpen] = useState(false);
+  const [ocMethod, setOcMethod] = useState<'mcp' | 'cli'>('mcp');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const { user, loading } = useAuth();
 
@@ -88,27 +89,40 @@ export default function SetupPage() {
                   rel="noreferrer"
                   className={styles.openclawTitle}
                 >
-                  {t('openclaw.title')}
+                  {t('openclaw.getOpenClaw')}
                 </a>
-                <p className={styles.openclawHint}>{t('openclaw.hint')}</p>
+                <p className={styles.openclawIntro}>{t('openclaw.intro')}</p>
+
+                <div className={styles.methodTabs}>
+                  <button
+                    className={`${styles.methodTab} ${ocMethod === 'mcp' ? styles.methodTabActive : ''}`}
+                    onClick={() => setOcMethod('mcp')}
+                  >
+                    {t('openclaw.methodMcp')}
+                  </button>
+                  <button
+                    className={`${styles.methodTab} ${ocMethod === 'cli' ? styles.methodTabActive : ''}`}
+                    onClick={() => setOcMethod('cli')}
+                  >
+                    {t('openclaw.methodCli')}
+                  </button>
+                </div>
+
+                <p className={styles.openclawHint}>
+                  {t(ocMethod === 'mcp' ? 'openclaw.mcpHint' : 'openclaw.cliHint')}
+                </p>
                 <div className={styles.codeBlock}>
-                  <code className={styles.codeValue}>curl -fsSL https://openclaw.ai/install.sh | bash</code>
+                  <code className={styles.codeValue}>
+                    {t(ocMethod === 'mcp' ? 'openclaw.mcpPrompt' : 'openclaw.cliPrompt')}
+                  </code>
                   <button
                     type="button"
                     className="kura-btn kura-btn--ghost"
-                    onClick={() => copyText('curl -fsSL https://openclaw.ai/install.sh | bash', 'oc-install')}
+                    onClick={() => copyText(t(ocMethod === 'mcp' ? 'openclaw.mcpPrompt' : 'openclaw.cliPrompt'), `oc-${ocMethod}`)}
                   >
-                    {copyLabel('oc-install')}
+                    {copyLabel(`oc-${ocMethod}`)}
                   </button>
                 </div>
-                <a
-                  href="https://openclaw.ai"
-                  target="_blank"
-                  rel="noreferrer"
-                  className={styles.openclawLink}
-                >
-                  openclaw.ai &rarr;
-                </a>
               </div>
             )}
           </div>

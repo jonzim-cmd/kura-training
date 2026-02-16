@@ -374,8 +374,15 @@
       }
     },
     "openclaw": {
-      "title": "OpenClawをインストール",
-      "hint": "まだインストールしていない場合："
+      "title": "OpenClaw",
+      "intro": "OpenClawはAIエージェントです。Kuraに接続するよう伝えるだけでOKです。",
+      "getOpenClaw": "openclaw.ai →",
+      "methodMcp": "MCP",
+      "methodCli": "CLI",
+      "mcpHint": "OpenClawエージェントに伝えてください：",
+      "mcpPrompt": "Connect to my Kura account. MCP server URL: https://api.withkura.com/mcp — Use OAuth for authentication.",
+      "cliHint": "OpenClawエージェントに伝えてください：",
+      "cliPrompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with kura login. Kura API: https://api.withkura.com"
     },
     "expert": {
       "toggle": "Claude Desktop、Claude Code、Gemini CLI、Codex、その他のMCPまたはCLI対応ツールを使っていますか？",

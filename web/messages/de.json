@@ -374,8 +374,15 @@
       }
     },
     "openclaw": {
-      "title": "OpenClaw installieren",
-      "hint": "Falls du es noch nicht hast:"
+      "title": "OpenClaw",
+      "intro": "OpenClaw ist ein KI-Agent — sag ihm einfach, dass er sich mit Kura verbinden soll.",
+      "getOpenClaw": "openclaw.ai →",
+      "methodMcp": "MCP",
+      "methodCli": "CLI",
+      "mcpHint": "Sag deinem OpenClaw-Agent:",
+      "mcpPrompt": "Verbinde dich mit meinem Kura-Konto. MCP-Server-URL: https://api.withkura.com/mcp — Nutze OAuth zur Authentifizierung.",
+      "cliHint": "Sag deinem OpenClaw-Agent:",
+      "cliPrompt": "Installiere die Kura CLI (cargo install kura-cli) und verbinde mein Konto mit kura login. Kura API: https://api.withkura.com"
     },
     "expert": {
       "toggle": "Du nutzt Claude Desktop, Claude Code, Gemini CLI, Codex oder ein anderes Tool mit MCP- oder CLI-Unterstützung?",
