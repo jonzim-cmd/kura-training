@@ -344,6 +344,7 @@ async fn main() {
         )
         .merge(routes::auth::me_router())
         .merge(routes::invite::public_router().layer(middleware::rate_limit::register_layer()))
+        .merge(routes::invite::email_action_router())
         .merge(routes::account::self_router())
         .merge(routes::account::admin_router())
         .merge(routes::invite::admin_router())

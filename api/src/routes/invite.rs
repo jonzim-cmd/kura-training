@@ -1,11 +1,13 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Form, Json, Router};
 use chrono::{Duration, Utc};
+use hmac::{Hmac, Mac};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use uuid::Uuid;
 
 use crate::auth::AuthenticatedUser;
@@ -79,9 +81,9 @@ pub async fn submit_access_request(
         .filter(|s| !s.is_empty());
 
     // Always return 201 even if duplicate (no info leak)
-    let result = sqlx::query_scalar::<_, i64>(
+    let result = sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO access_requests (email, name, context) VALUES ($1, $2, $3) \
-         ON CONFLICT DO NOTHING RETURNING 1",
+         ON CONFLICT DO NOTHING RETURNING id",
     )
     .bind(&email)
     .bind(name)
@@ -91,12 +93,18 @@ pub async fn submit_access_request(
     .map_err(AppError::Database)?;
 
     // Notify admin about new (non-duplicate) requests
-    if result.is_some() {
+    if let Some(request_id) = result {
         let notify_email = email.clone();
         let notify_name = req.name.clone();
         let notify_context = req.context.clone();
         tokio::spawn(async move {
-            send_admin_notification(&notify_email, notify_name.as_deref(), notify_context.as_deref()).await;
+            send_admin_notification(
+                &notify_email,
+                notify_name.as_deref(),
+                notify_context.as_deref(),
+                &request_id,
+            )
+            .await;
         });
     }
 
@@ -619,7 +627,12 @@ async fn send_invite_email(
     }
 }
 
-async fn send_admin_notification(requester_email: &str, name: Option<&str>, context: Option<&str>) {
+async fn send_admin_notification(
+    requester_email: &str,
+    name: Option<&str>,
+    context: Option<&str>,
+    request_id: &Uuid,
+) {
     let (api_key, from, admin_email) = match (
         std::env::var("RESEND_API_KEY").ok().filter(|k| !k.is_empty()),
         std::env::var("ADMIN_NOTIFY_EMAIL").ok().filter(|k| !k.is_empty()),
@@ -642,13 +655,17 @@ async fn send_admin_notification(requester_email: &str, name: Option<&str>, cont
         .map(|c| format!("Kontext: {c}\n"))
         .unwrap_or_default();
 
+    let approve_url = build_action_url(request_id, "approve")
+        .unwrap_or_else(|| "(Link konnte nicht erzeugt werden)".to_string());
+    let reject_url = build_action_url(request_id, "reject")
+        .unwrap_or_else(|| "(Link konnte nicht erzeugt werden)".to_string());
+
     let body = format!(
         "Neue Zugangsanfrage fuer Kura:\n\n\
          Email: {requester_email}\n\
          {name_line}{context_line}\n\
-         Zum Approven:\n\
-         kura api GET /v1/admin/access-requests?status=pending\n\
-         kura api POST /v1/admin/access-requests/<id>/approve"
+         Annehmen: {approve_url}\n\n\
+         Ablehnen: {reject_url}"
     );
 
     let client = reqwest::Client::new();
@@ -677,6 +694,332 @@ async fn send_admin_notification(requester_email: &str, name: Option<&str>, cont
             tracing::error!("Failed to send admin notification: {e}");
         }
     }
+}
+
+// ──────────────────────────────────────────────
+// Email action links (HMAC-signed, no auth)
+// ──────────────────────────────────────────────
+
+type HmacSha256 = Hmac<Sha256>;
+
+fn action_secret() -> Option<String> {
+    std::env::var("KURA_AGENT_MODEL_ATTESTATION_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+fn sign_action(action: &str, request_id: &Uuid, timestamp: i64) -> Option<String> {
+    let secret = action_secret()?;
+    let msg = format!("admin-action:{action}:{request_id}:{timestamp}");
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).ok()?;
+    mac.update(msg.as_bytes());
+    let sig = hex::encode(mac.finalize().into_bytes());
+    Some(format!("{timestamp}.{sig}"))
+}
+
+fn verify_action_token(action: &str, request_id: &Uuid, token: &str) -> bool {
+    let secret = match action_secret() {
+        Some(s) => s,
+        None => return false,
+    };
+    let parts: Vec<&str> = token.splitn(2, '.').collect();
+    if parts.len() != 2 {
+        return false;
+    }
+    let timestamp: i64 = match parts[0].parse() {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    // Tokens expire after 7 days
+    let age = Utc::now().timestamp() - timestamp;
+    if age > 7 * 24 * 3600 || age < 0 {
+        return false;
+    }
+    let msg = format!("admin-action:{action}:{request_id}:{timestamp}");
+    let mut mac = match HmacSha256::new_from_slice(secret.as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    mac.update(msg.as_bytes());
+    let expected = hex::encode(mac.finalize().into_bytes());
+    let provided = parts[1];
+    // Constant-time comparison
+    provided.len() == expected.len()
+        && provided
+            .bytes()
+            .zip(expected.bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0
+}
+
+fn build_action_url(request_id: &Uuid, action: &str) -> Option<String> {
+    // Must route through the public API URL (not frontend)
+    let base = std::env::var("KURA_WEB_PUBLIC_API_URL")
+        .unwrap_or_else(|_| "https://api.withkura.com".to_string());
+    let token = sign_action(action, request_id, Utc::now().timestamp())?;
+    Some(format!(
+        "{base}/v1/admin/action/{request_id}/{action}?t={token}"
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ActionQuery {
+    pub t: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ActionForm {
+    pub t: String,
+}
+
+/// GET — show confirmation page
+pub async fn email_action_page(
+    State(state): State<AppState>,
+    Path((request_id, action)): Path<(Uuid, String)>,
+    Query(query): Query<ActionQuery>,
+) -> Result<Html<String>, AppError> {
+    if action != "approve" && action != "reject" {
+        return Err(AppError::Validation {
+            message: "Invalid action".to_string(),
+            field: None,
+            received: None,
+            docs_hint: None,
+        });
+    }
+
+    if !verify_action_token(&action, &request_id, &query.t) {
+        return Ok(Html(error_page("Link ungueltig oder abgelaufen.")));
+    }
+
+    // Fetch request details
+    let row = sqlx::query_as::<_, (String, Option<String>, Option<String>, String)>(
+        "SELECT email, name, context, status FROM access_requests WHERE id = $1",
+    )
+    .bind(request_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?;
+
+    let (email, name, context, status) = match row {
+        Some(r) => r,
+        None => return Ok(Html(error_page("Anfrage nicht gefunden."))),
+    };
+
+    if status != "pending" {
+        return Ok(Html(result_page(&format!(
+            "Anfrage bereits verarbeitet (Status: {status})."
+        ))));
+    }
+
+    let action_label = if action == "approve" {
+        "Annehmen"
+    } else {
+        "Ablehnen"
+    };
+    let action_color = if action == "approve" {
+        "#22c55e"
+    } else {
+        "#ef4444"
+    };
+
+    let name_html = name
+        .map(|n| format!("<p><strong>Name:</strong> {}</p>", html_escape(&n)))
+        .unwrap_or_default();
+    let context_html = context
+        .map(|c| format!("<p><strong>Kontext:</strong> {}</p>", html_escape(&c)))
+        .unwrap_or_default();
+
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kura — Zugangsanfrage</title>
+<style>
+  body {{ font-family: -apple-system, system-ui, sans-serif; max-width: 480px; margin: 60px auto; padding: 0 20px; color: #1a1a1a; background: #fafafa; }}
+  .card {{ background: #fff; border-radius: 12px; padding: 32px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
+  h1 {{ font-size: 20px; margin: 0 0 24px; }}
+  p {{ margin: 8px 0; font-size: 15px; line-height: 1.5; }}
+  .email {{ font-size: 17px; font-weight: 600; }}
+  button {{ background: {action_color}; color: #fff; border: none; padding: 12px 32px; border-radius: 8px; font-size: 16px; cursor: pointer; margin-top: 24px; width: 100%; }}
+  button:hover {{ opacity: 0.9; }}
+  .subtle {{ color: #666; font-size: 13px; margin-top: 16px; }}
+</style></head>
+<body><div class="card">
+  <h1>Zugangsanfrage {action_label}?</h1>
+  <p class="email">{escaped_email}</p>
+  {name_html}
+  {context_html}
+  <form method="POST">
+    <input type="hidden" name="t" value="{token}">
+    <button type="submit">{action_label}</button>
+  </form>
+  <p class="subtle">Dieser Link ist 7 Tage gueltig.</p>
+</div></body></html>"#,
+        escaped_email = html_escape(&email),
+        token = html_escape(&query.t),
+    );
+
+    Ok(Html(html))
+}
+
+/// POST — execute the action
+pub async fn email_action_execute(
+    State(state): State<AppState>,
+    Path((request_id, action)): Path<(Uuid, String)>,
+    Form(form): Form<ActionForm>,
+) -> Result<Html<String>, AppError> {
+    if action != "approve" && action != "reject" {
+        return Err(AppError::Validation {
+            message: "Invalid action".to_string(),
+            field: None,
+            received: None,
+            docs_hint: None,
+        });
+    }
+
+    if !verify_action_token(&action, &request_id, &form.t) {
+        return Ok(Html(error_page("Link ungueltig oder abgelaufen.")));
+    }
+
+    if action == "approve" {
+        match execute_approve(&state, request_id).await {
+            Ok((email, email_sent)) => {
+                let email_note = if email_sent {
+                    format!("Einladung an {} gesendet.", html_escape(&email))
+                } else {
+                    format!(
+                        "Anfrage genehmigt, aber Email an {} konnte nicht gesendet werden.",
+                        html_escape(&email)
+                    )
+                };
+                Ok(Html(result_page(&email_note)))
+            }
+            Err(msg) => Ok(Html(result_page(&msg))),
+        }
+    } else {
+        match execute_reject(&state, request_id).await {
+            Ok(_) => Ok(Html(result_page("Anfrage abgelehnt."))),
+            Err(msg) => Ok(Html(result_page(&msg))),
+        }
+    }
+}
+
+async fn execute_approve(state: &AppState, request_id: Uuid) -> Result<(String, bool), String> {
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| format!("DB error: {e}"))?;
+
+    let row = sqlx::query_as::<_, (String, String)>(
+        "SELECT email, status FROM access_requests WHERE id = $1 FOR UPDATE",
+    )
+    .bind(request_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| format!("DB error: {e}"))?;
+
+    let (email, status) = match row {
+        Some(r) => r,
+        None => return Err("Anfrage nicht gefunden.".to_string()),
+    };
+
+    if status != "pending" {
+        return Err(format!("Bereits verarbeitet (Status: {status})."));
+    }
+
+    let token = generate_invite_token();
+    let expires_at = Utc::now() + Duration::days(7);
+    let token_id = Uuid::now_v7();
+
+    sqlx::query(
+        "INSERT INTO invite_tokens (id, token, email, created_by, expires_at) \
+         VALUES ($1, $2, $3, NULL, $4)",
+    )
+    .bind(token_id)
+    .bind(&token)
+    .bind(&email)
+    .bind(expires_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("DB error: {e}"))?;
+
+    sqlx::query(
+        "UPDATE access_requests SET status = 'approved', reviewed_at = NOW(), \
+         invite_token_id = $1 WHERE id = $2",
+    )
+    .bind(token_id)
+    .bind(request_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("DB error: {e}"))?;
+
+    tx.commit().await.map_err(|e| format!("DB error: {e}"))?;
+
+    let frontend_url =
+        std::env::var("FRONTEND_URL").unwrap_or_else(|_| "https://kura.dev".to_string());
+    let invite_url = format!("{frontend_url}/signup?invite={token}");
+    let email_sent = send_invite_email(&email, &invite_url, &expires_at).await;
+
+    Ok((email, email_sent))
+}
+
+async fn execute_reject(state: &AppState, request_id: Uuid) -> Result<(), String> {
+    let result = sqlx::query(
+        "UPDATE access_requests SET status = 'rejected', reviewed_at = NOW() \
+         WHERE id = $1 AND status = 'pending'",
+    )
+    .bind(request_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| format!("DB error: {e}"))?;
+
+    if result.rows_affected() == 0 {
+        return Err("Bereits verarbeitet oder nicht gefunden.".to_string());
+    }
+    Ok(())
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn error_page(msg: &str) -> String {
+    format!(
+        r#"<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kura</title>
+<style>
+  body {{ font-family: -apple-system, system-ui, sans-serif; max-width: 480px; margin: 60px auto; padding: 0 20px; color: #1a1a1a; background: #fafafa; }}
+  .card {{ background: #fff; border-radius: 12px; padding: 32px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); text-align: center; }}
+  p {{ font-size: 15px; color: #666; }}
+</style></head>
+<body><div class="card"><p>{msg}</p></div></body></html>"#
+    )
+}
+
+fn result_page(msg: &str) -> String {
+    format!(
+        r#"<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kura</title>
+<style>
+  body {{ font-family: -apple-system, system-ui, sans-serif; max-width: 480px; margin: 60px auto; padding: 0 20px; color: #1a1a1a; background: #fafafa; }}
+  .card {{ background: #fff; border-radius: 12px; padding: 32px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); text-align: center; }}
+  .check {{ font-size: 48px; margin-bottom: 16px; }}
+  p {{ font-size: 15px; line-height: 1.5; }}
+</style></head>
+<body><div class="card"><div class="check">&#10003;</div><p>{msg}</p></div></body></html>"#
+    )
+}
+
+pub fn email_action_router() -> Router<AppState> {
+    Router::new().route(
+        "/v1/admin/action/{request_id}/{action}",
+        get(email_action_page).post(email_action_execute),
+    )
 }
 
 // ──────────────────────────────────────────────
