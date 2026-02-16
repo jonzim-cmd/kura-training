@@ -17,9 +17,11 @@ export default function SignupPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [consent, setConsent] = useState(false);
+  const [consentAnonymized, setConsentAnonymized] = useState(false);
+  const [consentHealth, setConsentHealth] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [consentError, setConsentError] = useState(false);
+  const [consentAnonymizedError, setConsentAnonymizedError] = useState(false);
+  const [consentHealthError, setConsentHealthError] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   // No invite token -> redirect to request-access
@@ -42,10 +44,17 @@ export default function SignupPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setConsentError(false);
+    setConsentAnonymizedError(false);
+    setConsentHealthError(false);
 
-    if (!consent) {
-      setConsentError(true);
+    if (!consentHealth) {
+      setConsentHealthError(true);
+      setError(t('healthConsentRequired'));
+      return;
+    }
+    if (!consentAnonymized) {
+      setConsentAnonymizedError(true);
+      setError(t('anonymizedConsentRequired'));
       return;
     }
     if (password !== confirmPassword) {
@@ -59,7 +68,13 @@ export default function SignupPage() {
 
     setSubmitting(true);
     try {
-      await register(email, password, inviteToken);
+      await register(
+        email,
+        password,
+        inviteToken,
+        consentHealth,
+        consentAnonymized,
+      );
       router.push('/setup');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed');
@@ -118,11 +133,21 @@ export default function SignupPage() {
             />
           </div>
 
-          <label className={`${styles.consent} ${consentError ? styles.consentError : ''}`}>
+          <label className={`${styles.consent} ${consentHealthError ? styles.consentError : ''}`}>
             <input
               type="checkbox"
-              checked={consent}
-              onChange={(e) => setConsent(e.target.checked)}
+              checked={consentHealth}
+              onChange={(e) => setConsentHealth(e.target.checked)}
+              className={styles.consentCheckbox}
+            />
+            <span className={styles.consentText}>{t('healthConsentLabel')}</span>
+          </label>
+
+          <label className={`${styles.consent} ${consentAnonymizedError ? styles.consentError : ''}`}>
+            <input
+              type="checkbox"
+              checked={consentAnonymized}
+              onChange={(e) => setConsentAnonymized(e.target.checked)}
               className={styles.consentCheckbox}
             />
             <span className={styles.consentText}>{t('consentLabel')}</span>

@@ -47,6 +47,9 @@ export default function SettingsPage() {
   const [contactSending, setContactSending] = useState(false);
   const [contactSuccess, setContactSuccess] = useState(false);
   const [contactError, setContactError] = useState<string | null>(null);
+  const [healthConsent, setHealthConsent] = useState(false);
+  const [healthConsentSaving, setHealthConsentSaving] = useState(false);
+  const [healthConsentError, setHealthConsentError] = useState<string | null>(null);
 
   // Redirect if not logged in
   useEffect(() => {
@@ -68,6 +71,10 @@ export default function SettingsPage() {
   }, [token]);
 
   useEffect(() => { fetchKeys(); }, [fetchKeys]);
+
+  useEffect(() => {
+    setHealthConsent(Boolean(user?.consent_health_data_processing));
+  }, [user?.consent_health_data_processing]);
 
   if (loading || !user) return null;
 
@@ -175,6 +182,32 @@ export default function SettingsPage() {
       a.click();
       URL.revokeObjectURL(url);
     } catch { /* silently fail */ }
+  };
+
+  const handleToggleHealthConsent = async () => {
+    if (!token || healthConsentSaving) return;
+
+    const nextConsent = !healthConsent;
+    setHealthConsentError(null);
+    setHealthConsentSaving(true);
+    try {
+      const res = await apiAuth('/v1/account/consent/health', token, {
+        method: 'PATCH',
+        body: JSON.stringify({ consent: nextConsent }),
+      });
+      if (res.ok) {
+        const body = await res.json().catch(() => null);
+        setHealthConsent(Boolean(body?.consent_health_data_processing));
+        await refreshUser();
+      } else {
+        const body = await res.json().catch(() => null);
+        setHealthConsentError(
+          body?.message || body?.error || t('privacy.healthConsentError'),
+        );
+      }
+    } finally {
+      setHealthConsentSaving(false);
+    }
   };
 
   const handleContactSubmit = async () => {
@@ -413,13 +446,34 @@ export default function SettingsPage() {
 
                 <div className={styles.settingRow}>
                   <div className={styles.settingInfo}>
+                    <span className={styles.settingName}>{t('privacy.healthConsentLabel')}</span>
+                    <p className={styles.settingHint}>
+                      {healthConsent
+                        ? t('privacy.healthConsentGrantedHint')
+                        : t('privacy.healthConsentMissingHint')}
+                    </p>
+                    {healthConsentError && (
+                      <p className={styles.settingHint}>{healthConsentError}</p>
+                    )}
+                  </div>
+                  <button
+                    className="kura-toggle"
+                    role="switch"
+                    aria-checked={healthConsent}
+                    onClick={handleToggleHealthConsent}
+                    disabled={healthConsentSaving}
+                  />
+                </div>
+
+                <div className={styles.settingRow}>
+                  <div className={styles.settingInfo}>
                     <span className={styles.settingName}>{t('privacy.consentLabel')}</span>
                     <p className={styles.settingHint}>{t('privacy.consentHint')}</p>
                   </div>
                   <button
                     className="kura-toggle"
                     role="switch"
-                    aria-checked="true"
+                    aria-checked={user.consent_anonymized_learning}
                     disabled
                   />
                 </div>

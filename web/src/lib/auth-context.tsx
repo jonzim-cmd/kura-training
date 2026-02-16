@@ -16,6 +16,11 @@ interface User {
   email: string;
   display_name: string | null;
   is_admin: boolean;
+  consent_anonymized_learning: boolean;
+  consent_health_data_processing: boolean;
+  consent_health_data_processing_at: string | null;
+  consent_health_data_processing_version: string | null;
+  consent_health_data_withdrawn_at: string | null;
   created_at: string;
 }
 
@@ -34,6 +39,8 @@ interface AuthContextType {
     email: string,
     password: string,
     inviteToken: string,
+    consentHealthDataProcessing: boolean,
+    consentAnonymizedLearning: boolean,
     displayName?: string,
   ) => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -53,6 +60,11 @@ const MOCK_USER: User = {
   email: 'dev@kura.dev',
   display_name: 'Dev User',
   is_admin: true,
+  consent_anonymized_learning: true,
+  consent_health_data_processing: true,
+  consent_health_data_processing_at: '2026-01-01T00:00:00Z',
+  consent_health_data_processing_version: 'health-consent-v1-2026-02-16',
+  consent_health_data_withdrawn_at: null,
   created_at: '2026-01-01T00:00:00Z',
 };
 
@@ -212,6 +224,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       email: string,
       password: string,
       inviteToken: string,
+      consentHealthDataProcessing: boolean,
+      consentAnonymizedLearning: boolean,
       displayName?: string,
     ) => {
       const regRes = await apiFetch('/v1/auth/register', {
@@ -220,7 +234,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           email,
           password,
           invite_token: inviteToken,
-          consent_anonymized_learning: true,
+          consent_health_data_processing: consentHealthDataProcessing,
+          consent_anonymized_learning: consentAnonymizedLearning,
           display_name: displayName || undefined,
         }),
       });

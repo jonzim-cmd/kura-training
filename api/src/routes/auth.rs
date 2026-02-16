@@ -73,6 +73,7 @@ const DEVICE_CODE_TTL_MINUTES: i64 = 10;
 const DEVICE_CODE_POLL_INTERVAL_SECONDS: i32 = 5;
 const PASSWORD_RESET_TOKEN_TTL_MINUTES: i64 = 60;
 const OAUTH_BROWSER_SESSION_COOKIE: &str = "kura_oauth_session";
+const HEALTH_DATA_CONSENT_VERSION: &str = "health-consent-v1-2026-02-16";
 
 fn default_agent_token_scopes() -> Vec<String> {
     vec![
@@ -133,27 +134,6 @@ fn ensure_social_signup_allowed(signup_gate: crate::state::SignupGate) -> Result
             docs_hint: Some("Payment integration coming soon.".to_string()),
         }),
     }
-}
-
-async fn create_social_user(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    email_norm: &str,
-) -> Result<Uuid, AppError> {
-    let new_user_id = Uuid::now_v7();
-    let bootstrap_secret = format!("oidc-disabled-password-{}", Uuid::now_v7());
-    let password_hash = auth::hash_password(&bootstrap_secret).map_err(AppError::Internal)?;
-
-    sqlx::query(
-        "INSERT INTO users (id, email, password_hash, display_name) VALUES ($1, $2, $3, NULL)",
-    )
-    .bind(new_user_id)
-    .bind(email_norm)
-    .bind(&password_hash)
-    .execute(&mut **tx)
-    .await
-    .map_err(AppError::Database)?;
-
-    Ok(new_user_id)
 }
 
 fn normalize_user_code(user_code: &str) -> String {
@@ -238,6 +218,8 @@ pub struct RegisterRequest {
     #[serde(default)]
     pub invite_token: Option<String>,
     #[serde(default)]
+    pub consent_health_data_processing: Option<bool>,
+    #[serde(default)]
     pub consent_anonymized_learning: Option<bool>,
 }
 
@@ -283,6 +265,16 @@ pub async fn register(
             docs_hint: None,
         });
     }
+    if req.consent_health_data_processing != Some(true) {
+        return Err(AppError::Validation {
+            message:
+                "Explicit consent to process health-related training and recovery data is required."
+                    .to_string(),
+            field: Some("consent_health_data_processing".to_string()),
+            received: None,
+            docs_hint: Some("Set consent_health_data_processing: true".to_string()),
+        });
+    }
 
     // Invite gate: validate token when SIGNUP_GATE=invite
     let invite_token_id = match state.signup_gate {
@@ -323,20 +315,32 @@ pub async fn register(
     };
 
     let consent = req.consent_anonymized_learning.unwrap_or(false);
+    let health_consent = req.consent_health_data_processing.unwrap_or(false);
     let password_hash = auth::hash_password(&req.password).map_err(|e| AppError::Internal(e))?;
 
     let user_id = Uuid::now_v7();
     let mut tx = state.db.begin().await?;
 
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, display_name, consent_anonymized_learning, invited_by_token) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO users (
+            id,
+            email,
+            password_hash,
+            display_name,
+            consent_anonymized_learning,
+            consent_health_data_processing,
+            consent_health_data_processing_at,
+            consent_health_data_processing_version,
+            invited_by_token
+         ) VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8)",
     )
     .bind(user_id)
     .bind(&email_norm)
     .bind(&password_hash)
     .bind(&req.display_name)
     .bind(consent)
+    .bind(health_consent)
+    .bind(HEALTH_DATA_CONSENT_VERSION)
     .bind(invite_token_id)
     .execute(&mut *tx)
     .await
@@ -2273,7 +2277,14 @@ pub async fn oidc_login(
             existing_user_id
         } else {
             ensure_social_signup_allowed(state.signup_gate)?;
-            create_social_user(&mut tx, &email_norm).await?
+            return Err(AppError::Forbidden {
+                message: "Social sign-up requires prior account registration with explicit health-data consent."
+                    .to_string(),
+                docs_hint: Some(
+                    "Create an account first, accept health-data consent, then retry social login with the same verified email."
+                        .to_string(),
+                ),
+            });
         }
     };
 
@@ -2582,7 +2593,14 @@ pub async fn supabase_login(
             existing_user_id
         } else {
             ensure_social_signup_allowed(state.signup_gate)?;
-            create_social_user(&mut tx, &email_norm).await?
+            return Err(AppError::Forbidden {
+                message: "Social sign-up requires prior account registration with explicit health-data consent."
+                    .to_string(),
+                docs_hint: Some(
+                    "Create an account first, accept health-data consent, then retry social login with the same verified email."
+                        .to_string(),
+                ),
+            });
         }
     };
 
@@ -2976,6 +2994,14 @@ pub struct MeResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub is_admin: bool,
+    pub consent_anonymized_learning: bool,
+    pub consent_health_data_processing: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consent_health_data_processing_at: Option<chrono::DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consent_health_data_processing_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consent_health_data_withdrawn_at: Option<chrono::DateTime<Utc>>,
     pub created_at: chrono::DateTime<Utc>,
 }
 
@@ -2985,6 +3011,11 @@ struct MeRow {
     email: String,
     display_name: Option<String>,
     is_admin: bool,
+    consent_anonymized_learning: bool,
+    consent_health_data_processing: bool,
+    consent_health_data_processing_at: Option<chrono::DateTime<Utc>>,
+    consent_health_data_processing_version: Option<String>,
+    consent_health_data_withdrawn_at: Option<chrono::DateTime<Utc>>,
     created_at: chrono::DateTime<Utc>,
 }
 
@@ -3003,7 +3034,19 @@ pub async fn get_me(
     State(state): State<AppState>,
 ) -> Result<Response, AppError> {
     let row = sqlx::query_as::<_, MeRow>(
-        "SELECT id, email, display_name, is_admin, created_at FROM users WHERE id = $1",
+        "SELECT
+            id,
+            email,
+            display_name,
+            is_admin,
+            consent_anonymized_learning,
+            consent_health_data_processing,
+            consent_health_data_processing_at,
+            consent_health_data_processing_version,
+            consent_health_data_withdrawn_at,
+            created_at
+         FROM users
+         WHERE id = $1",
     )
     .bind(user.user_id)
     .fetch_one(&state.db)
@@ -3015,6 +3058,11 @@ pub async fn get_me(
         email: row.email,
         display_name: row.display_name,
         is_admin: row.is_admin,
+        consent_anonymized_learning: row.consent_anonymized_learning,
+        consent_health_data_processing: row.consent_health_data_processing,
+        consent_health_data_processing_at: row.consent_health_data_processing_at,
+        consent_health_data_processing_version: row.consent_health_data_processing_version,
+        consent_health_data_withdrawn_at: row.consent_health_data_withdrawn_at,
         created_at: row.created_at,
     })
     .into_response();

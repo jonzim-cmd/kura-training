@@ -34,6 +34,72 @@ pub fn read_router() -> Router<AppState> {
     Router::new().route("/v1/events", get(list_events))
 }
 
+fn event_requires_health_data_consent(event_type: &str) -> bool {
+    if matches!(
+        event_type,
+        "set.logged"
+            | "set.corrected"
+            | "event.retracted"
+            | "session.logged"
+            | "session.completed"
+            | "bodyweight.logged"
+            | "measurement.logged"
+            | "meal.logged"
+            | "sleep.logged"
+            | "soreness.logged"
+            | "energy.logged"
+            | "training_plan.created"
+            | "training_plan.updated"
+            | "exercise.alias_created"
+    ) {
+        return true;
+    }
+
+    let normalized = event_type.trim().to_ascii_lowercase();
+    normalized.starts_with("sleep.")
+        || normalized.starts_with("recovery.")
+        || normalized.starts_with("pain.")
+        || normalized.starts_with("health.")
+        || normalized.starts_with("nutrition.")
+}
+
+fn batch_requires_health_data_consent(events: &[CreateEventRequest]) -> bool {
+    events
+        .iter()
+        .any(|event| event_requires_health_data_consent(&event.event_type))
+}
+
+async fn ensure_health_data_processing_consent(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<(), AppError> {
+    let consent = sqlx::query_scalar::<_, bool>(
+        "SELECT consent_health_data_processing FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::Unauthorized {
+        message: "Account not found".to_string(),
+        docs_hint: None,
+    })?;
+
+    if !consent {
+        return Err(AppError::Forbidden {
+            message:
+                "Processing health-related training data requires explicit consent (Art. 9 GDPR)."
+                    .to_string(),
+            docs_hint: Some(
+                "Grant consent in Settings > Privacy & Data before creating health/training events."
+                    .to_string(),
+            ),
+        });
+    }
+
+    Ok(())
+}
+
 /// Validate a single event request
 fn validate_event(req: &CreateEventRequest) -> Result<(), AppError> {
     if req.event_type.is_empty() {
@@ -2300,6 +2366,9 @@ pub async fn create_event(
 ) -> Result<impl IntoResponse, AppError> {
     let user_id = auth.user_id;
     validate_event(&req)?;
+    if event_requires_health_data_consent(&req.event_type) {
+        ensure_health_data_processing_consent(&state, user_id).await?;
+    }
     enforce_legacy_domain_invariants(&state, user_id, std::slice::from_ref(&req)).await?;
 
     let mut warnings = check_event_plausibility(&req.event_type, &req.data);
@@ -2508,6 +2577,9 @@ pub async fn create_events_batch(
     auth: AuthenticatedUser,
     Json(req): Json<BatchCreateEventsRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    if batch_requires_health_data_consent(&req.events) {
+        ensure_health_data_processing_consent(&state, auth.user_id).await?;
+    }
     enforce_legacy_domain_invariants(&state, auth.user_id, &req.events).await?;
     let batch_result = create_events_batch_internal(&state, auth.user_id, &req.events).await?;
     Ok((StatusCode::CREATED, Json(batch_result)))
@@ -2556,6 +2628,10 @@ pub async fn simulate_events(
                 "Split large simulation batches into chunks of 100 or fewer".to_string(),
             ),
         });
+    }
+
+    if batch_requires_health_data_consent(&req.events) {
+        ensure_health_data_processing_consent(&state, user_id).await?;
     }
 
     let mut known_ids = fetch_user_exercise_ids(&state.db, user_id).await?;
@@ -4014,5 +4090,22 @@ mod tests {
             })
             .expect("custom target should be present");
         assert!(candidate.delete_hint);
+    }
+
+    #[test]
+    fn test_health_consent_required_for_core_training_event() {
+        assert!(event_requires_health_data_consent("set.logged"));
+    }
+
+    #[test]
+    fn test_health_consent_required_for_health_prefix() {
+        assert!(event_requires_health_data_consent("health.symptom.logged"));
+        assert!(event_requires_health_data_consent("recovery.daily_checkin"));
+    }
+
+    #[test]
+    fn test_health_consent_not_required_for_projection_rule_events() {
+        assert!(!event_requires_health_data_consent("projection_rule.created"));
+        assert!(!event_requires_health_data_consent("workflow.onboarding.closed"));
     }
 }

@@ -15,6 +15,7 @@ use crate::privacy::get_or_create_analysis_subject_id;
 use crate::state::AppState;
 
 const ACCOUNT_DELETION_GRACE_DAYS: i64 = 30;
+const HEALTH_DATA_CONSENT_VERSION: &str = "health-consent-v1-2026-02-16";
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct AccountDeletedResponse {
@@ -40,6 +41,22 @@ pub struct UpdateLoginEmailRequest {
 pub struct UpdateLoginEmailResponse {
     pub email: String,
     pub message: String,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct UpdateHealthConsentRequest {
+    pub consent: bool,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct UpdateHealthConsentResponse {
+    pub consent_health_data_processing: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consent_health_data_processing_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consent_health_data_processing_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consent_health_data_withdrawn_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -234,6 +251,83 @@ pub async fn update_login_email(
     Ok(Json(UpdateLoginEmailResponse {
         email: new_email_norm,
         message: "Login email updated.".to_string(),
+    }))
+}
+
+#[derive(sqlx::FromRow)]
+struct HealthConsentRow {
+    consent_health_data_processing: bool,
+    consent_health_data_processing_at: Option<DateTime<Utc>>,
+    consent_health_data_processing_version: Option<String>,
+    consent_health_data_withdrawn_at: Option<DateTime<Utc>>,
+}
+
+/// PATCH /v1/account/consent/health — grant/withdraw explicit Art. 9 consent
+#[utoipa::path(
+    patch,
+    path = "/v1/account/consent/health",
+    request_body = UpdateHealthConsentRequest,
+    responses(
+        (status = 200, description = "Health-data consent updated", body = UpdateHealthConsentResponse),
+        (status = 401, description = "Not authenticated"),
+        (status = 400, description = "Validation error", body = kura_core::error::ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "account"
+)]
+pub async fn update_health_data_consent(
+    user: AuthenticatedUser,
+    state: axum::extract::State<AppState>,
+    Json(req): Json<UpdateHealthConsentRequest>,
+) -> Result<Json<UpdateHealthConsentResponse>, AppError> {
+    let row = if req.consent {
+        sqlx::query_as::<_, HealthConsentRow>(
+            "UPDATE users
+             SET consent_health_data_processing = TRUE,
+                 consent_health_data_processing_at = COALESCE(consent_health_data_processing_at, NOW()),
+                 consent_health_data_processing_version = $2,
+                 consent_health_data_withdrawn_at = NULL,
+                 updated_at = NOW()
+             WHERE id = $1
+             RETURNING
+                 consent_health_data_processing,
+                 consent_health_data_processing_at,
+                 consent_health_data_processing_version,
+                 consent_health_data_withdrawn_at",
+        )
+        .bind(user.user_id)
+        .bind(HEALTH_DATA_CONSENT_VERSION)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(AppError::Database)?
+    } else {
+        sqlx::query_as::<_, HealthConsentRow>(
+            "UPDATE users
+             SET consent_health_data_processing = FALSE,
+                 consent_health_data_withdrawn_at = NOW(),
+                 updated_at = NOW()
+             WHERE id = $1
+             RETURNING
+                 consent_health_data_processing,
+                 consent_health_data_processing_at,
+                 consent_health_data_processing_version,
+                 consent_health_data_withdrawn_at",
+        )
+        .bind(user.user_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(AppError::Database)?
+    }
+    .ok_or_else(|| AppError::Unauthorized {
+        message: "Account not found".to_string(),
+        docs_hint: None,
+    })?;
+
+    Ok(Json(UpdateHealthConsentResponse {
+        consent_health_data_processing: row.consent_health_data_processing,
+        consent_health_data_processing_at: row.consent_health_data_processing_at,
+        consent_health_data_processing_version: row.consent_health_data_processing_version,
+        consent_health_data_withdrawn_at: row.consent_health_data_withdrawn_at,
     }))
 }
 
@@ -869,6 +963,10 @@ pub fn self_router() -> Router<AppState> {
     Router::new()
         .route("/v1/account", delete(delete_own_account))
         .route("/v1/account/email", patch(update_login_email))
+        .route(
+            "/v1/account/consent/health",
+            patch(update_health_data_consent),
+        )
         .route("/v1/account/analysis-subject", get(get_analysis_subject))
         .route(
             "/v1/account/api-keys",
@@ -1057,5 +1155,42 @@ mod tests {
             }
             other => panic!("unexpected error variant: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn update_health_data_consent_enables_and_disables() {
+        let Some(pool) = db_pool_with_migrations_if_available().await else {
+            return;
+        };
+
+        let email = format!("health-consent-{}@example.com", Uuid::now_v7());
+        let user_id = seed_email_password_user(&pool, &email, "Health-Consent-123!").await;
+        let state = AppState {
+            db: pool.clone(),
+            signup_gate: SignupGate::Open,
+        };
+
+        let Json(enabled) = update_health_data_consent(
+            test_auth_user(user_id),
+            State(state.clone()),
+            Json(UpdateHealthConsentRequest { consent: true }),
+        )
+        .await
+        .expect("enabling consent should succeed");
+        assert!(enabled.consent_health_data_processing);
+        assert!(enabled.consent_health_data_processing_at.is_some());
+        assert!(enabled.consent_health_data_processing_version.is_some());
+        assert!(enabled.consent_health_data_withdrawn_at.is_none());
+
+        let Json(disabled) = update_health_data_consent(
+            test_auth_user(user_id),
+            State(state),
+            Json(UpdateHealthConsentRequest { consent: false }),
+        )
+        .await
+        .expect("disabling consent should succeed");
+        assert!(!disabled.consent_health_data_processing);
+        assert!(disabled.consent_health_data_processing_at.is_some());
+        assert!(disabled.consent_health_data_withdrawn_at.is_some());
     }
 }

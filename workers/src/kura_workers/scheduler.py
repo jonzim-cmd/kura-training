@@ -1,8 +1,8 @@
-"""Durable recurring scheduler helpers for nightly inference refits."""
+"""Durable recurring scheduler helpers for background maintenance jobs."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 import os
 from typing import Any
@@ -14,10 +14,19 @@ from psycopg.types.json import Json
 logger = logging.getLogger(__name__)
 
 NIGHTLY_SCHEDULER_KEY = "nightly_inference_refit"
+LOG_RETENTION_JOB_TYPE = "maintenance.log_retention"
 
 
 def nightly_interval_hours() -> int:
     raw = os.environ.get("KURA_NIGHTLY_REFIT_HOURS", "24")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 24
+
+
+def log_retention_interval_hours() -> int:
+    raw = os.environ.get("KURA_LOG_RETENTION_INTERVAL_HOURS", "24")
     try:
         return max(1, int(raw))
     except ValueError:
@@ -245,6 +254,85 @@ async def ensure_nightly_inference_scheduler(conn: psycopg.AsyncConnection[Any])
         new_job_id,
         run_count,
         missed_runs,
+        interval_h,
+    )
+
+
+async def ensure_log_retention_job(conn: psycopg.AsyncConnection[Any]) -> None:
+    """Schedule recurring log-retention cleanup as a single in-flight maintenance job."""
+    interval_h = log_retention_interval_hours()
+    now = datetime.now(timezone.utc)
+
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT id
+            FROM background_jobs
+            WHERE job_type = %s
+              AND status IN ('pending', 'processing')
+            ORDER BY scheduled_for ASC, id ASC
+            LIMIT 1
+            """,
+            (LOG_RETENTION_JOB_TYPE,),
+        )
+        in_flight = await cur.fetchone()
+        if in_flight is not None:
+            return
+
+        await cur.execute(
+            """
+            SELECT completed_at
+            FROM background_jobs
+            WHERE job_type = %s
+              AND status = 'completed'
+              AND completed_at IS NOT NULL
+            ORDER BY completed_at DESC
+            LIMIT 1
+            """,
+            (LOG_RETENTION_JOB_TYPE,),
+        )
+        last_completed = await cur.fetchone()
+        if last_completed is not None:
+            completed_at = _as_utc(last_completed["completed_at"])
+            if completed_at + timedelta(hours=interval_h) > now:
+                return
+
+        await cur.execute(
+            """
+            SELECT user_id
+            FROM events
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """
+        )
+        seed_row = await cur.fetchone()
+        if seed_row is None:
+            logger.info("No users/events yet; skipping maintenance.log_retention scheduling")
+            return
+
+        payload = {
+            "interval_hours": interval_h,
+            "scheduler_key": "maintenance.log_retention",
+            "scheduled_at": now.isoformat(),
+        }
+        await cur.execute(
+            """
+            INSERT INTO background_jobs (
+                user_id, job_type, payload, scheduled_for, priority, max_retries
+            )
+            VALUES (%s, %s, %s, NOW(), 50, 5)
+            RETURNING id
+            """,
+            (seed_row["user_id"], LOG_RETENTION_JOB_TYPE, Json(payload)),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return
+        job_id = int(row["id"])
+
+    logger.info(
+        "Scheduled maintenance.log_retention (job_id=%d, interval_h=%d)",
+        job_id,
         interval_h,
     )
 

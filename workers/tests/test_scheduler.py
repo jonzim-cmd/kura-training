@@ -4,7 +4,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from kura_workers.scheduler import due_run_count, nightly_interval_hours
+from kura_workers.scheduler import (
+    due_run_count,
+    log_retention_interval_hours,
+    nightly_interval_hours,
+)
 
 
 def test_nightly_interval_hours_default(monkeypatch):
@@ -20,6 +24,21 @@ def test_nightly_interval_hours_clamps_to_positive(monkeypatch):
 def test_nightly_interval_hours_invalid(monkeypatch):
     monkeypatch.setenv("KURA_NIGHTLY_REFIT_HOURS", "abc")
     assert nightly_interval_hours() == 24
+
+
+def test_log_retention_interval_hours_default(monkeypatch):
+    monkeypatch.delenv("KURA_LOG_RETENTION_INTERVAL_HOURS", raising=False)
+    assert log_retention_interval_hours() == 24
+
+
+def test_log_retention_interval_hours_clamps_to_positive(monkeypatch):
+    monkeypatch.setenv("KURA_LOG_RETENTION_INTERVAL_HOURS", "0")
+    assert log_retention_interval_hours() == 1
+
+
+def test_log_retention_interval_hours_invalid(monkeypatch):
+    monkeypatch.setenv("KURA_LOG_RETENTION_INTERVAL_HOURS", "invalid")
+    assert log_retention_interval_hours() == 24
 
 
 def test_due_run_count_zero_when_next_run_in_future():

@@ -9,7 +9,7 @@ from psycopg.rows import dict_row
 from .config import Config
 from .metrics import record_job_completed, record_job_dead, record_job_failed
 from .registry import get_handler
-from .scheduler import ensure_nightly_inference_scheduler
+from .scheduler import ensure_log_retention_job, ensure_nightly_inference_scheduler
 from .semantic_bootstrap import ensure_semantic_catalog
 from .system_config import ensure_system_config
 
@@ -49,6 +49,10 @@ class Worker:
                 await ensure_nightly_inference_scheduler(conn)
             except Exception as exc:
                 logger.warning("Nightly inference scheduler bootstrap skipped: %s", exc)
+            try:
+                await ensure_log_retention_job(conn)
+            except Exception as exc:
+                logger.warning("Log retention scheduler bootstrap skipped: %s", exc)
 
         # Run LISTEN and poll concurrently
         async with asyncio.TaskGroup() as tg:
@@ -111,9 +115,10 @@ class Worker:
 
                 try:
                     await ensure_nightly_inference_scheduler(conn)
+                    await ensure_log_retention_job(conn)
                     await conn.commit()
                 except Exception as exc:
-                    logger.warning("Nightly inference scheduler tick skipped: %s", exc)
+                    logger.warning("Recurring scheduler tick skipped: %s", exc)
 
                 jobs = await self._claim_jobs(conn)
                 await conn.commit()  # Commit claims immediately so they survive crashes

@@ -54,13 +54,15 @@ const LEGAL_CONTENT: Record<LegalLocale, LegalBundle> = {
             'Sicherheit und Missbrauchsabwehr (Art. 6 Abs. 1 lit. f): Rate-Limiting, Session-Schutz, Token-Widerruf, technische Fehleranalyse.',
             'Kommunikation und Support (Art. 6 Abs. 1 lit. b und f): Bearbeitung von Anfragen und Service-Nachrichten.',
             'Anonymisierte Lern- und Verbesserungsprozesse (Art. 6 Abs. 1 lit. a und/oder b): sofern und soweit im jeweiligen Produktmodus vorgesehen.',
+            'Besondere Kategorien personenbezogener Daten (Gesundheitsbezug, Art. 9 DSGVO): Verarbeitung nur bei ausdruecklicher Einwilligung gemaess Art. 9 Abs. 2 lit. a DSGVO.',
             'Erfuellung rechtlicher Pflichten (Art. 6 Abs. 1 lit. c), sofern einschlaegig.',
           ],
         },
         {
           title: '4. Registrierung, Login und Kontofunktionen',
           paragraphs: [
-            'Bei der Registrierung verarbeiten wir E-Mail, Passwort (nur als Hash), optional Anzeigename, Invite-Informationen und ggf. die Zustimmung zur anonymisierten Datennutzung im Early-Access-Kontext.',
+            'Bei der Registrierung verarbeiten wir E-Mail, Passwort (nur als Hash), optional Anzeigename, Invite-Informationen, die explizite Art.-9-Einwilligung fuer gesundheitsbezogene Daten sowie ggf. die Zustimmung zur anonymisierten Datennutzung im Early-Access-Kontext.',
+            'Ohne aktive Art.-9-Einwilligung koennen gesundheitsbezogene Trainings-, Recovery-, Schlaf- und Schmerz-Events nicht gespeichert werden.',
             'Bei Passwort-Reset werden zeitlich begrenzte Reset-Token verwendet (derzeit 60 Minuten gueltig). Beim Zuruecksetzen werden bestehende Sessions/Tokens widerrufen.',
             'Bei Kontoloeschung wird dein Konto zunaechst deaktiviert; die endgueltige Loeschung ist derzeit nach einer Schonfrist von 30 Tagen vorgesehen.',
           ],
@@ -99,15 +101,18 @@ const LEGAL_CONTENT: Record<LegalLocale, LegalBundle> = {
         {
           title: '9. Empfaenger und Auftragsverarbeiter',
           bullets: [
-            'Hosting/Plattform und Datenbankdienste (derzeit u. a. Supabase-Komponenten).',
-            'E-Mail-Zustelldienst (derzeit Resend).',
+            'Supabase (Region EU West / eu-west-1, Projekt-Ref slawzzhovquintrsmfby): Hosting fuer Auth-/Datenbankfunktionen als Auftragsverarbeiter.',
+            'Resend (USA): Versand transaktionaler E-Mails (z. B. Einladungen, Passwort-Reset, Support-Bestaetigungen) als Auftragsverarbeiter.',
+            'OpenAI API (optional, USA): nur falls Embeddings-Funktionen aktiviert sind; Verarbeitung als Auftragsverarbeiter gemaess separatem Vertrag.',
             'Interne Administratoren und Support nur im erforderlichen Umfang (Need-to-know-Prinzip, mit Auditierung).',
+            'Massgeblich ist die versionierte Auftragsverarbeiter-/Drittlandliste in docs/legal/processors-and-transfers.md.',
           ],
         },
         {
           title: '10. Drittlanduebermittlungen',
           paragraphs: [
-            'Soweit Dienstleister Daten ausserhalb des EWR verarbeiten, erfolgt dies nur unter den gesetzlichen Voraussetzungen (z. B. Angemessenheitsbeschluss oder EU-Standardvertragsklauseln).',
+            'Supabase wird produktiv in der EU-Region eu-west-1 betrieben. Fuer Resend (USA) und optional OpenAI (USA) koennen Drittlanduebermittlungen erfolgen.',
+            'Drittlanduebermittlungen erfolgen nur unter den gesetzlichen Voraussetzungen, insbesondere auf Basis von EU-Standardvertragsklauseln (SCC) und Auftragsverarbeitungsvertraegen.',
           ],
         },
         {
@@ -118,7 +123,12 @@ const LEGAL_CONTENT: Record<LegalLocale, LegalBundle> = {
             'Invite-Token: derzeit 7 Tage gueltig.',
             'Passwort-Reset-Token: derzeit 60 Minuten gueltig.',
             'API-Schluessel: bis Widerruf oder Kontoloeschung.',
-            'Log- und Sicherheitsdaten: nur solange erforderlich fuer Sicherheit, Betrieb und Fehleranalyse.',
+            'API-Zugriffslogs (api_access_log): 30 Tage.',
+            'Security-Abuse-Telemetrie (security_abuse_telemetry): 90 Tage.',
+            'Kill-Switch-Audit (security_kill_switch_audit): 365 Tage.',
+            'Support-Zugriffsaudit (support_access_audit): 730 Tage (24 Monate).',
+            'Ablauf-/genutzte Passwort-Reset-Token: 30 Tage.',
+            'Log-Loeschfristen werden technisch ueber einen wiederkehrenden Maintenance-Job durchgesetzt und in log_retention_runs auditiert.',
           ],
         },
         {
@@ -179,6 +189,7 @@ const LEGAL_CONTENT: Record<LegalLocale, LegalBundle> = {
           bullets: [
             'Fuer wesentliche Funktionen ist ein Nutzerkonto erforderlich.',
             'Du musst bei der Registrierung wahrheitsgemaesse Angaben machen und Zugangsdaten vertraulich behandeln.',
+            'Fuer die Verarbeitung gesundheitsbezogener Trainings-/Recoverydaten ist eine ausdrueckliche Einwilligung erforderlich; ohne Einwilligung sind entsprechende Funktionen eingeschraenkt.',
             'Einladungs- oder Zugangsgates koennen je nach Betriebsmodus Voraussetzung fuer die Registrierung sein.',
           ],
         },
@@ -308,13 +319,15 @@ const LEGAL_CONTENT: Record<LegalLocale, LegalBundle> = {
             'Security and abuse prevention (Art. 6(1)(f)): rate limiting, session protection, token revocation, technical troubleshooting.',
             'Communication and support (Art. 6(1)(b) and (f)): handling requests and service communication.',
             'Anonymized learning and product improvement (Art. 6(1)(a) and/or (b)), where applicable for the active product mode.',
+            'Special categories of personal data (health-related, Art. 9 GDPR): processed only with explicit consent under Art. 9(2)(a) GDPR.',
             'Compliance with legal obligations (Art. 6(1)(c)) where required.',
           ],
         },
         {
           title: '4. Registration, login, and account management',
           paragraphs: [
-            'During registration we process email, password (stored only as a hash), optional display name, invite information, and where applicable consent state for anonymized learning in early access.',
+            'During registration we process email, password (stored only as a hash), optional display name, invite information, explicit Art. 9 consent for health-related data, and where applicable consent state for anonymized learning in early access.',
+            'Without active Art. 9 consent, health-related training, recovery, sleep, and pain events cannot be stored.',
             'Password reset uses time-limited reset tokens (currently 60 minutes). Existing sessions/tokens are revoked after password reset.',
             'Account deletion currently follows a 30-day grace period before permanent deletion.',
           ],
@@ -353,15 +366,18 @@ const LEGAL_CONTENT: Record<LegalLocale, LegalBundle> = {
         {
           title: '9. Recipients and processors',
           bullets: [
-            'Hosting/platform and database service providers (currently including Supabase components).',
-            'Email delivery provider (currently Resend).',
+            'Supabase (EU West / eu-west-1, project ref slawzzhovquintrsmfby): hosting of auth/database functions as processor.',
+            'Resend (United States): transactional email delivery (for example invites, password reset, support acknowledgements) as processor.',
+            'OpenAI API (optional, United States): only when embeddings features are enabled; processing under a separate processor agreement.',
             'Internal admin/support staff only where required under least-privilege and audited access.',
+            'Authoritative versioned processor/transfer register: docs/legal/processors-and-transfers.md.',
           ],
         },
         {
           title: '10. International data transfers',
           paragraphs: [
-            'If a provider processes data outside the EEA, transfers occur only under applicable legal safeguards (for example adequacy decisions or EU Standard Contractual Clauses).',
+            'Supabase production runtime is operated in EU region eu-west-1. Resend (US) and optional OpenAI (US) may involve third-country processing.',
+            'Transfers outside the EEA only occur under lawful safeguards, in particular EU Standard Contractual Clauses (SCCs) and data processing agreements.',
           ],
         },
         {
@@ -372,7 +388,12 @@ const LEGAL_CONTENT: Record<LegalLocale, LegalBundle> = {
             'Invite tokens: currently valid for 7 days.',
             'Password reset tokens: currently valid for 60 minutes.',
             'API keys: retained until revoked or account deletion.',
-            'Log and security data: retained only as long as necessary for security, operations, and troubleshooting.',
+            'API access logs (api_access_log): 30 days.',
+            'Security abuse telemetry (security_abuse_telemetry): 90 days.',
+            'Kill-switch audit log (security_kill_switch_audit): 365 days.',
+            'Support access audit (support_access_audit): 730 days (24 months).',
+            'Expired/used password reset tokens: 30 days.',
+            'Retention windows are technically enforced via recurring maintenance jobs and audited in log_retention_runs.',
           ],
         },
         {
@@ -433,6 +454,7 @@ const LEGAL_CONTENT: Record<LegalLocale, LegalBundle> = {
           bullets: [
             'An account is required for core functionality.',
             'You must provide accurate information and keep credentials confidential.',
+            'Explicit consent is required for processing health-related training/recovery data; without consent, related features are restricted.',
             'Invite or access gates may apply depending on the current product mode.',
           ],
         },
@@ -541,4 +563,3 @@ export function getPrivacyContent(locale: string): LegalDocument {
 export function getTermsContent(locale: string): LegalDocument {
   return LEGAL_CONTENT[resolveLegalLocale(locale)].terms;
 }
-
