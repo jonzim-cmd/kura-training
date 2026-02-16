@@ -194,6 +194,10 @@
   gap: var(--space-sm);
 }
 
+.advancedCard {
+  margin-top: var(--space-lg);
+}
+
 /* MCP Coming Soon */
 .mcpCard {
   text-align: left;

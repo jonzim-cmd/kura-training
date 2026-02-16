@@ -242,7 +242,7 @@
     "comingSoon": "Bald verfügbar",
     "mcpReady": {
       "title": "MCP-Integration",
-      "description": "Verbinde deine KI direkt per MCP. Nutze die Werte unten und authentifiziere mit deinem Kura API-Key.",
+      "description": "Verbinde deine KI direkt per MCP. Nutze die Werte unten und waehle den OAuth-Flow (Mit Kura verbinden).",
       "status": "MCP-Endpunkt konfiguriert."
     },
     "claude": {
@@ -254,15 +254,11 @@
         },
         "login": {
           "title": "Authentifizieren",
-          "description": "Melde dich mit deinem Kura-Konto an."
-        },
-        "apiKey": {
-          "title": "API-Schlüssel erstellen",
-          "description": "Erstelle den Schlüssel in den Einstellungen (Kura-Konto erforderlich)."
+          "description": "Verbinde dein Kura-Konto per OAuth (kura login)."
         },
         "configure": {
           "title": "Zu Claude hinzufügen",
-          "description": "Füge Kura als Tool in deinem Claude-Projekt hinzu."
+          "description": "Fuege Kura als Tool hinzu. Die Authentifizierung kommt aus deiner kura-login Sitzung."
         }
       }
     },
@@ -275,15 +271,11 @@
         },
         "login": {
           "title": "Authentifizieren",
-          "description": "Melde dich mit deinem Kura-Konto an."
-        },
-        "apiKey": {
-          "title": "API-Schlüssel erstellen",
-          "description": "Erstelle den Schlüssel in den Einstellungen (Kura-Konto erforderlich)."
+          "description": "Verbinde dein Kura-Konto per OAuth (kura login)."
         },
         "configure": {
           "title": "Zu ChatGPT hinzufügen",
-          "description": "Konfiguriere Kura als benutzerdefiniertes Tool in deinen ChatGPT-Einstellungen."
+          "description": "Konfiguriere Kura als Tool. Die Authentifizierung kommt aus deiner kura-login Sitzung."
         }
       }
     },
@@ -296,15 +288,11 @@
         },
         "login": {
           "title": "Authentifizieren",
-          "description": "Melde dich mit deinem Kura-Konto an."
-        },
-        "apiKey": {
-          "title": "API-Schlüssel erstellen",
-          "description": "Erstelle den Schlüssel in den Einstellungen (Kura-Konto erforderlich)."
+          "description": "Verbinde dein Kura-Konto per OAuth (kura login)."
         },
         "configure": {
           "title": "Zu Gemini hinzufügen",
-          "description": "Konfiguriere Kura als Tool in deinem Gemini-Workspace."
+          "description": "Konfiguriere Kura als Tool. Die Authentifizierung kommt aus deiner kura-login Sitzung."
         }
       }
     },
@@ -314,19 +302,25 @@
       "status": "In Entwicklung. CLI ist aktuell der empfohlene Weg."
     },
     "accountGate": {
-      "title": "Bevor du einen Bearer-Key erstellst",
-      "loggedOutDescription": "API-Schlüssel (Bearer-Token) gibt es nur für angemeldete Kura-Konten. Melde dich zuerst an oder frage Zugang an.",
-      "loggedInDescription": "Du bist angemeldet. Erstelle den API-Schlüssel in den Einstellungen und nutze ihn als Bearer-Token für CLI oder MCP.",
+      "title": "Mit Kura verbinden (empfohlen)",
+      "loggedOutDescription": "Melde dich zuerst bei Kura an. Danach verbindest du deinen Assistenten per OAuth - ohne manuelles Schluessel-Kopieren.",
+      "loggedInDescription": "Du bist angemeldet. Verbinde deinen Assistenten direkt per OAuth ueber Mit Kura verbinden.",
+      "connectButton": "Mit Kura verbinden",
       "keyHintLoggedIn": "Erstelle den API-Schlüssel in den Einstellungen und trage ihn in deinem Agenten ein.",
       "keyHintLoggedOut": "Du brauchst zuerst ein Kura-Konto. Danach erstellst du den API-Schlüssel in den Einstellungen.",
-      "mcpHintLoggedIn": "Nutze deinen API-Schlüssel aus den Einstellungen als Bearer-Token für MCP.",
-      "mcpHintLoggedOut": "Auch für MCP brauchst du einen API-Schlüssel aus einem angemeldeten Kura-Konto."
+      "mcpHintLoggedIn": "Nutze zuerst OAuth (Mit Kura verbinden). API-Schluessel nur, wenn dein Client noch kein OAuth unterstuetzt.",
+      "mcpHintLoggedOut": "Melde dich zuerst an. Danach kannst du OAuth fuer MCP nutzen."
+    },
+    "advanced": {
+      "title": "Experten-Fallback: API-Schluessel",
+      "description": "Nur wenn dein Tool keinen OAuth-Flow anbietet: Setze den API-Schluessel als Umgebungsvariable.",
+      "mcpDescription": "Nur falls dein MCP-Client noch keinen OAuth-Login anbietet: nutze Bearer mit API-Schluessel."
     },
     "mcpFields": {
       "name": "Server-Name",
       "url": "Server-URL",
       "auth": "Authentifizierung",
-      "authValue": "Bearer <API-Schlüssel aus Einstellungen>"
+      "authValue": "OAuth (Mit Kura verbinden)"
     }
   },
   "footer": {

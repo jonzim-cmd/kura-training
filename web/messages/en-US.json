@@ -247,15 +247,11 @@
         },
         "login": {
           "title": "Authenticate",
-          "description": "Log in with your Kura account."
-        },
-        "apiKey": {
-          "title": "Create an API key",
-          "description": "Generate a key in Settings (requires a Kura account)."
+          "description": "Connect your Kura account via OAuth (kura login)."
         },
         "configure": {
           "title": "Add to Claude",
-          "description": "Add Kura as a tool in your Claude project."
+          "description": "Add Kura as a tool. Authentication comes from your kura login session."
         }
       }
     },
@@ -268,15 +264,11 @@
         },
         "login": {
           "title": "Authenticate",
-          "description": "Log in with your Kura account."
-        },
-        "apiKey": {
-          "title": "Create an API key",
-          "description": "Generate a key in Settings (requires a Kura account)."
+          "description": "Connect your Kura account via OAuth (kura login)."
         },
         "configure": {
           "title": "Add to ChatGPT",
-          "description": "Configure Kura as a custom tool in your ChatGPT settings."
+          "description": "Configure Kura as a tool. Authentication comes from your kura login session."
         }
       }
     },
@@ -289,32 +281,34 @@
         },
         "login": {
           "title": "Authenticate",
-          "description": "Log in with your Kura account."
-        },
-        "apiKey": {
-          "title": "Create an API key",
-          "description": "Generate a key in Settings (requires a Kura account)."
+          "description": "Connect your Kura account via OAuth (kura login)."
         },
         "configure": {
           "title": "Add to Gemini",
-          "description": "Configure Kura as a tool in your Gemini workspace."
+          "description": "Configure Kura as a tool. Authentication comes from your kura login session."
         }
       }
     },
     "ready": "Ready",
     "comingSoon": "Coming soon",
     "accountGate": {
-      "title": "Before creating a Bearer key",
-      "loggedOutDescription": "API keys (Bearer tokens) are only available for signed-in Kura accounts. Log in or request access first.",
-      "loggedInDescription": "You are signed in. Create your API key in Settings and use it as a Bearer token for CLI or MCP.",
+      "title": "Connect with Kura (Recommended)",
+      "loggedOutDescription": "Sign in to Kura first. Then connect your assistant via OAuth - no manual key copy required.",
+      "loggedInDescription": "You are signed in. Connect your assistant directly via OAuth with Connect with Kura.",
+      "connectButton": "Connect with Kura",
       "keyHintLoggedIn": "Create the API key in Settings and copy it into your agent setup.",
       "keyHintLoggedOut": "You need a Kura account first. Then create an API key in Settings.",
-      "mcpHintLoggedIn": "Use your Settings API key as the Bearer token for MCP.",
-      "mcpHintLoggedOut": "MCP auth also needs an API key from a signed-in Kura account."
+      "mcpHintLoggedIn": "Use OAuth first (Connect with Kura). Use API keys only if your client still lacks OAuth.",
+      "mcpHintLoggedOut": "Sign in first, then use OAuth for MCP."
+    },
+    "advanced": {
+      "title": "Expert fallback: API key",
+      "description": "Use this only if your tool does not support OAuth yet: set your API key as an environment variable.",
+      "mcpDescription": "Use this only if your MCP client does not support OAuth yet: configure Bearer auth with an API key."
     },
     "mcpReady": {
       "title": "MCP Integration",
-      "description": "Connect your AI directly via MCP. Use the values below and authenticate with your Kura API key.",
+      "description": "Connect your AI directly via MCP. Use the values below and choose OAuth (Connect with Kura).",
       "status": "MCP endpoint configured."
     },
     "mcpComingSoon": {
@@ -326,7 +320,7 @@
       "name": "Server name",
       "url": "Server URL",
       "auth": "Authentication",
-      "authValue": "Bearer <API key from Settings>"
+      "authValue": "OAuth (Connect with Kura)"
     }
   },
   "footer": {

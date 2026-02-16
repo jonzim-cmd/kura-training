@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/routing';
 import { useAuth } from '@/lib/auth-context';
+import { API_URL } from '@/lib/api';
 import { SETUP_SEEN_STORAGE_KEY } from '@/lib/onboarding';
 import styles from './setup.module.css';
 
@@ -13,39 +14,61 @@ const API_KEY_SETTINGS_PATH = '/settings#api-keys';
 const MCP_SERVER_NAME = 'Kura';
 const CONFIGURED_MCP_URL = process.env.NEXT_PUBLIC_KURA_MCP_URL?.trim() ?? '';
 const FALLBACK_MCP_URL = 'https://<dein-mcp-host>/mcp';
+const OAUTH_CONNECT_URL = `${API_URL}/v1/auth/device/verify`;
+const CLI_API_KEY_FALLBACK = 'export KURA_API_KEY=<kura_sk_...>';
 
-const CLI_COMMANDS: Record<AI, Record<string, string>> = {
+const STEP_KEYS = ['install', 'login', 'configure'] as const;
+type CliStep = (typeof STEP_KEYS)[number];
+
+const CLI_COMMANDS: Record<AI, Record<CliStep, string>> = {
   claude: {
     install: 'cargo install kura-cli',
     login: 'kura login',
-    apiKey: API_KEY_SETTINGS_PATH,
     configure: `# Add to your CLAUDE.md or project config:
 # Tool: kura CLI at /path/to/kura
-# API Key: kura_sk_...`,
+# Auth: handled by kura login (OAuth)`,
   },
   chatgpt: {
     install: 'cargo install kura-cli',
     login: 'kura login',
-    apiKey: API_KEY_SETTINGS_PATH,
     configure: `# In ChatGPT settings, add a custom tool:
 # Name: Kura
 # Command: kura
-# API Key: kura_sk_...`,
+# Auth: reuse your local kura login session`,
   },
   gemini: {
     install: 'cargo install kura-cli',
     login: 'kura login',
-    apiKey: API_KEY_SETTINGS_PATH,
     configure: `# In Gemini workspace, add Kura tool:
 # Binary: /path/to/kura
-# API Key: kura_sk_...`,
+# Auth: reuse your local kura login session`,
   },
 };
 
-const STEP_KEYS = ['install', 'login', 'apiKey', 'configure'] as const;
+function getMcpOauthSnippet(ai: AI, mcpUrl: string, oauthConnectUrl: string) {
+  if (ai === 'chatgpt') {
+    return `# ChatGPT MCP setup (OAuth)
+Name: Kura
+URL: ${mcpUrl}
+Auth: OAuth (Connect with Kura)
+If prompted for device verification, open: ${oauthConnectUrl}`;
+  }
+  if (ai === 'claude') {
+    return `# Claude MCP setup (OAuth)
+Name: Kura
+URL: ${mcpUrl}
+Auth: OAuth (Connect with Kura)
+If prompted for device verification, open: ${oauthConnectUrl}`;
+  }
+  return `# Gemini / Other MCP setup (OAuth)
+Name: Kura
+URL: ${mcpUrl}
+Auth: OAuth (Connect with Kura)
+If prompted for device verification, open: ${oauthConnectUrl}`;
+}
 
-function getMcpSnippet(ai: AI, mcpUrl: string) {
-  const base = `{
+function getMcpApiKeyFallbackSnippet(mcpUrl: string) {
+  return `{
   "mcpServers": {
     "kura": {
       "url": "${mcpUrl}",
@@ -55,16 +78,6 @@ function getMcpSnippet(ai: AI, mcpUrl: string) {
     }
   }
 }`;
-
-  if (ai === 'claude') {
-    return base;
-  }
-  if (ai === 'chatgpt') {
-    return `// ChatGPT (Web) -> Developer Mode -> Add MCP connector
-${base}`;
-  }
-  return `// Gemini / Other MCP-compatible clients
-${base}`;
 }
 
 export default function SetupPage() {
@@ -78,7 +91,8 @@ export default function SetupPage() {
   const isLoggedIn = !loading && Boolean(user);
   const isMcpLive = CONFIGURED_MCP_URL.length > 0;
   const mcpUrl = isMcpLive ? CONFIGURED_MCP_URL : FALLBACK_MCP_URL;
-  const mcpSnippet = getMcpSnippet(selectedAI, mcpUrl);
+  const mcpOauthSnippet = getMcpOauthSnippet(selectedAI, mcpUrl, OAUTH_CONNECT_URL);
+  const mcpApiKeyFallbackSnippet = getMcpApiKeyFallbackSnippet(mcpUrl);
 
   const markCopied = (id: string) => {
     setCopiedId(id);
@@ -114,9 +128,19 @@ export default function SetupPage() {
   const renderSetupActions = () => {
     if (isLoggedIn) {
       return (
-        <Link href={API_KEY_SETTINGS_PATH} className="kura-btn kura-btn--ghost">
-          {tn('settings')}
-        </Link>
+        <>
+          <a
+            href={OAUTH_CONNECT_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="kura-btn kura-btn--primary"
+          >
+            {t('accountGate.connectButton')}
+          </a>
+          <Link href={API_KEY_SETTINGS_PATH} className="kura-btn kura-btn--ghost">
+            {tn('settings')}
+          </Link>
+        </>
       );
     }
 
@@ -222,17 +246,33 @@ export default function SetupPage() {
                         {copyLabel(`cli-${selectedAI}-${stepKey}`)}
                       </button>
                     </div>
-                    {stepKey === 'apiKey' && (
-                      <>
-                        <p className={styles.stepHint}>
-                          {isLoggedIn ? t('accountGate.keyHintLoggedIn') : t('accountGate.keyHintLoggedOut')}
-                        </p>
-                        <div className={styles.stepActions}>{renderSetupActions()}</div>
-                      </>
-                    )}
                   </div>
                 </div>
               ))}
+              <div className={`kura-card ${styles.advancedCard}`}>
+                <h3 className={styles.stepTitle}>{t('advanced.title')}</h3>
+                <p className={styles.stepDescription}>{t('advanced.description')}</p>
+                <div className={styles.codeBlock}>
+                  <pre className="kura-code">
+                    <code>{CLI_API_KEY_FALLBACK}</code>
+                  </pre>
+                  <button
+                    type="button"
+                    className="kura-btn kura-btn--ghost"
+                    onClick={() => copyText(CLI_API_KEY_FALLBACK, `cli-apikey-fallback-${selectedAI}`)}
+                  >
+                    {copyLabel(`cli-apikey-fallback-${selectedAI}`)}
+                  </button>
+                </div>
+                <p className={styles.stepHint}>
+                  {isLoggedIn ? t('accountGate.keyHintLoggedIn') : t('accountGate.keyHintLoggedOut')}
+                </p>
+                <div className={styles.stepActions}>
+                  <Link href={API_KEY_SETTINGS_PATH} className="kura-btn kura-btn--ghost">
+                    {tn('settings')}
+                  </Link>
+                </div>
+              </div>
             </div>
           ) : (
             <div className={`kura-card ${styles.mcpCard}`}>
@@ -299,15 +339,32 @@ export default function SetupPage() {
 
               <div className={styles.codeBlock}>
                 <pre className="kura-code">
-                  <code>{mcpSnippet}</code>
+                  <code>{mcpOauthSnippet}</code>
                 </pre>
                 <button
                   type="button"
                   className="kura-btn kura-btn--ghost"
-                  onClick={() => copyText(mcpSnippet, `mcp-snippet-${selectedAI}`)}
+                  onClick={() => copyText(mcpOauthSnippet, `mcp-snippet-${selectedAI}`)}
                 >
                   {copyLabel(`mcp-snippet-${selectedAI}`)}
                 </button>
+              </div>
+
+              <div className={`kura-card ${styles.advancedCard}`}>
+                <h3 className={styles.stepTitle}>{t('advanced.title')}</h3>
+                <p className={styles.stepDescription}>{t('advanced.mcpDescription')}</p>
+                <div className={styles.codeBlock}>
+                  <pre className="kura-code">
+                    <code>{mcpApiKeyFallbackSnippet}</code>
+                  </pre>
+                  <button
+                    type="button"
+                    className="kura-btn kura-btn--ghost"
+                    onClick={() => copyText(mcpApiKeyFallbackSnippet, `mcp-apikey-fallback-${selectedAI}`)}
+                  >
+                    {copyLabel(`mcp-apikey-fallback-${selectedAI}`)}
+                  </button>
+                </div>
               </div>
             </div>
           )}

@@ -242,7 +242,7 @@
     "comingSoon": "近日公開",
     "mcpReady": {
       "title": "MCP統合",
-      "description": "MCPでAIを直接接続できます。以下の値を使い、Kura APIキーで認証してください。",
+      "description": "MCPでAIを直接接続できます。以下の値を使い、OAuth（Connect with Kura）を選択してください。",
       "status": "MCPエンドポイント設定済み。"
     },
     "claude": {
@@ -254,15 +254,11 @@
         },
         "login": {
           "title": "認証",
-          "description": "Kuraアカウントでログインします。"
-        },
-        "apiKey": {
-          "title": "APIキーを作成",
-          "description": "設定でキーを作成します（Kuraアカウントが必要）。"
+          "description": "OAuthでKuraアカウントを接続します（kura login）。"
         },
         "configure": {
           "title": "Claudeに追加",
-          "description": "ClaudeプロジェクトにKuraをツールとして追加します。"
+          "description": "Kuraをツールとして追加します。認証はkura loginセッションを使います。"
         }
       }
     },
@@ -275,15 +271,11 @@
         },
         "login": {
           "title": "認証",
-          "description": "Kuraアカウントでログインします。"
-        },
-        "apiKey": {
-          "title": "APIキーを作成",
-          "description": "設定でキーを作成します（Kuraアカウントが必要）。"
+          "description": "OAuthでKuraアカウントを接続します（kura login）。"
         },
         "configure": {
           "title": "ChatGPTに追加",
-          "description": "ChatGPTの設定でKuraをカスタムツールとして設定します。"
+          "description": "Kuraをツールとして設定します。認証はkura loginセッションを使います。"
         }
       }
     },
@@ -296,26 +288,28 @@
         },
         "login": {
           "title": "認証",
-          "description": "Kuraアカウントでログインします。"
-        },
-        "apiKey": {
-          "title": "APIキーを作成",
-          "description": "設定でキーを作成します（Kuraアカウントが必要）。"
+          "description": "OAuthでKuraアカウントを接続します（kura login）。"
         },
         "configure": {
           "title": "Geminiに追加",
-          "description": "GeminiワークスペースでKuraをツールとして設定します。"
+          "description": "Kuraをツールとして設定します。認証はkura loginセッションを使います。"
         }
       }
     },
     "accountGate": {
-      "title": "Bearerキーを作成する前に",
-      "loggedOutDescription": "APIキー（Bearerトークン）は、Kuraアカウントでログインしている場合のみ作成できます。先にログインするかアクセス申請してください。",
-      "loggedInDescription": "ログイン済みです。設定でAPIキーを作成し、CLIまたはMCPのBearerトークンとして使ってください。",
+      "title": "Connect with Kura（推奨）",
+      "loggedOutDescription": "まずKuraにログインしてください。その後、OAuthでアシスタントを接続できます（手動キー不要）。",
+      "loggedInDescription": "ログイン済みです。Connect with KuraからOAuthで直接接続してください。",
+      "connectButton": "Connect with Kura",
       "keyHintLoggedIn": "設定でAPIキーを作成して、エージェント設定に貼り付けてください。",
       "keyHintLoggedOut": "先にKuraアカウントが必要です。その後、設定でAPIキーを作成してください。",
-      "mcpHintLoggedIn": "設定で作成したAPIキーをMCPのBearerトークンとして使います。",
-      "mcpHintLoggedOut": "MCP認証にも、ログイン済みKuraアカウントのAPIキーが必要です。"
+      "mcpHintLoggedIn": "まずOAuth（Connect with Kura）を使ってください。APIキーはクライアントがOAuth未対応の場合のみ使用します。",
+      "mcpHintLoggedOut": "まずログインしてから、MCPはOAuthで接続してください。"
+    },
+    "advanced": {
+      "title": "上級者向けフォールバック: APIキー",
+      "description": "ツールがまだOAuthに未対応の場合のみ、APIキーを環境変数として設定してください。",
+      "mcpDescription": "MCPクライアントがまだOAuthに未対応の場合のみ、Bearer認証にAPIキーを使ってください."
     },
     "mcpComingSoon": {
       "title": "MCP統合",
@@ -326,7 +320,7 @@
       "name": "サーバー名",
       "url": "サーバーURL",
       "auth": "認証",
-      "authValue": "Bearer <設定で作成したAPIキー>"
+      "authValue": "OAuth（Connect with Kura）"
     }
   },
   "footer": {
