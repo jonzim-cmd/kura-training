@@ -22,7 +22,7 @@
 .directLink {
   display: block;
   text-align: center;
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   margin-bottom: var(--space-lg);
 }
 
@@ -81,7 +81,7 @@
 
 .ctrlBtn {
   font-family: var(--font-display);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   padding: 0.625rem 1.25rem;
   border-radius: 4px;
   border: 1px solid var(--thread);
@@ -115,7 +115,7 @@
 .stepLabel {
   text-align: center;
   margin-bottom: var(--space-lg);
-  font-size: var(--text-base);
+  font-size: var(--text-md);
   color: var(--ink);
 }
 
@@ -608,7 +608,7 @@
 }
 
 .doneHint {
-  font-size: var(--text-base);
+  font-size: var(--text-md);
   color: var(--ink-faint);
 }
 

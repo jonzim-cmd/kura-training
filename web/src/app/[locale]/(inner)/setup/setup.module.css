@@ -27,7 +27,7 @@
 
 .subtitle {
   color: var(--ink-faint);
-  font-size: var(--text-base);
+  font-size: var(--text-md);
 }
 
 /* --- AI Cards --- */
@@ -72,7 +72,7 @@
 
 .aiCardSub {
   font-family: var(--font-mono);
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   color: var(--ink-faint);
 }
 
@@ -101,7 +101,7 @@
 
 .chatgptHint {
   color: var(--ink-faint);
-  font-size: var(--text-base);
+  font-size: var(--text-md);
   margin-bottom: var(--space-lg);
   max-width: 32em;
   margin-left: auto;
@@ -118,7 +118,7 @@
 
 .mcpUrlValue {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   background: rgba(255, 255, 255, 0.04);
   padding: 0.5rem 0.875rem;
   border-radius: 4px;
@@ -163,7 +163,7 @@
 
 .openclawHint {
   color: var(--ink-faint);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   margin-bottom: var(--space-sm);
   padding-left: 2.25rem;
 }
@@ -177,7 +177,7 @@
 
 .codeValue {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   background: rgba(255, 255, 255, 0.04);
   padding: 0.75rem 1rem;
   border-radius: 4px;
@@ -193,7 +193,7 @@
   display: inline-block;
   margin-left: 2.25rem;
   margin-top: var(--space-sm);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
 }
 
 /* --- Expert Section --- */
@@ -207,7 +207,7 @@
   align-items: center;
   gap: var(--space-sm);
   font-family: var(--font-display);
-  font-size: var(--text-base);
+  font-size: var(--text-md);
   color: var(--ink-faint);
   background: none;
   border: none;
@@ -247,7 +247,7 @@
 
 .expertBlockTitle {
   font-family: var(--font-display);
-  font-size: var(--text-base);
+  font-size: var(--text-lg);
   font-weight: 700;
   color: var(--ink);
   margin-bottom: var(--space-xs);
@@ -255,7 +255,7 @@
 
 .expertDescription {
   color: var(--ink-faint);
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
   margin-bottom: var(--space-md);
 }
 
