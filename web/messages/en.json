@@ -313,7 +313,7 @@
       "step2Prompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with kura login. Kura API: https://api.withkura.com"
     },
     "expert": {
-      "toggle": "You use Claude Desktop, Claude Code, Gemini CLI, Codex, or another tool with MCP support?",
+      "toggle": "You use Claude Desktop, Claude Code, Gemini CLI, Codex, or another tool with MCP or CLI support?",
       "mcpTitle": "MCP connection",
       "mcpDescription": "Give this to your AI — it will set up the connection itself:",
       "mcpPrompt": "Connect to my Kura account. MCP server URL: https://api.withkura.com/mcp — Use OAuth for authentication.",
