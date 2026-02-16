@@ -56,8 +56,16 @@ require_env() {
 }
 
 require_env "KURA_DB_PASSWORD" "Generate with: openssl rand -hex 24"
-require_env "KURA_API_KEY" "Run scripts/setup-user.sh and copy the generated key."
 require_env "KURA_AGENT_MODEL_ATTESTATION_SECRET" "Generate with: openssl rand -hex 32"
+
+# KURA_API_KEY is optional on first deploy (proxy skipped until setup-user.sh runs)
+SKIP_PROXY=false
+_api_key="${KURA_API_KEY:-}"
+if [ -z "$_api_key" ] || [ "$_api_key" = "CHANGE_ME" ]; then
+    warn "KURA_API_KEY not set — kura-proxy will be skipped."
+    warn "After deploy, run: ./scripts/setup-user.sh --email you@example.com --name \"Your Name\""
+    SKIP_PROXY=true
+fi
 require_env "KURA_API_DATABASE_URL" "Set Supabase DB URL for API runtime."
 require_env "KURA_WORKER_DATABASE_URL" "Set Supabase DB URL for worker runtime."
 require_env "KURA_WEB_PUBLIC_API_URL" "Set public API base URL for web runtime (e.g. https://api.withkura.com)."
@@ -95,8 +103,12 @@ docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d kura-web
 
 # nginx resolves upstream IPs on startup. Force proxy recreation so it always picks
 # up the latest kura-api container IP after API recreation during deploy/rollback.
-info "Recreating kura-proxy to refresh upstream binding..."
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --force-recreate kura-proxy
+if [ "$SKIP_PROXY" = "false" ]; then
+    info "Recreating kura-proxy to refresh upstream binding..."
+    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --force-recreate kura-proxy
+else
+    info "Skipping kura-proxy (KURA_API_KEY not set). Run setup-user.sh first."
+fi
 
 # ── Wait for healthy ──────────────────────────────────
 

@@ -26,6 +26,8 @@ env/
 .env.local
 .env.*.local
 docker/.env
+docker/.env.production
+docker/.env.production.*.bak
 .secrets/
 
 # Testing

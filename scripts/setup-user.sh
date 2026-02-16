@@ -4,9 +4,11 @@
 # Run this once after initial deployment to create your account.
 # Uses the kura CLI image to run admin commands directly against the database.
 #
+# Connects to KURA_API_DATABASE_URL (Supabase or wherever the API runtime DB is).
+#
 # Prerequisites:
-#   - Kura services running (./scripts/deploy.sh)
-#   - docker/.env.production configured
+#   - Kura API has started at least once (migrations applied)
+#   - docker/.env.production configured with KURA_API_DATABASE_URL
 #
 # Usage:
 #   ./scripts/setup-user.sh --email you@example.com --name "Your Name"
@@ -48,49 +50,36 @@ ENV_FILE="${ROOT_DIR}/docker/.env.production"
 COMPOSE_FILE="${ROOT_DIR}/docker/compose.production.yml"
 
 if [ ! -f "$ENV_FILE" ]; then
-    error "Missing ${ENV_FILE}. Run deploy.sh first."
+    error "Missing ${ENV_FILE}. Copy from .env.production.example and set required secrets."
 fi
 
 # shellcheck disable=SC1090
 source "$ENV_FILE"
-# Resolve postgres container name (compose prefixes with project name)
-PG_CONTAINER=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
-    ps --format '{{.Name}}' kura-postgres 2>/dev/null | head -1)
-PG_HOST="${PG_CONTAINER:-docker-kura-postgres-1}"
-DB_URL="postgresql://kura:${KURA_DB_PASSWORD}@${PG_HOST}:5432/kura"
 
-# Resolve Docker network name
-NETWORK=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
-    config --format json 2>/dev/null | python3 -c "
-import sys,json
-cfg=json.load(sys.stdin)
-nets=cfg.get('networks',{})
-for v in nets.values():
-    if v.get('external'):
-        print(v.get('name','')); break
-" 2>/dev/null)
-NETWORK="${NETWORK:-moltbot_moltbot-internal}"
+# Use the runtime DB URL (same DB the API connects to)
+DB_URL="${KURA_API_DATABASE_URL:?KURA_API_DATABASE_URL must be set in ${ENV_FILE}}"
 
-# CLI image (built by deploy.sh --extract)
+# CLI image (built by deploy.sh or on demand)
 CLI_IMAGE="kura-cli:latest"
 if ! docker image inspect "$CLI_IMAGE" >/dev/null 2>&1; then
     info "Building CLI image..."
     docker build --target cli -t kura-cli:latest -f "${ROOT_DIR}/Dockerfile" "$ROOT_DIR"
 fi
 
-# Helper: run kura CLI in a temporary container on the shared network
+# Helper: run kura CLI in a temporary container
 kura_cli() {
-    docker run --rm --network "$NETWORK" \
+    docker run --rm \
         -e DATABASE_URL="$DB_URL" \
         "$CLI_IMAGE" "$@"
 }
 
-# ── Check services are running ────────────────────────
+# ── Check DB is reachable ─────────────────────────────
 
-info "Checking kura-postgres is reachable..."
-if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T kura-postgres \
-    pg_isready -U kura -d kura >/dev/null 2>&1; then
-    error "kura-postgres is not running. Start with: ./scripts/deploy.sh"
+info "Checking database is reachable..."
+if ! kura_cli health >/dev/null 2>&1; then
+    warn "CLI health check failed — the API may not have run migrations yet."
+    warn "Make sure kura-api has started at least once before running this script."
+    error "Database not reachable at KURA_API_DATABASE_URL."
 fi
 
 # ── Create user ───────────────────────────────────────
@@ -105,15 +94,17 @@ USER_JSON=$(kura_cli admin create-user \
     --display-name "$DISPLAY_NAME" 2>&1) || {
     if echo "$USER_JSON" | grep -q "duplicate key\|already exists\|23505"; then
         warn "User ${EMAIL} already exists."
-        # Get user ID from DB
-        USER_ID=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
-            exec -T kura-postgres psql -U kura -d kura -t -A -c \
-            "SELECT id FROM users WHERE email = '${EMAIL}';")
-        USER_ID=$(echo "$USER_ID" | tr -d '[:space:]')
-        if [ -z "$USER_ID" ]; then
-            error "Could not find existing user ${EMAIL}"
+        # Query user ID via CLI
+        USER_ID=$(kura_cli admin create-user \
+            --email "$EMAIL" \
+            --password "$PASSWORD" \
+            --display-name "$DISPLAY_NAME" 2>&1 | \
+            python3 -c "import sys; print([l for l in sys.stdin if 'user_id' in l or 'id' in l][0])" 2>/dev/null) || true
+        # Fallback: tell user to check manually
+        if [ -z "${USER_ID:-}" ]; then
+            error "User ${EMAIL} already exists. Check the database for the user ID and run:
+  kura admin create-key --user-id <USER_ID> --label agent-primary"
         fi
-        info "Found existing user: ${USER_ID}"
     else
         error "Failed to create user: ${USER_JSON}"
     fi
@@ -155,9 +146,8 @@ echo ""
 info "Add to docker/.env.production:"
 echo ""
 echo "  KURA_API_KEY=${API_KEY}"
-echo "  KURA_AGENT_MODEL_ATTESTATION_SECRET=<shared-secret-from-openssl-rand-hex-32>"
 echo ""
-info "Then restart the proxy:"
+info "Then start (or restart) the proxy:"
 echo ""
 echo "  docker compose --env-file docker/.env.production -f docker/compose.production.yml up -d kura-proxy"
 echo ""
