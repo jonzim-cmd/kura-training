@@ -852,13 +852,10 @@
 
 /* --- Responsive --- */
 @media (max-width: 640px) {
-  /* Let mockup grow vertically — prevent clipping tall modals */
+  /* Mockup above fixed site header (z-index: 100) so content isn't covered */
   .mockup {
-    overflow: visible;
-  }
-
-  .mockupBar {
-    border-radius: 12px 12px 0 0;
+    position: relative;
+    z-index: 101;
   }
 
   .mockupBody {
@@ -888,7 +885,7 @@
   .modalOverlay {
     position: relative;
     inset: auto;
-    min-height: 420px;
+    min-height: auto;
     border-radius: 0 0 12px 12px;
   }
 }

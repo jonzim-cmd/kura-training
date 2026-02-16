@@ -304,7 +304,7 @@ function Step5({ t }: { t: ReturnType<typeof useTranslations> }) {
 function Step6({ t }: { t: ReturnType<typeof useTranslations> }) {
   return (
     <MockupChrome url="chatgpt.com/apps#settings/Advanced">
-      <div className={styles.mockupBody} style={{ minHeight: 480, position: 'relative', background: 'rgba(0,0,0,0.3)' }}>
+      <div className={styles.mockupBody} style={{ minHeight: 600, position: 'relative', background: 'rgba(0,0,0,0.3)' }}>
         <div className={styles.modalOverlay}>
           <div className={styles.modal}>
             <h3 className={styles.modalTitle}>
