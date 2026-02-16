@@ -119,23 +119,64 @@ Für den Launch-Track gilt verbindlich `AUTH_STRATEGY=B` (DB-only Migration), Fu
 **Server:** `moltbot@100.65.100.2` (Tailscale)
 **Docker:** Rootless — `export DOCKER_HOST=unix:///run/user/1000/docker.sock`
 **Source:** `~/kura-training/` (git clone)
+**DB:** Supabase Postgres (Session Pooler, `aws-1-eu-west-1.pooler.supabase.com:5432`)
+**Secrets:** `docker/.env.production` auf dem VPS (NICHT in Git, gitignored)
 
-### Deploy
+### Regulärer Deploy (Standardfall)
 
 ```bash
 ssh moltbot@100.65.100.2
 export DOCKER_HOST=unix:///run/user/1000/docker.sock
 cd ~/kura-training
 git pull origin main
-docker compose -f docker/compose.production.yml --env-file docker/.env.production build
-docker compose -f docker/compose.production.yml --env-file docker/.env.production up -d
+./scripts/deploy.sh            # Build + Migration Drift Check + Start + Health Checks
+./scripts/deploy.sh --extract  # Optional: CLI-Binary für Fred neu extrahieren
 ```
 
-**WICHTIG:** IMMER `--env-file docker/.env.production` — ohne das ist KURA_DB_PASSWORD leer → API panic.
+`deploy.sh` macht alles automatisch:
+1. Preflight: prüft alle required Env-Vars
+2. Build: alle Docker-Images
+3. Migration Drift: vergleicht DB-Schema mit Repo-Migrations
+4. Start: kura-postgres → kura-api → kura-worker → kura-web → kura-proxy
+5. Health: wartet bis alle Services healthy sind
+
+### Ersteinrichtung auf neuem Server
+
+```bash
+# 1. Secrets generieren
+openssl rand -hex 24   # → KURA_DB_PASSWORD
+openssl rand -hex 32   # → KURA_AGENT_MODEL_ATTESTATION_SECRET
+
+# 2. docker/.env.production anlegen (von .env.production.example)
+#    Supabase DB-URLs: Dashboard → Connect → Session Pooler
+#    WICHTIG: Sonderzeichen im DB-Passwort URL-encoden (& → %26, + → %2B)
+#    WICHTIG: EMAIL_FROM muss gequotet sein ("Kura <noreply@...>")
+#    KURA_API_KEY=CHANGE_ME lassen (wird in Schritt 4 gesetzt)
+
+# 3. Erster Deploy (Proxy wird automatisch übersprungen wenn KURA_API_KEY fehlt)
+./scripts/deploy.sh
+
+# 4. User + API Key erzeugen (gegen Supabase DB, nicht lokalen Postgres)
+./scripts/setup-user.sh --email admin@example.com --name "Admin"
+# → gibt kura_sk_... Key aus
+
+# 5. Key eintragen + Proxy starten
+nano docker/.env.production   # KURA_API_KEY=kura_sk_...
+docker compose -f docker/compose.production.yml --env-file docker/.env.production up -d kura-proxy
+```
+
+### Bekannte Pitfalls
+
+- **IMMER `--env-file docker/.env.production`** bei allen compose-Commands — ohne das ist KURA_DB_PASSWORD leer → API panic.
+- **EMAIL_FROM** muss gequotet sein: `EMAIL_FROM="Kura <noreply@withkura.com>"` — sonst bricht `source .env.production` wegen `<>` Redirect-Syntax.
+- **DB-Passwort URL-Encoding**: Sonderzeichen in Supabase-Passwörtern müssen encoded werden (`&` → `%26`, `+` → `%2B`, etc.).
+- **Zombie-Worker**: `ps aux | grep kura` statt `pgrep -f "kura_workers.main"` — das Binary hat einen anderen Prozessnamen.
 
 ### CLI für Fred updaten
 
 ```bash
+./scripts/deploy.sh --extract
+# Oder manuell:
 docker build --target cli -t kura-cli:latest .
 docker create --name kura-cli-extract kura-cli:latest
 docker cp kura-cli-extract:/usr/local/bin/kura ~/moltbot/workspace/bin/kura
@@ -153,7 +194,12 @@ Fred (moltbot-gateway Container) nutzt die CLI:
 ### Verify
 
 ```bash
+# Intern (vom VPS aus)
 docker exec -e KURA_API_URL=http://kura-proxy:8320 -e KURA_NO_AUTH=true moltbot-gateway /workspace/bin/kura health
+
+# Extern (von überall)
+curl https://api.withkura.com/health
+curl -sf https://withkura.com -o /dev/null -w "HTTP %{http_code}\n"
 ```
 
 ## Technische Konfiguration
