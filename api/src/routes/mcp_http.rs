@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
 use axum::body::Bytes;
-use axum::extract::{OriginalUri, Query, State};
+use axum::extract::{OriginalUri, Query, Request, State};
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, HOST, WWW_AUTHENTICATE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
@@ -67,10 +68,63 @@ pub fn router() -> Router<AppState> {
         .route("/mcp/oauth/token", post(oauth_token))
         .route("/oauth/register", post(oauth_register))
         .route("/mcp/oauth/register", post(oauth_register))
+        .layer(axum::middleware::from_fn(log_oauth_http_flow))
 }
 
 async fn mcp_get() -> Response {
     StatusCode::METHOD_NOT_ALLOWED.into_response()
+}
+
+async fn log_oauth_http_flow(req: Request, next: Next) -> Response {
+    let method = req.method().to_string();
+    let path = req.uri().path().to_string();
+    let should_log = is_oauth_observed_path(&path);
+
+    let origin = header_value(req.headers(), "origin");
+    let user_agent = header_value(req.headers(), "user-agent");
+    let forwarded_for = first_header_token(req.headers(), "x-forwarded-for");
+    let content_type = header_value(req.headers(), "content-type");
+    let ac_request_method = header_value(req.headers(), "access-control-request-method");
+    let ac_request_headers = header_value(req.headers(), "access-control-request-headers");
+
+    if should_log {
+        tracing::info!(
+            event = "mcp_oauth_http_request",
+            method = %method,
+            path = %path,
+            origin = ?origin,
+            user_agent = ?user_agent,
+            forwarded_for = ?forwarded_for,
+            content_type = ?content_type,
+            access_control_request_method = ?ac_request_method,
+            access_control_request_headers = ?ac_request_headers,
+            "MCP OAuth HTTP request received"
+        );
+    }
+
+    let response = next.run(req).await;
+
+    if should_log {
+        tracing::info!(
+            event = "mcp_oauth_http_response",
+            method = %method,
+            path = %path,
+            status = response.status().as_u16(),
+            content_type = ?header_value(response.headers(), "content-type"),
+            access_control_allow_origin = ?header_value(response.headers(), "access-control-allow-origin"),
+            access_control_allow_methods = ?header_value(response.headers(), "access-control-allow-methods"),
+            allow = ?header_value(response.headers(), "allow"),
+            "MCP OAuth HTTP response sent"
+        );
+    }
+
+    response
+}
+
+fn is_oauth_observed_path(path: &str) -> bool {
+    path.starts_with("/oauth/")
+        || path.starts_with("/mcp/oauth/")
+        || path.contains("/.well-known/oauth-")
 }
 
 async fn mcp_post(headers: HeaderMap, body: Bytes) -> Response {
