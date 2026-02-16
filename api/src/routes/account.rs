@@ -970,22 +970,24 @@ mod tests {
             db: pool.clone(),
             signup_gate: SignupGate::Open,
         };
+        let requested_email = format!("  New.Email+{}@Test.Example  ", Uuid::now_v7().simple());
+        let expected_email = normalize_email(&requested_email);
         let req = UpdateLoginEmailRequest {
-            new_email: "  New.Email@Test.Example  ".to_string(),
+            new_email: requested_email,
             password: password.to_string(),
         };
 
         let Json(response) = update_login_email(test_auth_user(user_id), State(state), Json(req))
             .await
             .expect("email change should succeed");
-        assert_eq!(response.email, "new.email@test.example");
+        assert_eq!(response.email, expected_email);
 
         let user_email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
             .bind(user_id)
             .fetch_one(&pool)
             .await
             .expect("load updated user email");
-        assert_eq!(user_email, "new.email@test.example");
+        assert_eq!(user_email, expected_email);
 
         let identity_row: (String, String) = sqlx::query_as(
             "SELECT provider_subject, email_norm \
@@ -996,8 +998,8 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("load updated identity");
-        assert_eq!(identity_row.0, "new.email@test.example");
-        assert_eq!(identity_row.1, "new.email@test.example");
+        assert_eq!(identity_row.0, expected_email);
+        assert_eq!(identity_row.1, expected_email);
     }
 
     #[tokio::test]
