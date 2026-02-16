@@ -18,17 +18,27 @@
   --cai-green: #4ade80;
 }
 
-/* --- Direct link --- */
-.directLinkWrap {
+/* --- Intro --- */
+.intro {
   text-align: center;
-  margin-bottom: var(--space-lg);
+  font-size: var(--text-md);
+  color: var(--ink-mid);
+  margin-bottom: var(--space-xl);
+  line-height: 1.6;
 }
 
-.directLink {
-  font-size: var(--text-base);
+.introLink {
+  color: var(--amber);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  font-weight: 500;
 }
 
-/* --- MCP URL Copy (below controls) --- */
+.introLink:hover {
+  color: var(--ink);
+}
+
+/* --- MCP URL Copy --- */
 .mcpCopyWrap {
   display: flex;
   flex-direction: column;
@@ -64,7 +74,7 @@
   align-items: center;
   justify-content: center;
   gap: 0;
-  margin: 0 0 var(--space-lg);
+  margin: 0 0 var(--space-md);
 }
 
 .progressDot {
@@ -108,7 +118,7 @@
   display: flex;
   justify-content: center;
   gap: var(--space-sm);
-  margin-bottom: var(--space-xl);
+  margin-top: var(--space-lg);
 }
 
 .ctrlBtn {
@@ -153,6 +163,12 @@
 
 .stepLabel strong {
   color: var(--ink);
+}
+
+.stepNumber {
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  color: var(--ink-faint);
 }
 
 /* --- Mockup Chrome --- */

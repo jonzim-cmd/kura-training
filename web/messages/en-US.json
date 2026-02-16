@@ -256,6 +256,7 @@
       "openclawSub": "openclaw.ai"
     },
     "claude": {
+      "intro": "Open <link>claude.ai</link> and follow the visual guide below.",
       "step1Label": "Click your profile name at the bottom-left of the sidebar",
       "step2Label": "Click \"Settings\" in the pop-up menu",
       "step3Label": "Click \"Connectors\" in the Settings sidebar",
@@ -314,6 +315,7 @@
       }
     },
     "chatgpt": {
+      "intro": "Open <link>chatgpt.com</link> and follow the visual guide below.",
       "step1Label": "Click \"Apps\" in the sidebar",
       "step2Label": "Click the gear icon at the top-right of the Apps page",
       "step3Label": "Click \"Advanced settings\" in the Apps settings tab",

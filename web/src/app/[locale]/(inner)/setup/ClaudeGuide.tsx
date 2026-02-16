@@ -386,14 +386,35 @@ export function ClaudeGuide() {
 
   return (
     <div className={styles.guide}>
-      {/* Direct link to claude.ai */}
-      <div className={styles.directLinkWrap}>
-        <a href="https://claude.ai" target="_blank" rel="noreferrer" className={styles.directLink}>
-          claude.ai &rarr;
-        </a>
+      {/* Intro with link */}
+      <p className={styles.intro}>
+        {t.rich('intro', {
+          link: (chunks) => (
+            <a href="https://claude.ai" target="_blank" rel="noreferrer" className={styles.introLink}>
+              {chunks}
+            </a>
+          ),
+        })}
+      </p>
+
+      {/* Step description */}
+      <div className={styles.stepLabel}>
+        <span className={styles.stepNumber}>{current + 1}/{TOTAL_STEPS}</span>{' '}
+        <BoldQuoted text={stepLabels[current]} />
       </div>
 
-      {/* Progress dots */}
+      {/* MCP URL copy */}
+      <div className={styles.mcpCopyWrap}>
+        <div className={styles.mcpCopy}>
+          <code className={styles.mcpUrl}>{MCP_URL}</code>
+          <button type="button" className="kura-btn kura-btn--ghost" onClick={copyUrl}>
+            {copied ? tc('copied') : tc('copy')}
+          </button>
+        </div>
+        <div className={styles.mcpHint}>{t('mcpCopyHint')}</div>
+      </div>
+
+      {/* Progress dots — directly above mockup */}
       <div className={styles.progressBar}>
         {Array.from({ length: TOTAL_STEPS }).map((_, i) => (
           <div key={i} style={{ display: 'contents' }}>
@@ -412,28 +433,7 @@ export function ClaudeGuide() {
         ))}
       </div>
 
-      {/* Controls */}
-      <div className={styles.controls}>
-        <button className={styles.ctrlBtn} onClick={() => go(-1)}>
-          &larr; {t('back')}
-        </button>
-        <button className={styles.ctrlBtn} onClick={() => go(1)}>
-          {isLast ? `${t('restart')} \u21BB` : `${t('next')} \u2192`}
-        </button>
-      </div>
-
-      {/* MCP URL copy */}
-      <div className={styles.mcpCopyWrap}>
-        <div className={styles.mcpCopy}>
-          <code className={styles.mcpUrl}>{MCP_URL}</code>
-          <button type="button" className="kura-btn kura-btn--ghost" onClick={copyUrl}>
-            {copied ? tc('copied') : tc('copy')}
-          </button>
-        </div>
-        <div className={styles.mcpHint}>{t('mcpCopyHint')}</div>
-      </div>
-
-      {/* Step content — click or swipe to advance */}
+      {/* Mockup — click or swipe to advance */}
       {STEPS.map((StepComp, i) => (
         <div
           key={i}
@@ -443,12 +443,19 @@ export function ClaudeGuide() {
           onTouchEnd={handleTouchEnd}
           style={{ cursor: 'pointer' }}
         >
-          <div className={styles.stepLabel}>
-            <BoldQuoted text={stepLabels[i]} />
-          </div>
           <StepComp t={t} />
         </div>
       ))}
+
+      {/* Controls — below mockup */}
+      <div className={styles.controls}>
+        <button className={styles.ctrlBtn} onClick={() => go(-1)}>
+          &larr; {t('back')}
+        </button>
+        <button className={styles.ctrlBtn} onClick={() => go(1)}>
+          {isLast ? `${t('restart')} \u21BB` : `${t('next')} \u2192`}
+        </button>
+      </div>
 
       {/* Done message on last step */}
       {isLast && (
