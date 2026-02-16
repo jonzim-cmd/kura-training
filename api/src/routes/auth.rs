@@ -978,12 +978,42 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
+fn oauth_app_name_from_redirect_uri(redirect_uri: &str) -> String {
+    let Some(host) = redirect_host(redirect_uri) else {
+        return "Connected app".to_string();
+    };
+
+    let host_lower = host.to_ascii_lowercase();
+    if host_lower.ends_with("claude.ai") || host_lower.ends_with("anthropic.com") {
+        return "Claude".to_string();
+    }
+    if host_lower.ends_with("chat.openai.com") || host_lower.ends_with("openai.com") {
+        return "ChatGPT".to_string();
+    }
+    if host_lower == "localhost" || host_lower == "127.0.0.1" || host_lower == "::1" {
+        return "Local app".to_string();
+    }
+
+    host.trim_start_matches("www.").to_string()
+}
+
+fn redirect_host(redirect_uri: &str) -> Option<String> {
+    let parsed = url::Url::parse(redirect_uri).ok()?;
+    let host = parsed.host_str()?.trim();
+    if host.is_empty() {
+        return None;
+    }
+    Some(host.to_string())
+}
+
 fn render_login_form(
     client_id: &str,
     redirect_uri: &str,
     code_challenge: &str,
     state: &str,
 ) -> String {
+    let app_name = oauth_app_name_from_redirect_uri(redirect_uri);
+    let app_name_escaped = html_escape(&app_name);
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -992,29 +1022,205 @@ fn render_login_form(
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kura — Authorize</title>
 <style>
-body {{ font-family: system-ui, sans-serif; max-width: 400px; margin: 60px auto; padding: 0 20px; }}
-h1 {{ font-size: 1.4em; }}
-label {{ display: block; margin-top: 12px; font-weight: 500; }}
-input[type="email"], input[type="password"] {{ width: 100%; padding: 8px; margin-top: 4px; box-sizing: border-box; }}
-button {{ margin-top: 20px; padding: 10px 24px; background: #111; color: #fff; border: none; cursor: pointer; font-size: 1em; }}
-.info {{ color: #666; font-size: 0.9em; margin-top: 8px; }}
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;700;900&family=Roboto+Condensed:wght@300;400;500;700&display=swap');
+
+:root {{
+  --paper: #000000;
+  --ink: #D4D0C8;
+  --ink-mid: #9A9690;
+  --ink-faint: #706B65;
+  --thread: rgba(255, 255, 255, 0.08);
+  --amber: #FFE566;
+  --font-display: 'Outfit', sans-serif;
+  --font-body: 'Roboto Condensed', 'Arial Narrow', sans-serif;
+}}
+
+* {{
+  box-sizing: border-box;
+}}
+
+body {{
+  margin: 0;
+  min-height: 100vh;
+  padding: 24px;
+  color: var(--ink);
+  font-family: var(--font-body);
+  background:
+    radial-gradient(1000px 520px at 10% -15%, rgba(255, 229, 102, 0.16), transparent 55%),
+    radial-gradient(900px 420px at 100% 110%, rgba(255, 255, 255, 0.07), transparent 65%),
+    var(--paper);
+  display: grid;
+  place-items: center;
+}}
+
+.card {{
+  width: min(100%, 430px);
+  border: 1px solid var(--thread);
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.88);
+  padding: 26px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.42);
+}}
+
+.brand {{
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+}}
+
+.brandLogo {{
+  width: 34px;
+  height: 34px;
+  display: block;
+}}
+
+.brandWordmark {{
+  color: var(--amber);
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: 0.95rem;
+  letter-spacing: 0.24em;
+}}
+
+.eyebrow {{
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}}
+
+h1 {{
+  margin: 6px 0 8px;
+  font-family: var(--font-display);
+  font-size: 1.65rem;
+  line-height: 1.1;
+}}
+
+.info {{
+  margin: 0 0 18px;
+  color: var(--ink-mid);
+  font-size: 1rem;
+}}
+
+.appTag {{
+  margin: 0 0 16px;
+  padding: 9px 12px;
+  border: 1px solid var(--thread);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}}
+
+.appTagLabel {{
+  color: var(--ink-faint);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}}
+
+.appTagValue {{
+  margin: 0;
+  padding: 2px 0;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 700;
+}}
+
+form {{
+  margin: 0;
+}}
+
+label {{
+  display: block;
+  margin-top: 12px;
+  color: var(--ink-mid);
+  font-size: 0.86rem;
+}}
+
+input[type="email"], input[type="password"] {{
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--thread);
+  background: #050505;
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 1rem;
+}}
+
+input:focus {{
+  outline: none;
+  border-color: var(--amber);
+}}
+
+button {{
+  width: 100%;
+  margin-top: 18px;
+  padding: 11px 14px;
+  border: 1px solid var(--amber);
+  border-radius: 10px;
+  background: var(--amber);
+  color: #000;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}}
+
+button:hover {{
+  filter: brightness(0.96);
+}}
+
+.hint {{
+  margin: 12px 0 0;
+  color: var(--ink-faint);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}}
+
+@media (max-width: 500px) {{
+  body {{ padding: 14px; }}
+  .card {{ border-radius: 12px; padding: 18px; }}
+  h1 {{ font-size: 1.48rem; }}
+}}
 </style>
 </head>
 <body>
-<h1>Authorize {client_id_escaped}</h1>
-<p class="info">Sign in to grant access to your Kura account.</p>
-<form method="POST" action="/v1/auth/authorize">
+<main class="card">
+<div class="brand">
+<img class="brandLogo" src="/oauth/assets/logo-kura-k-gelb.png" alt="Kura logo">
+<span class="brandWordmark">KU<span style="letter-spacing:0.06em;">R</span>A</span>
+</div>
+<p class="eyebrow">Secure Connection</p>
+<h1>Authorize access</h1>
+<p class="info">Sign in to connect <strong>{app_name_escaped}</strong> with your Kura account.</p>
+<div class="appTag">
+  <span class="appTagLabel">App</span>
+  <p class="appTagValue">{app_name_escaped}</p>
+</div>
+<form method="POST" action="/oauth/authorize">
 <input type="hidden" name="client_id" value="{client_id_escaped}">
 <input type="hidden" name="redirect_uri" value="{redirect_uri_escaped}">
 <input type="hidden" name="code_challenge" value="{code_challenge_escaped}">
 <input type="hidden" name="state" value="{state_escaped}">
-<label>Email<input type="email" name="email" required autofocus></label>
-<label>Password<input type="password" name="password" required></label>
-<button type="submit">Authorize</button>
+<label>Email<input type="email" name="email" autocomplete="email" required autofocus></label>
+<label>Password<input type="password" name="password" autocomplete="current-password" required></label>
+<button type="submit">Continue</button>
 </form>
+<p class="hint">Only your Kura sign-in is used here. This app never sees your password.</p>
+</main>
 </body>
 </html>"#,
         client_id_escaped = html_escape(client_id),
+        app_name_escaped = app_name_escaped,
         redirect_uri_escaped = html_escape(redirect_uri),
         code_challenge_escaped = html_escape(code_challenge),
         state_escaped = html_escape(state),
@@ -2672,8 +2878,9 @@ mod tests {
         device_token, ensure_social_signup_allowed, exchange_authorization_code,
         extract_supabase_identity, forgot_password, generate_user_code,
         is_supported_social_provider, is_valid_loopback_redirect, issue_tokens, normalize_email,
-        normalize_user_code, oidc_email_verified, reactivate_account, refresh_tokens,
-        reset_password, validate_invite_email_binding, validate_oauth_client,
+        normalize_user_code, oauth_app_name_from_redirect_uri, oidc_email_verified,
+        reactivate_account, refresh_tokens, reset_password, validate_invite_email_binding,
+        validate_oauth_client,
     };
     use crate::state::{AppState, SignupGate};
     use axum::{Json, extract::State};
@@ -2700,6 +2907,26 @@ mod tests {
             "https://127.0.0.1:3000/callback"
         ));
         assert!(!is_valid_loopback_redirect("http://127.0.0.1:3000/wrong"));
+    }
+
+    #[test]
+    fn oauth_app_name_detects_known_hosts() {
+        assert_eq!(
+            oauth_app_name_from_redirect_uri("https://chat.openai.com/aip/callback"),
+            "ChatGPT"
+        );
+        assert_eq!(
+            oauth_app_name_from_redirect_uri("https://claude.ai/api/mcp/auth_callback"),
+            "Claude"
+        );
+    }
+
+    #[test]
+    fn oauth_app_name_hides_generated_client_ids_when_redirect_missing() {
+        assert_eq!(
+            oauth_app_name_from_redirect_uri("not-a-valid-url"),
+            "Connected app"
+        );
     }
 
     #[test]
