@@ -1,5 +1,7 @@
 # Supabase Baseline Report - 2026-02-15
 
+Last updated: 2026-02-16
+
 ## Project
 
 - Project ref: `slawzzhovquintrsmfby`
@@ -51,17 +53,19 @@ Additional required fix during rollout:
 
 ## Organization Billing Status
 
-Observed via Management API on 2026-02-15:
+Observed via Management API on 2026-02-16:
 
 - Organization: `gnimangxbapltvkrwjem` (`JZ`)
-- Organization plan: `free`
+- Organization plan: `pro`
 - Allowed release channels: `ga`, `preview`
 
 ## Addon Inventory (Management API)
 
 `GET /v1/projects/{ref}/billing/addons` returned:
 
-- `selected_addons = []`
+- `selected_addons` includes:
+  - `compute_instance = ci_small` (Small)
+  - `pitr = pitr_7` (7 days retention)
 - `available_addons` includes:
   - `compute_instance` variants (`ci_micro` ... `ci_48xlarge_*`)
   - `pitr` variants (`pitr_7`, `pitr_14`, `pitr_28`)
@@ -70,18 +74,24 @@ Observed via Management API on 2026-02-15:
 
 ## Backup / PITR Status
 
-`supabase backups list --project-ref slawzzhovquintrsmfby` (2026-02-15):
+`supabase backups list --project-ref slawzzhovquintrsmfby` (2026-02-16):
 
 - `region = eu-west-1`
 - `walg_enabled = true`
-- `pitr_enabled = false`
+- `pitr_enabled = true`
 - `backups = []` at query time
+- `physical_backup_data` present with earliest/latest backup unix timestamps
 
-PITR enablement attempt (2026-02-15):
+PITR activation sequence:
 
-- request: `PATCH /v1/projects/slawzzhovquintrsmfby/billing/addons` with `{"addon_type":"pitr","addon_variant":"pitr_7"}`
-- response: `400`
-- message: `Organization is not entitled to the selected PITR duration.`
+1. Initial PITR request returned `400`: `To enable PITR, you need to at least be on a small compute addon.`
+2. Compute add-on updated to `ci_small` (`200`).
+3. PITR add-on `pitr_7` applied successfully (`200`) after resize/cooldown.
+4. Verification now reports `pitr_enabled = true`.
+
+Restore drill evidence:
+
+- `docs/reports/supabase-pitr-restore-drill-2026-02-16.md`
 
 ## Spend Guardrails API Coverage
 
@@ -100,13 +110,12 @@ Probed org-level billing paths (2026-02-15) all returned `404`:
 
 ## Guardrail Gate Status
 
-1. PITR gate (`pitr_enabled=true`): **FAIL** (`false`).
-2. Spend alerts 50/80/95 + monthly hard cap configured: **FAIL** (not available in current org state / not configured).
-3. Billing-plan readiness for paid guardrails: **FAIL** (organization plan is `free`).
+1. PITR gate (`pitr_enabled=true`): **PASS** (`true`, `pitr_7` selected).
+2. Spend alerts 50/80/95 + monthly hard cap configured: **FAIL** (manual dashboard configuration still pending).
+3. Billing-plan readiness for paid guardrails: **PASS** (organization plan is `pro`).
 
 ## Required Manual Actions Before Public Launch
 
-1. Upgrade organization plan from `free` to a paid plan that entitles PITR and spend controls.
-2. Configure spend alerts at 50%, 80%, 95% and set monthly hard cap in Supabase dashboard/billing.
-3. Re-run PITR enablement check until `pitr_enabled=true`.
-4. Run PITR restore drill and attach evidence to rollout report.
+1. Configure spend alerts at 50%, 80%, 95% and set monthly hard cap in Supabase dashboard/billing.
+2. Record spend-guardrail values in this baseline report once configured.
+3. Keep periodic PITR restore drills and attach evidence reports.

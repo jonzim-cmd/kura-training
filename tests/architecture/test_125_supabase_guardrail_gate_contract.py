@@ -15,6 +15,7 @@ def test_baseline_report_captures_billing_plan_and_guardrail_status() -> None:
     assert "Organization Billing Status" in src
     assert "Organization plan" in src
     assert "Backup / PITR Status" in src
+    assert "pitr_enabled = true" in src
     assert "Spend Guardrails API Coverage" in src
     assert "Required Manual Actions Before Public Launch" in src
 
@@ -32,7 +33,6 @@ def test_dry_run_report_links_guardrail_blockers_to_baseline() -> None:
     src = DRY_RUN_REPORT.read_text(encoding="utf-8")
 
     assert "Remaining Launch Blockers" in src
-    assert "pitr_enabled=false" in src
-    assert "billing plan" in src
-    assert "`free`" in src
+    assert "Spend alerts + monthly hard cap are not configured yet." in src
+    assert "supabase-pitr-restore-drill-2026-02-16.md" in src
     assert "supabase-pro-baseline-2026-02-15.md" in src

@@ -85,7 +85,6 @@ A full source-to-target migration was executed from VPS Postgres to Supabase, fo
 
 ## Remaining Launch Blockers
 
-1. Organization billing plan is still `free` (paid guardrails not yet available).
-2. PITR remains disabled (`pitr_enabled=false`).
-3. Spend alerts + monthly hard cap are not configured.
-4. See baseline details: `docs/reports/supabase-pro-baseline-2026-02-15.md`.
+1. Spend alerts + monthly hard cap are not configured yet.
+2. PITR is now enabled and restore drill evidence is documented at `docs/reports/supabase-pitr-restore-drill-2026-02-16.md`.
+3. See current baseline details: `docs/reports/supabase-pro-baseline-2026-02-15.md`.
