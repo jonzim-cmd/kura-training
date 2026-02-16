@@ -52,8 +52,17 @@ END
 $$;
 
 -- Supabase linter: function_search_path_mutable
-ALTER FUNCTION IF EXISTS public.fn_enqueue_event_job() SET search_path = public, pg_temp;
-ALTER FUNCTION IF EXISTS public.delete_user_account(UUID) SET search_path = public, pg_temp;
+DO $$
+BEGIN
+    IF to_regprocedure('public.fn_enqueue_event_job()') IS NOT NULL THEN
+        EXECUTE 'ALTER FUNCTION public.fn_enqueue_event_job() SET search_path = public, pg_temp';
+    END IF;
+
+    IF to_regprocedure('public.delete_user_account(uuid)') IS NOT NULL THEN
+        EXECUTE 'ALTER FUNCTION public.delete_user_account(uuid) SET search_path = public, pg_temp';
+    END IF;
+END
+$$;
 
 -- Supabase linter: unindexed_foreign_keys
 CREATE INDEX IF NOT EXISTS idx_access_requests_invite_token_id ON access_requests (invite_token_id);
