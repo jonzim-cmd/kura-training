@@ -403,16 +403,18 @@ export function ClaudeGuide() {
         <BoldQuoted text={stepLabels[current]} />
       </div>
 
-      {/* MCP URL copy */}
-      <div className={styles.mcpCopyWrap}>
-        <div className={styles.mcpCopy}>
-          <code className={styles.mcpUrl}>{MCP_URL}</code>
-          <button type="button" className="kura-btn kura-btn--ghost" onClick={copyUrl}>
-            {copied ? tc('copied') : tc('copy')}
-          </button>
+      {/* MCP URL copy — only on step 5 */}
+      {current === 4 && (
+        <div className={styles.mcpCopyWrap}>
+          <div className={styles.mcpCopy}>
+            <code className={styles.mcpUrl}>{MCP_URL}</code>
+            <button type="button" className="kura-btn kura-btn--ghost" onClick={copyUrl}>
+              {copied ? tc('copied') : tc('copy')}
+            </button>
+          </div>
+          <div className={styles.mcpHint}>{t('mcpCopyHint')}</div>
         </div>
-        <div className={styles.mcpHint}>{t('mcpCopyHint')}</div>
-      </div>
+      )}
 
       {/* Progress dots — directly above mockup */}
       <div className={styles.progressBar}>
