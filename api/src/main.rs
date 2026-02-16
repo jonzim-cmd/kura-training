@@ -49,6 +49,9 @@ mod state;
         routes::auth::authorize_form,
         routes::auth::authorize_submit,
         routes::auth::token,
+        routes::auth::forgot_password,
+        routes::auth::reset_password,
+        routes::auth::reactivate_account,
         routes::auth::device_authorize,
         routes::auth::device_verify_form,
         routes::auth::device_verify_submit,
@@ -86,6 +89,8 @@ mod state;
     components(schemas(
         HealthResponse,
         routes::account::AccountDeletedResponse,
+        routes::account::DeleteOwnAccountRequest,
+        routes::account::AccountDeletionScheduledResponse,
         routes::account::AnalysisSubjectResponse,
         routes::account::SupportReidentifyRequest,
         routes::account::SupportReidentifyResponse,
@@ -150,6 +155,11 @@ mod state;
         routes::provider_connections::ProviderConnectionResponse,
         routes::auth::RegisterRequest,
         routes::auth::RegisterResponse,
+        routes::auth::ForgotPasswordRequest,
+        routes::auth::ForgotPasswordResponse,
+        routes::auth::ResetPasswordRequest,
+        routes::auth::ResetPasswordResponse,
+        routes::auth::ReactivateAccountRequest,
         routes::auth::TokenRequest,
         routes::auth::TokenResponse,
         routes::auth::DeviceAuthorizeRequest,
@@ -325,6 +335,13 @@ async fn main() {
         .merge(routes::auth::device_router().layer(middleware::rate_limit::token_layer()))
         .merge(routes::auth::oidc_router().layer(middleware::rate_limit::authorize_layer()))
         .merge(routes::auth::email_login_router().layer(middleware::rate_limit::authorize_layer()))
+        .merge(
+            routes::auth::password_reset_router().layer(middleware::rate_limit::authorize_layer()),
+        )
+        .merge(
+            routes::auth::reactivate_account_router()
+                .layer(middleware::rate_limit::authorize_layer()),
+        )
         .merge(routes::auth::me_router())
         .merge(routes::invite::public_router().layer(middleware::rate_limit::register_layer()))
         .merge(routes::account::self_router())

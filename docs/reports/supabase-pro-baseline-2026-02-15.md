@@ -93,7 +93,7 @@ Restore drill evidence:
 
 - `docs/reports/supabase-pitr-restore-drill-2026-02-16.md`
 
-## Spend Guardrails API Coverage
+## Spend Guardrails API Coverage + Dashboard Evidence
 
 Management API v1 currently exposes project billing add-ons, but no documented spend-alert / monthly hard-cap endpoints.
 
@@ -108,14 +108,20 @@ Probed org-level billing paths (2026-02-15) all returned `404`:
 - `/v1/organizations/{slug}/billing/alerts`
 - `/v1/organizations/{slug}/billing/usage`
 
+Dashboard configuration (verified 2026-02-16):
+
+- Spend alerts: `50%`, `80%`, `95%` monthly budget thresholds.
+- Monthly hard cap: configured in Supabase Billing dashboard (value managed operationally, not committed in repo).
+- Owner: `jonzim-cmd`
+- Escalation: `jonzim-cmd` -> launch room -> rollback owner (`jonzim-cmd`)
+
 ## Guardrail Gate Status
 
 1. PITR gate (`pitr_enabled=true`): **PASS** (`true`, `pitr_7` selected).
-2. Spend alerts 50/80/95 + monthly hard cap configured: **FAIL** (manual dashboard configuration still pending).
+2. Spend alerts 50/80/95 + monthly hard cap configured: **PASS** (dashboard configuration verified 2026-02-16).
 3. Billing-plan readiness for paid guardrails: **PASS** (organization plan is `pro`).
 
 ## Required Manual Actions Before Public Launch
 
-1. Configure spend alerts at 50%, 80%, 95% and set monthly hard cap in Supabase dashboard/billing.
-2. Record spend-guardrail values in this baseline report once configured.
-3. Keep periodic PITR restore drills and attach evidence reports.
+1. Keep periodic PITR restore drills and attach evidence reports.
+2. Re-validate spend-alert thresholds and hard-cap settings monthly or after billing-owner changes.

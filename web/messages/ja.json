@@ -152,7 +152,21 @@
     "creating": "アカウント作成中...",
     "requestAccessLink": "アクセスをリクエスト",
     "passwordMismatch": "パスワードが一致しません",
-    "passwordTooShort": "パスワードは8文字以上必要です"
+    "passwordTooShort": "パスワードは8文字以上必要です",
+    "forgotPasswordTitle": "パスワードをリセット",
+    "forgotPasswordSubtitle": "メールアドレスを入力してください。アカウントが存在する場合、リセットリンクを送信します。",
+    "forgotPasswordButton": "リセットリンクを送信",
+    "forgotPasswordSubmitting": "送信中...",
+    "forgotPasswordSuccess": "アカウントが存在する場合、リセットメールを送信しました。",
+    "forgotPasswordError": "リセットメールを送信できませんでした。もう一度お試しください。",
+    "resetPasswordTitle": "新しいパスワードを設定",
+    "resetPasswordSubtitle": "アカウントの新しいパスワードを設定してください。",
+    "resetPasswordButton": "新しいパスワードを保存",
+    "resetPasswordSubmitting": "保存中...",
+    "resetPasswordSuccess": "パスワードを更新しました。ログインできます。",
+    "resetPasswordMissingToken": "リセットトークンがありません。メール内のリンクを開き直してください。",
+    "resetPasswordError": "パスワードをリセットできませんでした。新しいリンクをリクエストしてください。",
+    "backToLogin": "ログインに戻る"
   },
   "settings": {
     "title": "設定",
@@ -200,9 +214,11 @@
     "danger": {
       "title": "アカウント削除",
       "deleteAccount": "アカウント削除",
-      "deleteDescription": "アカウントとすべての関連データを完全に削除します。この操作は取り消せません。",
+      "deleteDescription": "アカウントはすぐに無効化されます。完全削除は30日後に実行されます。",
       "deleteConfirm": "削除を確認するためにメールアドレスを入力してください",
-      "deleteButton": "アカウントを完全に削除"
+      "deletePassword": "確認のためパスワードを入力してください",
+      "deleteButton": "アカウントを無効化して削除予約",
+      "deleteError": "アカウント削除を予約できませんでした。もう一度お試しください。"
     }
   },
   "setup": {

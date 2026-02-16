@@ -152,7 +152,21 @@
     "creating": "Creating account...",
     "requestAccessLink": "Request access",
     "passwordMismatch": "Passwords do not match",
-    "passwordTooShort": "Password must be at least 8 characters"
+    "passwordTooShort": "Password must be at least 8 characters",
+    "forgotPasswordTitle": "Reset password",
+    "forgotPasswordSubtitle": "Enter your email and we'll send you a reset link if the account exists.",
+    "forgotPasswordButton": "Send reset link",
+    "forgotPasswordSubmitting": "Sending...",
+    "forgotPasswordSuccess": "If an account exists, we've sent a reset email.",
+    "forgotPasswordError": "Could not send reset email. Please try again.",
+    "resetPasswordTitle": "Choose a new password",
+    "resetPasswordSubtitle": "Set a new password for your account.",
+    "resetPasswordButton": "Set new password",
+    "resetPasswordSubmitting": "Saving...",
+    "resetPasswordSuccess": "Password updated. You can now log in.",
+    "resetPasswordMissingToken": "Reset token missing. Open the link from your email again.",
+    "resetPasswordError": "Could not reset password. Request a new reset link.",
+    "backToLogin": "Back to login"
   },
   "settings": {
     "title": "Settings",
@@ -200,9 +214,11 @@
     "danger": {
       "title": "Delete account",
       "deleteAccount": "Delete account",
-      "deleteDescription": "Permanently delete your account and all associated data. This action cannot be undone.",
+      "deleteDescription": "Deactivate your account now. Permanent deletion happens after a 30-day grace period.",
       "deleteConfirm": "Type your email to confirm deletion",
-      "deleteButton": "Delete my account permanently"
+      "deletePassword": "Enter your password to confirm",
+      "deleteButton": "Deactivate account and schedule deletion",
+      "deleteError": "Could not schedule account deletion. Please try again."
     }
   },
   "setup": {

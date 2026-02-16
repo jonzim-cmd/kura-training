@@ -244,8 +244,12 @@ async fn authenticate_api_key(
     let token_hash = kura_core::auth::hash_token(token);
 
     let row = sqlx::query_as::<_, ApiKeyRow>(
-        "SELECT id, user_id, scopes, expires_at FROM api_keys \
-         WHERE key_hash = $1 AND is_revoked = FALSE",
+        "SELECT ak.id, ak.user_id, ak.scopes, ak.expires_at \
+         FROM api_keys ak \
+         JOIN users u ON u.id = ak.user_id \
+         WHERE ak.key_hash = $1 \
+           AND ak.is_revoked = FALSE \
+           AND u.is_active = TRUE",
     )
     .bind(&token_hash)
     .fetch_optional(pool)
@@ -289,8 +293,12 @@ async fn authenticate_access_token(
     let token_hash = kura_core::auth::hash_token(token);
 
     let row = sqlx::query_as::<_, AccessTokenRow>(
-        "SELECT id, user_id, client_id, scopes, expires_at FROM oauth_access_tokens \
-         WHERE token_hash = $1 AND is_revoked = FALSE",
+        "SELECT oat.id, oat.user_id, oat.client_id, oat.scopes, oat.expires_at \
+         FROM oauth_access_tokens oat \
+         JOIN users u ON u.id = oat.user_id \
+         WHERE oat.token_hash = $1 \
+           AND oat.is_revoked = FALSE \
+           AND u.is_active = TRUE",
     )
     .bind(&token_hash)
     .fetch_optional(pool)

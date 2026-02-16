@@ -85,6 +85,6 @@ A full source-to-target migration was executed from VPS Postgres to Supabase, fo
 
 ## Remaining Launch Blockers
 
-1. Spend alerts + monthly hard cap are not configured yet.
-2. PITR is now enabled and restore drill evidence is documented at `docs/reports/supabase-pitr-restore-drill-2026-02-16.md`.
+1. Spend alerts (50/80/95) + monthly hard cap were configured in dashboard on 2026-02-16.
+2. PITR is enabled and restore drill evidence is documented at `docs/reports/supabase-pitr-restore-drill-2026-02-16.md`.
 3. See current baseline details: `docs/reports/supabase-pro-baseline-2026-02-15.md`.

@@ -147,7 +147,7 @@ Evidence report: `docs/reports/supabase-monitoring-drill-2026-02-15.md`
 | Data integrity | key table spot checks unchanged | `users/events/projections/oauth_clients/user_identities/api_keys` parity | PASS |
 | Auth compatibility | Strategy B auth tests pass | `cargo test -p kura-api routes::auth::tests` 15/15 pass | PASS |
 | PITR gate | `pitr_enabled=true` | `pitr_enabled=true` with `pitr_7` + restore drill 2026-02-16 (`6s`) | PASS |
-| Spend guardrail gate | alerts 50/80/95 + hard cap configured | pending manual dashboard setup (see baseline report) | NO-GO |
+| Spend guardrail gate | alerts 50/80/95 + hard cap configured | dashboard configuration verified on 2026-02-16 (see baseline report) | PASS |
 
 ## 13. 24h Post-Cutover Checklist
 
@@ -174,5 +174,5 @@ Cutover complete:
 
 ## 15. Current Launch Blockers
 
-1. Spend-alert thresholds and monthly hard cap are not yet configured in dashboard.
-2. Document final spend-guardrail values in baseline before public launch sign-off.
+1. None in this Supabase cutover track: PITR and spend guardrail gates are both `PASS` as of 2026-02-16.
+2. Keep monthly billing-guardrail review (alerts/hard-cap) under the owner/escalation policy in section 10.

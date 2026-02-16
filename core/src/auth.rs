@@ -32,6 +32,15 @@ pub fn generate_refresh_token() -> (String, String) {
     (full_token, hash)
 }
 
+/// Generate a password reset token. Returns `(full_token, sha256_hash)`.
+/// Format: `kura_rst_` + 32 random bytes hex-encoded.
+pub fn generate_password_reset_token() -> (String, String) {
+    let raw = random_hex(32);
+    let full_token = format!("kura_rst_{raw}");
+    let hash = hash_token(&full_token);
+    (full_token, hash)
+}
+
 /// Generate an authorization code. Returns `(code, sha256_hash)`.
 /// 32 random bytes hex-encoded (no prefix).
 pub fn generate_auth_code() -> (String, String) {
@@ -120,6 +129,13 @@ mod tests {
     fn refresh_token_roundtrip() {
         let (token, hash) = generate_refresh_token();
         assert!(token.starts_with("kura_rt_"));
+        assert_eq!(hash, hash_token(&token));
+    }
+
+    #[test]
+    fn password_reset_token_roundtrip() {
+        let (token, hash) = generate_password_reset_token();
+        assert!(token.starts_with("kura_rst_"));
         assert_eq!(hash, hash_token(&token));
     }
 

@@ -82,6 +82,12 @@ export default function LoginPage() {
             />
           </div>
 
+          <div className={styles.formFooter}>
+            <Link href="/forgot-password" className={styles.forgotLink}>
+              {t('forgotPassword')}
+            </Link>
+          </div>
+
           <button
             type="submit"
             className="kura-btn kura-btn--primary"

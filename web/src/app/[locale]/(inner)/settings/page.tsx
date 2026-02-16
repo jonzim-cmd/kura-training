@@ -32,7 +32,9 @@ export default function SettingsPage() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newlyCreatedKey, setNewlyCreatedKey] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState('');
+  const [deletePassword, setDeletePassword] = useState('');
   const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [activeSection, setActiveSection] = useState<SectionId>('account');
 
@@ -89,13 +91,24 @@ export default function SettingsPage() {
   };
 
   const handleDeleteAccount = async () => {
-    if (!token || deleteConfirm !== user.email) return;
+    if (!token || deleteConfirm !== user.email || !deletePassword) return;
+    setDeleteError(null);
     setDeleting(true);
     try {
-      const res = await apiAuth('/v1/account', token, { method: 'DELETE' });
+      const res = await apiAuth('/v1/account', token, {
+        method: 'DELETE',
+        body: JSON.stringify({
+          password: deletePassword,
+          confirm_email: user.email,
+        }),
+      });
       if (res.ok) {
+        setDeletePassword('');
         logout();
-        router.push('/');
+        router.push('/login');
+      } else {
+        const body = await res.json().catch(() => null);
+        setDeleteError(body?.message || body?.error || t('danger.deleteError'));
       }
     } finally {
       setDeleting(false);
@@ -369,9 +382,22 @@ export default function SettingsPage() {
                       onChange={(e) => setDeleteConfirm(e.target.value)}
                     />
                   </div>
+                  <div className={styles.field}>
+                    <label htmlFor="deletePassword" className="kura-label">
+                      {t('danger.deletePassword')}
+                    </label>
+                    <input
+                      id="deletePassword"
+                      type="password"
+                      className="kura-input"
+                      value={deletePassword}
+                      onChange={(e) => setDeletePassword(e.target.value)}
+                    />
+                  </div>
+                  {deleteError && <p className={styles.settingHint}>{deleteError}</p>}
                   <button
                     className="kura-btn kura-btn--danger"
-                    disabled={deleteConfirm !== user.email || deleting}
+                    disabled={deleteConfirm !== user.email || !deletePassword || deleting}
                     onClick={handleDeleteAccount}
                   >
                     {deleting ? tc('loading') : t('danger.deleteButton')}

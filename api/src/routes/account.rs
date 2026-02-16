@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -14,11 +14,27 @@ use crate::error::AppError;
 use crate::privacy::get_or_create_analysis_subject_id;
 use crate::state::AppState;
 
+const ACCOUNT_DELETION_GRACE_DAYS: i64 = 30;
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct AccountDeletedResponse {
     pub message: String,
     pub events_deleted: i64,
     pub projections_deleted: i64,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct DeleteOwnAccountRequest {
+    pub password: String,
+    #[serde(default)]
+    pub confirm_email: Option<String>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct AccountDeletionScheduledResponse {
+    pub message: String,
+    pub deletion_scheduled_for: DateTime<Utc>,
+    pub grace_period_days: i64,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -49,12 +65,14 @@ pub struct SupportReidentifyResponse {
     pub audited_at: DateTime<Utc>,
 }
 
-/// DELETE /v1/account — delete your own account and all data
+/// DELETE /v1/account — schedule deletion of your own account (30-day grace)
 #[utoipa::path(
     delete,
     path = "/v1/account",
+    request_body = DeleteOwnAccountRequest,
     responses(
-        (status = 200, description = "Account and all data permanently deleted", body = AccountDeletedResponse),
+        (status = 200, description = "Account deletion scheduled (30-day grace)", body = AccountDeletionScheduledResponse),
+        (status = 400, description = "Validation error", body = kura_core::error::ApiError),
         (status = 401, description = "Not authenticated"),
     ),
     security(("bearer_auth" = []))
@@ -62,9 +80,150 @@ pub struct SupportReidentifyResponse {
 pub async fn delete_own_account(
     user: AuthenticatedUser,
     state: axum::extract::State<AppState>,
-) -> Result<Json<AccountDeletedResponse>, AppError> {
-    let result = execute_account_deletion(&state.db, user.user_id).await?;
-    Ok(Json(result))
+    Json(req): Json<DeleteOwnAccountRequest>,
+) -> Result<Json<AccountDeletionScheduledResponse>, AppError> {
+    if req.password.is_empty() {
+        return Err(AppError::Validation {
+            message: "password must not be empty".to_string(),
+            field: Some("password".to_string()),
+            received: None,
+            docs_hint: None,
+        });
+    }
+
+    let mut tx = state.db.begin().await.map_err(AppError::Database)?;
+    let row = sqlx::query_as::<_, AccountCredentialRow>(
+        "SELECT email, password_hash, is_active, deletion_scheduled_for \
+         FROM users \
+         WHERE id = $1 \
+         FOR UPDATE",
+    )
+    .bind(user.user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::Unauthorized {
+        message: "Account not found".to_string(),
+        docs_hint: None,
+    })?;
+
+    if let Some(confirm_email) = req.confirm_email.as_deref() {
+        let expected = normalize_email(&row.email);
+        let provided = normalize_email(confirm_email);
+        if !provided.is_empty() && provided != expected {
+            return Err(AppError::Validation {
+                message: "confirm_email does not match your account email".to_string(),
+                field: Some("confirm_email".to_string()),
+                received: None,
+                docs_hint: Some("Provide your account email exactly.".to_string()),
+            });
+        }
+    }
+
+    let valid =
+        auth::verify_password(&req.password, &row.password_hash).map_err(AppError::Internal)?;
+    if !valid {
+        return Err(AppError::Unauthorized {
+            message: "Invalid password".to_string(),
+            docs_hint: None,
+        });
+    }
+
+    if !row.is_active {
+        if let Some(scheduled_for) = row.deletion_scheduled_for {
+            return Ok(Json(AccountDeletionScheduledResponse {
+                message: "Account deletion is already scheduled.".to_string(),
+                deletion_scheduled_for: scheduled_for,
+                grace_period_days: ACCOUNT_DELETION_GRACE_DAYS,
+            }));
+        }
+        return Err(AppError::Forbidden {
+            message: "Account is inactive and cannot be scheduled again.".to_string(),
+            docs_hint: Some("Contact support for manual review.".to_string()),
+        });
+    }
+
+    let requested_at = Utc::now();
+    let scheduled_for = requested_at + Duration::days(ACCOUNT_DELETION_GRACE_DAYS);
+    sqlx::query(
+        "UPDATE users \
+         SET is_active = FALSE, \
+             deletion_requested_at = $2, \
+             deletion_scheduled_for = $3, \
+             updated_at = NOW() \
+         WHERE id = $1",
+    )
+    .bind(user.user_id)
+    .bind(requested_at)
+    .bind(scheduled_for)
+    .execute(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+
+    sqlx::query("UPDATE oauth_access_tokens SET is_revoked = TRUE WHERE user_id = $1")
+        .bind(user.user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+    sqlx::query("UPDATE oauth_refresh_tokens SET is_revoked = TRUE WHERE user_id = $1")
+        .bind(user.user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+    sqlx::query(
+        "UPDATE oauth_authorization_codes \
+         SET used_at = COALESCE(used_at, NOW()) \
+         WHERE user_id = $1 AND used_at IS NULL",
+    )
+    .bind(user.user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+    sqlx::query(
+        "UPDATE oauth_device_codes \
+         SET status = 'expired', updated_at = NOW() \
+         WHERE approved_user_id = $1 AND status IN ('pending', 'approved')",
+    )
+    .bind(user.user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+    sqlx::query("UPDATE api_keys SET is_revoked = TRUE WHERE user_id = $1")
+        .bind(user.user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+    sqlx::query(
+        "INSERT INTO background_jobs (user_id, job_type, payload, scheduled_for, priority, max_retries) \
+         VALUES ($1, 'account.hard_delete', $2, $3, 100, 5)",
+    )
+    .bind(user.user_id)
+    .bind(serde_json::json!({
+        "user_id": user.user_id,
+        "deletion_requested_at": requested_at.to_rfc3339(),
+    }))
+    .bind(scheduled_for)
+    .execute(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+
+    tx.commit().await.map_err(AppError::Database)?;
+
+    tracing::info!(
+        user_id = %user.user_id,
+        deletion_scheduled_for = %scheduled_for,
+        "Account deletion scheduled with grace period"
+    );
+
+    Ok(Json(AccountDeletionScheduledResponse {
+        message: format!(
+            "Account deactivated. Permanent deletion is scheduled in {} days.",
+            ACCOUNT_DELETION_GRACE_DAYS
+        ),
+        deletion_scheduled_for: scheduled_for,
+        grace_period_days: ACCOUNT_DELETION_GRACE_DAYS,
+    }))
 }
 
 /// GET /v1/account/analysis-subject — stable pseudonymous subject id for analytics/debug
@@ -274,6 +433,18 @@ async fn execute_account_deletion(
         events_deleted: row.0,
         projections_deleted: row.1,
     })
+}
+
+fn normalize_email(email: &str) -> String {
+    email.trim().to_lowercase()
+}
+
+#[derive(sqlx::FromRow)]
+struct AccountCredentialRow {
+    email: String,
+    password_hash: String,
+    is_active: bool,
+    deletion_scheduled_for: Option<DateTime<Utc>>,
 }
 
 async fn ensure_admin(pool: &sqlx::PgPool, user_id: Uuid) -> Result<(), AppError> {

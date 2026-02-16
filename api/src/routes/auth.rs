@@ -23,6 +23,16 @@ pub fn email_login_router() -> Router<AppState> {
     Router::new().route("/v1/auth/email/login", post(email_login))
 }
 
+pub fn password_reset_router() -> Router<AppState> {
+    Router::new()
+        .route("/v1/auth/forgot-password", post(forgot_password))
+        .route("/v1/auth/reset-password", post(reset_password))
+}
+
+pub fn reactivate_account_router() -> Router<AppState> {
+    Router::new().route("/v1/auth/reactivate-account", post(reactivate_account))
+}
+
 pub fn me_router() -> Router<AppState> {
     Router::new().route("/v1/auth/me", get(get_me))
 }
@@ -55,6 +65,7 @@ pub fn oidc_router() -> Router<AppState> {
 const AGENT_ACCESS_TOKEN_TTL_MINUTES: i64 = 30;
 const DEVICE_CODE_TTL_MINUTES: i64 = 10;
 const DEVICE_CODE_POLL_INTERVAL_SECONDS: i32 = 5;
+const PASSWORD_RESET_TOKEN_TTL_MINUTES: i64 = 60;
 
 fn default_agent_token_scopes() -> Vec<String> {
     vec![
@@ -347,6 +358,396 @@ pub async fn register(
             display_name: req.display_name,
         }),
     ))
+}
+
+// ──────────────────────────────────────────────
+// POST /v1/auth/forgot-password
+// POST /v1/auth/reset-password
+// POST /v1/auth/reactivate-account
+// ──────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct ForgotPasswordRequest {
+    pub email: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ForgotPasswordResponse {
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct ResetPasswordRequest {
+    pub token: String,
+    pub new_password: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ResetPasswordResponse {
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct ReactivateAccountRequest {
+    pub email: String,
+    pub password: String,
+    #[serde(default)]
+    pub client_id: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct PasswordResetUserRow {
+    id: Uuid,
+    email: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct PasswordResetTokenRow {
+    id: Uuid,
+    user_id: Uuid,
+    expires_at: chrono::DateTime<Utc>,
+    used_at: Option<chrono::DateTime<Utc>>,
+}
+
+#[derive(sqlx::FromRow)]
+struct ReactivateAccountRow {
+    id: Uuid,
+    password_hash: String,
+    is_active: bool,
+    deletion_scheduled_for: Option<chrono::DateTime<Utc>>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/auth/forgot-password",
+    request_body = ForgotPasswordRequest,
+    responses(
+        (status = 200, description = "Password reset email dispatch accepted", body = ForgotPasswordResponse),
+        (status = 400, description = "Validation error", body = kura_core::error::ApiError)
+    ),
+    tag = "auth"
+)]
+pub async fn forgot_password(
+    State(state): State<AppState>,
+    Json(req): Json<ForgotPasswordRequest>,
+) -> Result<Json<ForgotPasswordResponse>, AppError> {
+    let email_norm = normalize_email(&req.email);
+    if email_norm.is_empty() {
+        return Err(AppError::Validation {
+            message: "email must not be empty".to_string(),
+            field: Some("email".to_string()),
+            received: None,
+            docs_hint: None,
+        });
+    }
+
+    let generic = ForgotPasswordResponse {
+        message: "Falls ein Account existiert, haben wir eine E-Mail zum Zuruecksetzen gesendet."
+            .to_string(),
+    };
+
+    let user = sqlx::query_as::<_, PasswordResetUserRow>(
+        "SELECT u.id, u.email \
+         FROM user_identities ui \
+         JOIN users u ON u.id = ui.user_id \
+         WHERE ui.provider = 'email_password' \
+           AND ui.email_norm = $1 \
+           AND u.is_active = TRUE \
+         LIMIT 1",
+    )
+    .bind(&email_norm)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?;
+
+    let Some(user) = user else {
+        return Ok(Json(generic));
+    };
+
+    let mut tx = state.db.begin().await.map_err(AppError::Database)?;
+    sqlx::query(
+        "UPDATE password_reset_tokens \
+         SET used_at = NOW() \
+         WHERE user_id = $1 AND used_at IS NULL",
+    )
+    .bind(user.id)
+    .execute(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+
+    let (token, token_hash) = auth::generate_password_reset_token();
+    let expires_at = Utc::now() + Duration::minutes(PASSWORD_RESET_TOKEN_TTL_MINUTES);
+    sqlx::query(
+        "INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(user.id)
+    .bind(&token_hash)
+    .bind(expires_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+    tx.commit().await.map_err(AppError::Database)?;
+
+    let frontend_url =
+        std::env::var("FRONTEND_URL").unwrap_or_else(|_| "https://kura.dev".to_string());
+    let reset_url = format!(
+        "{}/reset-password?token={}",
+        frontend_url.trim_end_matches('/'),
+        token
+    );
+    let _sent = send_password_reset_email(&user.email, &reset_url, &expires_at).await;
+
+    Ok(Json(generic))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/auth/reset-password",
+    request_body = ResetPasswordRequest,
+    responses(
+        (status = 200, description = "Password reset successful", body = ResetPasswordResponse),
+        (status = 400, description = "Validation error", body = kura_core::error::ApiError),
+        (status = 401, description = "Invalid or expired token", body = kura_core::error::ApiError)
+    ),
+    tag = "auth"
+)]
+pub async fn reset_password(
+    State(state): State<AppState>,
+    Json(req): Json<ResetPasswordRequest>,
+) -> Result<Json<ResetPasswordResponse>, AppError> {
+    if req.new_password.len() < 8 {
+        return Err(AppError::Validation {
+            message: "password must be at least 8 characters".to_string(),
+            field: Some("new_password".to_string()),
+            received: None,
+            docs_hint: None,
+        });
+    }
+    if !req.token.starts_with("kura_rst_") {
+        return Err(AppError::Unauthorized {
+            message: "Invalid reset token".to_string(),
+            docs_hint: Some("Request a new password reset link.".to_string()),
+        });
+    }
+
+    let token_hash = auth::hash_token(&req.token);
+    let mut tx = state.db.begin().await.map_err(AppError::Database)?;
+
+    let token_row = sqlx::query_as::<_, PasswordResetTokenRow>(
+        "SELECT id, user_id, expires_at, used_at \
+         FROM password_reset_tokens \
+         WHERE token_hash = $1 \
+         FOR UPDATE",
+    )
+    .bind(&token_hash)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::Unauthorized {
+        message: "Invalid or expired reset token".to_string(),
+        docs_hint: Some("Request a new password reset link.".to_string()),
+    })?;
+
+    if token_row.used_at.is_some() || token_row.expires_at < Utc::now() {
+        return Err(AppError::Unauthorized {
+            message: "Invalid or expired reset token".to_string(),
+            docs_hint: Some("Request a new password reset link.".to_string()),
+        });
+    }
+
+    let new_password_hash = auth::hash_password(&req.new_password).map_err(AppError::Internal)?;
+    sqlx::query("UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2")
+        .bind(&new_password_hash)
+        .bind(token_row.user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+    sqlx::query("UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1")
+        .bind(token_row.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+    sqlx::query("UPDATE oauth_access_tokens SET is_revoked = TRUE WHERE user_id = $1")
+        .bind(token_row.user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+    sqlx::query("UPDATE oauth_refresh_tokens SET is_revoked = TRUE WHERE user_id = $1")
+        .bind(token_row.user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+    tx.commit().await.map_err(AppError::Database)?;
+
+    Ok(Json(ResetPasswordResponse {
+        message: "Passwort erfolgreich aktualisiert.".to_string(),
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/auth/reactivate-account",
+    request_body = ReactivateAccountRequest,
+    responses(
+        (status = 200, description = "Account reactivated and tokens issued", body = TokenResponse),
+        (status = 400, description = "Validation error", body = kura_core::error::ApiError),
+        (status = 401, description = "Invalid credentials", body = kura_core::error::ApiError),
+        (status = 409, description = "Account already active", body = kura_core::error::ApiError)
+    ),
+    tag = "auth"
+)]
+pub async fn reactivate_account(
+    State(state): State<AppState>,
+    Json(req): Json<ReactivateAccountRequest>,
+) -> Result<Json<TokenResponse>, AppError> {
+    let email_norm = normalize_email(&req.email);
+    if email_norm.is_empty() {
+        return Err(AppError::Validation {
+            message: "email must not be empty".to_string(),
+            field: Some("email".to_string()),
+            received: None,
+            docs_hint: None,
+        });
+    }
+    if req.password.is_empty() {
+        return Err(AppError::Validation {
+            message: "password must not be empty".to_string(),
+            field: Some("password".to_string()),
+            received: None,
+            docs_hint: None,
+        });
+    }
+
+    let row = sqlx::query_as::<_, ReactivateAccountRow>(
+        "SELECT u.id, u.password_hash, u.is_active, u.deletion_scheduled_for \
+         FROM user_identities ui \
+         JOIN users u ON u.id = ui.user_id \
+         WHERE ui.provider = 'email_password' \
+           AND ui.email_norm = $1 \
+         LIMIT 1",
+    )
+    .bind(&email_norm)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::Unauthorized {
+        message: "Invalid email or password".to_string(),
+        docs_hint: None,
+    })?;
+
+    let valid =
+        auth::verify_password(&req.password, &row.password_hash).map_err(AppError::Internal)?;
+    if !valid {
+        return Err(AppError::Unauthorized {
+            message: "Invalid email or password".to_string(),
+            docs_hint: None,
+        });
+    }
+
+    if row.is_active {
+        return Err(AppError::Conflict {
+            message: "Account is already active".to_string(),
+        });
+    }
+
+    let scheduled_for = row
+        .deletion_scheduled_for
+        .ok_or_else(|| AppError::Unauthorized {
+            message: "Account cannot be reactivated".to_string(),
+            docs_hint: Some("Contact support if this account was disabled by mistake.".to_string()),
+        })?;
+    if scheduled_for <= Utc::now() {
+        return Err(AppError::Unauthorized {
+            message: "Reactivation window has expired".to_string(),
+            docs_hint: Some("Contact support for manual review.".to_string()),
+        });
+    }
+
+    let mut tx = state.db.begin().await.map_err(AppError::Database)?;
+    sqlx::query(
+        "UPDATE users \
+         SET is_active = TRUE, deletion_requested_at = NULL, deletion_scheduled_for = NULL, updated_at = NOW() \
+         WHERE id = $1",
+    )
+    .bind(row.id)
+    .execute(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+
+    sqlx::query(
+        "UPDATE background_jobs \
+         SET status = 'completed', completed_at = NOW(), error_message = 'cancelled: account reactivated' \
+         WHERE user_id = $1 AND job_type = 'account.hard_delete' AND status = 'pending'",
+    )
+    .bind(row.id)
+    .execute(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+    tx.commit().await.map_err(AppError::Database)?;
+
+    let client_id = req.client_id.unwrap_or_else(|| "kura-web".to_string());
+    issue_tokens(&state.db, row.id, &client_id, default_agent_token_scopes()).await
+}
+
+async fn send_password_reset_email(
+    to_email: &str,
+    reset_url: &str,
+    expires_at: &chrono::DateTime<Utc>,
+) -> bool {
+    let api_key = match std::env::var("RESEND_API_KEY") {
+        Ok(k) if !k.is_empty() => k,
+        _ => {
+            tracing::warn!("RESEND_API_KEY not set, skipping password reset email to {to_email}");
+            return false;
+        }
+    };
+
+    let from =
+        std::env::var("EMAIL_FROM").unwrap_or_else(|_| "Kura <noreply@kura.dev>".to_string());
+    let expires_formatted = expires_at.format("%d.%m.%Y %H:%M UTC").to_string();
+    let body = format!(
+        "Hallo,\n\n\
+         du hast ein neues Passwort fuer Kura angefordert.\n\n\
+         Setze dein Passwort hier zurueck: {reset_url}\n\n\
+         Der Link ist gueltig bis {expires_formatted}.\n\
+         Wenn du das nicht angefordert hast, kannst du diese E-Mail ignorieren.\n\n\
+         -- Kura"
+    );
+
+    let client = reqwest::Client::new();
+    let result = client
+        .post("https://api.resend.com/emails")
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&serde_json::json!({
+            "from": from,
+            "to": [to_email],
+            "subject": "Kura Passwort zuruecksetzen",
+            "text": body
+        }))
+        .send()
+        .await;
+
+    match result {
+        Ok(resp) if resp.status().is_success() => {
+            tracing::info!("Password reset email sent to {to_email}");
+            true
+        }
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            tracing::error!("Failed to send password reset email to {to_email}: {status} {body}");
+            false
+        }
+        Err(err) => {
+            tracing::error!("Failed to send password reset email to {to_email}: {err}");
+            false
+        }
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -1740,6 +2141,25 @@ async fn issue_tokens(
     client_id: &str,
     scopes: Vec<String>,
 ) -> Result<Json<TokenResponse>, AppError> {
+    let is_active = sqlx::query_scalar::<_, bool>("SELECT is_active FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(AppError::Database)?
+        .ok_or_else(|| AppError::Unauthorized {
+            message: "invalid_grant".to_string(),
+            docs_hint: Some("Account not found.".to_string()),
+        })?;
+    if !is_active {
+        return Err(AppError::Unauthorized {
+            message: "account_inactive".to_string(),
+            docs_hint: Some(
+                "If account deletion was scheduled, you can reactivate via POST /v1/auth/reactivate-account."
+                    .to_string(),
+            ),
+        });
+    }
+
     let access_token_id = Uuid::now_v7();
     let (access_token, access_hash) = auth::generate_access_token();
     let access_expires = Utc::now() + Duration::minutes(AGENT_ACCESS_TOKEN_TTL_MINUTES);
@@ -1910,9 +2330,11 @@ struct RefreshTokenRow {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppError, DeviceTokenRequest, authenticate_email_password_user_id, device_token,
-        exchange_authorization_code, generate_user_code, is_valid_loopback_redirect, issue_tokens,
-        normalize_email, normalize_user_code, oidc_email_verified, refresh_tokens,
+        AppError, DeviceTokenRequest, ForgotPasswordRequest, ReactivateAccountRequest,
+        ResetPasswordRequest, authenticate_email_password_user_id, default_agent_token_scopes,
+        device_token, exchange_authorization_code, forgot_password, generate_user_code,
+        is_valid_loopback_redirect, issue_tokens, normalize_email, normalize_user_code,
+        oidc_email_verified, reactivate_account, refresh_tokens, reset_password,
         validate_invite_email_binding, validate_oauth_client,
     };
     use crate::state::{AppState, SignupGate};
@@ -1952,8 +2374,10 @@ mod tests {
 
     #[test]
     fn invite_email_binding_accepts_matching_email() {
-        let result =
-            validate_invite_email_binding(Some("  Alice.Example@Mail.TLD "), "alice.example@mail.tld");
+        let result = validate_invite_email_binding(
+            Some("  Alice.Example@Mail.TLD "),
+            "alice.example@mail.tld",
+        );
         assert!(result.is_ok());
     }
 
@@ -2123,6 +2547,218 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forgot_password_is_non_enumerating_for_unknown_email() {
+        let Some(pool) = db_pool_with_migrations_if_available().await else {
+            return;
+        };
+
+        let missing_email = format!("missing-reset-{}@example.com", Uuid::now_v7());
+        let state = AppState {
+            db: pool.clone(),
+            signup_gate: SignupGate::Open,
+        };
+
+        let Json(response) = forgot_password(
+            State(state),
+            Json(ForgotPasswordRequest {
+                email: missing_email.clone(),
+            }),
+        )
+        .await
+        .expect("forgot-password should always return success for unknown email");
+        assert!(response.message.contains("Falls ein Account existiert"));
+
+        let count_for_email: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) \
+             FROM password_reset_tokens prt \
+             JOIN users u ON u.id = prt.user_id \
+             WHERE u.email = $1",
+        )
+        .bind(&missing_email)
+        .fetch_one(&pool)
+        .await
+        .expect("query password reset token count");
+        assert_eq!(count_for_email, 0);
+    }
+
+    #[tokio::test]
+    async fn reset_password_rotates_credentials_and_revokes_existing_sessions() {
+        let Some(pool) = db_pool_with_migrations_if_available().await else {
+            return;
+        };
+
+        let email = format!("reset-user-{}@example.com", Uuid::now_v7());
+        let old_password = "Old-Reset-Password-123!";
+        let new_password = "New-Reset-Password-456!";
+        let user_id = seed_email_password_user(&pool, &email, old_password).await;
+
+        let Json(tokens) = issue_tokens(&pool, user_id, "kura-web", default_agent_token_scopes())
+            .await
+            .expect("issue baseline tokens");
+        let access_hash = auth::hash_token(&tokens.access_token);
+        let refresh_hash = auth::hash_token(&tokens.refresh_token);
+
+        let (reset_token, reset_hash) = auth::generate_password_reset_token();
+        let reset_token_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(reset_token_id)
+        .bind(user_id)
+        .bind(&reset_hash)
+        .bind(Utc::now() + Duration::minutes(30))
+        .execute(&pool)
+        .await
+        .expect("insert password reset token");
+
+        let state = AppState {
+            db: pool.clone(),
+            signup_gate: SignupGate::Open,
+        };
+        let Json(response) = reset_password(
+            State(state),
+            Json(ResetPasswordRequest {
+                token: reset_token.clone(),
+                new_password: new_password.to_string(),
+            }),
+        )
+        .await
+        .expect("reset password should succeed");
+        assert!(response.message.contains("erfolgreich"));
+
+        let used_at: Option<chrono::DateTime<Utc>> =
+            sqlx::query_scalar("SELECT used_at FROM password_reset_tokens WHERE id = $1")
+                .bind(reset_token_id)
+                .fetch_one(&pool)
+                .await
+                .expect("load reset token usage state");
+        assert!(used_at.is_some());
+
+        let access_revoked: bool =
+            sqlx::query_scalar("SELECT is_revoked FROM oauth_access_tokens WHERE token_hash = $1")
+                .bind(&access_hash)
+                .fetch_one(&pool)
+                .await
+                .expect("load access token revocation");
+        let refresh_revoked: bool =
+            sqlx::query_scalar("SELECT is_revoked FROM oauth_refresh_tokens WHERE token_hash = $1")
+                .bind(&refresh_hash)
+                .fetch_one(&pool)
+                .await
+                .expect("load refresh token revocation");
+        assert!(access_revoked);
+        assert!(refresh_revoked);
+
+        let resolved = authenticate_email_password_user_id(&pool, &email, new_password)
+            .await
+            .expect("new password should authenticate");
+        assert_eq!(resolved, user_id);
+        let err = authenticate_email_password_user_id(&pool, &email, old_password)
+            .await
+            .expect_err("old password must be invalidated");
+        assert!(matches!(err, AppError::Unauthorized { .. }));
+    }
+
+    #[tokio::test]
+    async fn reactivate_account_restores_user_and_cancels_pending_hard_delete_job() {
+        let Some(pool) = db_pool_with_migrations_if_available().await else {
+            return;
+        };
+
+        let email = format!("reactivate-{}@example.com", Uuid::now_v7());
+        let password = "Reactivate-Password-123!";
+        let user_id = seed_email_password_user(&pool, &email, password).await;
+
+        let requested_at = Utc::now();
+        let scheduled_for = requested_at + Duration::days(7);
+        sqlx::query(
+            "UPDATE users \
+             SET is_active = FALSE, deletion_requested_at = $2, deletion_scheduled_for = $3 \
+             WHERE id = $1",
+        )
+        .bind(user_id)
+        .bind(requested_at)
+        .bind(scheduled_for)
+        .execute(&pool)
+        .await
+        .expect("deactivate user for reactivation test");
+
+        sqlx::query(
+            "INSERT INTO background_jobs (user_id, job_type, payload, status, scheduled_for) \
+             VALUES ($1, 'account.hard_delete', '{}'::jsonb, 'pending', $2)",
+        )
+        .bind(user_id)
+        .bind(scheduled_for)
+        .execute(&pool)
+        .await
+        .expect("insert pending hard-delete job");
+
+        let state = AppState {
+            db: pool.clone(),
+            signup_gate: SignupGate::Open,
+        };
+        let Json(tokens) = reactivate_account(
+            State(state),
+            Json(ReactivateAccountRequest {
+                email: email.clone(),
+                password: password.to_string(),
+                client_id: Some("kura-web".to_string()),
+            }),
+        )
+        .await
+        .expect("reactivation should succeed");
+        assert!(tokens.access_token.starts_with("kura_at_"));
+        assert!(tokens.refresh_token.starts_with("kura_rt_"));
+
+        let user_state: (
+            bool,
+            Option<chrono::DateTime<Utc>>,
+            Option<chrono::DateTime<Utc>>,
+        ) = sqlx::query_as(
+            "SELECT is_active, deletion_requested_at, deletion_scheduled_for \
+                 FROM users WHERE id = $1",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load user state");
+        assert!(user_state.0);
+        assert!(user_state.1.is_none());
+        assert!(user_state.2.is_none());
+
+        let pending_jobs: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM background_jobs \
+             WHERE user_id = $1 AND job_type = 'account.hard_delete' AND status = 'pending'",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count pending hard-delete jobs");
+        assert_eq!(pending_jobs, 0);
+    }
+
+    #[tokio::test]
+    async fn issue_tokens_rejects_inactive_user() {
+        let Some(pool) = db_pool_with_migrations_if_available().await else {
+            return;
+        };
+
+        let email = format!("inactive-issue-{}@example.com", Uuid::now_v7());
+        let user_id = seed_email_password_user(&pool, &email, "Issue-Token-Password-123!").await;
+        sqlx::query("UPDATE users SET is_active = FALSE WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("deactivate user");
+
+        let err = issue_tokens(&pool, user_id, "kura-web", default_agent_token_scopes())
+            .await
+            .expect_err("inactive users must not receive tokens");
+        assert!(matches!(err, AppError::Unauthorized { .. }));
+    }
+
+    #[tokio::test]
     async fn exchange_authorization_code_rejects_wrong_pkce_without_consuming_code() {
         let Some(pool) = db_pool_with_migrations_if_available().await else {
             return;
@@ -2156,24 +2792,18 @@ mod tests {
         .await
         .expect("insert auth code");
 
-        let err = exchange_authorization_code(
-            &pool,
-            &code,
-            "wrong-verifier",
-            redirect_uri,
-            &client_id,
-        )
-        .await
-        .expect_err("wrong pkce verifier must fail");
+        let err =
+            exchange_authorization_code(&pool, &code, "wrong-verifier", redirect_uri, &client_id)
+                .await
+                .expect_err("wrong pkce verifier must fail");
         assert!(matches!(err, AppError::Unauthorized { .. }));
 
-        let used_at: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(
-            "SELECT used_at FROM oauth_authorization_codes WHERE id = $1",
-        )
-        .bind(auth_code_id)
-        .fetch_one(&pool)
-        .await
-        .expect("load auth code");
+        let used_at: Option<chrono::DateTime<Utc>> =
+            sqlx::query_scalar("SELECT used_at FROM oauth_authorization_codes WHERE id = $1")
+                .bind(auth_code_id)
+                .fetch_one(&pool)
+                .await
+                .expect("load auth code");
         assert!(used_at.is_none(), "failed PKCE must not consume auth code");
     }
 
@@ -2218,13 +2848,12 @@ mod tests {
         assert!(tokens.access_token.starts_with("kura_at_"));
         assert!(tokens.refresh_token.starts_with("kura_rt_"));
 
-        let used_at: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(
-            "SELECT used_at FROM oauth_authorization_codes WHERE id = $1",
-        )
-        .bind(auth_code_id)
-        .fetch_one(&pool)
-        .await
-        .expect("load auth code");
+        let used_at: Option<chrono::DateTime<Utc>> =
+            sqlx::query_scalar("SELECT used_at FROM oauth_authorization_codes WHERE id = $1")
+                .bind(auth_code_id)
+                .fetch_one(&pool)
+                .await
+                .expect("load auth code");
         assert!(used_at.is_some(), "successful exchange must consume code");
 
         let access_hash = auth::hash_token(&tokens.access_token);
@@ -2260,8 +2889,7 @@ mod tests {
         seed_oauth_client(&pool, &client_id, redirect_uri).await;
 
         let email = format!("refresh-user-{}@example.com", Uuid::now_v7());
-        let user_id =
-            seed_email_password_user(&pool, &email, "Refresh-Test-Password-123!").await;
+        let user_id = seed_email_password_user(&pool, &email, "Refresh-Test-Password-123!").await;
 
         let Json(initial_tokens) = issue_tokens(
             &pool,
@@ -2304,12 +2932,13 @@ mod tests {
         assert!(old_access_revoked);
 
         let new_refresh_hash = auth::hash_token(&rotated_tokens.refresh_token);
-        let new_refresh_active: bool =
-            sqlx::query_scalar("SELECT NOT is_revoked FROM oauth_refresh_tokens WHERE token_hash = $1")
-                .bind(&new_refresh_hash)
-                .fetch_one(&pool)
-                .await
-                .expect("load new refresh token state");
+        let new_refresh_active: bool = sqlx::query_scalar(
+            "SELECT NOT is_revoked FROM oauth_refresh_tokens WHERE token_hash = $1",
+        )
+        .bind(&new_refresh_hash)
+        .fetch_one(&pool)
+        .await
+        .expect("load new refresh token state");
         assert!(new_refresh_active);
 
         let err = refresh_tokens(&pool, &initial_tokens.refresh_token, &client_id)

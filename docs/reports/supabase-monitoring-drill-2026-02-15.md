@@ -43,4 +43,4 @@ Validate the launch-critical monitoring gates for:
 ## Outcome
 
 The monitoring design required by `kura-training-4sv.7` has trigger evidence for all required signals.
-Current unresolved launch blockers remain billing/PITR guardrails (`kura-training-4sv.8`, `kura-training-4sv.9`).
+Guardrail follow-ups are now closed: billing spend guardrails (`kura-training-4sv.8`) and PITR restore readiness (`kura-training-4sv.9`) are both completed.
