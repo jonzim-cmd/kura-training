@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use axum::body::Bytes;
 use axum::extract::{Query, State};
-use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, HOST, WWW_AUTHENTICATE};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, HOST, WWW_AUTHENTICATE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -17,7 +17,6 @@ use crate::state::AppState;
 
 const MCP_PATH: &str = "/mcp";
 const OAUTH_SCOPES: [&str; 3] = ["agent:read", "agent:write", "agent:resolve"];
-const OAUTH_LOGO_K_GELB: &[u8] = include_bytes!("../../../assets/logo/Kura_Logo_K_gelb.png");
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -42,21 +41,8 @@ pub fn router() -> Router<AppState> {
             "/oauth/authorize",
             get(oauth_authorize_get).post(oauth_authorize_post),
         )
-        .route("/oauth/assets/logo-kura-k-gelb.png", get(oauth_logo_k_gelb))
         .route("/oauth/token", post(oauth_token))
         .route("/oauth/register", post(oauth_register))
-}
-
-async fn oauth_logo_k_gelb() -> Response {
-    let mut response = (StatusCode::OK, OAUTH_LOGO_K_GELB).into_response();
-    response
-        .headers_mut()
-        .insert(CONTENT_TYPE, HeaderValue::from_static("image/png"));
-    response.headers_mut().insert(
-        CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=86400"),
-    );
-    response
 }
 
 async fn mcp_get() -> Response {

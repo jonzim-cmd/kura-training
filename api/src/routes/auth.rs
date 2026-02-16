@@ -1072,7 +1072,16 @@ body {{
 .brandLogo {{
   width: 34px;
   height: 34px;
-  display: block;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: var(--amber);
+  color: #000;
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: 1rem;
+  line-height: 1;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
 }}
 
 .brandWordmark {{
@@ -1196,7 +1205,7 @@ button:hover {{
 <body>
 <main class="card">
 <div class="brand">
-<img class="brandLogo" src="/oauth/assets/logo-kura-k-gelb.png" alt="Kura logo">
+<span class="brandLogo" aria-hidden="true">K</span>
 <span class="brandWordmark">KU<span style="letter-spacing:0.06em;">R</span>A</span>
 </div>
 <p class="eyebrow">Secure Connection</p>
