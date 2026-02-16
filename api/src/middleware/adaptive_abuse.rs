@@ -914,7 +914,9 @@ mod tests {
                 .iter()
                 .any(|signal| signal == "denied_ratio_high_confidence_60s")
         );
-        assert!(assessment.score >= profile_tuning(SecurityProfile::Adaptive).throttle_score_threshold);
+        assert!(
+            assessment.score >= profile_tuning(SecurityProfile::Adaptive).throttle_score_threshold
+        );
     }
 
     #[tokio::test]

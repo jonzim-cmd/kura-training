@@ -10514,7 +10514,7 @@ mod tests {
                 hallucination_reason_codes: vec!["retrieval_regret_high".to_string()],
                 data_quality_reason_codes: vec!["persist_intent_ask_first".to_string()],
                 confidence_reason_codes: vec![
-                    "confidence_from_specificity_and_risk_balance".to_string()
+                    "confidence_from_specificity_and_risk_balance".to_string(),
                 ],
             },
             advisory_action_plan: super::AgentAdvisoryActionPlan {
@@ -10525,8 +10525,7 @@ mod tests {
                 clarification_question_budget: 1,
                 requires_uncertainty_note: true,
                 assistant_instruction:
-                    "Use uncertainty-explicit wording and confirm before persistence."
-                        .to_string(),
+                    "Use uncertainty-explicit wording and confirm before persistence.".to_string(),
                 reason_codes: vec!["persist_action_ask_first".to_string()],
             },
             counterfactual_recommendation: super::AgentCounterfactualRecommendation {

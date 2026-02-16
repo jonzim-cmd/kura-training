@@ -837,7 +837,10 @@ pub(super) fn build_advisory_scores(
         }
         _ => {}
     }
-    match response_mode_policy.outcome_signal_sample_confidence.as_str() {
+    match response_mode_policy
+        .outcome_signal_sample_confidence
+        .as_str()
+    {
         "high" => {
             confidence_score += 0.04;
             confidence_reason_codes.push("outcome_sample_confidence_high".to_string());

@@ -1197,9 +1197,13 @@ mod tests {
         let mut overview = make_overview(10.0, 10.0, 2.0);
         overview.learning_signals.advisory_scoring_assessed = 25;
         overview.learning_signals.advisory_high_hallucination_risk = 11;
-        overview.learning_signals.advisory_high_hallucination_risk_rate_pct = 44.0;
+        overview
+            .learning_signals
+            .advisory_high_hallucination_risk_rate_pct = 44.0;
         overview.learning_signals.advisory_high_data_quality_risk = 10;
-        overview.learning_signals.advisory_high_data_quality_risk_rate_pct = 40.0;
+        overview
+            .learning_signals
+            .advisory_high_data_quality_risk_rate_pct = 40.0;
 
         let anomalies = build_anomalies(&overview, 10);
         assert!(
@@ -1219,9 +1223,15 @@ mod tests {
         let mut overview = make_overview(10.0, 10.0, 2.0);
         overview.learning_signals.advisory_high_risk_runs = 22;
         overview.learning_signals.advisory_high_risk_persist_now = 9;
-        overview.learning_signals.advisory_high_risk_persist_now_rate_pct = 40.9;
-        overview.learning_signals.advisory_high_risk_cautious_actions = 13;
-        overview.learning_signals.advisory_high_risk_cautious_rate_pct = 59.1;
+        overview
+            .learning_signals
+            .advisory_high_risk_persist_now_rate_pct = 40.9;
+        overview
+            .learning_signals
+            .advisory_high_risk_cautious_actions = 13;
+        overview
+            .learning_signals
+            .advisory_high_risk_cautious_rate_pct = 59.1;
 
         let anomalies = build_anomalies(&overview, 10);
         assert!(

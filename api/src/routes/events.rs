@@ -3584,29 +3584,20 @@ mod tests {
 
     #[test]
     fn test_session_completed_enjoyment_out_of_range() {
-        let w = check_event_plausibility(
-            "session.completed",
-            &json!({"enjoyment": 15}),
-        );
+        let w = check_event_plausibility("session.completed", &json!({"enjoyment": 15}));
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].field, "enjoyment");
     }
 
     #[test]
     fn test_session_completed_pain_zero_valid() {
-        let w = check_event_plausibility(
-            "session.completed",
-            &json!({"pain_discomfort": 0}),
-        );
+        let w = check_event_plausibility("session.completed", &json!({"pain_discomfort": 0}));
         assert!(w.is_empty());
     }
 
     #[test]
     fn test_session_completed_pain_out_of_range() {
-        let w = check_event_plausibility(
-            "session.completed",
-            &json!({"pain_discomfort": 11}),
-        );
+        let w = check_event_plausibility("session.completed", &json!({"pain_discomfort": 11}));
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].field, "pain_discomfort");
     }

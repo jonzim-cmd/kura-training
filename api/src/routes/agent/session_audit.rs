@@ -23,8 +23,7 @@ pub(super) const SESSION_FEEDBACK_CONTEXT_KEYS: [&str; 6] = [
     "feeling",
 ];
 pub(super) const SESSION_POSITIVE_HINTS: [&str; 10] = [
-    "good", "great", "fun", "spass", "strong", "solid", "leicht", "easy", "well",
-    "locker",
+    "good", "great", "fun", "spass", "strong", "solid", "leicht", "easy", "well", "locker",
 ];
 pub(super) const SESSION_NEGATIVE_HINTS: [&str; 10] = [
     "bad", "terrible", "schlecht", "pain", "hurt", "injury", "müde", "tired", "awful", "weak",
@@ -513,7 +512,10 @@ fn normalize_hint_text(text: &str) -> String {
         .replace('ö', "oe")
         .replace('ü', "ue")
         .replace('ß', "ss");
-    WHITESPACE_RE.replace_all(&normalized, " ").trim().to_string()
+    WHITESPACE_RE
+        .replace_all(&normalized, " ")
+        .trim()
+        .to_string()
 }
 
 fn contains_hint_token(text: &str, hint: &str) -> bool {
@@ -527,7 +529,9 @@ fn contains_hint_token(text: &str, hint: &str) -> bool {
 
 pub(super) fn contains_any_hint(text: &str, hints: &[&str]) -> bool {
     let normalized = normalize_hint_text(text);
-    hints.iter().any(|hint| contains_hint_token(&normalized, hint))
+    hints
+        .iter()
+        .any(|hint| contains_hint_token(&normalized, hint))
 }
 
 pub(super) fn contains_any_negative_hint(text: &str) -> bool {
@@ -536,7 +540,10 @@ pub(super) fn contains_any_negative_hint(text: &str) -> bool {
         let phrase_normalized = normalize_hint_text(phrase);
         normalized = normalized.replace(&phrase_normalized, " ");
     }
-    let normalized = WHITESPACE_RE.replace_all(&normalized, " ").trim().to_string();
+    let normalized = WHITESPACE_RE
+        .replace_all(&normalized, " ")
+        .trim()
+        .to_string();
     SESSION_NEGATIVE_HINTS
         .iter()
         .any(|hint| contains_hint_token(&normalized, hint))
