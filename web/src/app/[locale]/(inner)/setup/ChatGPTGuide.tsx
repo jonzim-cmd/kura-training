@@ -430,13 +430,13 @@ export function ChatGPTGuide() {
       {/* MCP URL copy — only on step 5 */}
       {current === 4 && (
         <div className={styles.mcpCopyWrap}>
+          <span className={styles.mcpLabel}>MCP-Server-URL:</span>
           <div className={styles.mcpCopy}>
             <code className={styles.mcpUrl}>{MCP_URL}</code>
             <button type="button" className="kura-btn kura-btn--ghost" onClick={copyUrl}>
               {copied ? tc('copied') : tc('copy')}
             </button>
           </div>
-          <div className={styles.mcpHint}>{t('mcpCopyHint')}</div>
         </div>
       )}
 

@@ -82,51 +82,33 @@ export default function SetupPage() {
 
             {selectedAI === 'openclaw' && (
               <div className={styles.openclawGuide}>
-                {/* Step 1: Install */}
-                <div className={styles.openclawStep}>
-                  <div className={styles.openclawStepTitle}>
-                    <span className={styles.openclawStepNumber}>1</span>
-                    {t('openclaw.step1Title')}
-                  </div>
-                  <p className={styles.openclawHint}>{t('openclaw.step1Hint')}</p>
-                  <div className={styles.codeBlock}>
-                    <code className={styles.codeValue}>curl -fsSL https://openclaw.ai/install.sh | bash</code>
-                    <button
-                      type="button"
-                      className="kura-btn kura-btn--ghost"
-                      onClick={() => copyText('curl -fsSL https://openclaw.ai/install.sh | bash', 'oc-install')}
-                    >
-                      {copyLabel('oc-install')}
-                    </button>
-                  </div>
-                  <a
-                    href="https://openclaw.ai"
-                    target="_blank"
-                    rel="noreferrer"
-                    className={styles.openclawLink}
+                <a
+                  href="https://openclaw.ai"
+                  target="_blank"
+                  rel="noreferrer"
+                  className={styles.openclawTitle}
+                >
+                  {t('openclaw.title')}
+                </a>
+                <p className={styles.openclawHint}>{t('openclaw.hint')}</p>
+                <div className={styles.codeBlock}>
+                  <code className={styles.codeValue}>curl -fsSL https://openclaw.ai/install.sh | bash</code>
+                  <button
+                    type="button"
+                    className="kura-btn kura-btn--ghost"
+                    onClick={() => copyText('curl -fsSL https://openclaw.ai/install.sh | bash', 'oc-install')}
                   >
-                    openclaw.ai &rarr;
-                  </a>
+                    {copyLabel('oc-install')}
+                  </button>
                 </div>
-
-                {/* Step 2: Prompt */}
-                <div className={styles.openclawStep}>
-                  <div className={styles.openclawStepTitle}>
-                    <span className={styles.openclawStepNumber}>2</span>
-                    {t('openclaw.step2Title')}
-                  </div>
-                  <p className={styles.openclawHint}>{t('openclaw.step2Hint')}</p>
-                  <div className={styles.codeBlock}>
-                    <code className={styles.codeValue}>{t('openclaw.step2Prompt')}</code>
-                    <button
-                      type="button"
-                      className="kura-btn kura-btn--ghost"
-                      onClick={() => copyText(t('openclaw.step2Prompt'), 'oc-prompt')}
-                    >
-                      {copyLabel('oc-prompt')}
-                    </button>
-                  </div>
-                </div>
+                <a
+                  href="https://openclaw.ai"
+                  target="_blank"
+                  rel="noreferrer"
+                  className={styles.openclawLink}
+                >
+                  openclaw.ai &rarr;
+                </a>
               </div>
             )}
           </div>

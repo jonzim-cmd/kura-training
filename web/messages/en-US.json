@@ -265,7 +265,7 @@
       "step6Label": "Click \"Connect\" on your new Kura Training connector",
       "done": "Done! Your connector is now set up.",
       "doneHint": "Open a new chat and tell Claude about your training.",
-      "mcpCopyHint": "Paste into step 5 on claude.ai",
+
       "next": "Next",
       "back": "Back",
       "restart": "Restart",
@@ -324,7 +324,7 @@
       "step6Label": "Check the agreement box and click \"Create\"",
       "done": "Done! Your MCP app is now set up in ChatGPT.",
       "doneHint": "Open a new chat and tell ChatGPT about your training.",
-      "mcpCopyHint": "Paste into step 5 on chatgpt.com",
+
       "next": "Next",
       "back": "Back",
       "restart": "Restart",
@@ -366,11 +366,8 @@
       }
     },
     "openclaw": {
-      "step1Title": "Install OpenClaw",
-      "step1Hint": "If you don't have it yet:",
-      "step2Title": "Tell your AI to set up Kura",
-      "step2Hint": "Copy this into your chat:",
-      "step2Prompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with kura login. Kura API: https://api.withkura.com"
+      "title": "Install OpenClaw",
+      "hint": "If you don't have it yet:"
     },
     "expert": {
       "toggle": "You use Claude Desktop, Claude Code, Gemini CLI, Codex, or another tool with MCP or CLI support?",

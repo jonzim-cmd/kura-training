@@ -41,10 +41,17 @@
 /* --- MCP URL Copy --- */
 .mcpCopyWrap {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: var(--space-xs);
+  justify-content: center;
+  gap: var(--space-sm);
   margin-bottom: var(--space-xl);
+  flex-wrap: wrap;
+}
+
+.mcpLabel {
+  font-size: var(--text-sm);
+  color: var(--ink-faint);
+  white-space: nowrap;
 }
 
 .mcpCopy {
@@ -61,11 +68,6 @@
   border-radius: 4px;
   color: var(--ink);
   border: 1px solid var(--thread);
-}
-
-.mcpHint {
-  font-size: var(--text-sm);
-  color: var(--ink-faint);
 }
 
 /* --- Progress Bar --- */

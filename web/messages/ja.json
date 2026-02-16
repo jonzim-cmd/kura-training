@@ -265,7 +265,7 @@
       "step6Label": "新しいKura Trainingコネクターの「Connect」をクリック",
       "done": "完了！コネクターの設定が完了しました。",
       "doneHint": "新しいチャットを開いて、トレーニングについて話しましょう。",
-      "mcpCopyHint": "ステップ5でclaude.aiに貼り付け",
+
       "next": "次へ",
       "back": "戻る",
       "restart": "最初から",
@@ -324,7 +324,7 @@
       "step6Label": "同意チェックボックスにチェックを入れて「Create」をクリック",
       "done": "完了！MCPアプリがChatGPTに設定されました。",
       "doneHint": "新しいチャットを開いて、トレーニングについて話しましょう。",
-      "mcpCopyHint": "ステップ5でchatgpt.comに貼り付け",
+
       "next": "次へ",
       "back": "戻る",
       "restart": "最初から",
@@ -366,11 +366,8 @@
       }
     },
     "openclaw": {
-      "step1Title": "OpenClawをインストール",
-      "step1Hint": "まだインストールしていない場合：",
-      "step2Title": "AIにKuraのセットアップを依頼",
-      "step2Hint": "チャットにコピーしてください：",
-      "step2Prompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with kura login. Kura API: https://api.withkura.com"
+      "title": "OpenClawをインストール",
+      "hint": "まだインストールしていない場合："
     },
     "expert": {
       "toggle": "Claude Desktop、Claude Code、Gemini CLI、Codex、その他のMCPまたはCLI対応ツールを使っていますか？",
