@@ -1250,6 +1250,7 @@ dependencies = [
  "hmac",
  "jsonwebtoken",
  "kura-core",
+ "kura-mcp-runtime",
  "rand 0.8.5",
  "regex",
  "reqwest",

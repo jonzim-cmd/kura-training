@@ -334,6 +334,7 @@ async fn main() {
             routes::projection_rules::router().layer(middleware::rate_limit::projections_layer()),
         )
         .merge(routes::system::router().layer(middleware::rate_limit::projections_layer()))
+        .merge(routes::mcp_http::router())
         .merge(routes::auth::register_router().layer(middleware::rate_limit::register_layer()))
         .merge(routes::auth::authorize_router().layer(middleware::rate_limit::authorize_layer()))
         .merge(routes::auth::token_router().layer(middleware::rate_limit::token_layer()))

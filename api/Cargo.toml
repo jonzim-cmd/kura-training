@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 kura-core = { workspace = true }
+kura-mcp-runtime = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }

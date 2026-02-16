@@ -61,6 +61,41 @@ pub async fn run(api_url: &str, inherited_no_auth: bool, command: McpCommands) -
 }
 
 #[derive(Clone, Debug)]
+pub struct HttpMcpRequestConfig {
+    pub no_auth: bool,
+    pub token: Option<String>,
+    pub default_source: String,
+    pub default_agent: String,
+}
+
+impl Default for HttpMcpRequestConfig {
+    fn default() -> Self {
+        Self {
+            no_auth: false,
+            token: None,
+            default_source: "mcp".to_string(),
+            default_agent: "kura-mcp".to_string(),
+        }
+    }
+}
+
+pub async fn handle_http_jsonrpc(
+    api_url: &str,
+    config: HttpMcpRequestConfig,
+    incoming: Value,
+) -> Vec<Value> {
+    let mut server = McpServer::new(McpRuntimeConfig {
+        api_url: api_url.to_string(),
+        no_auth: config.no_auth,
+        explicit_token: config.token,
+        default_source: config.default_source,
+        default_agent: config.default_agent,
+    });
+    server.capability_profile = server.negotiate_capability_profile().await;
+    server.handle_incoming_message(incoming).await
+}
+
+#[derive(Clone, Debug)]
 struct McpRuntimeConfig {
     api_url: String,
     no_auth: bool,
