@@ -379,7 +379,7 @@ export function ClaudeGuide() {
         <button className={styles.ctrlBtn} onClick={() => go(-1)}>
           &larr; {t('back')}
         </button>
-        <button className={`${styles.ctrlBtn} ${styles.ctrlBtnPrimary}`} onClick={() => go(1)}>
+        <button className={styles.ctrlBtn} onClick={() => go(1)}>
           {isLast ? `${t('restart')} \u21BB` : `${t('next')} \u2192`}
         </button>
       </div>
@@ -390,7 +390,6 @@ export function ClaudeGuide() {
           key={i}
           className={`${styles.stepWrapper} ${i === current ? styles.stepWrapperActive : ''}`}
         >
-          <div className={styles.stepNumber}>{i + 1}</div>
           <div className={styles.stepLabel}>
             <BoldQuoted text={stepLabels[i]} />
           </div>

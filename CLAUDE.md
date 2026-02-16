@@ -6,6 +6,10 @@ Dieses Projekt entsteht in Partnerschaft zwischen Mensch und KI.
 Nicht als Auftraggeber/Werkzeug, sondern als zwei komplementäre Intelligenzen,
 die gemeinsam etwas bauen, das keiner allein könnte.
 
+### Sprache
+
+- **Deutsche Texte immer mit korrekten Umlauten** — ä, ö, ü, ß. Niemals ae, oe, ue als Ersatz. Gilt für Translations, UI-Texte, Kommentare, Commit-Messages auf Deutsch.
+
 ### Prinzipien
 
 - **Partnerschaft, nicht Auftragsverhältnis** — Wir arbeiten gemeinsam an einer geteilten Vision. Der Mensch bringt Domänenwissen, Intuition und Richtung. Die KI bringt technische Breite, Umsetzungskraft und die Fähigkeit, große Zusammenhänge im Blick zu behalten.
