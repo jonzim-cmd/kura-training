@@ -49,6 +49,8 @@ services:
       KURA_AGENT_MODEL_ATTESTATION_SECRET: ${KURA_AGENT_MODEL_ATTESTATION_SECRET}
       FRONTEND_URL: ${KURA_FRONTEND_URL:?KURA_FRONTEND_URL must be set}
       KURA_CORS_ORIGINS: ${KURA_CORS_ORIGINS:?KURA_CORS_ORIGINS must be set}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-Kura <noreply@send.withkura.com>}
     depends_on:
       kura-postgres:
         condition: service_healthy
