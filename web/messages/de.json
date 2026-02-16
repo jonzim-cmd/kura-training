@@ -322,7 +322,7 @@
       }
     },
     "chatgpt": {
-      "intro": "Öffne <link>chatgpt.com</link> und folge der Bilder-Anleitung unten.",
+      "intro": "Die offizielle KURA-App für ChatGPT ist bei OpenAI eingereicht. Bis zur Freigabe verbindest du KURA über den Entwicklermodus — dauert zwei Minuten.<br></br>Öffne <link>chatgpt.com</link> und folge der Anleitung unten.",
       "step1Label": "Klicke auf \"Apps\" in der Seitenleiste",
       "step2Label": "Klicke auf das Zahnrad-Symbol oben rechts auf der Apps-Seite",
       "step3Label": "Klicke auf \"Erweiterte Einstellungen\" im Apps-Tab",

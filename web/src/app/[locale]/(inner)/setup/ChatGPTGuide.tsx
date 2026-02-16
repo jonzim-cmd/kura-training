@@ -413,6 +413,7 @@ export function ChatGPTGuide() {
       {/* Intro with link */}
       <p className={styles.intro}>
         {t.rich('intro', {
+          br: () => <br />,
           link: (chunks) => (
             <a href="https://chatgpt.com" target="_blank" rel="noreferrer" className={styles.introLink}>
               {chunks}

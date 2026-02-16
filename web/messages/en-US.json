@@ -322,7 +322,7 @@
       }
     },
     "chatgpt": {
-      "intro": "Open <link>chatgpt.com</link> and follow the visual guide below.",
+      "intro": "The official KURA app for ChatGPT has been submitted to OpenAI and is pending approval. In the meantime, you can connect KURA via developer mode — takes two minutes.<br></br>Open <link>chatgpt.com</link> and follow the guide below.",
       "step1Label": "Click \"Apps\" in the sidebar",
       "step2Label": "Click the gear icon at the top-right of the Apps page",
       "step3Label": "Click \"Advanced settings\" in the Apps settings tab",

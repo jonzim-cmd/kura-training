@@ -322,7 +322,7 @@
       }
     },
     "chatgpt": {
-      "intro": "<link>chatgpt.com</link>を開き、下のビジュアルガイドに従ってください。",
+      "intro": "ChatGPT向けの公式KURAアプリはOpenAIに申請中です。承認されるまでは、開発者モードでKURAを接続できます（2分で完了）。<br></br><link>chatgpt.com</link>を開き、下のガイドに従ってください。",
       "step1Label": "サイドバーの「Apps」をクリック",
       "step2Label": "Appsページ右上の歯車アイコンをクリック",
       "step3Label": "Apps設定タブで「Advanced settings」をクリック",
