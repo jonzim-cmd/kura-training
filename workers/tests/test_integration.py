@@ -13,6 +13,7 @@ Each test:
 
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import psycopg
 import pytest
@@ -1422,13 +1423,18 @@ class TestInferenceNightlyRefitIntegration:
         await create_test_user(db, test_user_id)
         await create_test_user(db, other_user_id)
         cluster_signature = "ls_backlog_bridge_signature"
+        # Use current timestamps so test data lands in the latest ISO week,
+        # ensuring _load_latest_week_clusters picks it up even when existing
+        # committed events occupy earlier weeks.
+        now = datetime.now(timezone.utc)
 
-        def _signal_payload(*, pseudo_user: str, signal_type: str, ts_iso: str) -> dict:
+        def _signal_payload(*, pseudo_user: str, signal_type: str, offset_minutes: int) -> dict:
+            ts = now - timedelta(minutes=35 - offset_minutes)
             return {
                 "schema_version": 1,
                 "signal_type": signal_type,
                 "category": "friction_signal",
-                "captured_at": ts_iso,
+                "captured_at": ts.isoformat(),
                 "user_ref": {"pseudonymized_user_id": pseudo_user},
                 "signature": {
                     "issue_type": signal_type,
@@ -1449,9 +1455,8 @@ class TestInferenceNightlyRefitIntegration:
             _signal_payload(
                 pseudo_user="u_alpha",
                 signal_type="save_claim_mismatch_attempt",
-                ts_iso="2026-02-13T09:00:00+00:00",
+                offset_minutes=0,
             ),
-            "TIMESTAMP '2026-02-13 10:00:00+01'",
         )
         await insert_event(
             db,
@@ -1460,9 +1465,8 @@ class TestInferenceNightlyRefitIntegration:
             _signal_payload(
                 pseudo_user="u_alpha",
                 signal_type="workflow_violation",
-                ts_iso="2026-02-13T09:10:00+00:00",
+                offset_minutes=10,
             ),
-            "TIMESTAMP '2026-02-13 10:10:00+01'",
         )
         await insert_event(
             db,
@@ -1471,9 +1475,8 @@ class TestInferenceNightlyRefitIntegration:
             _signal_payload(
                 pseudo_user="u_beta",
                 signal_type="save_claim_mismatch_attempt",
-                ts_iso="2026-02-13T09:20:00+00:00",
+                offset_minutes=20,
             ),
-            "TIMESTAMP '2026-02-13 10:20:00+01'",
         )
         await insert_event(
             db,
@@ -1482,9 +1485,8 @@ class TestInferenceNightlyRefitIntegration:
             _signal_payload(
                 pseudo_user="u_beta",
                 signal_type="workflow_violation",
-                ts_iso="2026-02-13T09:25:00+00:00",
+                offset_minutes=25,
             ),
-            "TIMESTAMP '2026-02-13 10:25:00+01'",
         )
         await insert_event(
             db,
@@ -1493,9 +1495,8 @@ class TestInferenceNightlyRefitIntegration:
             _signal_payload(
                 pseudo_user="u_alpha",
                 signal_type="save_claim_mismatch_attempt",
-                ts_iso="2026-02-13T09:30:00+00:00",
+                offset_minutes=30,
             ),
-            "TIMESTAMP '2026-02-13 10:30:00+01'",
         )
         await insert_event(
             db,
@@ -1504,9 +1505,8 @@ class TestInferenceNightlyRefitIntegration:
             _signal_payload(
                 pseudo_user="u_beta",
                 signal_type="save_claim_mismatch_attempt",
-                ts_iso="2026-02-13T09:35:00+00:00",
+                offset_minutes=35,
             ),
-            "TIMESTAMP '2026-02-13 10:35:00+01'",
         )
 
         await db.execute("SET ROLE app_worker")
@@ -1554,7 +1554,10 @@ class TestInferenceNightlyRefitIntegration:
         claim_class = "integration_test.rest_seconds"
         parser_version = "mention_parser.integration_test"
 
-        for minute in (0, 5, 10):
+        # Use current timestamps so test data lands in the latest ISO week,
+        # ensuring resolve_extraction_calibration_status picks it up.
+        for idx, minute in enumerate((0, 5, 10)):
+            offset = 30 - minute  # decreasing offset → increasing chronological order
             target_event_id = await insert_event(
                 db,
                 test_user_id,
@@ -1564,7 +1567,7 @@ class TestInferenceNightlyRefitIntegration:
                     "reps": 5,
                     "rest_seconds": 90,
                 },
-                f"TIMESTAMP '2026-02-12 10:{minute:02d}:00+01'",
+                f"NOW() - INTERVAL '{offset} minutes'",
             )
             await insert_event(
                 db,
@@ -1588,7 +1591,7 @@ class TestInferenceNightlyRefitIntegration:
                         "lineage_type": "supports",
                     },
                 },
-                f"TIMESTAMP '2026-02-12 10:{minute:02d}:20+01'",
+                f"NOW() - INTERVAL '{offset} minutes' + INTERVAL '20 seconds'",
             )
             await insert_event(
                 db,
@@ -1600,7 +1603,7 @@ class TestInferenceNightlyRefitIntegration:
                         "rest_seconds": {"from": 90, "to": 60}
                     },
                 },
-                f"TIMESTAMP '2026-02-12 10:{minute:02d}:40+01'",
+                f"NOW() - INTERVAL '{offset} minutes' + INTERVAL '40 seconds'",
             )
 
         await db.execute("SET ROLE app_worker")
