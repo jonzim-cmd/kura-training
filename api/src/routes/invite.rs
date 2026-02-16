@@ -79,16 +79,26 @@ pub async fn submit_access_request(
         .filter(|s| !s.is_empty());
 
     // Always return 201 even if duplicate (no info leak)
-    sqlx::query(
+    let result = sqlx::query_scalar::<_, i64>(
         "INSERT INTO access_requests (email, name, context) VALUES ($1, $2, $3) \
-         ON CONFLICT DO NOTHING",
+         ON CONFLICT DO NOTHING RETURNING 1",
     )
     .bind(&email)
     .bind(name)
     .bind(context)
-    .execute(&state.db)
+    .fetch_optional(&state.db)
     .await
     .map_err(AppError::Database)?;
+
+    // Notify admin about new (non-duplicate) requests
+    if result.is_some() {
+        let notify_email = email.clone();
+        let notify_name = req.name.clone();
+        let notify_context = req.context.clone();
+        tokio::spawn(async move {
+            send_admin_notification(&notify_email, notify_name.as_deref(), notify_context.as_deref()).await;
+        });
+    }
 
     Ok((
         StatusCode::CREATED,
@@ -605,6 +615,66 @@ async fn send_invite_email(
         Err(e) => {
             tracing::error!("Failed to send invite email to {to_email}: {e}");
             false
+        }
+    }
+}
+
+async fn send_admin_notification(requester_email: &str, name: Option<&str>, context: Option<&str>) {
+    let (api_key, from, admin_email) = match (
+        std::env::var("RESEND_API_KEY").ok().filter(|k| !k.is_empty()),
+        std::env::var("ADMIN_NOTIFY_EMAIL").ok().filter(|k| !k.is_empty()),
+    ) {
+        (Some(key), Some(admin)) => {
+            let from = std::env::var("EMAIL_FROM")
+                .unwrap_or_else(|_| "Kura <noreply@kura.dev>".to_string());
+            (key, from, admin)
+        }
+        _ => {
+            tracing::debug!("RESEND_API_KEY or ADMIN_NOTIFY_EMAIL not set, skipping admin notification");
+            return;
+        }
+    };
+
+    let name_line = name
+        .map(|n| format!("Name: {n}\n"))
+        .unwrap_or_default();
+    let context_line = context
+        .map(|c| format!("Kontext: {c}\n"))
+        .unwrap_or_default();
+
+    let body = format!(
+        "Neue Zugangsanfrage fuer Kura:\n\n\
+         Email: {requester_email}\n\
+         {name_line}{context_line}\n\
+         Zum Approven:\n\
+         kura api GET /v1/admin/access-requests?status=pending\n\
+         kura api POST /v1/admin/access-requests/<id>/approve"
+    );
+
+    let client = reqwest::Client::new();
+    let result = client
+        .post("https://api.resend.com/emails")
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&serde_json::json!({
+            "from": from,
+            "to": [admin_email],
+            "subject": format!("Kura: Neue Zugangsanfrage von {requester_email}"),
+            "text": body
+        }))
+        .send()
+        .await;
+
+    match result {
+        Ok(resp) if resp.status().is_success() => {
+            tracing::info!("Admin notification sent for access request from {requester_email}");
+        }
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            tracing::error!("Failed to send admin notification: {status} {body}");
+        }
+        Err(e) => {
+            tracing::error!("Failed to send admin notification: {e}");
         }
     }
 }

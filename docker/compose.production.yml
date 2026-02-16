@@ -51,6 +51,7 @@ services:
       KURA_CORS_ORIGINS: ${KURA_CORS_ORIGINS:?KURA_CORS_ORIGINS must be set}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-Kura <noreply@send.withkura.com>}
+      ADMIN_NOTIFY_EMAIL: ${ADMIN_NOTIFY_EMAIL:-}
     depends_on:
       kura-postgres:
         condition: service_healthy
