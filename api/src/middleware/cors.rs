@@ -1,5 +1,8 @@
-use axum::http::{HeaderName, HeaderValue, Method};
-use tower_http::cors::CorsLayer;
+use std::collections::HashSet;
+use std::sync::Arc;
+
+use axum::http::{HeaderName, HeaderValue, Method, request::Parts as RequestParts};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 const CONNECTOR_ORIGINS: &[&str] = &[
     "https://chatgpt.com",
@@ -39,13 +42,40 @@ pub fn build_cors_layer() -> CorsLayer {
         }
     }
 
-    let origins: Vec<HeaderValue> = origin_values
-        .into_iter()
-        .filter_map(|origin| origin.parse::<HeaderValue>().ok())
-        .collect();
+    let allowed_origins = Arc::new(
+        origin_values
+            .iter()
+            .map(|origin| origin.to_ascii_lowercase())
+            .collect::<HashSet<_>>(),
+    );
+
+    tracing::info!(
+        event = "cors_allowlist_configured",
+        allowed_origins = ?origin_values,
+        "Configured CORS allowlist"
+    );
+
+    let allow_origin =
+        AllowOrigin::predicate(move |origin: &HeaderValue, request_parts: &RequestParts| {
+            let origin_value = origin.to_str().unwrap_or_default();
+            let allowed = allowed_origins.contains(&origin_value.to_ascii_lowercase());
+
+            if is_oauth_path(request_parts.uri.path()) {
+                tracing::info!(
+                    event = "mcp_oauth_cors_origin_check",
+                    path = %request_parts.uri.path(),
+                    method = %request_parts.method,
+                    origin = %origin_value,
+                    allowed = allowed,
+                    "Evaluated CORS origin for MCP OAuth request"
+                );
+            }
+
+            allowed
+        });
 
     CorsLayer::new()
-        .allow_origin(origins)
+        .allow_origin(allow_origin)
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
         .allow_headers([
             HeaderName::from_static("authorization"),
@@ -53,4 +83,10 @@ pub fn build_cors_layer() -> CorsLayer {
         ])
         .allow_credentials(true)
         .max_age(std::time::Duration::from_secs(3600))
+}
+
+fn is_oauth_path(path: &str) -> bool {
+    path.starts_with("/oauth/")
+        || path.starts_with("/mcp/oauth/")
+        || path.contains("/.well-known/oauth-")
 }

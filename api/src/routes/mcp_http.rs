@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use axum::body::Bytes;
-use axum::extract::{Query, State};
+use axum::extract::{OriginalUri, Query, State};
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, HOST, WWW_AUTHENTICATE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -17,6 +17,7 @@ use crate::state::AppState;
 
 const MCP_PATH: &str = "/mcp";
 const OAUTH_SCOPES: [&str; 3] = ["agent:read", "agent:write", "agent:resolve"];
+const OAUTH_REQUEST_ID_HEADER: &str = "x-kura-oauth-request-id";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -122,8 +123,12 @@ async fn mcp_post(headers: HeaderMap, body: Bytes) -> Response {
     (StatusCode::OK, Json(Value::Array(responses))).into_response()
 }
 
-async fn oauth_authorization_server_metadata(headers: HeaderMap) -> Json<Value> {
+async fn oauth_authorization_server_metadata(
+    headers: HeaderMap,
+    original_uri: OriginalUri,
+) -> Json<Value> {
     let base = request_base_url(&headers);
+    log_oauth_discovery_request("authorization_server", &headers, &original_uri, &base);
     Json(json!({
         "issuer": base,
         "authorization_endpoint": format!("{base}/oauth/authorize"),
@@ -137,8 +142,12 @@ async fn oauth_authorization_server_metadata(headers: HeaderMap) -> Json<Value> 
     }))
 }
 
-async fn oauth_protected_resource_metadata(headers: HeaderMap) -> Json<Value> {
+async fn oauth_protected_resource_metadata(
+    headers: HeaderMap,
+    original_uri: OriginalUri,
+) -> Json<Value> {
     let base = request_base_url(&headers);
+    log_oauth_discovery_request("protected_resource", &headers, &original_uri, &base);
     Json(json!({
         "resource": format!("{base}{MCP_PATH}"),
         "authorization_servers": [base],
@@ -204,9 +213,89 @@ struct DynamicClientRegistrationResponse {
 
 async fn oauth_register(
     State(state): State<AppState>,
-    Json(req): Json<DynamicClientRegistrationRequest>,
-) -> Result<(StatusCode, Json<DynamicClientRegistrationResponse>), AppError> {
+    headers: HeaderMap,
+    original_uri: OriginalUri,
+    body: Bytes,
+) -> Response {
+    let log_context = oauth_log_context(&headers, &original_uri);
+    let req: DynamicClientRegistrationRequest = match serde_json::from_slice(&body) {
+        Ok(payload) => payload,
+        Err(err) => {
+            tracing::warn!(
+                event = "mcp_oauth_dcr_rejected",
+                request_id = %log_context.request_id,
+                path = %log_context.path,
+                origin = ?log_context.origin,
+                user_agent = ?log_context.user_agent,
+                forwarded_for = ?log_context.forwarded_for,
+                reason = "invalid_json_body",
+                body_len = body.len(),
+                parse_error = %err,
+                "MCP OAuth dynamic client registration rejected"
+            );
+            let response = oauth_error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_client_metadata",
+                "Request body must be valid JSON.",
+                None,
+            );
+            return with_oauth_request_id_header(response, &log_context.request_id);
+        }
+    };
+
+    tracing::info!(
+        event = "mcp_oauth_dcr_attempt",
+        request_id = %log_context.request_id,
+        path = %log_context.path,
+        origin = ?log_context.origin,
+        user_agent = ?log_context.user_agent,
+        forwarded_for = ?log_context.forwarded_for,
+        redirect_uri_count = req.redirect_uris.len(),
+        redirect_uri_targets = ?summarize_redirect_uri_targets(&req.redirect_uris),
+        grant_types = ?req.grant_types,
+        response_types = ?req.response_types,
+        token_endpoint_auth_method = ?req.token_endpoint_auth_method,
+        "MCP OAuth dynamic client registration attempt"
+    );
+
+    match oauth_register_inner(&state, req, &log_context).await {
+        Ok(registration) => {
+            let response = (StatusCode::CREATED, Json(registration)).into_response();
+            with_oauth_request_id_header(response, &log_context.request_id)
+        }
+        Err(err) => {
+            let response = app_error_to_oauth_response(err);
+            tracing::warn!(
+                event = "mcp_oauth_dcr_failed",
+                request_id = %log_context.request_id,
+                path = %log_context.path,
+                origin = ?log_context.origin,
+                user_agent = ?log_context.user_agent,
+                forwarded_for = ?log_context.forwarded_for,
+                status = response.status().as_u16(),
+                "MCP OAuth dynamic client registration failed"
+            );
+            with_oauth_request_id_header(response, &log_context.request_id)
+        }
+    }
+}
+
+async fn oauth_register_inner(
+    state: &AppState,
+    req: DynamicClientRegistrationRequest,
+    log_context: &OauthLogContext,
+) -> Result<DynamicClientRegistrationResponse, AppError> {
     if req.redirect_uris.is_empty() {
+        tracing::warn!(
+            event = "mcp_oauth_dcr_validation_failed",
+            request_id = %log_context.request_id,
+            path = %log_context.path,
+            origin = ?log_context.origin,
+            user_agent = ?log_context.user_agent,
+            forwarded_for = ?log_context.forwarded_for,
+            reason = "missing_redirect_uris",
+            "MCP OAuth dynamic client registration validation failed"
+        );
         return Err(AppError::Validation {
             message: "redirect_uris must not be empty".to_string(),
             field: Some("redirect_uris".to_string()),
@@ -217,11 +306,24 @@ async fn oauth_register(
 
     let mut normalized_redirects = Vec::with_capacity(req.redirect_uris.len());
     for redirect in req.redirect_uris {
-        let parsed = Url::parse(redirect.trim()).map_err(|_| AppError::Validation {
-            message: "redirect_uri is invalid".to_string(),
-            field: Some("redirect_uris".to_string()),
-            received: Some(Value::String(redirect.clone())),
-            docs_hint: Some("Use a valid absolute URI.".to_string()),
+        let parsed = Url::parse(redirect.trim()).map_err(|_| {
+            tracing::warn!(
+                event = "mcp_oauth_dcr_validation_failed",
+                request_id = %log_context.request_id,
+                path = %log_context.path,
+                origin = ?log_context.origin,
+                user_agent = ?log_context.user_agent,
+                forwarded_for = ?log_context.forwarded_for,
+                reason = "invalid_redirect_uri",
+                redirect_uri = %redirect,
+                "MCP OAuth dynamic client registration validation failed"
+            );
+            AppError::Validation {
+                message: "redirect_uri is invalid".to_string(),
+                field: Some("redirect_uris".to_string()),
+                received: Some(Value::String(redirect.clone())),
+                docs_hint: Some("Use a valid absolute URI.".to_string()),
+            }
         })?;
 
         let is_https = parsed.scheme() == "https";
@@ -232,6 +334,17 @@ async fn oauth_register(
             );
 
         if !is_https && !is_loopback_http {
+            tracing::warn!(
+                event = "mcp_oauth_dcr_validation_failed",
+                request_id = %log_context.request_id,
+                path = %log_context.path,
+                origin = ?log_context.origin,
+                user_agent = ?log_context.user_agent,
+                forwarded_for = ?log_context.forwarded_for,
+                reason = "redirect_scheme_not_allowed",
+                redirect_uri = %redirect,
+                "MCP OAuth dynamic client registration validation failed"
+            );
             return Err(AppError::Validation {
                 message: "redirect_uri must use https or loopback http".to_string(),
                 field: Some("redirect_uris".to_string()),
@@ -249,7 +362,7 @@ async fn oauth_register(
     normalized_redirects.dedup();
 
     let client_id = format!("kura-mcp-{}", Uuid::now_v7().simple());
-    sqlx::query(
+    if let Err(err) = sqlx::query(
         "INSERT INTO oauth_clients (client_id, allowed_redirect_uris, allow_loopback_redirect, is_active) \
          VALUES ($1, $2, FALSE, TRUE)",
     )
@@ -257,7 +370,19 @@ async fn oauth_register(
     .bind(&normalized_redirects)
     .execute(&state.db)
     .await
-    .map_err(AppError::Database)?;
+    {
+        tracing::error!(
+            event = "mcp_oauth_dcr_database_error",
+            request_id = %log_context.request_id,
+            path = %log_context.path,
+            origin = ?log_context.origin,
+            user_agent = ?log_context.user_agent,
+            forwarded_for = ?log_context.forwarded_for,
+            error = %err,
+            "MCP OAuth dynamic client registration database insert failed"
+        );
+        return Err(AppError::Database(err));
+    }
 
     let grant_types = if req.grant_types.is_empty() {
         vec![
@@ -278,17 +403,92 @@ async fn oauth_register(
         .token_endpoint_auth_method
         .unwrap_or_else(|| "none".to_string());
 
-    Ok((
-        StatusCode::CREATED,
-        Json(DynamicClientRegistrationResponse {
-            client_id,
-            client_id_issued_at: chrono::Utc::now().timestamp(),
-            redirect_uris: normalized_redirects,
-            grant_types,
-            response_types,
-            token_endpoint_auth_method,
-        }),
-    ))
+    tracing::info!(
+        event = "mcp_oauth_dcr_success",
+        request_id = %log_context.request_id,
+        path = %log_context.path,
+        origin = ?log_context.origin,
+        user_agent = ?log_context.user_agent,
+        forwarded_for = ?log_context.forwarded_for,
+        client_id = %client_id,
+        redirect_uri_count = normalized_redirects.len(),
+        redirect_uri_targets = ?summarize_redirect_uri_targets(&normalized_redirects),
+        "MCP OAuth dynamic client registration succeeded"
+    );
+
+    Ok(DynamicClientRegistrationResponse {
+        client_id,
+        client_id_issued_at: chrono::Utc::now().timestamp(),
+        redirect_uris: normalized_redirects,
+        grant_types,
+        response_types,
+        token_endpoint_auth_method,
+    })
+}
+
+#[derive(Debug)]
+struct OauthLogContext {
+    request_id: String,
+    path: String,
+    origin: Option<String>,
+    user_agent: Option<String>,
+    forwarded_for: Option<String>,
+}
+
+fn oauth_log_context(headers: &HeaderMap, original_uri: &OriginalUri) -> OauthLogContext {
+    OauthLogContext {
+        request_id: format!("oauth-{}", Uuid::now_v7()),
+        path: original_uri.0.path().to_string(),
+        origin: header_value(headers, "origin"),
+        user_agent: header_value(headers, "user-agent"),
+        forwarded_for: first_header_token(headers, "x-forwarded-for"),
+    }
+}
+
+fn log_oauth_discovery_request(
+    metadata_kind: &'static str,
+    headers: &HeaderMap,
+    original_uri: &OriginalUri,
+    base_url: &str,
+) {
+    tracing::info!(
+        event = "mcp_oauth_discovery_request",
+        metadata_kind = metadata_kind,
+        path = %original_uri.0.path(),
+        base_url = %base_url,
+        origin = ?header_value(headers, "origin"),
+        user_agent = ?header_value(headers, "user-agent"),
+        forwarded_for = ?first_header_token(headers, "x-forwarded-for"),
+        "MCP OAuth discovery metadata served"
+    );
+}
+
+fn summarize_redirect_uri_targets(redirect_uris: &[String]) -> Vec<String> {
+    let mut targets: Vec<String> = redirect_uris
+        .iter()
+        .filter_map(|value| {
+            let parsed = Url::parse(value.trim()).ok()?;
+            let host = parsed.host_str()?;
+            let mut target = format!("{}://{}", parsed.scheme(), host);
+            if let Some(port) = parsed.port() {
+                target.push(':');
+                target.push_str(&port.to_string());
+            }
+            Some(target)
+        })
+        .collect();
+    targets.sort();
+    targets.dedup();
+    targets
+}
+
+fn with_oauth_request_id_header(mut response: Response, request_id: &str) -> Response {
+    if let Ok(value) = HeaderValue::from_str(request_id) {
+        response
+            .headers_mut()
+            .insert(OAUTH_REQUEST_ID_HEADER, value);
+    }
+    response
 }
 
 fn parse_token_request(
@@ -480,6 +680,13 @@ fn request_base_url(headers: &HeaderMap) -> String {
     }
 
     runtime_api_base_url()
+}
+
+fn header_value(headers: &HeaderMap, key: &str) -> Option<String> {
+    headers
+        .get(key)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned)
 }
 
 fn first_header_token(headers: &HeaderMap, key: &str) -> Option<String> {
