@@ -185,9 +185,9 @@ async fn oauth_authorization_server_metadata(
     log_oauth_discovery_request("authorization_server", &headers, &original_uri, &base);
     Json(json!({
         "issuer": base,
-        "authorization_endpoint": format!("{base}/oauth/authorize"),
-        "token_endpoint": format!("{base}/oauth/token"),
-        "registration_endpoint": format!("{base}/oauth/register"),
+        "authorization_endpoint": format!("{base}/mcp/oauth/authorize"),
+        "token_endpoint": format!("{base}/mcp/oauth/token"),
+        "registration_endpoint": format!("{base}/mcp/oauth/register"),
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
