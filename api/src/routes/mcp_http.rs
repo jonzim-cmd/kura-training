@@ -131,7 +131,7 @@ async fn mcp_get() -> Response {
 async fn log_oauth_http_flow(req: Request, next: Next) -> Response {
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
-    let should_log = is_oauth_observed_path(&path);
+    let should_log = is_observed_path(&path);
 
     let origin = header_value(req.headers(), "origin");
     let user_agent = header_value(req.headers(), "user-agent");
@@ -174,8 +174,9 @@ async fn log_oauth_http_flow(req: Request, next: Next) -> Response {
     response
 }
 
-fn is_oauth_observed_path(path: &str) -> bool {
-    path.starts_with("/oauth/")
+fn is_observed_path(path: &str) -> bool {
+    path == MCP_PATH
+        || path.starts_with("/oauth/")
         || path.starts_with("/mcp/oauth/")
         || path.contains("/.well-known/oauth-")
 }
