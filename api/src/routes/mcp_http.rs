@@ -19,6 +19,7 @@ use crate::state::AppState;
 const MCP_PATH: &str = "/mcp";
 const OAUTH_SCOPES: [&str; 3] = ["agent:read", "agent:write", "agent:resolve"];
 const OAUTH_REQUEST_ID_HEADER: &str = "x-kura-oauth-request-id";
+const DCR_TOKEN_AUTH_METHODS: [&str; 2] = ["none", "client_secret_post"];
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -66,6 +67,10 @@ pub fn router() -> Router<AppState> {
         )
         .route("/oauth/token", post(oauth_token))
         .route("/mcp/oauth/token", post(oauth_token))
+        .route("/oauth/revoke", post(oauth_revoke))
+        .route("/mcp/oauth/revoke", post(oauth_revoke))
+        .route("/oauth/device/start", post(oauth_device_start))
+        .route("/mcp/oauth/device/start", post(oauth_device_start))
         .route("/oauth/register", post(oauth_register))
         .route("/mcp/oauth/register", post(oauth_register))
         .layer(axum::middleware::from_fn(log_oauth_http_flow))
@@ -188,10 +193,16 @@ async fn oauth_authorization_server_metadata(
         "authorization_endpoint": format!("{base}/mcp/oauth/authorize"),
         "token_endpoint": format!("{base}/mcp/oauth/token"),
         "registration_endpoint": format!("{base}/mcp/oauth/register"),
+        "revocation_endpoint": format!("{base}/mcp/oauth/revoke"),
+        "device_authorization_endpoint": format!("{base}/mcp/oauth/device/start"),
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "grant_types_supported": [
+            "authorization_code",
+            "refresh_token",
+            "urn:ietf:params:oauth:grant-type:device_code"
+        ],
         "code_challenge_methods_supported": ["S256"],
-        "token_endpoint_auth_methods_supported": ["none"],
+        "token_endpoint_auth_methods_supported": DCR_TOKEN_AUTH_METHODS,
         "scopes_supported": OAUTH_SCOPES,
     }))
 }
@@ -244,9 +255,23 @@ async fn oauth_token(State(state): State<AppState>, headers: HeaderMap, body: By
     }
 }
 
+async fn oauth_revoke() -> Response {
+    // RFC 7009: revocation endpoint should return 200 even for unknown tokens.
+    StatusCode::OK.into_response()
+}
+
+async fn oauth_device_start(
+    state: State<AppState>,
+    Json(req): Json<super::auth::DeviceAuthorizeRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    super::auth::device_authorize(state, Json(req)).await
+}
+
 #[derive(Debug, Deserialize)]
 struct DynamicClientRegistrationRequest {
     redirect_uris: Vec<String>,
+    #[serde(default)]
+    client_name: Option<String>,
     #[serde(default)]
     grant_types: Vec<String>,
     #[serde(default)]
@@ -260,8 +285,11 @@ struct DynamicClientRegistrationResponse {
     client_id: String,
     client_id_issued_at: i64,
     redirect_uris: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_name: Option<String>,
     grant_types: Vec<String>,
     response_types: Vec<String>,
+    code_challenge_methods_supported: Vec<String>,
     token_endpoint_auth_method: String,
 }
 
@@ -306,6 +334,7 @@ async fn oauth_register(
         forwarded_for = ?log_context.forwarded_for,
         redirect_uri_count = req.redirect_uris.len(),
         redirect_uri_targets = ?summarize_redirect_uri_targets(&req.redirect_uris),
+        client_name = ?req.client_name,
         grant_types = ?req.grant_types,
         response_types = ?req.response_types,
         token_endpoint_auth_method = ?req.token_endpoint_auth_method,
@@ -415,6 +444,52 @@ async fn oauth_register_inner(
     normalized_redirects.sort();
     normalized_redirects.dedup();
 
+    let grant_types = if req.grant_types.is_empty() {
+        vec![
+            "authorization_code".to_string(),
+            "refresh_token".to_string(),
+        ]
+    } else {
+        req.grant_types
+    };
+
+    let response_types = if req.response_types.is_empty() {
+        vec!["code".to_string()]
+    } else {
+        req.response_types
+    };
+
+    let token_endpoint_auth_method = req
+        .token_endpoint_auth_method
+        .unwrap_or_else(|| "none".to_string());
+    if !DCR_TOKEN_AUTH_METHODS
+        .iter()
+        .any(|method| method == &token_endpoint_auth_method)
+    {
+        tracing::warn!(
+            event = "mcp_oauth_dcr_validation_failed",
+            request_id = %log_context.request_id,
+            path = %log_context.path,
+            origin = ?log_context.origin,
+            user_agent = ?log_context.user_agent,
+            forwarded_for = ?log_context.forwarded_for,
+            reason = "unsupported_token_endpoint_auth_method",
+            token_endpoint_auth_method = %token_endpoint_auth_method,
+            "MCP OAuth dynamic client registration validation failed"
+        );
+        return Err(AppError::Validation {
+            message: "token_endpoint_auth_method is not supported".to_string(),
+            field: Some("token_endpoint_auth_method".to_string()),
+            received: Some(Value::String(token_endpoint_auth_method)),
+            docs_hint: Some("Supported methods: none, client_secret_post.".to_string()),
+        });
+    }
+
+    let client_name = req
+        .client_name
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
     let client_id = format!("kura-mcp-{}", Uuid::now_v7().simple());
     if let Err(err) = sqlx::query(
         "INSERT INTO oauth_clients (client_id, allowed_redirect_uris, allow_loopback_redirect, is_active) \
@@ -438,25 +513,6 @@ async fn oauth_register_inner(
         return Err(AppError::Database(err));
     }
 
-    let grant_types = if req.grant_types.is_empty() {
-        vec![
-            "authorization_code".to_string(),
-            "refresh_token".to_string(),
-        ]
-    } else {
-        req.grant_types
-    };
-
-    let response_types = if req.response_types.is_empty() {
-        vec!["code".to_string()]
-    } else {
-        req.response_types
-    };
-
-    let token_endpoint_auth_method = req
-        .token_endpoint_auth_method
-        .unwrap_or_else(|| "none".to_string());
-
     tracing::info!(
         event = "mcp_oauth_dcr_success",
         request_id = %log_context.request_id,
@@ -465,6 +521,7 @@ async fn oauth_register_inner(
         user_agent = ?log_context.user_agent,
         forwarded_for = ?log_context.forwarded_for,
         client_id = %client_id,
+        client_name = ?client_name,
         redirect_uri_count = normalized_redirects.len(),
         redirect_uri_targets = ?summarize_redirect_uri_targets(&normalized_redirects),
         "MCP OAuth dynamic client registration succeeded"
@@ -474,8 +531,10 @@ async fn oauth_register_inner(
         client_id,
         client_id_issued_at: chrono::Utc::now().timestamp(),
         redirect_uris: normalized_redirects,
+        client_name,
         grant_types,
         response_types,
+        code_challenge_methods_supported: vec!["S256".to_string()],
         token_endpoint_auth_method,
     })
 }
