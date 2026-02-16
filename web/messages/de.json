@@ -220,7 +220,19 @@
     },
     "support": {
       "title": "Support",
-      "text": "Fragen oder Probleme? Schreib an support@kura.dev."
+      "description": "Schreib uns — wir melden uns so schnell wie möglich.",
+      "category": "Kategorie",
+      "categoryQuestion": "Frage",
+      "categoryBug": "Bug melden",
+      "categoryFeature": "Feature-Wunsch",
+      "categoryOther": "Sonstiges",
+      "message": "Nachricht",
+      "messagePlaceholder": "Beschreib dein Anliegen...",
+      "send": "Nachricht senden",
+      "sending": "Wird gesendet...",
+      "success": "Deine Nachricht wurde gesendet. Wir melden uns.",
+      "sendAnother": "Weitere Nachricht senden",
+      "error": "Nachricht konnte nicht gesendet werden. Bitte versuche es erneut."
     },
     "danger": {
       "title": "Konto löschen",
@@ -383,14 +395,22 @@
     "title": "Impressum",
     "tmg": "Angaben gemäß § 5 TMG",
     "name": "Name",
-    "namePlaceholder": "Wird ergänzt",
     "address": "Adresse",
-    "addressPlaceholder": "Wird ergänzt",
     "contact": "Kontakt",
-    "contactPlaceholder": "Wird ergänzt",
-    "responsible": "Verantwortlich für den Inhalt",
-    "responsiblePlaceholder": "Wird ergänzt",
-    "note": "Inhalte werden ergänzt."
+    "contactPrefix": "E-Mail: ",
+    "responsible": "Verantwortlich für den Inhalt nach § 18 Abs. 2 MStV",
+    "liability": {
+      "title": "Haftung für Inhalte",
+      "text": "Als Diensteanbieter sind wir gemäß § 7 Abs. 1 TMG für eigene Inhalte auf diesen Seiten nach den allgemeinen Gesetzen verantwortlich. Nach §§ 8 bis 10 TMG sind wir als Diensteanbieter jedoch nicht verpflichtet, übermittelte oder gespeicherte fremde Informationen zu überwachen oder nach Umständen zu forschen, die auf eine rechtswidrige Tätigkeit hinweisen. Verpflichtungen zur Entfernung oder Sperrung der Nutzung von Informationen nach den allgemeinen Gesetzen bleiben hiervon unberührt."
+    },
+    "liabilityLinks": {
+      "title": "Haftung für Links",
+      "text": "Unser Angebot enthält Links zu externen Websites Dritter, auf deren Inhalte wir keinen Einfluss haben. Deshalb können wir für diese fremden Inhalte auch keine Gewähr übernehmen. Für die Inhalte der verlinkten Seiten ist stets der jeweilige Anbieter oder Betreiber der Seiten verantwortlich."
+    },
+    "copyright": {
+      "title": "Urheberrecht",
+      "text": "Die durch die Seitenbetreiber erstellten Inhalte und Werke auf diesen Seiten unterliegen dem deutschen Urheberrecht. Die Vervielfältigung, Bearbeitung, Verbreitung und jede Art der Verwertung außerhalb der Grenzen des Urheberrechtes bedürfen der schriftlichen Zustimmung des jeweiligen Autors bzw. Erstellers."
+    }
   },
   "datenschutz": {
     "title": "Datenschutzerklärung",

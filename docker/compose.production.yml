@@ -129,6 +129,9 @@ services:
       NEXT_PUBLIC_API_URL: ${KURA_WEB_PUBLIC_API_URL:?KURA_WEB_PUBLIC_API_URL must be set}
       NEXT_PUBLIC_KURA_MCP_URL: ${KURA_WEB_PUBLIC_MCP_URL:-https://api.withkura.com/mcp}
       NEXT_PUBLIC_SOCIAL_AUTH_BASE_URL: ${SUPABASE_URL:?SUPABASE_URL must be set}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      ADMIN_NOTIFY_EMAIL: ${ADMIN_NOTIFY_EMAIL:-}
+      EMAIL_FROM: ${EMAIL_FROM:-Kura <noreply@withkura.com>}
     depends_on:
       kura-api:
         condition: service_healthy

@@ -42,6 +42,11 @@ export default function SettingsPage() {
   const [emailSaving, setEmailSaving] = useState(false);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [emailSuccess, setEmailSuccess] = useState<string | null>(null);
+  const [contactCategory, setContactCategory] = useState('question');
+  const [contactMessage, setContactMessage] = useState('');
+  const [contactSending, setContactSending] = useState(false);
+  const [contactSuccess, setContactSuccess] = useState(false);
+  const [contactError, setContactError] = useState<string | null>(null);
 
   // Redirect if not logged in
   useEffect(() => {
@@ -170,6 +175,34 @@ export default function SettingsPage() {
       a.click();
       URL.revokeObjectURL(url);
     } catch { /* silently fail */ }
+  };
+
+  const handleContactSubmit = async () => {
+    if (!contactMessage.trim() || contactSending) return;
+    setContactSending(true);
+    setContactError(null);
+    try {
+      const res = await fetch('/api/contact', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          category: contactCategory,
+          message: contactMessage,
+          email: user.email,
+        }),
+      });
+      if (res.ok) {
+        setContactSuccess(true);
+        setContactMessage('');
+      } else {
+        const data = await res.json().catch(() => null);
+        setContactError(data?.error || t('support.error'));
+      }
+    } catch {
+      setContactError(t('support.error'));
+    } finally {
+      setContactSending(false);
+    }
   };
 
   const formatDate = (iso: string) => new Date(iso).toLocaleDateString();
@@ -428,9 +461,60 @@ export default function SettingsPage() {
             {activeSection === 'support' && (
               <section className="kura-card">
                 <h2 className={styles.sectionTitle}>{t('support.title')}</h2>
-                <p className={styles.sectionDescription}>
-                  {t('support.text')}
-                </p>
+                <p className={styles.sectionDescription}>{t('support.description')}</p>
+
+                {contactSuccess ? (
+                  <div className={styles.contactSuccess}>
+                    <p>{t('support.success')}</p>
+                    <button
+                      className="kura-btn kura-btn--ghost"
+                      onClick={() => setContactSuccess(false)}
+                    >
+                      {t('support.sendAnother')}
+                    </button>
+                  </div>
+                ) : (
+                  <div className={styles.contactForm}>
+                    <div className={styles.field}>
+                      <label htmlFor="contactCategory" className="kura-label">
+                        {t('support.category')}
+                      </label>
+                      <select
+                        id="contactCategory"
+                        className="kura-input"
+                        value={contactCategory}
+                        onChange={(e) => setContactCategory(e.target.value)}
+                      >
+                        <option value="question">{t('support.categoryQuestion')}</option>
+                        <option value="bug">{t('support.categoryBug')}</option>
+                        <option value="feature">{t('support.categoryFeature')}</option>
+                        <option value="other">{t('support.categoryOther')}</option>
+                      </select>
+                    </div>
+                    <div className={styles.field}>
+                      <label htmlFor="contactMessage" className="kura-label">
+                        {t('support.message')}
+                      </label>
+                      <textarea
+                        id="contactMessage"
+                        className="kura-input"
+                        rows={6}
+                        value={contactMessage}
+                        onChange={(e) => setContactMessage(e.target.value)}
+                        placeholder={t('support.messagePlaceholder')}
+                        style={{ resize: 'vertical' }}
+                      />
+                    </div>
+                    {contactError && <p className={styles.settingHint}>{contactError}</p>}
+                    <button
+                      className="kura-btn kura-btn--primary"
+                      onClick={handleContactSubmit}
+                      disabled={!contactMessage.trim() || contactSending}
+                    >
+                      {contactSending ? t('support.sending') : t('support.send')}
+                    </button>
+                  </div>
+                )}
               </section>
             )}
 
