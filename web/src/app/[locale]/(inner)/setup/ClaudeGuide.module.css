@@ -18,12 +18,34 @@
   --cai-green: #4ade80;
 }
 
-/* --- Direct Link --- */
-.directLink {
-  display: block;
-  text-align: center;
-  font-size: var(--text-base);
+/* --- Top Bar: link + MCP URL --- */
+.topBar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xl);
   margin-bottom: var(--space-lg);
+  flex-wrap: wrap;
+}
+
+.directLink {
+  font-size: var(--text-base);
+}
+
+.mcpCopy {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.mcpUrl {
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0.5rem 0.875rem;
+  border-radius: 4px;
+  color: var(--ink);
+  border: 1px solid var(--thread);
 }
 
 /* --- Progress Bar --- */

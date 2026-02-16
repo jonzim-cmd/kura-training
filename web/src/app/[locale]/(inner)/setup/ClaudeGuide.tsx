@@ -326,8 +326,27 @@ const STEPS = [Step1, Step2, Step3, Step4, Step5, Step6];
 
 export function ClaudeGuide() {
   const t = useTranslations('setup.claude');
+  const tc = useTranslations('common');
   const [current, setCurrent] = useState(0);
+  const [copied, setCopied] = useState(false);
   const isLast = current >= TOTAL_STEPS - 1;
+
+  const copyUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(MCP_URL);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = MCP_URL;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
+  };
 
   const stepLabels = [
     t('step1Label'), t('step2Label'), t('step3Label'),
@@ -355,10 +374,18 @@ export function ClaudeGuide() {
 
   return (
     <div className={styles.guide}>
-      {/* Direct link */}
-      <a href="https://claude.ai" target="_blank" rel="noreferrer" className={styles.directLink}>
-        claude.ai &rarr;
-      </a>
+      {/* Direct link + MCP URL copy */}
+      <div className={styles.topBar}>
+        <a href="https://claude.ai" target="_blank" rel="noreferrer" className={styles.directLink}>
+          claude.ai &rarr;
+        </a>
+        <div className={styles.mcpCopy}>
+          <code className={styles.mcpUrl}>{MCP_URL}</code>
+          <button type="button" className="kura-btn kura-btn--ghost" onClick={copyUrl}>
+            {copied ? tc('copied') : tc('copy')}
+          </button>
+        </div>
+      </div>
 
       {/* Progress dots */}
       <div className={styles.progressBar}>
