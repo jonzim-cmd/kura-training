@@ -153,6 +153,7 @@
     "consentLabel": "匿名化されたトレーニングデータがKuraの改善に使用されることに同意します。",
     "healthConsentRequired": "健康関連データの処理に関する明示的な同意が必要です。",
     "anonymizedConsentRequired": "アーリーアクセス参加のため、匿名化データ利用への同意が必要です。",
+    "socialSignupConsentHint": "2つの同意チェックを完了すると、ソーシャル登録を利用できます。",
     "inviteInvalid": "この招待リンクは無効または期限切れです。",
     "socialLoginFailed": "ソーシャルログインに失敗しました。もう一度お試しください。",
     "socialLoginNotConfigured": "ソーシャルログインは現在未設定です。",

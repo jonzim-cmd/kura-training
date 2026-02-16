@@ -153,6 +153,7 @@
     "consentLabel": "I agree that my anonymized training data may be used to improve Kura.",
     "healthConsentRequired": "Please provide explicit consent for processing health-related data.",
     "anonymizedConsentRequired": "Please agree to anonymized data usage for early access.",
+    "socialSignupConsentHint": "Social sign-up is available after both consent checkboxes are accepted.",
     "inviteInvalid": "This invite link is invalid or expired.",
     "socialLoginFailed": "Social login failed. Please try again.",
     "socialLoginNotConfigured": "Social login is currently not configured.",

@@ -35,6 +35,12 @@ interface AuthContextType {
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   loginWithSupabaseToken: (accessToken: string) => Promise<void>;
+  registerWithSupabaseToken: (
+    accessToken: string,
+    inviteToken: string | null,
+    consentHealthDataProcessing: boolean,
+    consentAnonymizedLearning: boolean,
+  ) => Promise<void>;
   register: (
     email: string,
     password: string,
@@ -211,7 +217,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => null);
-        throw new Error(err?.error || 'Social login failed');
+        throw new Error(err?.message || err?.error || 'Social login failed');
+      }
+      const tokens: Tokens = await res.json();
+      await handleTokens(tokens);
+    },
+    [handleTokens],
+  );
+
+  const registerWithSupabaseToken = useCallback(
+    async (
+      accessToken: string,
+      inviteToken: string | null,
+      consentHealthDataProcessing: boolean,
+      consentAnonymizedLearning: boolean,
+    ) => {
+      const res = await apiFetch('/v1/auth/supabase/register', {
+        method: 'POST',
+        body: JSON.stringify({
+          access_token: accessToken,
+          invite_token: inviteToken || undefined,
+          consent_health_data_processing: consentHealthDataProcessing,
+          consent_anonymized_learning: consentAnonymizedLearning,
+          client_id: CLIENT_ID,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        throw new Error(err?.message || err?.error || 'Social sign-up failed');
       }
       const tokens: Tokens = await res.json();
       await handleTokens(tokens);
@@ -265,6 +298,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       loading,
       login,
       loginWithSupabaseToken,
+      registerWithSupabaseToken,
       register,
       refreshUser,
       logout,
@@ -275,6 +309,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       loading,
       login,
       loginWithSupabaseToken,
+      registerWithSupabaseToken,
       register,
       refreshUser,
       logout,

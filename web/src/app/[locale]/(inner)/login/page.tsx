@@ -6,6 +6,11 @@ import { Link, useRouter } from '@/i18n/routing';
 import { API_URL } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { SETUP_SEEN_STORAGE_KEY } from '@/lib/onboarding';
+import {
+  SOCIAL_AUTH_ENABLED,
+  socialAuthorizeUrl,
+  type SocialProvider,
+} from '@/lib/social-auth';
 import styles from '../../auth.module.css';
 
 function postLoginRoute(): '/setup' | '/settings' {
@@ -13,17 +18,7 @@ function postLoginRoute(): '/setup' | '/settings' {
   return localStorage.getItem(SETUP_SEEN_STORAGE_KEY) === '1' ? '/settings' : '/setup';
 }
 
-type SocialProvider = 'google' | 'github' | 'apple';
-
-const SOCIAL_AUTH_BASE_URL = process.env.NEXT_PUBLIC_SOCIAL_AUTH_BASE_URL?.trim() ?? '';
 const OAUTH_AUTHORIZE_PATH = '/oauth/authorize';
-
-function socialAuthorizeUrl(provider: SocialProvider, redirectTo: string): string {
-  const authUrl = new URL('/auth/v1/authorize', SOCIAL_AUTH_BASE_URL);
-  authUrl.searchParams.set('provider', provider);
-  authUrl.searchParams.set('redirect_to', redirectTo);
-  return authUrl.toString();
-}
 
 function resolveOauthReturnTo(rawValue: string | null): string | null {
   if (!rawValue) return null;
@@ -87,7 +82,7 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [oauthReturnTo, setOauthReturnTo] = useState<string | null>(null);
   const redirectingRef = useRef(false);
-  const socialEnabled = SOCIAL_AUTH_BASE_URL.length > 0;
+  const socialEnabled = SOCIAL_AUTH_ENABLED;
 
   useEffect(() => {
     if (typeof window === 'undefined') return;

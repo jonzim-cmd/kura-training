@@ -56,10 +56,24 @@
   background: rgba(255, 255, 255, 0.02);
 }
 
+.socialBtn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+  border-color: var(--thread);
+}
+
 .socialBtn svg {
   width: 1.125rem;
   height: 1.125rem;
   flex-shrink: 0;
+}
+
+.socialHint {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--ink-ghost);
 }
 
 .divider {

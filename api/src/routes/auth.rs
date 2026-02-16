@@ -68,6 +68,10 @@ pub fn supabase_login_router() -> Router<AppState> {
     Router::new().route("/v1/auth/supabase/login", post(supabase_login))
 }
 
+pub fn supabase_register_router() -> Router<AppState> {
+    Router::new().route("/v1/auth/supabase/register", post(supabase_register))
+}
+
 const AGENT_ACCESS_TOKEN_TTL_MINUTES: i64 = 30;
 const DEVICE_CODE_TTL_MINUTES: i64 = 10;
 const DEVICE_CODE_POLL_INTERVAL_SECONDS: i32 = 5;
@@ -134,6 +138,11 @@ fn ensure_social_signup_allowed(signup_gate: crate::state::SignupGate) -> Result
             docs_hint: Some("Payment integration coming soon.".to_string()),
         }),
     }
+}
+
+fn social_bootstrap_password_hash() -> Result<String, AppError> {
+    let bootstrap_secret = format!("oidc-disabled-password-{}", Uuid::now_v7());
+    auth::hash_password(&bootstrap_secret).map_err(AppError::Internal)
 }
 
 fn normalize_user_code(user_code: &str) -> String {
@@ -2278,10 +2287,9 @@ pub async fn oidc_login(
         } else {
             ensure_social_signup_allowed(state.signup_gate)?;
             return Err(AppError::Forbidden {
-                message: "Social sign-up requires prior account registration with explicit health-data consent."
-                    .to_string(),
+                message: "No account is linked to this social identity yet.".to_string(),
                 docs_hint: Some(
-                    "Create an account first, accept health-data consent, then retry social login with the same verified email."
+                    "Use the sign-up flow with explicit consent, then retry social login."
                         .to_string(),
                 ),
             });
@@ -2359,6 +2367,19 @@ pub async fn oidc_login(
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SupabaseLoginRequest {
     pub access_token: String,
+    #[serde(default)]
+    pub client_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct SupabaseRegisterRequest {
+    pub access_token: String,
+    #[serde(default)]
+    pub invite_token: Option<String>,
+    #[serde(default)]
+    pub consent_health_data_processing: Option<bool>,
+    #[serde(default)]
+    pub consent_anonymized_learning: Option<bool>,
     #[serde(default)]
     pub client_id: Option<String>,
 }
@@ -2489,6 +2510,267 @@ async fn fetch_supabase_user(access_token: &str) -> Result<SupabaseUserResponse,
             message: "invalid_supabase_session".to_string(),
             docs_hint: Some("Supabase user payload is invalid.".to_string()),
         })
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/auth/supabase/register",
+    request_body = SupabaseRegisterRequest,
+    responses(
+        (status = 200, description = "Social registration successful, tokens issued", body = TokenResponse),
+        (status = 400, description = "Validation error", body = kura_core::error::ApiError),
+        (status = 401, description = "Invalid social session", body = kura_core::error::ApiError),
+        (status = 403, description = "Access gate blocks sign-up", body = kura_core::error::ApiError),
+        (status = 409, description = "Identity conflict", body = kura_core::error::ApiError)
+    ),
+    tag = "auth"
+)]
+pub async fn supabase_register(
+    State(state): State<AppState>,
+    Json(req): Json<SupabaseRegisterRequest>,
+) -> Result<Json<TokenResponse>, AppError> {
+    use crate::state::SignupGate;
+
+    if req.access_token.trim().is_empty() {
+        return Err(AppError::Validation {
+            message: "access_token is required".to_string(),
+            field: Some("access_token".to_string()),
+            received: None,
+            docs_hint: Some("Pass a Supabase access token from social login.".to_string()),
+        });
+    }
+    if req.consent_health_data_processing != Some(true) {
+        return Err(AppError::Validation {
+            message:
+                "Explicit consent to process health-related training and recovery data is required."
+                    .to_string(),
+            field: Some("consent_health_data_processing".to_string()),
+            received: None,
+            docs_hint: Some("Set consent_health_data_processing: true".to_string()),
+        });
+    }
+
+    let supabase_user = fetch_supabase_user(req.access_token.trim()).await?;
+    let (provider, provider_subject, verified_email_norm) =
+        extract_supabase_identity(&supabase_user)?;
+
+    let email_norm = verified_email_norm.ok_or_else(|| AppError::Unauthorized {
+        message: "verified_email_required_for_first_link".to_string(),
+        docs_hint: Some(
+            "First-time social login requires a verified email from the provider.".to_string(),
+        ),
+    })?;
+
+    let mut tx = state.db.begin().await?;
+    let invite_token_id = match state.signup_gate {
+        SignupGate::Invite => {
+            let token_str = req.invite_token.as_deref().unwrap_or("");
+            if token_str.is_empty() {
+                return Err(AppError::Forbidden {
+                    message: "Registration requires an invite token.".to_string(),
+                    docs_hint: Some("Request access at /request-access".to_string()),
+                });
+            }
+            let (token_id, bound_email) =
+                super::invite::validate_invite_token(&state.db, token_str).await?;
+            validate_invite_email_binding(bound_email.as_deref(), &email_norm)?;
+
+            if req.consent_anonymized_learning != Some(true) {
+                return Err(AppError::Validation {
+                    message: "Consent to anonymized data usage is required for early access."
+                        .to_string(),
+                    field: Some("consent_anonymized_learning".to_string()),
+                    received: None,
+                    docs_hint: Some("Set consent_anonymized_learning: true".to_string()),
+                });
+            }
+            Some(token_id)
+        }
+        SignupGate::Payment => {
+            return Err(AppError::Forbidden {
+                message: "Registration requires a payment subscription.".to_string(),
+                docs_hint: Some("Payment integration coming soon.".to_string()),
+            });
+        }
+        SignupGate::Open => None,
+    };
+
+    let consent_anonymized = req.consent_anonymized_learning.unwrap_or(false);
+    let existing_provider_user = sqlx::query_scalar::<_, Uuid>(
+        "SELECT user_id FROM user_identities WHERE provider = $1 AND provider_subject = $2",
+    )
+    .bind(&provider)
+    .bind(&provider_subject)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+
+    let (user_id, is_new_user) = if let Some(user_id) = existing_provider_user {
+        let _ = sqlx::query(
+            "UPDATE user_identities \
+             SET email_norm = $3, email_verified_at = NOW(), updated_at = NOW() \
+             WHERE provider = $1 AND provider_subject = $2",
+        )
+        .bind(&provider)
+        .bind(&provider_subject)
+        .bind(&email_norm)
+        .execute(&mut *tx)
+        .await;
+        (user_id, false)
+    } else {
+        let by_identity_email = sqlx::query_scalar::<_, Uuid>(
+            "SELECT DISTINCT user_id \
+             FROM user_identities \
+             WHERE email_norm = $1 AND email_verified_at IS NOT NULL \
+             LIMIT 2",
+        )
+        .bind(&email_norm)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+        if by_identity_email.len() > 1 {
+            return Err(AppError::Validation {
+                message: "ambiguous_email_identity".to_string(),
+                field: Some("email".to_string()),
+                received: Some(serde_json::Value::String(email_norm.clone())),
+                docs_hint: Some(
+                    "Multiple accounts map to this email. Manual account linking required."
+                        .to_string(),
+                ),
+            });
+        }
+
+        if let Some(existing_user_id) = by_identity_email.first().copied() {
+            (existing_user_id, false)
+        } else if let Some(existing_user_id) =
+            sqlx::query_scalar::<_, Uuid>("SELECT id FROM users WHERE email = $1")
+                .bind(&email_norm)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(AppError::Database)?
+        {
+            (existing_user_id, false)
+        } else {
+            ensure_social_signup_allowed(state.signup_gate)?;
+            let new_user_id = Uuid::now_v7();
+            let password_hash = social_bootstrap_password_hash()?;
+            sqlx::query(
+                "INSERT INTO users (
+                    id,
+                    email,
+                    password_hash,
+                    display_name,
+                    consent_anonymized_learning,
+                    consent_health_data_processing,
+                    consent_health_data_processing_at,
+                    consent_health_data_processing_version,
+                    invited_by_token
+                ) VALUES ($1, $2, $3, NULL, $4, TRUE, NOW(), $5, $6)",
+            )
+            .bind(new_user_id)
+            .bind(&email_norm)
+            .bind(&password_hash)
+            .bind(consent_anonymized)
+            .bind(HEALTH_DATA_CONSENT_VERSION)
+            .bind(invite_token_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+            (new_user_id, true)
+        }
+    };
+
+    if !is_new_user {
+        sqlx::query(
+            "UPDATE users
+             SET consent_health_data_processing = TRUE,
+                 consent_health_data_processing_at = COALESCE(consent_health_data_processing_at, NOW()),
+                 consent_health_data_processing_version = $2,
+                 consent_health_data_withdrawn_at = NULL,
+                 consent_anonymized_learning = consent_anonymized_learning OR $3,
+                 updated_at = NOW()
+             WHERE id = $1",
+        )
+        .bind(user_id)
+        .bind(HEALTH_DATA_CONSENT_VERSION)
+        .bind(consent_anonymized)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+    }
+
+    if let Some(token_id) = invite_token_id {
+        if is_new_user {
+            super::invite::mark_invite_used(&mut tx, token_id, user_id).await?;
+        }
+    }
+
+    let is_active = sqlx::query_scalar::<_, bool>("SELECT is_active FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(AppError::Database)?
+        .ok_or_else(|| AppError::Unauthorized {
+            message: "invalid_grant".to_string(),
+            docs_hint: Some("Social identity mapped to a missing account.".to_string()),
+        })?;
+    if !is_active {
+        return Err(AppError::Unauthorized {
+            message: "account_inactive".to_string(),
+            docs_hint: Some("This account is inactive.".to_string()),
+        });
+    }
+
+    let inserted = sqlx::query(
+        "INSERT INTO user_identities \
+         (user_id, provider, provider_subject, email_norm, email_verified_at) \
+         VALUES ($1, $2, $3, $4, NOW()) \
+         ON CONFLICT (provider, provider_subject) DO NOTHING",
+    )
+    .bind(user_id)
+    .bind(&provider)
+    .bind(&provider_subject)
+    .bind(&email_norm)
+    .execute(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+
+    if inserted.rows_affected() == 0 {
+        let existing_user_id = sqlx::query_scalar::<_, Uuid>(
+            "SELECT user_id FROM user_identities WHERE provider = $1 AND provider_subject = $2",
+        )
+        .bind(&provider)
+        .bind(&provider_subject)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+        if existing_user_id != user_id {
+            return Err(AppError::Forbidden {
+                message: "identity_already_linked".to_string(),
+                docs_hint: Some(
+                    "This provider identity is already linked to a different account.".to_string(),
+                ),
+            });
+        }
+    }
+
+    sqlx::query(
+        "INSERT INTO analysis_subjects (user_id, analysis_subject_id) \
+         VALUES ($1, 'asub_' || replace(gen_random_uuid()::text, '-', '')) \
+         ON CONFLICT (user_id) DO NOTHING",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+
+    tx.commit().await.map_err(AppError::Database)?;
+
+    let client_id = req.client_id.unwrap_or_else(|| "kura-web".to_string());
+    validate_oauth_client_for_device(&state.db, &client_id).await?;
+    issue_tokens(&state.db, user_id, &client_id, default_agent_token_scopes()).await
 }
 
 #[utoipa::path(
