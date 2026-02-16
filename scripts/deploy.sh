@@ -63,6 +63,8 @@ require_env "KURA_WORKER_DATABASE_URL" "Set Supabase DB URL for worker runtime."
 require_env "KURA_WEB_PUBLIC_API_URL" "Set public API base URL for web runtime (e.g. https://api.withkura.com)."
 require_env "KURA_FRONTEND_URL" "Set canonical web URL for auth/reset links (e.g. https://withkura.com)."
 require_env "KURA_CORS_ORIGINS" "Set allowed browser origins (comma-separated, e.g. https://withkura.com,https://www.withkura.com)."
+require_env "SUPABASE_URL" "Set Supabase project URL (e.g. https://<project-ref>.supabase.co)."
+require_env "SUPABASE_ANON_KEY" "Set Supabase anon key for social-login session validation."
 
 # Resolve target DB URL for migration drift preflight.
 TARGET_DATABASE_URL="${KURA_API_DATABASE_URL}"

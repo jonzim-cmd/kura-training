@@ -57,6 +57,7 @@ mod state;
         routes::auth::device_verify_submit,
         routes::auth::device_token,
         routes::auth::oidc_login,
+        routes::auth::supabase_login,
         routes::projections::snapshot,
         routes::projections::get_projection,
         routes::projections::list_projections,
@@ -167,6 +168,7 @@ mod state;
         routes::auth::DeviceTokenRequest,
         routes::auth::DeviceVerifySubmit,
         routes::auth::OidcLoginRequest,
+        routes::auth::SupabaseLoginRequest,
         kura_core::projections::Projection,
         kura_core::projections::ProjectionResponse,
         kura_core::projections::ProjectionMeta,
@@ -334,6 +336,9 @@ async fn main() {
         .merge(routes::auth::token_router().layer(middleware::rate_limit::token_layer()))
         .merge(routes::auth::device_router().layer(middleware::rate_limit::token_layer()))
         .merge(routes::auth::oidc_router().layer(middleware::rate_limit::authorize_layer()))
+        .merge(
+            routes::auth::supabase_login_router().layer(middleware::rate_limit::authorize_layer()),
+        )
         .merge(routes::auth::email_login_router().layer(middleware::rate_limit::authorize_layer()))
         .merge(
             routes::auth::password_reset_router().layer(middleware::rate_limit::authorize_layer()),

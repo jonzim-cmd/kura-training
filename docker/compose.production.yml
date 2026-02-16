@@ -15,6 +15,9 @@
 #   KURA_WEB_PUBLIC_API_URL
 #   KURA_FRONTEND_URL
 #   KURA_CORS_ORIGINS
+# Required Supabase auth values:
+#   SUPABASE_URL
+#   SUPABASE_ANON_KEY
 # Optional override:
 #   KURA_WORKER_LISTEN_DATABASE_URL
 
@@ -47,12 +50,15 @@ services:
       PORT: "3000"
       RUST_LOG: "kura_api=info,tower_http=info"
       KURA_AGENT_MODEL_ATTESTATION_SECRET: ${KURA_AGENT_MODEL_ATTESTATION_SECRET}
+      SIGNUP_GATE: ${SIGNUP_GATE:-invite}
       FRONTEND_URL: ${KURA_FRONTEND_URL:?KURA_FRONTEND_URL must be set}
       KURA_CORS_ORIGINS: ${KURA_CORS_ORIGINS:?KURA_CORS_ORIGINS must be set}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-Kura <noreply@withkura.com>}
       ADMIN_NOTIFY_EMAIL: ${ADMIN_NOTIFY_EMAIL:-}
       KURA_WEB_PUBLIC_API_URL: ${KURA_WEB_PUBLIC_API_URL:-https://api.withkura.com}
+      SUPABASE_URL: ${SUPABASE_URL:?SUPABASE_URL must be set}
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:?SUPABASE_ANON_KEY must be set}
     depends_on:
       kura-postgres:
         condition: service_healthy
@@ -113,11 +119,13 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: ${KURA_WEB_PUBLIC_API_URL:?KURA_WEB_PUBLIC_API_URL must be set}
+        NEXT_PUBLIC_SOCIAL_AUTH_BASE_URL: ${SUPABASE_URL:?SUPABASE_URL must be set}
     environment:
       NODE_ENV: "production"
       PORT: "3000"
       HOSTNAME: "0.0.0.0"
       NEXT_PUBLIC_API_URL: ${KURA_WEB_PUBLIC_API_URL:?KURA_WEB_PUBLIC_API_URL must be set}
+      NEXT_PUBLIC_SOCIAL_AUTH_BASE_URL: ${SUPABASE_URL:?SUPABASE_URL must be set}
     depends_on:
       kura-api:
         condition: service_healthy

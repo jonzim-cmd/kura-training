@@ -29,6 +29,7 @@ interface AuthContextType {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  loginWithSupabaseToken: (accessToken: string) => Promise<void>;
   register: (
     email: string,
     password: string,
@@ -186,6 +187,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [handleTokens],
   );
 
+  const loginWithSupabaseToken = useCallback(
+    async (accessToken: string) => {
+      const res = await apiFetch('/v1/auth/supabase/login', {
+        method: 'POST',
+        body: JSON.stringify({
+          access_token: accessToken,
+          client_id: CLIENT_ID,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        throw new Error(err?.error || 'Social login failed');
+      }
+      const tokens: Tokens = await res.json();
+      await handleTokens(tokens);
+    },
+    [handleTokens],
+  );
+
   const register = useCallback(
     async (
       email: string,
@@ -218,8 +238,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [clearAuth]);
 
   const value = useMemo(
-    () => ({ user, loading, login, register, logout, token: accessToken }),
-    [user, loading, login, register, logout, accessToken],
+    () => ({
+      user,
+      loading,
+      login,
+      loginWithSupabaseToken,
+      register,
+      logout,
+      token: accessToken,
+    }),
+    [user, loading, login, loginWithSupabaseToken, register, logout, accessToken],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

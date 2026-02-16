@@ -62,6 +62,10 @@ pub fn oidc_router() -> Router<AppState> {
     Router::new().route("/v1/auth/oidc/{provider}/login", post(oidc_login))
 }
 
+pub fn supabase_login_router() -> Router<AppState> {
+    Router::new().route("/v1/auth/supabase/login", post(supabase_login))
+}
+
 const AGENT_ACCESS_TOKEN_TTL_MINUTES: i64 = 30;
 const DEVICE_CODE_TTL_MINUTES: i64 = 10;
 const DEVICE_CODE_POLL_INTERVAL_SECONDS: i32 = 5;
@@ -110,6 +114,43 @@ fn validate_invite_email_binding(
         });
     }
     Ok(())
+}
+
+fn ensure_social_signup_allowed(signup_gate: crate::state::SignupGate) -> Result<(), AppError> {
+    use crate::state::SignupGate;
+
+    match signup_gate {
+        SignupGate::Open => Ok(()),
+        SignupGate::Invite => Err(AppError::Forbidden {
+            message: "Social sign-up requires an invite.".to_string(),
+            docs_hint: Some("Request access at /request-access".to_string()),
+        }),
+        SignupGate::Payment => Err(AppError::Forbidden {
+            message: "Social sign-up requires a payment subscription.".to_string(),
+            docs_hint: Some("Payment integration coming soon.".to_string()),
+        }),
+    }
+}
+
+async fn create_social_user(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    email_norm: &str,
+) -> Result<Uuid, AppError> {
+    let new_user_id = Uuid::now_v7();
+    let bootstrap_secret = format!("oidc-disabled-password-{}", Uuid::now_v7());
+    let password_hash = auth::hash_password(&bootstrap_secret).map_err(AppError::Internal)?;
+
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, display_name) VALUES ($1, $2, $3, NULL)",
+    )
+    .bind(new_user_id)
+    .bind(email_norm)
+    .bind(&password_hash)
+    .execute(&mut **tx)
+    .await
+    .map_err(AppError::Database)?;
+
+    Ok(new_user_id)
 }
 
 fn normalize_user_code(user_code: &str) -> String {
@@ -1848,22 +1889,8 @@ pub async fn oidc_login(
         {
             existing_user_id
         } else {
-            let new_user_id = Uuid::now_v7();
-            let bootstrap_secret = format!("oidc-disabled-password-{}", Uuid::now_v7());
-            let password_hash =
-                auth::hash_password(&bootstrap_secret).map_err(AppError::Internal)?;
-
-            sqlx::query(
-                "INSERT INTO users (id, email, password_hash, display_name) VALUES ($1, $2, $3, NULL)",
-            )
-            .bind(new_user_id)
-            .bind(&email_norm)
-            .bind(&password_hash)
-            .execute(&mut *tx)
-            .await
-            .map_err(AppError::Database)?;
-
-            new_user_id
+            ensure_social_signup_allowed(state.signup_gate)?;
+            create_social_user(&mut tx, &email_norm).await?
         }
     };
 
@@ -1903,6 +1930,315 @@ pub async fn oidc_login(
             "SELECT user_id FROM user_identities WHERE provider = $1 AND provider_subject = $2",
         )
         .bind(provider_cfg.provider)
+        .bind(&provider_subject)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+        if existing_user_id != user_id {
+            return Err(AppError::Forbidden {
+                message: "identity_already_linked".to_string(),
+                docs_hint: Some(
+                    "This provider identity is already linked to a different account.".to_string(),
+                ),
+            });
+        }
+    }
+
+    sqlx::query(
+        "INSERT INTO analysis_subjects (user_id, analysis_subject_id) \
+         VALUES ($1, 'asub_' || replace(gen_random_uuid()::text, '-', '')) \
+         ON CONFLICT (user_id) DO NOTHING",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+
+    tx.commit().await.map_err(AppError::Database)?;
+
+    let client_id = req.client_id.unwrap_or_else(|| "kura-web".to_string());
+    validate_oauth_client_for_device(&state.db, &client_id).await?;
+    issue_tokens(&state.db, user_id, &client_id, default_agent_token_scopes()).await
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct SupabaseLoginRequest {
+    pub access_token: String,
+    #[serde(default)]
+    pub client_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SupabaseUserAppMetadata {
+    provider: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SupabaseIdentityData {
+    sub: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SupabaseIdentity {
+    provider: Option<String>,
+    id: Option<String>,
+    identity_id: Option<String>,
+    user_id: Option<String>,
+    identity_data: Option<SupabaseIdentityData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SupabaseUserResponse {
+    id: String,
+    email: Option<String>,
+    email_confirmed_at: Option<String>,
+    app_metadata: Option<SupabaseUserAppMetadata>,
+    identities: Option<Vec<SupabaseIdentity>>,
+}
+
+fn is_supported_social_provider(provider: &str) -> bool {
+    matches!(provider, "google" | "apple" | "github")
+}
+
+fn extract_supabase_identity(
+    user: &SupabaseUserResponse,
+) -> Result<(String, String, Option<String>), AppError> {
+    let provider = user
+        .app_metadata
+        .as_ref()
+        .and_then(|meta| meta.provider.as_deref())
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| is_supported_social_provider(value))
+        .ok_or_else(|| AppError::Validation {
+            message: "Unsupported social provider.".to_string(),
+            field: Some("provider".to_string()),
+            received: None,
+            docs_hint: Some("Use one of: google, github, apple.".to_string()),
+        })?;
+
+    let provider_subject = user
+        .identities
+        .as_ref()
+        .and_then(|identities| {
+            identities
+                .iter()
+                .find(|identity| identity.provider.as_deref() == Some(provider.as_str()))
+                .and_then(|identity| {
+                    identity
+                        .id
+                        .as_deref()
+                        .or(identity.identity_id.as_deref())
+                        .or(identity
+                            .identity_data
+                            .as_ref()
+                            .and_then(|d| d.sub.as_deref()))
+                        .or(identity.user_id.as_deref())
+                        .map(str::to_string)
+                })
+        })
+        .unwrap_or_else(|| user.id.clone());
+
+    if provider_subject.trim().is_empty() {
+        return Err(AppError::Unauthorized {
+            message: "invalid_supabase_identity".to_string(),
+            docs_hint: Some("Supabase identity subject missing.".to_string()),
+        });
+    }
+
+    let verified_email_norm = user
+        .email
+        .as_deref()
+        .map(normalize_email)
+        .filter(|value| !value.is_empty())
+        .filter(|_| user.email_confirmed_at.is_some());
+
+    Ok((provider, provider_subject, verified_email_norm))
+}
+
+async fn fetch_supabase_user(access_token: &str) -> Result<SupabaseUserResponse, AppError> {
+    let supabase_url = std::env::var("SUPABASE_URL")
+        .map_err(|_| AppError::Internal("SUPABASE_URL must be set for social login".to_string()))?;
+    let supabase_anon_key = std::env::var("SUPABASE_ANON_KEY").map_err(|_| {
+        AppError::Internal("SUPABASE_ANON_KEY must be set for social login".to_string())
+    })?;
+
+    let user_url = format!("{}/auth/v1/user", supabase_url.trim_end_matches('/'));
+    let response = reqwest::Client::new()
+        .get(user_url)
+        .header("apikey", supabase_anon_key)
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .map_err(|_| AppError::Unauthorized {
+            message: "supabase_session_unavailable".to_string(),
+            docs_hint: Some("Supabase auth service could not be reached.".to_string()),
+        })?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err(AppError::Unauthorized {
+            message: "invalid_supabase_session".to_string(),
+            docs_hint: Some("Supabase access token is invalid or expired.".to_string()),
+        });
+    }
+    if !response.status().is_success() {
+        return Err(AppError::Unauthorized {
+            message: "supabase_session_unavailable".to_string(),
+            docs_hint: Some("Supabase session lookup failed.".to_string()),
+        });
+    }
+
+    response
+        .json::<SupabaseUserResponse>()
+        .await
+        .map_err(|_| AppError::Unauthorized {
+            message: "invalid_supabase_session".to_string(),
+            docs_hint: Some("Supabase user payload is invalid.".to_string()),
+        })
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/auth/supabase/login",
+    request_body = SupabaseLoginRequest,
+    responses(
+        (status = 200, description = "Social login successful, tokens issued", body = TokenResponse),
+        (status = 400, description = "Validation error", body = kura_core::error::ApiError),
+        (status = 401, description = "Invalid social session", body = kura_core::error::ApiError),
+        (status = 403, description = "Access gate blocks sign-up", body = kura_core::error::ApiError)
+    ),
+    tag = "auth"
+)]
+pub async fn supabase_login(
+    State(state): State<AppState>,
+    Json(req): Json<SupabaseLoginRequest>,
+) -> Result<Json<TokenResponse>, AppError> {
+    if req.access_token.trim().is_empty() {
+        return Err(AppError::Validation {
+            message: "access_token is required".to_string(),
+            field: Some("access_token".to_string()),
+            received: None,
+            docs_hint: Some("Pass a Supabase access token from social login.".to_string()),
+        });
+    }
+
+    let supabase_user = fetch_supabase_user(req.access_token.trim()).await?;
+    let (provider, provider_subject, verified_email_norm) =
+        extract_supabase_identity(&supabase_user)?;
+
+    let mut tx = state.db.begin().await?;
+
+    let existing_provider_user = sqlx::query_scalar::<_, Uuid>(
+        "SELECT user_id FROM user_identities WHERE provider = $1 AND provider_subject = $2",
+    )
+    .bind(&provider)
+    .bind(&provider_subject)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+
+    let user_id = if let Some(user_id) = existing_provider_user {
+        if let Some(email_norm) = verified_email_norm.as_deref() {
+            let _ = sqlx::query(
+                "UPDATE user_identities \
+                 SET email_norm = $3, email_verified_at = NOW(), updated_at = NOW() \
+                 WHERE provider = $1 AND provider_subject = $2",
+            )
+            .bind(&provider)
+            .bind(&provider_subject)
+            .bind(email_norm)
+            .execute(&mut *tx)
+            .await;
+        }
+        user_id
+    } else {
+        let email_norm = if let Some(email_norm) = verified_email_norm.as_deref() {
+            email_norm.to_string()
+        } else {
+            return Err(AppError::Unauthorized {
+                message: "verified_email_required_for_first_link".to_string(),
+                docs_hint: Some(
+                    "First-time social login requires a verified email from the provider."
+                        .to_string(),
+                ),
+            });
+        };
+
+        let by_identity_email = sqlx::query_scalar::<_, Uuid>(
+            "SELECT DISTINCT user_id \
+             FROM user_identities \
+             WHERE email_norm = $1 AND email_verified_at IS NOT NULL \
+             LIMIT 2",
+        )
+        .bind(&email_norm)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+        if by_identity_email.len() > 1 {
+            return Err(AppError::Validation {
+                message: "ambiguous_email_identity".to_string(),
+                field: Some("email".to_string()),
+                received: Some(serde_json::Value::String(email_norm)),
+                docs_hint: Some(
+                    "Multiple accounts map to this email. Manual account linking required."
+                        .to_string(),
+                ),
+            });
+        }
+
+        if let Some(existing_user_id) = by_identity_email.first().copied() {
+            existing_user_id
+        } else if let Some(existing_user_id) =
+            sqlx::query_scalar::<_, Uuid>("SELECT id FROM users WHERE email = $1")
+                .bind(&email_norm)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(AppError::Database)?
+        {
+            existing_user_id
+        } else {
+            ensure_social_signup_allowed(state.signup_gate)?;
+            create_social_user(&mut tx, &email_norm).await?
+        }
+    };
+
+    let is_active = sqlx::query_scalar::<_, bool>("SELECT is_active FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(AppError::Database)?
+        .ok_or_else(|| AppError::Unauthorized {
+            message: "invalid_grant".to_string(),
+            docs_hint: Some("Social identity mapped to a missing account.".to_string()),
+        })?;
+    if !is_active {
+        return Err(AppError::Unauthorized {
+            message: "account_inactive".to_string(),
+            docs_hint: Some("This account is inactive.".to_string()),
+        });
+    }
+
+    let identity_email = verified_email_norm.as_deref();
+    let inserted = sqlx::query(
+        "INSERT INTO user_identities \
+         (user_id, provider, provider_subject, email_norm, email_verified_at) \
+         VALUES ($1, $2, $3, $4, CASE WHEN $4 IS NULL THEN NULL ELSE NOW() END) \
+         ON CONFLICT (provider, provider_subject) DO NOTHING",
+    )
+    .bind(user_id)
+    .bind(&provider)
+    .bind(&provider_subject)
+    .bind(identity_email)
+    .execute(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+
+    if inserted.rows_affected() == 0 {
+        let existing_user_id = sqlx::query_scalar::<_, Uuid>(
+            "SELECT user_id FROM user_identities WHERE provider = $1 AND provider_subject = $2",
+        )
+        .bind(&provider)
         .bind(&provider_subject)
         .fetch_one(&mut *tx)
         .await
@@ -2331,11 +2667,13 @@ struct RefreshTokenRow {
 mod tests {
     use super::{
         AppError, DeviceTokenRequest, ForgotPasswordRequest, ReactivateAccountRequest,
-        ResetPasswordRequest, authenticate_email_password_user_id, default_agent_token_scopes,
-        device_token, exchange_authorization_code, forgot_password, generate_user_code,
-        is_valid_loopback_redirect, issue_tokens, normalize_email, normalize_user_code,
-        oidc_email_verified, reactivate_account, refresh_tokens, reset_password,
-        validate_invite_email_binding, validate_oauth_client,
+        ResetPasswordRequest, SupabaseIdentity, SupabaseIdentityData, SupabaseUserAppMetadata,
+        SupabaseUserResponse, authenticate_email_password_user_id, default_agent_token_scopes,
+        device_token, ensure_social_signup_allowed, exchange_authorization_code,
+        extract_supabase_identity, forgot_password, generate_user_code,
+        is_supported_social_provider, is_valid_loopback_redirect, issue_tokens, normalize_email,
+        normalize_user_code, oidc_email_verified, reactivate_account, refresh_tokens,
+        reset_password, validate_invite_email_binding, validate_oauth_client,
     };
     use crate::state::{AppState, SignupGate};
     use axum::{Json, extract::State};
@@ -2412,6 +2750,77 @@ mod tests {
         assert!(oidc_email_verified(&Some(json!("true"))));
         assert!(!oidc_email_verified(&Some(json!("false"))));
         assert!(!oidc_email_verified(&None));
+    }
+
+    #[test]
+    fn social_signup_gate_blocks_invite_and_payment() {
+        assert!(ensure_social_signup_allowed(SignupGate::Open).is_ok());
+        assert!(matches!(
+            ensure_social_signup_allowed(SignupGate::Invite),
+            Err(AppError::Forbidden { .. })
+        ));
+        assert!(matches!(
+            ensure_social_signup_allowed(SignupGate::Payment),
+            Err(AppError::Forbidden { .. })
+        ));
+    }
+
+    #[test]
+    fn supported_social_provider_list_is_explicit() {
+        assert!(is_supported_social_provider("google"));
+        assert!(is_supported_social_provider("apple"));
+        assert!(is_supported_social_provider("github"));
+        assert!(!is_supported_social_provider("email"));
+    }
+
+    #[test]
+    fn extract_supabase_identity_prefers_matching_provider_identity() {
+        let user = SupabaseUserResponse {
+            id: "supabase-user-id".to_string(),
+            email: Some("Athlete@Example.com".to_string()),
+            email_confirmed_at: Some("2026-02-16T00:00:00Z".to_string()),
+            app_metadata: Some(SupabaseUserAppMetadata {
+                provider: Some("google".to_string()),
+            }),
+            identities: Some(vec![
+                SupabaseIdentity {
+                    provider: Some("google".to_string()),
+                    id: Some("google-sub-123".to_string()),
+                    identity_id: None,
+                    user_id: None,
+                    identity_data: Some(SupabaseIdentityData { sub: None }),
+                },
+                SupabaseIdentity {
+                    provider: Some("github".to_string()),
+                    id: Some("github-sub-xyz".to_string()),
+                    identity_id: None,
+                    user_id: None,
+                    identity_data: Some(SupabaseIdentityData { sub: None }),
+                },
+            ]),
+        };
+
+        let (provider, subject, verified_email) =
+            extract_supabase_identity(&user).expect("identity extraction should succeed");
+        assert_eq!(provider, "google");
+        assert_eq!(subject, "google-sub-123");
+        assert_eq!(verified_email.as_deref(), Some("athlete@example.com"));
+    }
+
+    #[test]
+    fn extract_supabase_identity_rejects_unsupported_provider() {
+        let user = SupabaseUserResponse {
+            id: "supabase-user-id".to_string(),
+            email: Some("athlete@example.com".to_string()),
+            email_confirmed_at: Some("2026-02-16T00:00:00Z".to_string()),
+            app_metadata: Some(SupabaseUserAppMetadata {
+                provider: Some("twitter".to_string()),
+            }),
+            identities: Some(vec![]),
+        };
+
+        let err = extract_supabase_identity(&user).expect_err("unsupported provider must fail");
+        assert!(matches!(err, AppError::Validation { .. }));
     }
 
     async fn db_pool_if_available() -> Option<sqlx::PgPool> {
