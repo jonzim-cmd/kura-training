@@ -13,7 +13,7 @@ type Protocol = 'cli' | 'mcp';
 const API_KEY_SETTINGS_PATH = '/settings#api-keys';
 const MCP_SERVER_NAME = 'Kura';
 const CONFIGURED_MCP_URL = process.env.NEXT_PUBLIC_KURA_MCP_URL?.trim() ?? '';
-const FALLBACK_MCP_URL = 'https://<dein-mcp-host>/mcp';
+const FALLBACK_MCP_URL = 'https://api.withkura.com/mcp';
 const OAUTH_CONNECT_URL = `${API_URL}/v1/auth/device/verify`;
 const CLI_API_KEY_FALLBACK = 'export KURA_API_KEY=<kura_sk_...>';
 

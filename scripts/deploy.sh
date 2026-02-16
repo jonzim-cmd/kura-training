@@ -5,7 +5,7 @@
 #
 # Prerequisites:
 #   - docker/ .env.production exists with KURA_DB_PASSWORD, KURA_API_KEY,
-#     and KURA_AGENT_MODEL_ATTESTATION_SECRET set
+#     KURA_AGENT_MODEL_ATTESTATION_SECRET and public routing values set
 #   - moltbot-internal Docker network exists
 #   - DOCKER_HOST set for rootless Docker (if applicable)
 #
@@ -61,6 +61,7 @@ require_env "KURA_AGENT_MODEL_ATTESTATION_SECRET" "Generate with: openssl rand -
 require_env "KURA_API_DATABASE_URL" "Set Supabase DB URL for API runtime."
 require_env "KURA_WORKER_DATABASE_URL" "Set Supabase DB URL for worker runtime."
 require_env "KURA_WEB_PUBLIC_API_URL" "Set public API base URL for web runtime (e.g. https://api.withkura.com)."
+require_env "KURA_WEB_PUBLIC_MCP_URL" "Set public MCP URL for setup UI (e.g. https://api.withkura.com/mcp)."
 require_env "KURA_FRONTEND_URL" "Set canonical web URL for auth/reset links (e.g. https://withkura.com)."
 require_env "KURA_CORS_ORIGINS" "Set allowed browser origins (comma-separated, e.g. https://withkura.com,https://www.withkura.com)."
 require_env "SUPABASE_URL" "Set Supabase project URL (e.g. https://<project-ref>.supabase.co)."

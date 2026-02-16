@@ -7,12 +7,13 @@
 #   docker compose -f docker/compose.production.yml up -d
 #
 # Requires: .env.production in docker/ with KURA_DB_PASSWORD, KURA_API_KEY,
-# and KURA_AGENT_MODEL_ATTESTATION_SECRET.
+# KURA_AGENT_MODEL_ATTESTATION_SECRET, and public routing values.
 # Required DB URLs:
 #   KURA_API_DATABASE_URL
 #   KURA_WORKER_DATABASE_URL
 # Required web/public routing values:
 #   KURA_WEB_PUBLIC_API_URL
+#   KURA_WEB_PUBLIC_MCP_URL
 #   KURA_FRONTEND_URL
 #   KURA_CORS_ORIGINS
 # Required Supabase auth values:
@@ -119,12 +120,14 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: ${KURA_WEB_PUBLIC_API_URL:?KURA_WEB_PUBLIC_API_URL must be set}
+        NEXT_PUBLIC_KURA_MCP_URL: ${KURA_WEB_PUBLIC_MCP_URL:-https://api.withkura.com/mcp}
         NEXT_PUBLIC_SOCIAL_AUTH_BASE_URL: ${SUPABASE_URL:?SUPABASE_URL must be set}
     environment:
       NODE_ENV: "production"
       PORT: "3000"
       HOSTNAME: "0.0.0.0"
       NEXT_PUBLIC_API_URL: ${KURA_WEB_PUBLIC_API_URL:?KURA_WEB_PUBLIC_API_URL must be set}
+      NEXT_PUBLIC_KURA_MCP_URL: ${KURA_WEB_PUBLIC_MCP_URL:-https://api.withkura.com/mcp}
       NEXT_PUBLIC_SOCIAL_AUTH_BASE_URL: ${SUPABASE_URL:?SUPABASE_URL must be set}
     depends_on:
       kura-api:
