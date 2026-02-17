@@ -588,7 +588,7 @@ pub struct AgentWriteWithProofRequest {
     pub events: Vec<CreateEventRequest>,
     /// Projection targets that must prove read-after-write before "saved" claims.
     pub read_after_write_targets: Vec<AgentReadAfterWriteTarget>,
-    /// Max verification wait (default 1200ms, clamped to 100..10000).
+    /// Max verification wait (default 3000ms, clamped to 100..10000).
     #[serde(default)]
     pub verify_timeout_ms: Option<u64>,
     /// Include technical repair diagnostics (event IDs, field diffs, command trace).
@@ -2471,7 +2471,7 @@ fn validate_observation_draft_resolve_dimension(raw_dimension: &str) -> Result<S
 }
 
 fn clamp_verify_timeout_ms(value: Option<u64>) -> u64 {
-    value.unwrap_or(1200).clamp(100, 10_000)
+    value.unwrap_or(3000).clamp(100, 10_000)
 }
 
 fn normalize_read_after_write_targets(
@@ -6978,7 +6978,7 @@ mod tests {
 
     #[test]
     fn clamp_verify_timeout_ms_applies_bounds() {
-        assert_eq!(clamp_verify_timeout_ms(None), 1200);
+        assert_eq!(clamp_verify_timeout_ms(None), 3000);
         assert_eq!(clamp_verify_timeout_ms(Some(5)), 100);
         assert_eq!(clamp_verify_timeout_ms(Some(25_000)), 10_000);
     }
