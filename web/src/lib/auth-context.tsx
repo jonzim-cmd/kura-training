@@ -40,6 +40,7 @@ interface AuthContextType {
     inviteToken: string | null,
     consentHealthDataProcessing: boolean,
     consentAnonymizedLearning: boolean,
+    turnstileToken: string,
   ) => Promise<void>;
   register: (
     email: string,
@@ -47,6 +48,7 @@ interface AuthContextType {
     inviteToken: string,
     consentHealthDataProcessing: boolean,
     consentAnonymizedLearning: boolean,
+    turnstileToken: string,
     displayName?: string,
   ) => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -231,6 +233,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       inviteToken: string | null,
       consentHealthDataProcessing: boolean,
       consentAnonymizedLearning: boolean,
+      turnstileToken: string,
     ) => {
       const res = await apiFetch('/v1/auth/supabase/register', {
         method: 'POST',
@@ -240,6 +243,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           consent_health_data_processing: consentHealthDataProcessing,
           consent_anonymized_learning: consentAnonymizedLearning,
           client_id: CLIENT_ID,
+          turnstile_token: turnstileToken,
         }),
       });
       if (!res.ok) {
@@ -259,6 +263,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       inviteToken: string,
       consentHealthDataProcessing: boolean,
       consentAnonymizedLearning: boolean,
+      turnstileToken: string,
       displayName?: string,
     ) => {
       const regRes = await apiFetch('/v1/auth/register', {
@@ -270,11 +275,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           consent_health_data_processing: consentHealthDataProcessing,
           consent_anonymized_learning: consentAnonymizedLearning,
           display_name: displayName || undefined,
+          turnstile_token: turnstileToken,
         }),
       });
       if (!regRes.ok) {
         const err = await regRes.json().catch(() => null);
-        throw new Error(err?.error || 'Registration failed');
+        throw new Error(err?.message || err?.error || 'Registration failed');
       }
       // Auto-login after registration
       await login(email, password);

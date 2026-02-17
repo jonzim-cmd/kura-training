@@ -79,9 +79,33 @@
   border-radius: 6px;
 }
 
+.errorBanner {
+  font-family: var(--font-body);
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  color: #e85d5d;
+  padding: 0.75rem 1rem;
+  border: 1px solid rgba(232, 93, 93, 0.2);
+  border-radius: 4px;
+}
+
 .field {
   display: flex;
   flex-direction: column;
+}
+
+.captchaBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.captchaHint {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--ink-ghost);
 }
 
 .textarea {

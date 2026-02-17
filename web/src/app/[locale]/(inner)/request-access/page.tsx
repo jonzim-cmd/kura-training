@@ -3,16 +3,33 @@
 import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/routing';
+import { TurnstileWidget } from '@/components/TurnstileWidget';
 import styles from './request-access.module.css';
+
+const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim() ?? '';
 
 export default function RequestAccessPage() {
   const t = useTranslations('requestAccess');
   const tn = useTranslations('nav');
   const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const [turnstileResetNonce, setTurnstileResetNonce] = useState(0);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    setError(null);
+
+    if (!TURNSTILE_SITE_KEY) {
+      setError(t('captchaUnavailable'));
+      return;
+    }
+    if (!turnstileToken) {
+      setError(t('captchaRequired'));
+      return;
+    }
+
     setSubmitting(true);
 
     const form = e.currentTarget;
@@ -20,6 +37,7 @@ export default function RequestAccessPage() {
       email: (form.elements.namedItem('email') as HTMLInputElement).value,
       name: (form.elements.namedItem('name') as HTMLInputElement).value || undefined,
       context: (form.elements.namedItem('context') as HTMLTextAreaElement).value || undefined,
+      turnstile_token: turnstileToken,
     };
 
     try {
@@ -32,16 +50,20 @@ export default function RequestAccessPage() {
 
       if (res.ok || res.status === 201) {
         setSubmitted(true);
-      } else {
-        // Always show success — don't leak whether email exists
-        setSubmitted(true);
+        return;
       }
-    } catch {
-      // Network error — show success anyway (don't leak info, request may have gone through)
-      setSubmitted(true);
-    }
 
-    setSubmitting(false);
+      const apiError = await res.json().catch(() => null);
+      setError(apiError?.message || t('submitError'));
+      setTurnstileToken(null);
+      setTurnstileResetNonce((value) => value + 1);
+    } catch {
+      setError(t('networkError'));
+      setTurnstileToken(null);
+      setTurnstileResetNonce((value) => value + 1);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (submitted) {
@@ -85,6 +107,8 @@ export default function RequestAccessPage() {
         </div>
 
         <form onSubmit={handleSubmit} className={styles.form}>
+          {error && <div className={styles.errorBanner}>{error}</div>}
+
           <div className={styles.field}>
             <label htmlFor="email" className="kura-label">{t('email')}</label>
             <input
@@ -123,11 +147,22 @@ export default function RequestAccessPage() {
             />
           </div>
 
+          <div className={styles.captchaBlock}>
+            <TurnstileWidget
+              siteKey={TURNSTILE_SITE_KEY}
+              action="access_request"
+              resetNonce={turnstileResetNonce}
+              onTokenChange={setTurnstileToken}
+              onUnavailable={() => setError(t('captchaUnavailable'))}
+            />
+            <p className={styles.captchaHint}>{t('captchaNotice')}</p>
+          </div>
+
           <button
             type="submit"
             className="kura-btn kura-btn--primary"
             style={{ width: '100%' }}
-            disabled={submitting}
+            disabled={submitting || !TURNSTILE_SITE_KEY}
           >
             {submitting ? t('submitting') : t('submitButton')}
           </button>

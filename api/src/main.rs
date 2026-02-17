@@ -16,6 +16,7 @@ mod privacy;
 mod routes;
 mod security_profile;
 mod state;
+mod turnstile;
 
 #[derive(OpenApi)]
 #[openapi(
@@ -361,7 +362,9 @@ async fn main() {
                 .layer(middleware::rate_limit::authorize_layer()),
         )
         .merge(routes::auth::me_router())
-        .merge(routes::invite::public_router().layer(middleware::rate_limit::register_layer()))
+        .merge(
+            routes::invite::public_router().layer(middleware::rate_limit::access_request_layer()),
+        )
         .merge(routes::invite::email_action_router())
         .merge(routes::account::self_router())
         .merge(routes::account::admin_router())

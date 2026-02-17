@@ -37,6 +37,8 @@ pub struct AccessRequestBody {
     pub name: Option<String>,
     #[serde(default)]
     pub context: Option<String>,
+    #[serde(default)]
+    pub turnstile_token: Option<String>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -68,6 +70,8 @@ pub async fn submit_access_request(
             docs_hint: None,
         });
     }
+    crate::turnstile::require_turnstile_token(req.turnstile_token.as_deref(), "access_request")
+        .await?;
 
     let name = req
         .name

@@ -230,6 +230,8 @@ pub struct RegisterRequest {
     pub consent_health_data_processing: Option<bool>,
     #[serde(default)]
     pub consent_anonymized_learning: Option<bool>,
+    #[serde(default)]
+    pub turnstile_token: Option<String>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -284,6 +286,7 @@ pub async fn register(
             docs_hint: Some("Set consent_health_data_processing: true".to_string()),
         });
     }
+    crate::turnstile::require_turnstile_token(req.turnstile_token.as_deref(), "signup").await?;
 
     // Invite gate: validate token when SIGNUP_GATE=invite
     let invite_token_id = match state.signup_gate {
@@ -2382,6 +2385,8 @@ pub struct SupabaseRegisterRequest {
     pub consent_anonymized_learning: Option<bool>,
     #[serde(default)]
     pub client_id: Option<String>,
+    #[serde(default)]
+    pub turnstile_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2549,6 +2554,7 @@ pub async fn supabase_register(
             docs_hint: Some("Set consent_health_data_processing: true".to_string()),
         });
     }
+    crate::turnstile::require_turnstile_token(req.turnstile_token.as_deref(), "signup").await?;
 
     let supabase_user = fetch_supabase_user(req.access_token.trim()).await?;
     let (provider, provider_subject, verified_email_norm) =

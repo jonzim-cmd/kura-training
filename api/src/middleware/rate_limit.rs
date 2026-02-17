@@ -10,15 +10,28 @@ use crate::error::AppError;
 type RateLimitLayer =
     GovernorLayer<SmartIpKeyExtractor, governor::middleware::NoOpMiddleware, axum::body::Body>;
 
-/// Rate limit for POST /v1/auth/register: 5 requests per hour per IP.
+/// Rate limit for registration endpoints: 8 requests per 5 minutes per IP.
 pub fn register_layer() -> RateLimitLayer {
     GovernorLayer::new(
         GovernorConfigBuilder::default()
-            .per_second(720)
-            .burst_size(5)
+            .per_millisecond(37_500)
+            .burst_size(8)
             .key_extractor(SmartIpKeyExtractor)
             .finish()
             .expect("invalid governor config for register"),
+    )
+    .error_handler(json_error_handler)
+}
+
+/// Rate limit for POST /v1/access/request: 10 requests per 10 minutes per IP.
+pub fn access_request_layer() -> RateLimitLayer {
+    GovernorLayer::new(
+        GovernorConfigBuilder::default()
+            .per_second(60)
+            .burst_size(10)
+            .key_extractor(SmartIpKeyExtractor)
+            .finish()
+            .expect("invalid governor config for access_request"),
     )
     .error_handler(json_error_handler)
 }

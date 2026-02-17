@@ -19,6 +19,9 @@
 # Required Supabase auth values:
 #   SUPABASE_URL
 #   SUPABASE_ANON_KEY
+# Required Turnstile values:
+#   KURA_TURNSTILE_SITE_KEY
+#   KURA_TURNSTILE_SECRET_KEY
 # Optional override:
 #   KURA_WORKER_LISTEN_DATABASE_URL
 
@@ -60,6 +63,8 @@ services:
       KURA_WEB_PUBLIC_API_URL: ${KURA_WEB_PUBLIC_API_URL:-https://api.withkura.com}
       SUPABASE_URL: ${SUPABASE_URL:?SUPABASE_URL must be set}
       SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:?SUPABASE_ANON_KEY must be set}
+      TURNSTILE_SECRET_KEY: ${KURA_TURNSTILE_SECRET_KEY:?KURA_TURNSTILE_SECRET_KEY must be set}
+      TURNSTILE_EXPECTED_HOSTNAME: ${KURA_TURNSTILE_EXPECTED_HOSTNAME:-}
     depends_on:
       kura-postgres:
         condition: service_healthy
@@ -122,6 +127,7 @@ services:
         NEXT_PUBLIC_API_URL: ${KURA_WEB_PUBLIC_API_URL:?KURA_WEB_PUBLIC_API_URL must be set}
         NEXT_PUBLIC_KURA_MCP_URL: ${KURA_WEB_PUBLIC_MCP_URL:-https://api.withkura.com/mcp}
         NEXT_PUBLIC_SOCIAL_AUTH_BASE_URL: ${SUPABASE_URL:?SUPABASE_URL must be set}
+        NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${KURA_TURNSTILE_SITE_KEY:?KURA_TURNSTILE_SITE_KEY must be set}
     environment:
       NODE_ENV: "production"
       PORT: "3000"
@@ -129,6 +135,7 @@ services:
       NEXT_PUBLIC_API_URL: ${KURA_WEB_PUBLIC_API_URL:?KURA_WEB_PUBLIC_API_URL must be set}
       NEXT_PUBLIC_KURA_MCP_URL: ${KURA_WEB_PUBLIC_MCP_URL:-https://api.withkura.com/mcp}
       NEXT_PUBLIC_SOCIAL_AUTH_BASE_URL: ${SUPABASE_URL:?SUPABASE_URL must be set}
+      NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${KURA_TURNSTILE_SITE_KEY:?KURA_TURNSTILE_SITE_KEY must be set}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       ADMIN_NOTIFY_EMAIL: ${ADMIN_NOTIFY_EMAIL:-}
       EMAIL_FROM: ${EMAIL_FROM:-Kura <noreply@withkura.com>}

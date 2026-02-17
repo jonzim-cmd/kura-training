@@ -173,6 +173,20 @@
   color: #e85d5d;
 }
 
+.captchaBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.captchaHint {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--ink-ghost);
+}
+
 /* Error banner */
 
 .errorBanner {
