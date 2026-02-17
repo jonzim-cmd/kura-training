@@ -629,6 +629,7 @@ class TestBuildAgendaWithInterview:
         assert "onboarding_needed" in types
         item = next(a for a in result if a["type"] == "onboarding_needed")
         assert item["priority"] == "high"
+        assert "offer a short onboarding interview" in item["detail"]
 
     def test_refresh_in_agenda(self):
         coverage = [{"area": f"a{i}", "status": "uncovered"} for i in range(4)]

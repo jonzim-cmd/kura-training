@@ -28,7 +28,8 @@ pub(super) fn classify_system_config_field(key: &str) -> SystemConfigFieldClass 
 
 pub(super) fn classify_system_convention_field(key: &str) -> SystemConventionFieldClass {
     match key {
-        "exercise_normalization"
+        "first_contact_opening_v1"
+        | "exercise_normalization"
         | "training_core_fields_v1"
         | "training_session_block_model_v1"
         | "evidence_layer_v1"

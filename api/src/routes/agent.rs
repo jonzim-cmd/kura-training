@@ -1856,7 +1856,7 @@ fn bootstrap_user_profile(user_id: Uuid) -> ProjectionResponse {
                 "agenda": [{
                     "priority": "high",
                     "type": "onboarding_needed",
-                    "detail": "New user. No data yet. Produce initial events to bootstrap profile.",
+                    "detail": "First contact. Briefly explain Kura and how to use it, then offer a short onboarding interview to bootstrap profile.",
                     "dimensions": ["user_profile"]
                 }]
             }),
@@ -12579,6 +12579,7 @@ mod tests {
             "event_conventions": [{"event_type": "set.logged"}],
             "projection_schemas": {"user_profile": {"required_fields": ["user"]}},
             "conventions": {
+                "first_contact_opening_v1": {"schema_version": "first_contact_opening.v1"},
                 "exercise_normalization": {"rules": ["rule"]},
                 "training_core_fields_v1": {"rules": ["rule"]},
                 "training_session_block_model_v1": {"event_type": "session.logged"},
@@ -12619,6 +12620,7 @@ mod tests {
             .get("conventions")
             .and_then(Value::as_object)
             .expect("conventions should remain an object");
+        assert!(conventions.contains_key("first_contact_opening_v1"));
         assert!(conventions.contains_key("exercise_normalization"));
         assert!(conventions.contains_key("training_core_fields_v1"));
         assert!(conventions.contains_key("training_session_block_model_v1"));

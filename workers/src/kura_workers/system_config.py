@@ -39,6 +39,37 @@ def _get_conventions() -> dict[str, Any]:
     fragmentation issues like exercises without exercise_id.
     """
     return {
+        "first_contact_opening_v1": {
+            "schema_version": "first_contact_opening.v1",
+            "trigger": {
+                "agenda_types": ["onboarding_needed"],
+                "bootstrap_hint": "user_profile.user is null or minimal",
+            },
+            "required_sequence": [
+                "what_kura_is",
+                "how_to_use",
+                "onboarding_interview_offer",
+            ],
+            "mandatory_sentence": (
+                "Kura is a structured training-data system. You write naturally, "
+                "and I turn that into reliable events and projections so progress, trends, "
+                "and decisions stay consistent over time."
+            ),
+            "how_to_use_brief": (
+                "Tell me in natural language what you trained, ate, or measured; "
+                "I will structure it into events and keep your timeline consistent."
+            ),
+            "interview_offer": {
+                "required": True,
+                "format": "offer_short_onboarding_interview",
+                "max_estimated_minutes": 5,
+            },
+            "avoid_before_interview_offer": [
+                "feature_menu_dump",
+                "immediate_logging_checklist",
+                "planning_or_coaching_without_onboarding_offer",
+            ],
+        },
         "exercise_normalization": {
             "rules": [
                 "ALWAYS set exercise_id when you recognize the exercise.",

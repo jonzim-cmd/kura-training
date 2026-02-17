@@ -200,6 +200,19 @@ class TestBuildSystemConfig:
 
 
 class TestConventions:
+    def test_has_first_contact_opening_v1(self):
+        result = _get_conventions()
+        assert "first_contact_opening_v1" in result
+        opening = result["first_contact_opening_v1"]
+        assert opening["schema_version"] == "first_contact_opening.v1"
+        assert opening["required_sequence"] == [
+            "what_kura_is",
+            "how_to_use",
+            "onboarding_interview_offer",
+        ]
+        assert opening["interview_offer"]["required"] is True
+        assert "Kura is a structured training-data system." in opening["mandatory_sentence"]
+
     def test_has_exercise_normalization(self):
         result = _get_conventions()
         assert "exercise_normalization" in result

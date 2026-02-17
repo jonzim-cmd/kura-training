@@ -370,7 +370,7 @@ impl McpServer {
 
     fn initialize_payload(&self) -> Value {
         let instructions = format!(
-            "Start with kura_discover, read projections as source of truth, and prefer kura_events_write with mode=simulate before commit for higher confidence. Capability mode: {}.",
+            "Start with kura_agent_context (context-first). If user_profile agenda includes onboarding_needed, reply first with: (1) what Kura is (use first_contact_opening_v1 mandatory sentence), (2) how to use it briefly, (3) propose a short onboarding interview before feature menus or logging steps. Use kura_discover only for schema/capability troubleshooting, and prefer kura_events_write with mode=simulate before commit for higher confidence. Capability mode: {}.",
             self.capability_profile.mode.as_str()
         );
         json!({
@@ -3092,6 +3092,29 @@ mod tests {
         assert!(is_admin_api_path("/v1/admin/security/kill-switch"));
         assert!(!is_admin_api_path("/v1/agent/context"));
         assert!(!is_admin_api_path("/health"));
+    }
+
+    #[test]
+    fn initialize_instructions_prioritize_context_and_first_contact_onboarding() {
+        let server = McpServer::new(McpRuntimeConfig {
+            api_url: "http://127.0.0.1:9".to_string(),
+            no_auth: true,
+            explicit_token: None,
+            default_source: "mcp".to_string(),
+            default_agent: "kura-mcp".to_string(),
+            allow_admin: false,
+        });
+
+        let payload = server.initialize_payload();
+        let instructions = payload
+            .get("instructions")
+            .and_then(Value::as_str)
+            .expect("initialize payload should include instructions");
+
+        assert!(instructions.contains("kura_agent_context"));
+        assert!(instructions.contains("onboarding_needed"));
+        assert!(instructions.contains("first_contact_opening_v1"));
+        assert!(instructions.contains("kura_discover only for schema/capability troubleshooting"));
     }
 
     #[tokio::test]

@@ -672,7 +672,7 @@ def _build_agenda(
             agenda.append({
                 "priority": "high",
                 "type": "onboarding_needed",
-                "detail": "New user with minimal data. Interview recommended to bootstrap profile.",
+                "detail": "First contact with minimal data. Briefly explain Kura and how to use it, then offer a short onboarding interview to bootstrap profile.",
                 "dimensions": ["user_profile"],
             })
         elif _should_suggest_refresh(total_events, interview_coverage, has_goals, has_preferences):
