@@ -73,12 +73,19 @@ class Worker:
                     await conn.execute("LISTEN kura_jobs")
                     logger.info("Listening on kura_jobs channel")
 
-                    gen = conn.notifies(timeout=self.config.poll_interval_seconds)
-                    async for notify in gen:
-                        logger.debug("NOTIFY received: %s", notify.payload)
-                        await self._process_batch()
-                        if self._shutdown.is_set():
-                            break
+                    # Keep connection alive across timeouts — only reconnect
+                    # on actual connection loss (OperationalError).
+                    while not self._shutdown.is_set():
+                        gen = conn.notifies(
+                            timeout=self.config.poll_interval_seconds
+                        )
+                        async for notify in gen:
+                            logger.debug(
+                                "NOTIFY received: %s", notify.payload
+                            )
+                            await self._process_batch()
+                            if self._shutdown.is_set():
+                                break
             except psycopg.OperationalError:
                 if self._shutdown.is_set():
                     break

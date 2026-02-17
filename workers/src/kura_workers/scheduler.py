@@ -281,20 +281,24 @@ async def ensure_log_retention_job(conn: psycopg.AsyncConnection[Any]) -> None:
 
         await cur.execute(
             """
-            SELECT completed_at
+            SELECT completed_at, status
             FROM background_jobs
             WHERE job_type = %s
-              AND status = 'completed'
+              AND status IN ('completed', 'dead')
               AND completed_at IS NOT NULL
             ORDER BY completed_at DESC
             LIMIT 1
             """,
             (LOG_RETENTION_JOB_TYPE,),
         )
-        last_completed = await cur.fetchone()
-        if last_completed is not None:
-            completed_at = _as_utc(last_completed["completed_at"])
-            if completed_at + timedelta(hours=interval_h) > now:
+        last_finished = await cur.fetchone()
+        if last_finished is not None:
+            finished_at = _as_utc(last_finished["completed_at"])
+            # Completed jobs: full interval cooldown (24h default).
+            # Dead jobs: 1h cooldown to prevent infinite retry spam,
+            # while still retrying within a reasonable timeframe.
+            cooldown_h = interval_h if last_finished["status"] == "completed" else 1
+            if finished_at + timedelta(hours=cooldown_h) > now:
                 return
 
         await cur.execute(

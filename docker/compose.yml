@@ -22,7 +22,7 @@ services:
       dockerfile: Dockerfile
     environment:
       DATABASE_URL: postgresql://kura:${POSTGRES_PASSWORD:-kura_dev_password}@postgres:5432/kura
-      KURA_POLL_INTERVAL: "5.0"
+      KURA_POLL_INTERVAL: "1.0"
       KURA_BATCH_SIZE: "10"
       KURA_LOG_FORMAT: "json"
       KURA_HEALTH_PORT: "8081"

@@ -174,7 +174,7 @@ def build_consistency_inbox(
                 "severity": severity,
                 "summary": summary,
                 "recommended_action": "Review and confirm the affected values.",
-                "evidence_ref": row.get("id", ""),
+                "evidence_ref": str(row.get("id", "")),
                 "first_seen": ts.isoformat(),
             })
 
