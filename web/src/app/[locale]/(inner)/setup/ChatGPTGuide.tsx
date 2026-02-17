@@ -216,7 +216,7 @@ function Step3({ t }: { t: ReturnType<typeof useTranslations> }) {
               <div className={styles.advText}>{t('mockup.advancedSettings')}</div>
               <div className={styles.advChevron}>&rsaquo;</div>
               <HighlightPulse style={{ left: -6, top: -6, right: -6, bottom: -6, borderRadius: 8 }} />
-              <ClickDot style={{ right: -28, top: '50%', transform: 'translateY(-50%)' }} />
+              <ClickDot style={{ right: -4, top: -18 }} />
             </div>
           </div>
         </div>
@@ -248,7 +248,7 @@ function Step4({ t }: { t: ReturnType<typeof useTranslations> }) {
                   <div className={styles.toggleKnob} />
                 </div>
                 <HighlightPulse style={{ left: -6, top: -6, right: -6, bottom: -6, borderRadius: 14 }} />
-                <ClickDot style={{ right: -28, top: '50%', transform: 'translateY(-50%)' }} />
+                <ClickDot style={{ right: -4, top: -18 }} />
               </div>
             </div>
           </div>
