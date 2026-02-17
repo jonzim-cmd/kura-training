@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{LazyLock, Mutex};
+use std::time::Instant;
 
 use clap::{Args, Subcommand};
 use reqwest::Method;
@@ -14,6 +16,37 @@ const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MCP_SERVER_NAME: &str = "kura-mcp";
 const TOOL_ENVELOPE_MAX_BYTES: usize = 28_000;
 const COMPACT_ENDPOINT_PREVIEW_MAX_ITEMS: usize = 120;
+const CONTEXT_SESSION_TTL_SECS: u64 = 3600;
+
+/// Tracks which sessions have loaded agent context. Shared across HTTP requests
+/// (where each request creates a new McpServer) and stdio (single long-lived server).
+/// Keyed by session_id, value is last-seen timestamp for TTL cleanup.
+static CONTEXT_SESSIONS: LazyLock<Mutex<HashMap<String, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn mark_context_loaded(session_id: &str) {
+    let mut map = CONTEXT_SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
+    map.insert(session_id.to_string(), Instant::now());
+}
+
+fn is_context_loaded(session_id: &str) -> bool {
+    let mut map = CONTEXT_SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
+    // TTL cleanup on access — remove expired entries
+    let cutoff = Instant::now() - std::time::Duration::from_secs(CONTEXT_SESSION_TTL_SECS);
+    map.retain(|_, seen| *seen > cutoff);
+    map.contains_key(session_id)
+}
+
+/// Tools that don't operate on user data — exempt from the context gate.
+fn is_context_exempt_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "kura_agent_context"
+            | "kura_discover"
+            | "kura_discover_debug"
+            | "kura_mcp_status"
+    )
+}
 
 #[derive(Subcommand)]
 pub enum McpCommands {
@@ -118,6 +151,7 @@ struct McpServer {
     config: McpRuntimeConfig,
     http: reqwest::Client,
     capability_profile: CapabilityProfile,
+    session_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -230,10 +264,22 @@ impl CapabilityProfile {
 
 impl McpServer {
     fn new(config: McpRuntimeConfig) -> Self {
+        // Session ID: token-derived for HTTP (stable across requests),
+        // random UUID for stdio (one server = one session).
+        let session_id = match &config.explicit_token {
+            Some(token) => format!("tok-{:x}", {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                token.hash(&mut h);
+                h.finish()
+            }),
+            None => format!("stdio-{}", Uuid::now_v7()),
+        };
         Self {
             config,
             http: client(),
             capability_profile: CapabilityProfile::fallback("not_negotiated_yet", Vec::new(), None),
+            session_id,
         }
     }
 
@@ -431,9 +477,20 @@ impl McpServer {
             }
         };
 
+        // Context gate: if agent hasn't loaded context and this tool needs user data, warn.
+        let context_warning =
+            if !is_context_exempt_tool(name) && !is_context_loaded(&self.session_id) {
+                Some("IMPORTANT: You have not called kura_agent_context yet. Call it now before responding to the user — it contains critical setup information.\n\n")
+            } else {
+                None
+            };
+
         let result = self.execute_tool(name, &args).await;
         Ok(match result {
             Ok(payload) => {
+                if name == "kura_agent_context" {
+                    mark_context_loaded(&self.session_id);
+                }
                 let status = tool_completion_status(&payload);
                 let envelope = enforce_tool_payload_limit(
                     name,
@@ -444,7 +501,10 @@ impl McpServer {
                     "data": payload
                 }),
                 );
-                let text = tool_text_content(name, &envelope);
+                let mut text = tool_text_content(name, &envelope);
+                if let Some(warning) = context_warning {
+                    text = format!("{warning}{text}");
+                }
                 json!({
                     "content": [{ "type": "text", "text": text }],
                     "structuredContent": envelope
@@ -461,7 +521,10 @@ impl McpServer {
                     "error": payload
                 }),
                 );
-                let text = tool_text_content(name, &envelope);
+                let mut text = tool_text_content(name, &envelope);
+                if let Some(warning) = context_warning {
+                    text = format!("{warning}{text}");
+                }
                 json!({
                     "isError": true,
                     "content": [{ "type": "text", "text": text }],
@@ -3739,5 +3802,102 @@ mod tests {
         assert_eq!(surface["verification"], Value::Null);
         assert_eq!(surface["claim_guard"], Value::Null);
         assert_eq!(surface["persist_intent"], Value::Null);
+    }
+
+    // ── Context gate tests ──────────────────────────────────────────
+
+    #[test]
+    fn context_exempt_tools_are_exactly_the_discovery_and_status_set() {
+        // Exempt: tools that don't need user data
+        assert!(is_context_exempt_tool("kura_agent_context"));
+        assert!(is_context_exempt_tool("kura_discover"));
+        assert!(is_context_exempt_tool("kura_discover_debug"));
+        assert!(is_context_exempt_tool("kura_mcp_status"));
+
+        // NOT exempt: tools that operate on user data
+        assert!(!is_context_exempt_tool("kura_read"));
+        assert!(!is_context_exempt_tool("kura_write"));
+        assert!(!is_context_exempt_tool("kura_api"));
+        assert!(!is_context_exempt_tool("kura_batch_write"));
+        assert!(!is_context_exempt_tool(""));
+    }
+
+    #[test]
+    fn context_session_mark_and_check_roundtrip() {
+        let sid = format!("test-roundtrip-{}", Uuid::now_v7());
+        assert!(!is_context_loaded(&sid));
+        mark_context_loaded(&sid);
+        assert!(is_context_loaded(&sid));
+    }
+
+    #[test]
+    fn context_sessions_are_isolated_between_ids() {
+        let sid_a = format!("test-iso-a-{}", Uuid::now_v7());
+        let sid_b = format!("test-iso-b-{}", Uuid::now_v7());
+        mark_context_loaded(&sid_a);
+        assert!(is_context_loaded(&sid_a));
+        assert!(!is_context_loaded(&sid_b));
+    }
+
+    #[test]
+    fn session_id_is_token_derived_for_explicit_token() {
+        let server = McpServer::new(McpRuntimeConfig {
+            api_url: "http://127.0.0.1:9".to_string(),
+            no_auth: true,
+            explicit_token: Some("my-secret-token".to_string()),
+            default_source: "mcp".to_string(),
+            default_agent: "kura-mcp".to_string(),
+            allow_admin: false,
+        });
+        assert!(
+            server.session_id.starts_with("tok-"),
+            "token-based session_id should start with 'tok-', got: {}",
+            server.session_id
+        );
+    }
+
+    #[test]
+    fn session_id_is_stable_for_same_token() {
+        let make = || {
+            McpServer::new(McpRuntimeConfig {
+                api_url: "http://127.0.0.1:9".to_string(),
+                no_auth: true,
+                explicit_token: Some("stable-token-test".to_string()),
+                default_source: "mcp".to_string(),
+                default_agent: "kura-mcp".to_string(),
+                allow_admin: false,
+            })
+        };
+        let a = make();
+        let b = make();
+        assert_eq!(
+            a.session_id, b.session_id,
+            "same token must produce the same session_id (HTTP mode stability)"
+        );
+    }
+
+    #[test]
+    fn session_id_is_unique_uuid_for_stdio() {
+        let make = || {
+            McpServer::new(McpRuntimeConfig {
+                api_url: "http://127.0.0.1:9".to_string(),
+                no_auth: true,
+                explicit_token: None,
+                default_source: "mcp".to_string(),
+                default_agent: "kura-mcp".to_string(),
+                allow_admin: false,
+            })
+        };
+        let a = make();
+        let b = make();
+        assert!(
+            a.session_id.starts_with("stdio-"),
+            "stdio session_id should start with 'stdio-', got: {}",
+            a.session_id
+        );
+        assert_ne!(
+            a.session_id, b.session_id,
+            "each stdio server should get a unique session_id"
+        );
     }
 }
