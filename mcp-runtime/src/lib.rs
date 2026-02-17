@@ -13,6 +13,8 @@ use util::{client, resolve_token};
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MCP_SERVER_NAME: &str = "kura-mcp";
 const TOOL_TEXT_INLINE_JSON_MAX_CHARS: usize = 1500;
+const TOOL_ENVELOPE_MAX_BYTES: usize = 28_000;
+const COMPACT_ENDPOINT_PREVIEW_MAX_ITEMS: usize = 120;
 
 #[derive(Subcommand)]
 pub enum McpCommands {
@@ -371,7 +373,7 @@ impl McpServer {
 
     fn initialize_payload(&self) -> Value {
         let instructions = format!(
-            "Start with kura_agent_context (context-first). If user_profile agenda includes onboarding_needed, reply first with: (1) what Kura is (use first_contact_opening_v1 mandatory sentence), (2) how to use it briefly, (3) propose a short onboarding interview before feature menus or logging steps. Use kura_discover only for schema/capability troubleshooting, and prefer kura_events_write with mode=simulate before commit for higher confidence. Capability mode: {}.",
+            "Start with kura_agent_context (context-first). If user_profile agenda includes onboarding_needed, reply first with: (1) what Kura is (use first_contact_opening_v1 mandatory sentence), (2) how to use it briefly, (3) propose a short onboarding interview before feature menus or logging steps. Use kura_discover for lean capability snapshots; use kura_discover_debug only for deep schema/capability troubleshooting. Prefer kura_events_write with mode=simulate before commit for higher confidence. Capability mode: {}.",
             self.capability_profile.mode.as_str()
         );
         json!({
@@ -434,12 +436,15 @@ impl McpServer {
         Ok(match result {
             Ok(payload) => {
                 let status = tool_completion_status(&payload);
-                let envelope = json!({
+                let envelope = enforce_tool_payload_limit(
+                    name,
+                    json!({
                     "status": status,
                     "phase": "final",
                     "tool": name,
                     "data": payload
-                });
+                }),
+                );
                 let text = tool_text_content(name, &envelope);
                 json!({
                     "content": [{ "type": "text", "text": text }],
@@ -448,12 +453,15 @@ impl McpServer {
             }
             Err(err) => {
                 let payload = err.to_value();
-                let envelope = json!({
+                let envelope = enforce_tool_payload_limit(
+                    name,
+                    json!({
                     "status": "error",
                     "phase": "final",
                     "tool": name,
                     "error": payload
-                });
+                }),
+                );
                 let text = tool_text_content(name, &envelope);
                 json!({
                     "isError": true,
@@ -471,6 +479,7 @@ impl McpServer {
     ) -> Result<Value, ToolError> {
         match tool_name {
             "kura_discover" => self.tool_discover(args).await,
+            "kura_discover_debug" => self.tool_discover_debug(args).await,
             "kura_mcp_status" => self.tool_mcp_status(args).await,
             "kura_api_request" => self.tool_api_request(args).await,
             "kura_events_write" => self.tool_events_write(args).await,
@@ -497,10 +506,32 @@ impl McpServer {
     }
 
     async fn tool_discover(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
-        let include_openapi = arg_bool(args, "include_openapi", false)?;
-        let compact_openapi = arg_bool(args, "compact_openapi", true)?;
-        let include_system_config = arg_bool(args, "include_system_config", false)?;
-        let include_agent_capabilities = arg_bool(args, "include_agent_capabilities", true)?;
+        self.tool_discover_with_defaults(args, false, true, false, true)
+            .await
+    }
+
+    async fn tool_discover_debug(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
+        self.tool_discover_with_defaults(args, true, false, true, true)
+            .await
+    }
+
+    async fn tool_discover_with_defaults(
+        &self,
+        args: &Map<String, Value>,
+        include_openapi_default: bool,
+        compact_openapi_default: bool,
+        include_system_config_default: bool,
+        include_agent_capabilities_default: bool,
+    ) -> Result<Value, ToolError> {
+        let include_openapi = arg_bool(args, "include_openapi", include_openapi_default)?;
+        let compact_openapi = arg_bool(args, "compact_openapi", compact_openapi_default)?;
+        let include_system_config =
+            arg_bool(args, "include_system_config", include_system_config_default)?;
+        let include_agent_capabilities = arg_bool(
+            args,
+            "include_agent_capabilities",
+            include_agent_capabilities_default,
+        )?;
 
         let mut payload = json!({
             "generated_at": chrono::Utc::now(),
@@ -1776,13 +1807,27 @@ fn tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "kura_discover",
-            description: "Discover Kura capabilities, with optional large schema/system bundles for debugging.",
+            description: "Lean discovery: capability snapshot and MCP status with optional add-ons.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "include_openapi": { "type": "boolean", "default": false },
                     "compact_openapi": { "type": "boolean", "default": true },
                     "include_system_config": { "type": "boolean", "default": false },
+                    "include_agent_capabilities": { "type": "boolean", "default": true }
+                },
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "kura_discover_debug",
+            description: "Heavy discovery bundle for deep troubleshooting (explicit opt-in for large payloads).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "include_openapi": { "type": "boolean", "default": true },
+                    "compact_openapi": { "type": "boolean", "default": false },
+                    "include_system_config": { "type": "boolean", "default": true },
                     "include_agent_capabilities": { "type": "boolean", "default": true }
                 },
                 "additionalProperties": false
@@ -2175,6 +2220,19 @@ fn tool_completion_status(payload: &Value) -> &'static str {
 }
 
 fn tool_text_content(tool: &str, envelope: &Value) -> String {
+    if envelope
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let hint = envelope
+            .get("truncation")
+            .and_then(|v| v.get("details_hint"))
+            .and_then(Value::as_str)
+            .unwrap_or("See structuredContent.truncation for reload guidance.");
+        return format!("{tool} result was truncated to fit payload limits. {hint}");
+    }
+
     let pretty = to_pretty_json(envelope);
     if pretty.chars().count() <= TOOL_TEXT_INLINE_JSON_MAX_CHARS {
         return pretty;
@@ -2225,15 +2283,25 @@ fn compact_openapi_section(result: &ApiCallResult) -> Value {
         .unwrap_or_default()
         .to_string();
     let endpoints = extract_openapi_endpoints(&result.body);
+    let endpoint_count = endpoints.len();
+    let preview = if endpoint_count > COMPACT_ENDPOINT_PREVIEW_MAX_ITEMS {
+        endpoints
+            .into_iter()
+            .take(COMPACT_ENDPOINT_PREVIEW_MAX_ITEMS)
+            .collect::<Vec<_>>()
+    } else {
+        endpoints
+    };
     json!({
         "ok": result.is_success(),
         "status": result.status,
         "summary": {
             "title": title,
             "version": version,
-            "endpoint_count": endpoints.len()
+            "endpoint_count": endpoint_count
         },
-        "compact_endpoints": endpoints
+        "compact_endpoints": preview,
+        "compact_endpoints_truncated": endpoint_count > COMPACT_ENDPOINT_PREVIEW_MAX_ITEMS
     })
 }
 
@@ -2241,6 +2309,179 @@ fn json_to_map(value: Value) -> Map<String, Value> {
     match value {
         Value::Object(map) => map,
         _ => Map::new(),
+    }
+}
+
+fn enforce_tool_payload_limit(tool: &str, envelope: Value) -> Value {
+    let original_bytes = serialized_json_size_bytes(&envelope);
+    if original_bytes <= TOOL_ENVELOPE_MAX_BYTES {
+        return envelope;
+    }
+
+    let mut trimmed = envelope.clone();
+    if let Some(data) = trimmed.get_mut("data").and_then(Value::as_object_mut) {
+        trim_discovery_sections(data);
+    }
+    let trimmed_bytes = serialized_json_size_bytes(&trimmed);
+    if trimmed_bytes <= TOOL_ENVELOPE_MAX_BYTES {
+        annotate_truncation(
+            &mut trimmed,
+            "section_pruning",
+            original_bytes,
+            trimmed_bytes,
+            tool,
+        );
+        return trimmed;
+    }
+
+    let status = envelope
+        .get("status")
+        .cloned()
+        .unwrap_or_else(|| Value::String("complete".to_string()));
+    let mut fallback = json!({
+        "status": status,
+        "phase": "final",
+        "tool": tool,
+        "truncated": true,
+        "truncation": {
+            "reason": "payload_size_limit",
+            "strategy": "summary_only",
+            "limit_bytes": TOOL_ENVELOPE_MAX_BYTES,
+            "original_bytes": original_bytes,
+            "details_hint": payload_reload_hint(tool)
+        }
+    });
+    if let Some(data) = envelope.get("data") {
+        fallback["data_summary"] = summarize_json_shape(data);
+    }
+    if let Some(error) = envelope.get("error") {
+        fallback["error_summary"] = summarize_json_shape(error);
+    }
+
+    if serialized_json_size_bytes(&fallback) > TOOL_ENVELOPE_MAX_BYTES {
+        json!({
+            "status": status,
+            "phase": "final",
+            "tool": tool,
+            "truncated": true,
+            "truncation": {
+                "reason": "payload_size_limit",
+                "strategy": "minimal_fallback",
+                "limit_bytes": TOOL_ENVELOPE_MAX_BYTES,
+                "original_bytes": original_bytes,
+                "details_hint": payload_reload_hint(tool)
+            }
+        })
+    } else {
+        fallback
+    }
+}
+
+fn annotate_truncation(
+    envelope: &mut Value,
+    strategy: &str,
+    original_bytes: usize,
+    remaining_bytes: usize,
+    tool: &str,
+) {
+    if let Some(obj) = envelope.as_object_mut() {
+        obj.insert("truncated".to_string(), Value::Bool(true));
+        obj.insert(
+            "truncation".to_string(),
+            json!({
+                "reason": "payload_size_limit",
+                "strategy": strategy,
+                "limit_bytes": TOOL_ENVELOPE_MAX_BYTES,
+                "original_bytes": original_bytes,
+                "remaining_bytes": remaining_bytes,
+                "details_hint": payload_reload_hint(tool)
+            }),
+        );
+    }
+}
+
+fn trim_discovery_sections(data: &mut Map<String, Value>) {
+    for section in ["openapi", "system_config", "agent_capabilities"] {
+        let Some(section_value) = data.get_mut(section) else {
+            continue;
+        };
+        let Some(section_obj) = section_value.as_object_mut() else {
+            continue;
+        };
+
+        if let Some(body) = section_obj.remove("body") {
+            section_obj.insert("body_omitted".to_string(), Value::Bool(true));
+            section_obj.insert("body_summary".to_string(), summarize_json_shape(&body));
+        }
+        if let Some(headers) = section_obj.remove("headers") {
+            section_obj.insert("headers_omitted".to_string(), Value::Bool(true));
+            section_obj.insert("headers_summary".to_string(), summarize_json_shape(&headers));
+        }
+        if let Some(endpoints) = section_obj
+            .get_mut("compact_endpoints")
+            .and_then(Value::as_array_mut)
+        {
+            let total = endpoints.len();
+            if total > COMPACT_ENDPOINT_PREVIEW_MAX_ITEMS {
+                endpoints.truncate(COMPACT_ENDPOINT_PREVIEW_MAX_ITEMS);
+                section_obj.insert(
+                    "compact_endpoints_truncated".to_string(),
+                    Value::Bool(true),
+                );
+                section_obj.insert("compact_endpoints_total".to_string(), json!(total));
+            }
+        }
+    }
+}
+
+fn summarize_json_shape(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut sample_keys = map.keys().take(20).cloned().collect::<Vec<_>>();
+            sample_keys.sort();
+            json!({
+                "omitted": true,
+                "type": "object",
+                "key_count": map.len(),
+                "sample_keys": sample_keys
+            })
+        }
+        Value::Array(items) => json!({
+            "omitted": true,
+            "type": "array",
+            "item_count": items.len()
+        }),
+        Value::String(s) => json!({
+            "omitted": true,
+            "type": "string",
+            "char_count": s.chars().count()
+        }),
+        Value::Number(_) => json!({
+            "omitted": true,
+            "type": "number"
+        }),
+        Value::Bool(_) => json!({
+            "omitted": true,
+            "type": "boolean"
+        }),
+        Value::Null => json!({
+            "omitted": true,
+            "type": "null"
+        }),
+    }
+}
+
+fn serialized_json_size_bytes(value: &Value) -> usize {
+    serde_json::to_vec(value)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
+}
+
+fn payload_reload_hint(tool: &str) -> &'static str {
+    if tool == "kura_discover" || tool == "kura_discover_debug" {
+        "For full details, use kura_discover_debug with explicit include_* flags and fetch one large section at a time, or read kura://openapi, kura://system/config, and kura://agent/capabilities."
+    } else {
+        "Retry with narrower scope or pagination, then request follow-up chunks for full detail."
     }
 }
 
@@ -3190,7 +3431,8 @@ mod tests {
         assert!(instructions.contains("kura_agent_context"));
         assert!(instructions.contains("onboarding_needed"));
         assert!(instructions.contains("first_contact_opening_v1"));
-        assert!(instructions.contains("kura_discover only for schema/capability troubleshooting"));
+        assert!(instructions.contains("kura_discover for lean capability snapshots"));
+        assert!(instructions.contains("kura_discover_debug only for deep schema/capability troubleshooting"));
     }
 
     #[tokio::test]
@@ -3340,6 +3582,24 @@ mod tests {
         assert_eq!(props["compact_openapi"]["default"], true);
     }
 
+    #[test]
+    fn discover_debug_tool_schema_defaults_to_heavy_bundle() {
+        let tool = tool_definitions()
+            .into_iter()
+            .find(|tool| tool.name == "kura_discover_debug")
+            .expect("kura_discover_debug tool must exist");
+        let props = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("tool schema properties must exist");
+
+        assert_eq!(props["include_openapi"]["default"], true);
+        assert_eq!(props["include_system_config"]["default"], true);
+        assert_eq!(props["include_agent_capabilities"]["default"], true);
+        assert_eq!(props["compact_openapi"]["default"], false);
+    }
+
     #[tokio::test]
     async fn discover_defaults_only_include_capabilities_section() {
         let server = McpServer::new(McpRuntimeConfig {
@@ -3389,6 +3649,52 @@ mod tests {
 
         let text = tool_text_content("kura_mcp_status", &envelope);
         assert_eq!(text, to_pretty_json(&envelope));
+    }
+
+    #[test]
+    fn payload_limit_truncates_and_sets_reload_hint() {
+        let huge = "x".repeat(TOOL_ENVELOPE_MAX_BYTES * 2);
+        let envelope = json!({
+            "status": "complete",
+            "phase": "final",
+            "tool": "kura_discover_debug",
+            "data": {
+                "openapi": {
+                    "ok": true,
+                    "status": 200,
+                    "body": {
+                        "blob": huge
+                    }
+                }
+            }
+        });
+
+        let limited = enforce_tool_payload_limit("kura_discover_debug", envelope);
+        assert_eq!(limited["truncated"], true);
+        assert!(
+            limited["truncation"]["details_hint"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("kura_discover_debug")
+        );
+        assert!(serialized_json_size_bytes(&limited) <= TOOL_ENVELOPE_MAX_BYTES);
+    }
+
+    #[test]
+    fn tool_text_content_prefers_truncation_hint() {
+        let envelope = json!({
+            "status": "complete",
+            "phase": "final",
+            "tool": "kura_discover_debug",
+            "truncated": true,
+            "truncation": {
+                "details_hint": "Use kura_discover_debug with include_openapi=false."
+            }
+        });
+
+        let text = tool_text_content("kura_discover_debug", &envelope);
+        assert!(text.contains("truncated"));
+        assert!(text.contains("include_openapi=false"));
     }
 
     #[test]
