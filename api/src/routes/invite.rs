@@ -83,7 +83,7 @@ pub async fn submit_access_request(
     // Always return 201 even if duplicate (no info leak)
     let result = sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO access_requests (email, name, context) VALUES ($1, $2, $3) \
-         ON CONFLICT DO NOTHING RETURNING id",
+         ON CONFLICT ((lower(email))) WHERE status = 'pending' DO NOTHING RETURNING id",
     )
     .bind(&email)
     .bind(name)
