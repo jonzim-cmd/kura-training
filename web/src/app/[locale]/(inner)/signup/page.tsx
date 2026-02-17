@@ -424,6 +424,7 @@ export default function SignupPage() {
                 disabled={submitting || !socialConsentReady || !TURNSTILE_SITE_KEY}
                 aria-disabled={submitting || !socialConsentReady || !TURNSTILE_SITE_KEY}
               >
+                <GoogleIcon />
                 {t('continueWithGoogle')}
               </button>
               <button
@@ -433,6 +434,7 @@ export default function SignupPage() {
                 disabled={submitting || !socialConsentReady || !TURNSTILE_SITE_KEY}
                 aria-disabled={submitting || !socialConsentReady || !TURNSTILE_SITE_KEY}
               >
+                <GitHubIcon />
                 {t('continueWithGithub')}
               </button>
               <button
@@ -442,6 +444,7 @@ export default function SignupPage() {
                 disabled={submitting || !socialConsentReady || !TURNSTILE_SITE_KEY}
                 aria-disabled={submitting || !socialConsentReady || !TURNSTILE_SITE_KEY}
               >
+                <AppleIcon />
                 {t('continueWithApple')}
               </button>
             </div>
