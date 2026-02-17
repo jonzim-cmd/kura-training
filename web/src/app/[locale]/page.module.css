@@ -615,58 +615,153 @@
 
 /* === Responsive === */
 @media (max-width: 768px) {
-  .threshold { padding: 0 6%; }
-  .eventWrite { padding: 10vh 6%; }
-  .projCompute { padding: 4vh 6%; }
-  .inferenceText { padding: 12vh 6%; }
-  .core { padding: 6%; }
 
+  /* --- Spacing: give each section room to breathe --- */
+  .threshold {
+    padding: 8vh 6%;
+    min-height: 60vh;
+  }
+
+  .eventWrite { padding: 10vh 6%; }
+  .projCompute { padding: 6vh 6% 10vh; }
+  .inferenceText { padding: 10vh 6%; }
+  .core { padding: 8vh 6%; }
+
+  /* --- Threshold: keep horizontal layout, just tighter --- */
   .decompRow {
-    flex-direction: column;
-    gap: 0.25rem;
+    flex-direction: row;
+    gap: 1rem;
   }
 
   .fieldName {
-    text-align: left;
+    text-align: right;
     min-width: 0;
+    flex-shrink: 0;
+    font-size: 0.75rem;
+    width: 7rem;
   }
 
-  /* Inside section — hide decorative grid elements that overlap content on mobile */
+  .fieldValue {
+    font-size: 1.0625rem;
+  }
+
+  .fieldValueMono {
+    font-size: 0.8125rem;
+  }
+
+  /* --- Inside: restore depth, keep simplified deco --- */
   .inside {
-    min-height: auto;
+    min-height: 100vh;
+    /* Faint top glow marks entry into event store */
+    background: linear-gradient(
+      180deg,
+      rgba(255, 229, 102, 0.02) 0%,
+      transparent 15%,
+      transparent 85%,
+      rgba(255, 255, 255, 0.01) 100%
+    );
   }
 
   .eventLines {
-    opacity: 0.15;
+    opacity: 0.3;
+  }
+
+  .eventDot {
+    width: 5px;
+    height: 5px;
+    background: rgba(255, 229, 102, 0.8);
   }
 
   .projBand {
-    display: none;
+    opacity: 0.4;
   }
 
   .threadsSvg {
-    display: none;
+    opacity: 1;
   }
 
-  /* Deep section — hide clouds that overflow viewport */
+  .projCompute {
+    gap: 2.5rem;
+  }
+
+  .projBlock {
+    /* Subtle left accent to mark each projection */
+    border-left: 1px solid rgba(255, 229, 102, 0.08);
+    padding-left: 1rem;
+  }
+
+  /* --- Deep: single centered glow instead of scattered clouds --- */
+  .deep {
+    min-height: 80vh;
+    background: radial-gradient(
+      ellipse 80% 60% at 50% 40%,
+      rgba(255, 229, 102, 0.04) 0%,
+      transparent 70%
+    );
+  }
+
   .inferenceCloud {
-    display: none;
+    width: 200px !important;
+    height: 200px !important;
   }
 
-  /* Override inline marginLeft on inference steps */
+  .mesh svg {
+    opacity: 1;
+  }
+
+  /* Keep slight stagger for visual rhythm */
   .inferenceStep {
-    margin-left: 0 !important;
     max-width: 100%;
   }
+
+  .inferenceStep:nth-child(1) { margin-left: 0 !important; }
+  .inferenceStep:nth-child(2) { margin-left: 5% !important; }
+  .inferenceStep:nth-child(3) { margin-left: 2% !important; }
 
   .inferenceStepContent {
     font-size: 0.8125rem;
     word-break: break-word;
   }
 
-  /* Mesh background scales fine but reduce opacity for readability */
-  .mesh svg {
-    opacity: 0.5;
+  /* --- Section transitions: subtle dividers --- */
+  .bridge {
+    padding: 8vh 6%;
+  }
+
+  .threshold::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 10%;
+    right: 10%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 229, 102, 0.12), transparent);
+  }
+
+  .deep::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 10%;
+    right: 10%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+    z-index: 1;
+  }
+
+  .core::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 10%;
+    right: 10%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 229, 102, 0.08), transparent);
+  }
+
+  /* core needs position relative for the pseudo-element */
+  .core {
+    position: relative;
   }
 }
 
