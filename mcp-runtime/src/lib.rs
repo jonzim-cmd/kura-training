@@ -33,7 +33,6 @@ static TOOL_CALL_DEDUPE_CACHE: LazyLock<Mutex<HashMap<String, ToolCallDedupeEntr
 struct ToolCallDedupeEntry {
     created_at: Instant,
     envelope: Value,
-    is_error: bool,
 }
 
 fn mark_context_loaded(session_id: &str) {
@@ -103,7 +102,7 @@ fn get_tool_call_dedupe_entry(
     session_id: &str,
     name: &str,
     args: &Map<String, Value>,
-) -> Option<(Value, bool, u128)> {
+) -> Option<(Value, u128)> {
     if !is_tool_call_dedupe_eligible(name) {
         return None;
     }
@@ -121,7 +120,7 @@ fn get_tool_call_dedupe_entry(
     if age_ms > u128::from(TOOL_CALL_DEDUPE_WINDOW_MS) {
         return None;
     }
-    Some((entry.envelope.clone(), entry.is_error, age_ms))
+    Some((entry.envelope.clone(), age_ms))
 }
 
 fn store_tool_call_dedupe_entry(
@@ -129,7 +128,6 @@ fn store_tool_call_dedupe_entry(
     name: &str,
     args: &Map<String, Value>,
     envelope: &Value,
-    is_error: bool,
 ) {
     if !is_tool_call_dedupe_eligible(name) {
         return;
@@ -143,7 +141,6 @@ fn store_tool_call_dedupe_entry(
         ToolCallDedupeEntry {
             created_at: Instant::now(),
             envelope: envelope.clone(),
-            is_error,
         },
     );
 }
@@ -624,7 +621,7 @@ impl McpServer {
             None
         };
 
-        if let Some((mut envelope, is_error, age_ms)) =
+        if let Some((mut envelope, age_ms)) =
             get_tool_call_dedupe_entry(&self.session_id, name, &args)
         {
             envelope["dedupe"] = json!({
@@ -636,7 +633,7 @@ impl McpServer {
             return Ok(build_tool_call_response(
                 name,
                 envelope,
-                is_error,
+                false,
                 context_warning,
             ));
         }
@@ -657,7 +654,7 @@ impl McpServer {
                         "data": payload
                     }),
                 );
-                store_tool_call_dedupe_entry(&self.session_id, name, &args, &envelope, false);
+                store_tool_call_dedupe_entry(&self.session_id, name, &args, &envelope);
                 build_tool_call_response(name, envelope, false, context_warning)
             }
             Err(err) => {
@@ -671,7 +668,6 @@ impl McpServer {
                         "error": payload
                     }),
                 );
-                store_tool_call_dedupe_entry(&self.session_id, name, &args, &envelope, true);
                 build_tool_call_response(name, envelope, true, context_warning)
             }
         })
@@ -4113,7 +4109,7 @@ mod tests {
             "data": {"ok": true}
         });
 
-        store_tool_call_dedupe_entry(&sid, "kura_projection_get", &args, &envelope, false);
+        store_tool_call_dedupe_entry(&sid, "kura_projection_get", &args, &envelope);
         let hit = get_tool_call_dedupe_entry(&sid, "kura_projection_get", &args);
         assert!(hit.is_some(), "fresh entry must be deduped");
 
@@ -4133,7 +4129,6 @@ mod tests {
                         "tool": "kura_projection_get",
                         "data": {"stale": true}
                     }),
-                    is_error: false,
                 },
             );
         }

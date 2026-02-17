@@ -70,12 +70,12 @@ async def _load_event_type_counts(
             SELECT event_type, COUNT(*)::BIGINT AS count
             FROM events
             WHERE user_id = %s
-              AND timestamp >= NOW() - make_interval(days => %s)
+              AND timestamp >= NOW() - (%s::INT * INTERVAL '1 day')
             GROUP BY event_type
             ORDER BY count DESC, event_type ASC
             LIMIT 8
             """,
-            (user_id, float(horizon_days)),
+            (user_id, horizon_days),
         )
         return await cur.fetchall()
 
