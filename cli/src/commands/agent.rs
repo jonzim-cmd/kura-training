@@ -37,6 +37,8 @@ pub enum AgentCommands {
         #[arg(value_enum)]
         mode: SaveConfirmationMode,
     },
+    /// Resolve visualization policy/output for a task intent
+    ResolveVisualization(ResolveVisualizationArgs),
     /// Direct agent API access under /v1/agent/*
     Request(AgentRequestArgs),
 }
@@ -128,6 +130,37 @@ pub struct WriteWithProofArgs {
     pub request_file: Option<String>,
 }
 
+#[derive(Args)]
+pub struct ResolveVisualizationArgs {
+    /// Full request payload JSON file for /v1/agent/visualization/resolve
+    #[arg(long, conflicts_with = "task_intent")]
+    pub request_file: Option<String>,
+
+    /// Task intent (required unless --request-file is used)
+    #[arg(long, required_unless_present = "request_file")]
+    pub task_intent: Option<String>,
+
+    /// auto | always | never
+    #[arg(long)]
+    pub user_preference_override: Option<String>,
+
+    /// low | medium | high
+    #[arg(long)]
+    pub complexity_hint: Option<String>,
+
+    /// Allow rich rendering formats when true (default: true)
+    #[arg(long, default_value_t = true)]
+    pub allow_rich_rendering: bool,
+
+    /// Optional visualization_spec JSON file
+    #[arg(long)]
+    pub spec_file: Option<String>,
+
+    /// Optional telemetry session id
+    #[arg(long)]
+    pub telemetry_session_id: Option<String>,
+}
+
 pub async fn run(api_url: &str, token: Option<&str>, command: AgentCommands) -> i32 {
     match command {
         AgentCommands::Capabilities => capabilities(api_url, token).await,
@@ -155,6 +188,9 @@ pub async fn run(api_url: &str, token: Option<&str>, command: AgentCommands) -> 
         },
         AgentCommands::SetSaveConfirmationMode { mode } => {
             set_save_confirmation_mode(api_url, token, mode).await
+        }
+        AgentCommands::ResolveVisualization(args) => {
+            resolve_visualization(api_url, token, args).await
         }
         AgentCommands::Request(args) => request(api_url, token, args).await,
     }
@@ -295,6 +331,65 @@ pub async fn write_with_proof(api_url: &str, token: Option<&str>, args: WriteWit
         api_url,
         reqwest::Method::POST,
         "/v1/agent/write-with-proof",
+        token,
+        Some(body),
+        &[],
+        &[],
+        false,
+        false,
+    )
+    .await
+}
+
+async fn resolve_visualization(
+    api_url: &str,
+    token: Option<&str>,
+    args: ResolveVisualizationArgs,
+) -> i32 {
+    let body = if let Some(file) = args.request_file.as_deref() {
+        match read_json_from_file(file) {
+            Ok(v) => v,
+            Err(e) => exit_error(
+                &e,
+                Some("Provide a valid JSON payload for /v1/agent/visualization/resolve."),
+            ),
+        }
+    } else {
+        let task_intent = match args.task_intent {
+            Some(intent) if !intent.trim().is_empty() => intent,
+            _ => exit_error(
+                "task_intent is required unless --request-file is used.",
+                Some("Use --task-intent or provide --request-file."),
+            ),
+        };
+
+        let mut body = json!({
+            "task_intent": task_intent,
+            "allow_rich_rendering": args.allow_rich_rendering
+        });
+        if let Some(mode) = args.user_preference_override {
+            body["user_preference_override"] = json!(mode);
+        }
+        if let Some(complexity) = args.complexity_hint {
+            body["complexity_hint"] = json!(complexity);
+        }
+        if let Some(session_id) = args.telemetry_session_id {
+            body["telemetry_session_id"] = json!(session_id);
+        }
+        if let Some(spec_file) = args.spec_file.as_deref() {
+            let spec = match read_json_from_file(spec_file) {
+                Ok(v) => v,
+                Err(e) => exit_error(&e, Some("Provide a valid JSON visualization_spec payload.")),
+            };
+            body["visualization_spec"] = spec;
+        }
+        body
+    };
+
+    api_request(
+        api_url,
+        reqwest::Method::POST,
+        "/v1/agent/visualization/resolve",
         token,
         Some(body),
         &[],

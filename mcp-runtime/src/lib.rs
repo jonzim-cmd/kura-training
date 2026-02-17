@@ -33,6 +33,9 @@ pub struct McpServeArgs {
     /// Default metadata.agent for events written via MCP
     #[arg(long, default_value = "kura-mcp")]
     pub default_agent: String,
+    /// Allow admin API paths (disabled by default)
+    #[arg(long, env = "KURA_MCP_ALLOW_ADMIN")]
+    pub allow_admin: bool,
 }
 
 pub async fn run(api_url: &str, inherited_no_auth: bool, command: McpCommands) -> i32 {
@@ -44,6 +47,7 @@ pub async fn run(api_url: &str, inherited_no_auth: bool, command: McpCommands) -
                 explicit_token: args.token,
                 default_source: args.default_source,
                 default_agent: args.default_agent,
+                allow_admin: args.allow_admin,
             });
             match server.serve_stdio().await {
                 Ok(()) => 0,
@@ -66,6 +70,7 @@ pub struct HttpMcpRequestConfig {
     pub token: Option<String>,
     pub default_source: String,
     pub default_agent: String,
+    pub allow_admin: bool,
 }
 
 impl Default for HttpMcpRequestConfig {
@@ -75,6 +80,7 @@ impl Default for HttpMcpRequestConfig {
             token: None,
             default_source: "mcp".to_string(),
             default_agent: "kura-mcp".to_string(),
+            allow_admin: false,
         }
     }
 }
@@ -90,6 +96,7 @@ pub async fn handle_http_jsonrpc(
         explicit_token: config.token,
         default_source: config.default_source,
         default_agent: config.default_agent,
+        allow_admin: config.allow_admin,
     });
     server.capability_profile = server.negotiate_capability_profile().await;
     server.handle_incoming_message(incoming).await
@@ -102,6 +109,7 @@ struct McpRuntimeConfig {
     explicit_token: Option<String>,
     default_source: String,
     default_agent: String,
+    allow_admin: bool,
 }
 
 struct McpServer {
@@ -468,6 +476,16 @@ impl McpServer {
             "kura_projection_list" => self.tool_projection_list(args).await,
             "kura_agent_context" => self.tool_agent_context(args).await,
             "kura_semantic_resolve" => self.tool_semantic_resolve(args).await,
+            "kura_access_request" => self.tool_access_request(args).await,
+            "kura_account_api_keys_list" => self.tool_account_api_keys_list(args).await,
+            "kura_account_api_keys_create" => self.tool_account_api_keys_create(args).await,
+            "kura_account_api_keys_revoke" => self.tool_account_api_keys_revoke(args).await,
+            "kura_import_job_create" => self.tool_import_job_create(args).await,
+            "kura_import_job_get" => self.tool_import_job_get(args).await,
+            "kura_provider_connections_list" => self.tool_provider_connections_list(args).await,
+            "kura_provider_connections_upsert" => self.tool_provider_connections_upsert(args).await,
+            "kura_provider_connection_revoke" => self.tool_provider_connection_revoke(args).await,
+            "kura_agent_visualization_resolve" => self.tool_agent_visualization_resolve(args).await,
             _ => Err(ToolError::new(
                 "unknown_tool",
                 format!("Unknown tool '{tool_name}'"),
@@ -1124,6 +1142,302 @@ impl McpServer {
         }))
     }
 
+    async fn tool_access_request(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
+        let email = required_string(args, "email")?;
+        let mut body = json!({ "email": email });
+        if let Some(name) = arg_optional_string(args, "name")? {
+            body["name"] = json!(name);
+        }
+        if let Some(context) = arg_optional_string(args, "context")? {
+            body["context"] = json!(context);
+        }
+        if let Some(locale) = arg_optional_string(args, "locale")? {
+            body["locale"] = json!(locale);
+        }
+        if let Some(turnstile_token) = arg_optional_string(args, "turnstile_token")? {
+            body["turnstile_token"] = json!(turnstile_token);
+        }
+
+        let response = self
+            .send_api_request(
+                Method::POST,
+                "/v1/access/request",
+                &[],
+                Some(body),
+                false,
+                false,
+            )
+            .await?;
+
+        Ok(json!({
+            "request": { "path": "/v1/access/request" },
+            "response": response.to_value()
+        }))
+    }
+
+    async fn tool_account_api_keys_list(
+        &self,
+        _args: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        let response = self
+            .send_api_request(Method::GET, "/v1/account/api-keys", &[], None, true, false)
+            .await?;
+
+        Ok(json!({
+            "request": { "path": "/v1/account/api-keys" },
+            "response": response.to_value()
+        }))
+    }
+
+    async fn tool_account_api_keys_create(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        let label = required_string(args, "label")?;
+        let mut body = json!({ "label": label });
+        if let Some(scopes) = arg_optional_string_array(args, "scopes")? {
+            body["scopes"] = json!(scopes);
+        }
+
+        let response = self
+            .send_api_request(
+                Method::POST,
+                "/v1/account/api-keys",
+                &[],
+                Some(body),
+                true,
+                false,
+            )
+            .await?;
+
+        Ok(json!({
+            "request": { "path": "/v1/account/api-keys" },
+            "response": response.to_value()
+        }))
+    }
+
+    async fn tool_account_api_keys_revoke(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        let key_id = required_string(args, "key_id")?;
+        let key_id = parse_uuid_string(&key_id, "key_id")?;
+        let path = format!("/v1/account/api-keys/{key_id}");
+
+        let response = self
+            .send_api_request(Method::DELETE, &path, &[], None, true, false)
+            .await?;
+
+        Ok(json!({
+            "request": { "path": path, "key_id": key_id },
+            "response": response.to_value()
+        }))
+    }
+
+    async fn tool_import_job_create(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
+        let provider = required_string(args, "provider")?;
+        let provider_user_id = required_string(args, "provider_user_id")?;
+        let file_format = required_string(args, "file_format")?;
+        let payload_text = required_string(args, "payload_text")?;
+        let external_activity_id = required_string(args, "external_activity_id")?;
+
+        let mut body = json!({
+            "provider": provider,
+            "provider_user_id": provider_user_id,
+            "file_format": file_format,
+            "payload_text": payload_text,
+            "external_activity_id": external_activity_id
+        });
+        if let Some(external_event_version) = arg_optional_string(args, "external_event_version")? {
+            body["external_event_version"] = json!(external_event_version);
+        }
+        if let Some(raw_payload_ref) = arg_optional_string(args, "raw_payload_ref")? {
+            body["raw_payload_ref"] = json!(raw_payload_ref);
+        }
+        if let Some(ingestion_method) = arg_optional_string(args, "ingestion_method")? {
+            body["ingestion_method"] = json!(ingestion_method);
+        }
+
+        let response = self
+            .send_api_request(
+                Method::POST,
+                "/v1/imports/jobs",
+                &[],
+                Some(body),
+                true,
+                false,
+            )
+            .await?;
+
+        Ok(json!({
+            "request": { "path": "/v1/imports/jobs" },
+            "response": response.to_value()
+        }))
+    }
+
+    async fn tool_import_job_get(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
+        let job_id = required_string(args, "job_id")?;
+        let job_id = parse_uuid_string(&job_id, "job_id")?;
+        let path = format!("/v1/imports/jobs/{job_id}");
+
+        let response = self
+            .send_api_request(Method::GET, &path, &[], None, true, false)
+            .await?;
+
+        Ok(json!({
+            "request": { "path": path, "job_id": job_id },
+            "response": response.to_value()
+        }))
+    }
+
+    async fn tool_provider_connections_list(
+        &self,
+        _args: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        let response = self
+            .send_api_request(
+                Method::GET,
+                "/v1/providers/connections",
+                &[],
+                None,
+                true,
+                false,
+            )
+            .await?;
+
+        Ok(json!({
+            "request": { "path": "/v1/providers/connections" },
+            "response": response.to_value()
+        }))
+    }
+
+    async fn tool_provider_connections_upsert(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        let provider = required_string(args, "provider")?;
+        let provider_account_id = required_string(args, "provider_account_id")?;
+        let auth_state = required_string(args, "auth_state")?;
+
+        let mut body = json!({
+            "provider": provider,
+            "provider_account_id": provider_account_id,
+            "auth_state": auth_state,
+        });
+        if let Some(scopes) = arg_optional_string_array(args, "scopes")? {
+            body["scopes"] = json!(scopes);
+        }
+        if let Some(consented_at) = arg_optional_string(args, "consented_at")? {
+            body["consented_at"] = json!(consented_at);
+        }
+        if let Some(token_expires_at) = arg_optional_string(args, "token_expires_at")? {
+            body["token_expires_at"] = json!(token_expires_at);
+        }
+        if let Some(sync_cursor) = arg_optional_string(args, "sync_cursor")? {
+            body["sync_cursor"] = json!(sync_cursor);
+        }
+        if let Some(access_token_ref) = arg_optional_string(args, "access_token_ref")? {
+            body["access_token_ref"] = json!(access_token_ref);
+        }
+        if let Some(refresh_token_ref) = arg_optional_string(args, "refresh_token_ref")? {
+            body["refresh_token_ref"] = json!(refresh_token_ref);
+        }
+        if let Some(token_fingerprint) = arg_optional_string(args, "token_fingerprint")? {
+            body["token_fingerprint"] = json!(token_fingerprint);
+        }
+        if let Some(last_oauth_state_nonce) = arg_optional_string(args, "last_oauth_state_nonce")? {
+            body["last_oauth_state_nonce"] = json!(last_oauth_state_nonce);
+        }
+        if let Some(last_error_code) = arg_optional_string(args, "last_error_code")? {
+            body["last_error_code"] = json!(last_error_code);
+        }
+        if let Some(last_error_at) = arg_optional_string(args, "last_error_at")? {
+            body["last_error_at"] = json!(last_error_at);
+        }
+
+        let response = self
+            .send_api_request(
+                Method::POST,
+                "/v1/providers/connections",
+                &[],
+                Some(body),
+                true,
+                false,
+            )
+            .await?;
+
+        Ok(json!({
+            "request": { "path": "/v1/providers/connections" },
+            "response": response.to_value()
+        }))
+    }
+
+    async fn tool_provider_connection_revoke(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        let connection_id = required_string(args, "connection_id")?;
+        let connection_id = parse_uuid_string(&connection_id, "connection_id")?;
+        let reason = required_string(args, "reason")?;
+        let path = format!("/v1/providers/connections/{connection_id}/revoke");
+        let body = json!({ "reason": reason });
+
+        let response = self
+            .send_api_request(Method::POST, &path, &[], Some(body), true, false)
+            .await?;
+
+        Ok(json!({
+            "request": { "path": path, "connection_id": connection_id },
+            "response": response.to_value()
+        }))
+    }
+
+    async fn tool_agent_visualization_resolve(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        let task_intent = required_string(args, "task_intent")?;
+        let mut body = json!({
+            "task_intent": task_intent,
+            "allow_rich_rendering": arg_bool(args, "allow_rich_rendering", true)?
+        });
+        if let Some(value) = arg_optional_string(args, "user_preference_override")? {
+            body["user_preference_override"] = json!(value);
+        }
+        if let Some(value) = arg_optional_string(args, "complexity_hint")? {
+            body["complexity_hint"] = json!(value);
+        }
+        if let Some(value) = arg_optional_string(args, "telemetry_session_id")? {
+            body["telemetry_session_id"] = json!(value);
+        }
+        if let Some(spec) = args.get("visualization_spec") {
+            if !spec.is_object() {
+                return Err(ToolError::new(
+                    "validation_failed",
+                    "visualization_spec must be an object when provided",
+                )
+                .with_field("visualization_spec"));
+            }
+            body["visualization_spec"] = spec.clone();
+        }
+
+        let response = self
+            .send_api_request(
+                Method::POST,
+                "/v1/agent/visualization/resolve",
+                &[],
+                Some(body),
+                true,
+                false,
+            )
+            .await?;
+
+        Ok(json!({
+            "request": { "path": "/v1/agent/visualization/resolve" },
+            "response": response.to_value()
+        }))
+    }
+
     fn resources_list_payload(&self) -> Value {
         let resources: Vec<Value> = resource_definitions()
             .into_iter()
@@ -1208,6 +1522,18 @@ impl McpServer {
         include_headers: bool,
     ) -> Result<ApiCallResult, ToolError> {
         let path = normalize_api_path(path)?;
+        if is_admin_api_path(&path) && !self.config.allow_admin {
+            return Err(
+                ToolError::new(
+                    "admin_path_blocked",
+                    "Admin API paths are disabled in MCP by default",
+                )
+                .with_field("path")
+                .with_docs_hint(
+                    "Start MCP with --allow-admin (or set KURA_MCP_ALLOW_ADMIN=1) only in trusted developer/admin sessions.",
+                ),
+            );
+        }
         let mut url = reqwest::Url::parse(&format!(
             "{}{}",
             self.config.api_url.trim_end_matches('/'),
@@ -1637,6 +1963,165 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                 "additionalProperties": false
             }),
         },
+        ToolDefinition {
+            name: "kura_access_request",
+            description: "Submit a public access request (no auth required).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "email": { "type": "string" },
+                    "name": { "type": "string" },
+                    "context": { "type": "string" },
+                    "locale": { "type": "string", "enum": ["de", "en", "ja"] },
+                    "turnstile_token": { "type": "string" }
+                },
+                "required": ["email"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "kura_account_api_keys_list",
+            description: "List API keys for the authenticated account.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "kura_account_api_keys_create",
+            description: "Create an API key for the authenticated account.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "label": { "type": "string" },
+                    "scopes": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    }
+                },
+                "required": ["label"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "kura_account_api_keys_revoke",
+            description: "Revoke an API key by key_id.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "key_id": { "type": "string", "description": "UUID" }
+                },
+                "required": ["key_id"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "kura_import_job_create",
+            description: "Queue a new external import job.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "provider": { "type": "string" },
+                    "provider_user_id": { "type": "string" },
+                    "file_format": { "type": "string" },
+                    "payload_text": { "type": "string" },
+                    "external_activity_id": { "type": "string" },
+                    "external_event_version": { "type": "string" },
+                    "raw_payload_ref": { "type": "string" },
+                    "ingestion_method": { "type": "string" }
+                },
+                "required": [
+                    "provider",
+                    "provider_user_id",
+                    "file_format",
+                    "payload_text",
+                    "external_activity_id"
+                ],
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "kura_import_job_get",
+            description: "Get status of an import job by job_id.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": { "type": "string", "description": "UUID" }
+                },
+                "required": ["job_id"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "kura_provider_connections_list",
+            description: "List provider connections for the authenticated account.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "kura_provider_connections_upsert",
+            description: "Upsert provider connection metadata.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "provider": { "type": "string" },
+                    "provider_account_id": { "type": "string" },
+                    "auth_state": { "type": "string" },
+                    "scopes": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    },
+                    "consented_at": { "type": "string", "description": "RFC3339 timestamp" },
+                    "token_expires_at": { "type": "string", "description": "RFC3339 timestamp" },
+                    "sync_cursor": { "type": "string" },
+                    "access_token_ref": { "type": "string" },
+                    "refresh_token_ref": { "type": "string" },
+                    "token_fingerprint": { "type": "string" },
+                    "last_oauth_state_nonce": { "type": "string" },
+                    "last_error_code": { "type": "string" },
+                    "last_error_at": { "type": "string", "description": "RFC3339 timestamp" }
+                },
+                "required": ["provider", "provider_account_id", "auth_state"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "kura_provider_connection_revoke",
+            description: "Revoke one provider connection by connection_id.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "connection_id": { "type": "string", "description": "UUID" },
+                    "reason": { "type": "string" }
+                },
+                "required": ["connection_id", "reason"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "kura_agent_visualization_resolve",
+            description: "Resolve visualization policy and output for a task intent.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "task_intent": { "type": "string" },
+                    "user_preference_override": { "type": "string", "enum": ["auto", "always", "never"] },
+                    "complexity_hint": { "type": "string", "enum": ["low", "medium", "high"] },
+                    "allow_rich_rendering": { "type": "boolean", "default": true },
+                    "visualization_spec": {
+                        "type": "object",
+                        "description": "AgentVisualizationSpec payload"
+                    },
+                    "telemetry_session_id": { "type": "string" }
+                },
+                "required": ["task_intent"],
+                "additionalProperties": false
+            }),
+        },
     ]
 }
 
@@ -1874,6 +2359,11 @@ fn path_requires_auth(path: &str) -> bool {
     !(p == "/health" || p.starts_with("/api-doc/") || p.starts_with("/swagger-ui"))
 }
 
+fn is_admin_api_path(path: &str) -> bool {
+    let p = path.trim().to_lowercase();
+    p == "/v1/admin" || p.starts_with("/v1/admin/")
+}
+
 fn arg_bool(args: &Map<String, Value>, key: &str, default: bool) -> Result<bool, ToolError> {
     match args.get(key) {
         None => Ok(default),
@@ -1949,6 +2439,50 @@ fn arg_optional_u64(args: &Map<String, Value>, key: &str) -> Result<Option<u64>,
         )
         .with_field(key)),
     }
+}
+
+fn arg_optional_string_array(
+    args: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<Vec<String>>, ToolError> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let items = value.as_array().ok_or_else(|| {
+        ToolError::new(
+            "validation_failed",
+            format!("'{key}' must be an array of strings"),
+        )
+        .with_field(key)
+    })?;
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let text = item.as_str().ok_or_else(|| {
+            ToolError::new(
+                "validation_failed",
+                format!("'{key}' items must be strings"),
+            )
+            .with_field(key)
+        })?;
+        let normalized = text.trim();
+        if !normalized.is_empty() {
+            out.push(normalized.to_string());
+        }
+    }
+    Ok(Some(out))
+}
+
+fn parse_uuid_string(value: &str, field: &str) -> Result<Uuid, ToolError> {
+    Uuid::parse_str(value).map_err(|_| {
+        ToolError::new(
+            "validation_failed",
+            format!("'{field}' must be a valid UUID"),
+        )
+        .with_field(field)
+    })
 }
 
 fn parse_query_pairs(query_value: Option<&Value>) -> Result<Vec<(String, String)>, ToolError> {
@@ -2550,6 +3084,40 @@ mod tests {
     fn normalize_api_path_adds_leading_slash() {
         assert_eq!(normalize_api_path("v1/events").unwrap(), "/v1/events");
         assert_eq!(normalize_api_path("/v1/events").unwrap(), "/v1/events");
+    }
+
+    #[test]
+    fn admin_api_path_detection_is_strict_to_v1_admin_namespace() {
+        assert!(is_admin_api_path("/v1/admin"));
+        assert!(is_admin_api_path("/v1/admin/security/kill-switch"));
+        assert!(!is_admin_api_path("/v1/agent/context"));
+        assert!(!is_admin_api_path("/health"));
+    }
+
+    #[tokio::test]
+    async fn send_api_request_blocks_admin_paths_when_admin_not_allowed() {
+        let server = McpServer::new(McpRuntimeConfig {
+            api_url: "http://127.0.0.1:9".to_string(),
+            no_auth: true,
+            explicit_token: None,
+            default_source: "mcp".to_string(),
+            default_agent: "kura-mcp".to_string(),
+            allow_admin: false,
+        });
+
+        let err = server
+            .send_api_request(
+                Method::GET,
+                "/v1/admin/security/kill-switch",
+                &[],
+                None,
+                false,
+                false,
+            )
+            .await
+            .expect_err("admin path should be blocked before network call");
+
+        assert_eq!(err.code, "admin_path_blocked");
     }
 
     #[test]

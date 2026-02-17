@@ -1,6 +1,9 @@
 use clap::Args;
 
-use crate::util::{api_request, exit_error, read_json_from_file, resolve_token};
+use crate::util::{
+    admin_surface_enabled, api_request, exit_error, is_admin_api_path, read_json_from_file,
+    resolve_token,
+};
 
 #[derive(Args)]
 pub struct ApiArgs {
@@ -40,6 +43,13 @@ pub struct ApiArgs {
 }
 
 pub async fn run(api_url: &str, args: ApiArgs) -> i32 {
+    if is_admin_api_path(&args.path) && !admin_surface_enabled() {
+        exit_error(
+            "Admin API paths are disabled in CLI by default.",
+            Some("Set KURA_ENABLE_ADMIN_SURFACE=1 only in trusted developer/admin sessions."),
+        );
+    }
+
     // Parse method
     let method = match args.method.to_uppercase().as_str() {
         "GET" => reqwest::Method::GET,

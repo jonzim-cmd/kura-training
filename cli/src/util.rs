@@ -24,6 +24,35 @@ pub fn client() -> reqwest::Client {
     reqwest::Client::new()
 }
 
+pub fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+pub fn admin_surface_enabled() -> bool {
+    env_flag_enabled("KURA_ENABLE_ADMIN_SURFACE")
+}
+
+pub fn is_admin_api_path(path: &str) -> bool {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let normalized = if trimmed.starts_with('/') {
+        trimmed.to_ascii_lowercase()
+    } else {
+        format!("/{}", trimmed.to_ascii_lowercase())
+    };
+
+    normalized == "/v1/admin" || normalized.starts_with("/v1/admin/")
+}
+
 pub fn exit_error(message: &str, docs_hint: Option<&str>) -> ! {
     let mut err = json!({
         "error": "cli_error",
@@ -325,5 +354,19 @@ trait OpenOptionsExt {
 impl OpenOptionsExt for std::fs::OpenOptions {
     fn mode(&mut self, _mode: u32) -> &mut Self {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_admin_api_path;
+
+    #[test]
+    fn admin_path_detection_matches_v1_admin_namespace_only() {
+        assert!(is_admin_api_path("/v1/admin"));
+        assert!(is_admin_api_path("/v1/admin/invites"));
+        assert!(is_admin_api_path("v1/admin/security/kill-switch"));
+        assert!(!is_admin_api_path("/v1/agent/context"));
+        assert!(!is_admin_api_path("/health"));
     }
 }

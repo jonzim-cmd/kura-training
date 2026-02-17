@@ -27,6 +27,12 @@ enum Commands {
     /// Check API health
     Health,
 
+    /// Access request operations
+    Access {
+        #[command(subcommand)]
+        command: commands::access::AccessCommands,
+    },
+
     /// Direct API access (like gh api — works with any endpoint)
     Api(commands::api::ApiArgs),
 
@@ -42,7 +48,7 @@ enum Commands {
         command: commands::projection::ProjectionCommands,
     },
 
-    /// Agent operations (capabilities, context, write-with-proof, evidence, preferences)
+    /// Agent operations (capabilities, context, write-with-proof, evidence, preferences, visualization)
     Agent {
         #[command(subcommand)]
         command: commands::agent::AgentCommands,
@@ -58,6 +64,18 @@ enum Commands {
     Mcp {
         #[command(subcommand)]
         command: commands::mcp::McpCommands,
+    },
+
+    /// External import job operations
+    Import {
+        #[command(subcommand)]
+        command: commands::imports::ImportCommands,
+    },
+
+    /// Provider connection operations
+    Provider {
+        #[command(subcommand)]
+        command: commands::provider::ProviderCommands,
     },
 
     /// Offline replay evaluation wrappers (worker-backed)
@@ -134,6 +152,8 @@ async fn main() {
     let code = match cli.command {
         Commands::Health => commands::health::run(&cli.api_url).await,
 
+        Commands::Access { command } => commands::access::run(&cli.api_url, command).await,
+
         Commands::Api(mut args) => {
             if cli.no_auth {
                 args.no_auth = true;
@@ -162,6 +182,16 @@ async fn main() {
         }
 
         Commands::Mcp { command } => commands::mcp::run(&cli.api_url, cli.no_auth, command).await,
+
+        Commands::Import { command } => {
+            let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
+            commands::imports::run(&cli.api_url, token.as_deref(), command).await
+        }
+
+        Commands::Provider { command } => {
+            let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
+            commands::provider::run(&cli.api_url, token.as_deref(), command).await
+        }
 
         Commands::Eval { command } => commands::eval::run(command).await,
 
@@ -210,6 +240,7 @@ async fn main() {
         }
 
         Commands::Admin { command } => {
+            commands::admin::ensure_admin_surface_enabled_or_exit();
             let token = if commands::admin::requires_api_auth(&command) {
                 resolve_or_exit(&cli.api_url, cli.no_auth).await
             } else {

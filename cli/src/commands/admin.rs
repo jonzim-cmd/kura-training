@@ -1,7 +1,7 @@
 use clap::Subcommand;
 use serde_json::json;
 
-use crate::util::{api_request, exit_error};
+use crate::util::{admin_surface_enabled, api_request, env_flag_enabled, exit_error};
 
 #[derive(Subcommand)]
 pub enum AdminCommands {
@@ -135,7 +135,18 @@ pub fn requires_api_auth(command: &AdminCommands) -> bool {
     )
 }
 
+pub fn ensure_admin_surface_enabled_or_exit() {
+    if !admin_surface_enabled() {
+        exit_error(
+            "Admin commands are disabled by default.",
+            Some("Set KURA_ENABLE_ADMIN_SURFACE=1 only in trusted developer/admin sessions."),
+        );
+    }
+}
+
 pub async fn run(api_url: &str, token: Option<&str>, command: AdminCommands) -> i32 {
+    ensure_admin_surface_enabled_or_exit();
+
     match command {
         AdminCommands::CreateUser {
             email,
@@ -332,6 +343,13 @@ async fn telemetry(api_url: &str, token: Option<&str>, command: AdminTelemetryCo
 }
 
 async fn create_user(email: &str, password: &str, display_name: Option<&str>) -> i32 {
+    if !env_flag_enabled("KURA_ENABLE_BOOTSTRAP_ADMIN") {
+        exit_error(
+            "Direct database bootstrap admin commands are disabled by default.",
+            Some("Set KURA_ENABLE_BOOTSTRAP_ADMIN=1 for one-off developer bootstrap tasks."),
+        );
+    }
+
     let database_url = match std::env::var("DATABASE_URL") {
         Ok(url) => url,
         Err(_) => exit_error(
@@ -414,6 +432,13 @@ async fn create_user(email: &str, password: &str, display_name: Option<&str>) ->
 }
 
 async fn create_key(user_id_str: &str, label: &str, expires_in_days: Option<i64>) -> i32 {
+    if !env_flag_enabled("KURA_ENABLE_BOOTSTRAP_ADMIN") {
+        exit_error(
+            "Direct database bootstrap admin commands are disabled by default.",
+            Some("Set KURA_ENABLE_BOOTSTRAP_ADMIN=1 for one-off developer bootstrap tasks."),
+        );
+    }
+
     let database_url = match std::env::var("DATABASE_URL") {
         Ok(url) => url,
         Err(_) => exit_error(

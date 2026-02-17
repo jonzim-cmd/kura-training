@@ -1,3 +1,4 @@
+pub mod access;
 pub mod account;
 pub mod admin;
 pub mod agent;
@@ -6,7 +7,9 @@ pub mod auth;
 pub mod eval;
 pub mod event;
 pub mod health;
+pub mod imports;
 pub mod mcp;
 pub mod observation;
 pub mod projection;
+pub mod provider;
 pub mod system;
