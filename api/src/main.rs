@@ -43,6 +43,8 @@ mod turnstile;
         routes::events::list_events,
         routes::imports::create_import_job,
         routes::imports::get_import_job,
+        routes::analysis_jobs::create_analysis_job,
+        routes::analysis_jobs::get_analysis_job,
         routes::provider_connections::list_provider_connections,
         routes::provider_connections::upsert_provider_connection,
         routes::provider_connections::revoke_provider_connection,
@@ -157,6 +159,9 @@ mod turnstile;
         routes::imports::CreateImportJobRequest,
         routes::imports::CreateImportJobResponse,
         routes::imports::ImportJobStatusResponse,
+        routes::analysis_jobs::CreateAnalysisJobRequest,
+        routes::analysis_jobs::CreateAnalysisJobResponse,
+        routes::analysis_jobs::AnalysisJobStatusResponse,
         routes::provider_connections::UpsertProviderConnectionRequest,
         routes::provider_connections::RevokeProviderConnectionRequest,
         routes::provider_connections::ProviderConnectionAdapterContext,
@@ -327,6 +332,7 @@ async fn main() {
                 .layer(middleware::upgrade_signal::legacy_contract_layer()),
         )
         .merge(routes::imports::router().layer(middleware::rate_limit::events_write_layer()))
+        .merge(routes::analysis_jobs::router().layer(middleware::rate_limit::events_write_layer()))
         .merge(
             routes::provider_connections::router()
                 .layer(middleware::rate_limit::projections_layer()),

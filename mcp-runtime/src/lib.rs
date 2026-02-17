@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use clap::{Args, Subcommand};
 use reqwest::Method;
@@ -18,12 +18,23 @@ const TOOL_ENVELOPE_MAX_BYTES: usize = 28_000;
 const AGENT_CONTEXT_OVERFLOW_SCHEMA_VERSION: &str = "agent_context_overflow.v1";
 const COMPACT_ENDPOINT_PREVIEW_MAX_ITEMS: usize = 120;
 const CONTEXT_SESSION_TTL_SECS: u64 = 3600;
+const TOOL_CALL_DEDUPE_WINDOW_MS: u64 = 2500;
+const TOOL_CALL_DEDUPE_CACHE_TTL_SECS: u64 = 20;
 
 /// Tracks which sessions have loaded agent context. Shared across HTTP requests
 /// (where each request creates a new McpServer) and stdio (single long-lived server).
 /// Keyed by session_id, value is last-seen timestamp for TTL cleanup.
 static CONTEXT_SESSIONS: LazyLock<Mutex<HashMap<String, Instant>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static TOOL_CALL_DEDUPE_CACHE: LazyLock<Mutex<HashMap<String, ToolCallDedupeEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Clone, Debug)]
+struct ToolCallDedupeEntry {
+    created_at: Instant,
+    envelope: Value,
+    is_error: bool,
+}
 
 fn mark_context_loaded(session_id: &str) {
     let mut map = CONTEXT_SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
@@ -36,6 +47,130 @@ fn is_context_loaded(session_id: &str) -> bool {
     let cutoff = Instant::now() - std::time::Duration::from_secs(CONTEXT_SESSION_TTL_SECS);
     map.retain(|_, seen| *seen > cutoff);
     map.contains_key(session_id)
+}
+
+fn canonicalize_json(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut sorted = BTreeMap::<String, Value>::new();
+            for (key, entry) in map {
+                sorted.insert(key.clone(), canonicalize_json(entry));
+            }
+            let mut out = Map::new();
+            for (key, entry) in sorted {
+                out.insert(key, entry);
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => Value::Array(items.iter().map(canonicalize_json).collect()),
+        _ => value.clone(),
+    }
+}
+
+fn stable_dedupe_args_signature(args: &Map<String, Value>) -> String {
+    use std::hash::{Hash, Hasher};
+    let canonical = canonicalize_json(&Value::Object(args.clone()));
+    let serialized = serde_json::to_string(&canonical).unwrap_or_else(|_| "{}".to_string());
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serialized.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
+fn is_tool_call_dedupe_eligible(name: &str) -> bool {
+    matches!(
+        name,
+        "kura_discover"
+            | "kura_discover_debug"
+            | "kura_mcp_status"
+            | "kura_events_list"
+            | "kura_projection_get"
+            | "kura_projection_list"
+            | "kura_agent_context"
+            | "kura_semantic_resolve"
+            | "kura_account_api_keys_list"
+            | "kura_import_job_get"
+            | "kura_provider_connections_list"
+            | "kura_analysis_job_get"
+    )
+}
+
+fn tool_call_dedupe_key(session_id: &str, name: &str, args: &Map<String, Value>) -> String {
+    let sig = stable_dedupe_args_signature(args);
+    format!("{session_id}|{name}|{sig}")
+}
+
+fn get_tool_call_dedupe_entry(
+    session_id: &str,
+    name: &str,
+    args: &Map<String, Value>,
+) -> Option<(Value, bool, u128)> {
+    if !is_tool_call_dedupe_eligible(name) {
+        return None;
+    }
+
+    let now = Instant::now();
+    let mut cache = TOOL_CALL_DEDUPE_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let cutoff = now - Duration::from_secs(TOOL_CALL_DEDUPE_CACHE_TTL_SECS);
+    cache.retain(|_, entry| entry.created_at > cutoff);
+
+    let key = tool_call_dedupe_key(session_id, name, args);
+    let entry = cache.get(&key)?;
+    let age_ms = now.duration_since(entry.created_at).as_millis();
+    if age_ms > u128::from(TOOL_CALL_DEDUPE_WINDOW_MS) {
+        return None;
+    }
+    Some((entry.envelope.clone(), entry.is_error, age_ms))
+}
+
+fn store_tool_call_dedupe_entry(
+    session_id: &str,
+    name: &str,
+    args: &Map<String, Value>,
+    envelope: &Value,
+    is_error: bool,
+) {
+    if !is_tool_call_dedupe_eligible(name) {
+        return;
+    }
+    let mut cache = TOOL_CALL_DEDUPE_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let key = tool_call_dedupe_key(session_id, name, args);
+    cache.insert(
+        key,
+        ToolCallDedupeEntry {
+            created_at: Instant::now(),
+            envelope: envelope.clone(),
+            is_error,
+        },
+    );
+}
+
+fn build_tool_call_response(
+    tool_name: &str,
+    envelope: Value,
+    is_error: bool,
+    context_warning: Option<&str>,
+) -> Value {
+    let mut text = tool_text_content(tool_name, &envelope);
+    if let Some(warning) = context_warning {
+        text = format!("{warning}{text}");
+    }
+
+    if is_error {
+        json!({
+            "isError": true,
+            "content": [{ "type": "text", "text": text }],
+            "structuredContent": envelope
+        })
+    } else {
+        json!({
+            "content": [{ "type": "text", "text": text }],
+            "structuredContent": envelope
+        })
+    }
 }
 
 /// Tools that don't operate on user data. Used in tests to document the semantic
@@ -489,6 +624,23 @@ impl McpServer {
             None
         };
 
+        if let Some((mut envelope, is_error, age_ms)) =
+            get_tool_call_dedupe_entry(&self.session_id, name, &args)
+        {
+            envelope["dedupe"] = json!({
+                "applied": true,
+                "reason": "burst_retry_coalesced",
+                "window_ms": TOOL_CALL_DEDUPE_WINDOW_MS,
+                "age_ms": age_ms
+            });
+            return Ok(build_tool_call_response(
+                name,
+                envelope,
+                is_error,
+                context_warning,
+            ));
+        }
+
         let result = self.execute_tool(name, &args).await;
         Ok(match result {
             Ok(payload) => {
@@ -505,14 +657,8 @@ impl McpServer {
                         "data": payload
                     }),
                 );
-                let mut text = tool_text_content(name, &envelope);
-                if let Some(warning) = context_warning {
-                    text = format!("{warning}{text}");
-                }
-                json!({
-                    "content": [{ "type": "text", "text": text }],
-                    "structuredContent": envelope
-                })
+                store_tool_call_dedupe_entry(&self.session_id, name, &args, &envelope, false);
+                build_tool_call_response(name, envelope, false, context_warning)
             }
             Err(err) => {
                 let payload = err.to_value();
@@ -525,15 +671,8 @@ impl McpServer {
                         "error": payload
                     }),
                 );
-                let mut text = tool_text_content(name, &envelope);
-                if let Some(warning) = context_warning {
-                    text = format!("{warning}{text}");
-                }
-                json!({
-                    "isError": true,
-                    "content": [{ "type": "text", "text": text }],
-                    "structuredContent": envelope
-                })
+                store_tool_call_dedupe_entry(&self.session_id, name, &args, &envelope, true);
+                build_tool_call_response(name, envelope, true, context_warning)
             }
         })
     }
@@ -560,6 +699,8 @@ impl McpServer {
             "kura_account_api_keys_revoke" => self.tool_account_api_keys_revoke(args).await,
             "kura_import_job_create" => self.tool_import_job_create(args).await,
             "kura_import_job_get" => self.tool_import_job_get(args).await,
+            "kura_analysis_job_create" => self.tool_analysis_job_create(args).await,
+            "kura_analysis_job_get" => self.tool_analysis_job_get(args).await,
             "kura_provider_connections_list" => self.tool_provider_connections_list(args).await,
             "kura_provider_connections_upsert" => self.tool_provider_connections_upsert(args).await,
             "kura_provider_connection_revoke" => self.tool_provider_connection_revoke(args).await,
@@ -1400,6 +1541,53 @@ impl McpServer {
         }))
     }
 
+    async fn tool_analysis_job_create(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        let objective = required_string(args, "objective")?;
+        let mut body = json!({
+            "objective": objective
+        });
+        if let Some(horizon_days) = arg_optional_u64(args, "horizon_days")? {
+            body["horizon_days"] = json!(horizon_days as i64);
+        }
+        if let Some(focus) = arg_optional_string_array(args, "focus")? {
+            body["focus"] = json!(focus);
+        }
+
+        let response = self
+            .send_api_request(
+                Method::POST,
+                "/v1/analysis/jobs",
+                &[],
+                Some(body),
+                true,
+                false,
+            )
+            .await?;
+
+        Ok(json!({
+            "request": { "path": "/v1/analysis/jobs" },
+            "response": response.to_value()
+        }))
+    }
+
+    async fn tool_analysis_job_get(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
+        let job_id = required_string(args, "job_id")?;
+        let job_id = parse_uuid_string(&job_id, "job_id")?;
+        let path = format!("/v1/analysis/jobs/{job_id}");
+
+        let response = self
+            .send_api_request(Method::GET, &path, &[], None, true, false)
+            .await?;
+
+        Ok(json!({
+            "request": { "path": path, "job_id": job_id },
+            "response": response.to_value()
+        }))
+    }
+
     async fn tool_provider_connections_list(
         &self,
         _args: &Map<String, Value>,
@@ -2172,6 +2360,35 @@ fn tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "kura_import_job_get",
             description: "Get status of an import job by job_id.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": { "type": "string", "description": "UUID" }
+                },
+                "required": ["job_id"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "kura_analysis_job_create",
+            description: "Queue a new async deep-analysis job.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "objective": { "type": "string" },
+                    "horizon_days": { "type": "integer", "minimum": 1, "maximum": 3650 },
+                    "focus": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    }
+                },
+                "required": ["objective"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "kura_analysis_job_get",
+            description: "Get status of an analysis job by job_id.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -3840,6 +4057,91 @@ mod tests {
         assert_eq!(props["include_system_config"]["default"], true);
         assert_eq!(props["include_agent_capabilities"]["default"], true);
         assert_eq!(props["compact_openapi"]["default"], false);
+    }
+
+    #[test]
+    fn tool_definitions_include_analysis_job_tools() {
+        let tools = tool_definitions();
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.name == "kura_analysis_job_create"),
+            "analysis create tool must be exposed"
+        );
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.name == "kura_analysis_job_get"),
+            "analysis get tool must be exposed"
+        );
+    }
+
+    #[test]
+    fn dedupe_scope_excludes_write_tools() {
+        assert!(is_tool_call_dedupe_eligible("kura_projection_get"));
+        assert!(is_tool_call_dedupe_eligible("kura_analysis_job_get"));
+        assert!(!is_tool_call_dedupe_eligible("kura_events_write"));
+        assert!(!is_tool_call_dedupe_eligible("kura_import_job_create"));
+        assert!(!is_tool_call_dedupe_eligible("kura_analysis_job_create"));
+    }
+
+    #[test]
+    fn dedupe_args_signature_is_order_stable_for_objects() {
+        let mut args_a = Map::new();
+        args_a.insert("alpha".to_string(), json!(1));
+        args_a.insert("beta".to_string(), json!({"x": true, "y": 2}));
+
+        let mut args_b = Map::new();
+        args_b.insert("beta".to_string(), json!({"y": 2, "x": true}));
+        args_b.insert("alpha".to_string(), json!(1));
+
+        assert_eq!(
+            stable_dedupe_args_signature(&args_a),
+            stable_dedupe_args_signature(&args_b),
+            "same semantic args should produce same dedupe signature regardless of key ordering"
+        );
+    }
+
+    #[test]
+    fn dedupe_cache_returns_recent_entries_only() {
+        let sid = format!("test-dedupe-{}", Uuid::now_v7());
+        let args = Map::new();
+        let envelope = json!({
+            "status": "complete",
+            "phase": "final",
+            "tool": "kura_projection_get",
+            "data": {"ok": true}
+        });
+
+        store_tool_call_dedupe_entry(&sid, "kura_projection_get", &args, &envelope, false);
+        let hit = get_tool_call_dedupe_entry(&sid, "kura_projection_get", &args);
+        assert!(hit.is_some(), "fresh entry must be deduped");
+
+        let stale_key = tool_call_dedupe_key(&sid, "kura_projection_get", &args);
+        {
+            let mut cache = TOOL_CALL_DEDUPE_CACHE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            cache.insert(
+                stale_key,
+                ToolCallDedupeEntry {
+                    created_at: Instant::now()
+                        - Duration::from_millis(TOOL_CALL_DEDUPE_WINDOW_MS + 10),
+                    envelope: json!({
+                        "status": "complete",
+                        "phase": "final",
+                        "tool": "kura_projection_get",
+                        "data": {"stale": true}
+                    }),
+                    is_error: false,
+                },
+            );
+        }
+        let stale_hit = get_tool_call_dedupe_entry(&sid, "kura_projection_get", &args);
+        assert!(
+            stale_hit.is_none(),
+            "stale entry must not be used for dedupe response"
+        );
     }
 
     #[tokio::test]
