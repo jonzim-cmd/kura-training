@@ -6,6 +6,9 @@ import { useEffect, useRef, useState } from 'react';
 type TurnstileRenderOptions = {
   sitekey: string;
   action?: string;
+  retry?: 'auto' | 'never';
+  'refresh-expired'?: 'auto' | 'manual' | 'never';
+  'refresh-timeout'?: 'auto' | 'manual' | 'never';
   callback?: (token: string) => void;
   'expired-callback'?: () => void;
   'timeout-callback'?: () => void;
@@ -43,11 +46,23 @@ export function TurnstileWidget({
 }: TurnstileWidgetProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const widgetIdRef = useRef<string | null>(null);
-  const [scriptReady, setScriptReady] = useState(false);
+  const onTokenChangeRef = useRef(onTokenChange);
+  const onUnavailableRef = useRef(onUnavailable);
+  const [scriptReady, setScriptReady] = useState(() => (
+    typeof window !== 'undefined' && Boolean(window.turnstile)
+  ));
 
   useEffect(() => {
-    onTokenChange(null);
-  }, [action, onTokenChange]);
+    onTokenChangeRef.current = onTokenChange;
+  }, [onTokenChange]);
+
+  useEffect(() => {
+    onUnavailableRef.current = onUnavailable;
+  }, [onUnavailable]);
+
+  useEffect(() => {
+    onTokenChangeRef.current(null);
+  }, [action]);
 
   useEffect(() => {
     if (!scriptReady || !siteKey || !containerRef.current || !window.turnstile) {
@@ -62,14 +77,20 @@ export function TurnstileWidget({
       widgetIdRef.current = window.turnstile.render(containerRef.current, {
         sitekey: siteKey,
         action,
-        callback: (token: string) => onTokenChange(token),
-        'expired-callback': () => onTokenChange(null),
-        'timeout-callback': () => onTokenChange(null),
-        'error-callback': () => onTokenChange(null),
+        retry: 'never',
+        'refresh-expired': 'manual',
+        'refresh-timeout': 'manual',
+        callback: (token: string) => onTokenChangeRef.current(token),
+        'expired-callback': () => onTokenChangeRef.current(null),
+        'timeout-callback': () => onTokenChangeRef.current(null),
+        'error-callback': () => {
+          onTokenChangeRef.current(null);
+          onUnavailableRef.current?.();
+        },
       });
     } catch {
-      onTokenChange(null);
-      onUnavailable?.();
+      onTokenChangeRef.current(null);
+      onUnavailableRef.current?.();
     }
 
     return () => {
@@ -82,7 +103,7 @@ export function TurnstileWidget({
         widgetIdRef.current = null;
       }
     };
-  }, [action, onTokenChange, onUnavailable, scriptReady, siteKey]);
+  }, [action, scriptReady, siteKey]);
 
   useEffect(() => {
     if (resetNonce === undefined) {
@@ -93,12 +114,12 @@ export function TurnstileWidget({
     }
     try {
       window.turnstile.reset(widgetIdRef.current);
-      onTokenChange(null);
+      onTokenChangeRef.current(null);
     } catch {
-      onTokenChange(null);
-      onUnavailable?.();
+      onTokenChangeRef.current(null);
+      onUnavailableRef.current?.();
     }
-  }, [onTokenChange, onUnavailable, resetNonce]);
+  }, [resetNonce]);
 
   return (
     <>
@@ -107,8 +128,8 @@ export function TurnstileWidget({
         strategy="afterInteractive"
         onLoad={() => setScriptReady(true)}
         onError={() => {
-          onTokenChange(null);
-          onUnavailable?.();
+          onTokenChangeRef.current(null);
+          onUnavailableRef.current?.();
         }}
       />
       <div ref={containerRef} className={className} />
