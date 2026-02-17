@@ -37,7 +37,9 @@ fn is_context_loaded(session_id: &str) -> bool {
     map.contains_key(session_id)
 }
 
-/// Tools that don't operate on user data — exempt from the context gate.
+/// Tools that don't operate on user data. Used in tests to document the semantic
+/// distinction — the context gate itself only exempts `kura_agent_context`.
+#[cfg(test)]
 fn is_context_exempt_tool(name: &str) -> bool {
     matches!(
         name,
@@ -477,13 +479,13 @@ impl McpServer {
             }
         };
 
-        // Context gate: if agent hasn't loaded context and this tool needs user data, warn.
-        let context_warning =
-            if !is_context_exempt_tool(name) && !is_context_loaded(&self.session_id) {
-                Some("IMPORTANT: You have not called kura_agent_context yet. Call it now before responding to the user — it contains critical setup information.\n\n")
-            } else {
-                None
-            };
+        // Context gate: remind on EVERY tool until agent has loaded context.
+        // Only kura_agent_context itself is exempt (it's what loads context — warning would be circular).
+        let context_warning = if name != "kura_agent_context" && !is_context_loaded(&self.session_id) {
+            Some("⚠ You MUST call kura_agent_context before responding to the user. Without it you have no knowledge of this user's training history, goals, or current state. Any response without this context will be incorrect.\n\n")
+        } else {
+            None
+        };
 
         let result = self.execute_tool(name, &args).await;
         Ok(match result {
@@ -672,6 +674,17 @@ impl McpServer {
             payload["warnings"] = Value::Array(warnings.into_iter().map(Value::String).collect());
         }
         payload["mcp_capability_status"] = self.capability_profile.to_value();
+
+        // Session hint: tell the agent whether context is loaded and what to do next.
+        let context_loaded = is_context_loaded(&self.session_id);
+        payload["session"] = json!({
+            "context_loaded": context_loaded,
+            "next": if context_loaded {
+                "Context is loaded. You can respond to the user."
+            } else {
+                "Call kura_agent_context now to load this user's training data before responding."
+            }
+        });
 
         Ok(payload)
     }
@@ -3644,6 +3657,17 @@ mod tests {
         assert!(payload.get("agent_capabilities").is_some());
         assert!(payload.get("openapi").is_none());
         assert!(payload.get("system_config").is_none());
+
+        // Session hint must be present and indicate context not yet loaded
+        let session = payload.get("session").expect("discover must include session field");
+        assert_eq!(session["context_loaded"], false);
+        assert!(
+            session["next"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("kura_agent_context"),
+            "session.next must guide agent toward loading context"
+        );
     }
 
     #[test]
@@ -3807,19 +3831,42 @@ mod tests {
     // ── Context gate tests ──────────────────────────────────────────
 
     #[test]
-    fn context_exempt_tools_are_exactly_the_discovery_and_status_set() {
-        // Exempt: tools that don't need user data
+    fn context_exempt_tools_are_discovery_and_status_only() {
+        // Exempt from the *functional* perspective (they work without user data)
         assert!(is_context_exempt_tool("kura_agent_context"));
         assert!(is_context_exempt_tool("kura_discover"));
         assert!(is_context_exempt_tool("kura_discover_debug"));
         assert!(is_context_exempt_tool("kura_mcp_status"));
 
-        // NOT exempt: tools that operate on user data
+        // NOT exempt
         assert!(!is_context_exempt_tool("kura_read"));
         assert!(!is_context_exempt_tool("kura_write"));
         assert!(!is_context_exempt_tool("kura_api"));
         assert!(!is_context_exempt_tool("kura_batch_write"));
         assert!(!is_context_exempt_tool(""));
+    }
+
+    #[test]
+    fn context_gate_fires_on_all_tools_except_agent_context_itself() {
+        // The gate logic: name != "kura_agent_context" && !is_context_loaded
+        // This means discover, discover_debug, mcp_status all get the reminder too.
+        let sid = format!("test-gate-scope-{}", Uuid::now_v7());
+
+        // Before context loaded: everything except kura_agent_context should trigger
+        let should_warn = |name: &str| -> bool {
+            name != "kura_agent_context" && !is_context_loaded(&sid)
+        };
+        assert!(should_warn("kura_discover"));
+        assert!(should_warn("kura_discover_debug"));
+        assert!(should_warn("kura_mcp_status"));
+        assert!(should_warn("kura_read"));
+        assert!(should_warn("kura_write"));
+        assert!(!should_warn("kura_agent_context"));
+
+        // After context loaded: nobody triggers
+        mark_context_loaded(&sid);
+        assert!(!should_warn("kura_discover"));
+        assert!(!should_warn("kura_read"));
     }
 
     #[test]
