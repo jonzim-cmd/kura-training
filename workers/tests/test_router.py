@@ -22,17 +22,36 @@ class _FakeTransaction:
         return False  # don't suppress exceptions
 
 
-@pytest.fixture
-def mock_conn():
-    """Mock async connection with transaction savepoint support.
+class _FakeCursor:
+    """Mimics psycopg's async cursor context manager for advisory lock tests."""
 
-    psycopg's conn.transaction() is a synchronous method returning an async
-    context manager, so we use MagicMock (not AsyncMock) for transaction().
-    """
+    def __init__(self):
+        self.execute = AsyncMock()
+        self.fetchone = AsyncMock(return_value=(True,))  # lock acquired
+        self._execute_calls: list[tuple] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+
+def _make_mock_conn():
+    """Create a mock connection supporting both transaction and cursor patterns."""
     conn = AsyncMock()
     conn.transaction = MagicMock(return_value=_FakeTransaction())
     conn.execute = AsyncMock()
+    fake_cursor = _FakeCursor()
+    conn.cursor = MagicMock(return_value=fake_cursor)
+    conn._fake_cursor = fake_cursor  # expose for assertions
     return conn
+
+
+@pytest.fixture
+def mock_conn():
+    """Mock async connection with transaction and cursor support."""
+    return _make_mock_conn()
 
 
 def _no_custom_rules():
@@ -62,9 +81,10 @@ class TestHandleProjectionUpdate:
              _no_custom_rules():
             await handle_projection_update(mock_conn, payload)
 
-        # First execute call should be the advisory lock
-        lock_call = mock_conn.execute.call_args_list[0]
-        assert "pg_advisory_xact_lock" in lock_call.args[0]
+        # Lock acquired via cursor pattern (pg_try_advisory_xact_lock)
+        cur = mock_conn._fake_cursor
+        lock_call = cur.execute.call_args_list[0]
+        assert "pg_try_advisory_xact_lock" in lock_call.args[0]
         assert lock_call.args[1] == (user_id,)
 
     @pytest.mark.asyncio
@@ -294,47 +314,38 @@ class TestHandleProjectionRetry:
         with patch("kura_workers.handlers.router.get_projection_handler_by_name", return_value=handler):
             await handle_projection_retry(mock_conn, payload)
 
-        lock_call = mock_conn.execute.call_args_list[0]
-        assert "pg_advisory_xact_lock" in lock_call.args[0]
+        cur = mock_conn._fake_cursor
+        lock_call = cur.execute.call_args_list[0]
+        assert "pg_try_advisory_xact_lock" in lock_call.args[0]
         assert lock_call.args[1] == ("user-42",)
 
 
 class TestConcurrencySafety:
-    """Verify that pg_advisory_xact_lock serializes concurrent handler execution.
+    """Verify that pg_try_advisory_xact_lock serializes concurrent handler execution.
 
-    The advisory lock is transaction-scoped (pg_advisory_xact_lock), so two
-    concurrent projection.update jobs for the same user_id will block on the
-    same hash. Combined with full recompute (not incremental deltas), this
-    means no stale state can result from concurrent updates.
+    The advisory lock is transaction-scoped (pg_try_advisory_xact_lock), so two
+    concurrent projection.update jobs for the same user_id will contend on the
+    same hash.  The non-blocking variant fails fast instead of hanging on zombie
+    pooler connections.
     """
 
     @pytest.mark.asyncio
     async def test_same_user_gets_same_lock_hash(self):
-        """Two calls for the same user_id must acquire the same advisory lock.
-
-        Since pg_advisory_xact_lock(hashtext(user_id)::bigint) uses a
-        deterministic hash, two concurrent transactions will contend on the
-        same lock — guaranteeing serialization at the database level.
-        """
+        """Two calls for the same user_id must acquire the same advisory lock."""
         user_id = "concurrent-user-abc"
-        lock_calls = []
 
-        async def capture_execute(sql, params=()):
-            lock_calls.append((sql, params))
-
-        conn_a = AsyncMock()
-        conn_a.execute = AsyncMock(side_effect=capture_execute)
-        conn_b = AsyncMock()
-        conn_b.execute = AsyncMock(side_effect=capture_execute)
+        conn_a = _make_mock_conn()
+        conn_b = _make_mock_conn()
 
         await _acquire_user_lock(conn_a, user_id)
         await _acquire_user_lock(conn_b, user_id)
 
-        assert len(lock_calls) == 2
+        call_a = conn_a._fake_cursor.execute.call_args
+        call_b = conn_b._fake_cursor.execute.call_args
         # Both calls use the exact same SQL and parameter → same lock hash
-        assert lock_calls[0] == lock_calls[1]
-        assert "pg_advisory_xact_lock" in lock_calls[0][0]
-        assert lock_calls[0][1] == (user_id,)
+        assert call_a == call_b
+        assert "pg_try_advisory_xact_lock" in call_a.args[0]
+        assert call_a.args[1] == (user_id,)
 
     @pytest.mark.asyncio
     async def test_different_users_get_different_locks(self):
@@ -342,15 +353,13 @@ class TestConcurrencySafety:
         lock_calls = {}
 
         for uid in ("user-1", "user-2"):
-            conn = AsyncMock()
-            conn.execute = AsyncMock()
+            conn = _make_mock_conn()
             await _acquire_user_lock(conn, uid)
-            lock_calls[uid] = conn.execute.call_args
+            lock_calls[uid] = conn._fake_cursor.execute.call_args
 
         # Both acquire advisory locks but with different user_id params
         assert lock_calls["user-1"].args[1] == ("user-1",)
         assert lock_calls["user-2"].args[1] == ("user-2",)
-        # The params differ → hashtext() will produce different hashes
         assert lock_calls["user-1"].args[1] != lock_calls["user-2"].args[1]
 
     @pytest.mark.asyncio
@@ -364,21 +373,8 @@ class TestConcurrencySafety:
         handler = AsyncMock()
         handler.__name__ = "test_handler"
 
-        lock_sql_calls = []
-
-        def make_conn():
-            conn = AsyncMock()
-            conn.transaction = MagicMock(return_value=_FakeTransaction())
-
-            async def track_execute(sql, params=()):
-                if "pg_advisory_xact_lock" in sql:
-                    lock_sql_calls.append((sql, params))
-
-            conn.execute = AsyncMock(side_effect=track_execute)
-            return conn
-
-        conn_a = make_conn()
-        conn_b = make_conn()
+        conn_a = _make_mock_conn()
+        conn_b = _make_mock_conn()
 
         with patch("kura_workers.handlers.router.get_projection_handlers", return_value=[handler]), \
              _no_custom_rules():
@@ -387,7 +383,10 @@ class TestConcurrencySafety:
                 handle_projection_update(conn_b, payload_b),
             )
 
-        # Both calls acquired the lock for the same user_id
-        assert len(lock_sql_calls) == 2
-        assert lock_sql_calls[0][1] == (user_id,)
-        assert lock_sql_calls[1][1] == (user_id,)
+        # Both calls acquired the lock via cursor pattern (pg_try_advisory_xact_lock)
+        for conn, label in [(conn_a, "conn_a"), (conn_b, "conn_b")]:
+            cur = conn._fake_cursor
+            assert cur.execute.await_count >= 1, f"{label} should have called cursor.execute"
+            lock_call = cur.execute.call_args_list[0]
+            assert "pg_try_advisory_xact_lock" in lock_call.args[0]
+            assert lock_call.args[1] == (user_id,)

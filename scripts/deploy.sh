@@ -95,6 +95,20 @@ info "Running migration drift preflight..."
     --database-url "$TARGET_DATABASE_URL" \
     --migrations-dir "${ROOT_DIR}/migrations"
 
+# ── Terminate stale worker connections ────────────────
+# Advisory locks survive across deploys when the connection pooler (Supavisor)
+# keeps backend connections alive after the old worker container is killed.
+# Terminate idle-in-transaction connections to release zombie advisory locks.
+info "Terminating stale worker connections..."
+docker run --rm postgres:17 psql "$TARGET_DATABASE_URL" -Atqc "
+    SELECT pg_terminate_backend(l.pid)
+    FROM pg_locks l
+    JOIN pg_stat_activity a ON l.pid = a.pid
+    WHERE l.locktype = 'advisory'
+      AND a.state = 'idle in transaction'
+      AND a.query_start < NOW() - INTERVAL '60 seconds'
+" 2>/dev/null || true
+
 # ── Start ─────────────────────────────────────────────
 
 info "Starting core services..."

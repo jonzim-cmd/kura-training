@@ -85,14 +85,29 @@ async def _resolve_retraction(
     return {"event_id": retracted_event_id, "event_type": retracted_event_type}
 
 
+class UserLockNotAvailable(Exception):
+    """Raised when the per-user advisory lock cannot be acquired immediately."""
+
+
 async def _acquire_user_lock(
     conn: psycopg.AsyncConnection[Any], user_id: str
 ) -> None:
-    """Serialize all projection work for the same user."""
-    await conn.execute(
-        "SELECT pg_advisory_xact_lock(hashtext(%s)::bigint)",
-        (str(user_id),),
-    )
+    """Serialize all projection work for the same user.
+
+    Uses pg_try_advisory_xact_lock (non-blocking) to avoid hanging on zombie
+    locks left by stale pooler connections after deploys.  When the lock is
+    held, the job fails fast and is retried by the normal backoff mechanism.
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT pg_try_advisory_xact_lock(hashtext(%s)::bigint)",
+            (str(user_id),),
+        )
+        row = await cur.fetchone()
+        if not row or not row[0]:
+            raise UserLockNotAvailable(
+                f"Advisory lock for user {user_id} held by another connection"
+            )
 
 
 @register("projection.update")
