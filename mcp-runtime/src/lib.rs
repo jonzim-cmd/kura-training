@@ -12,7 +12,6 @@ use util::{client, resolve_token};
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MCP_SERVER_NAME: &str = "kura-mcp";
-const TOOL_TEXT_INLINE_JSON_MAX_CHARS: usize = 1500;
 const TOOL_ENVELOPE_MAX_BYTES: usize = 28_000;
 const COMPACT_ENDPOINT_PREVIEW_MAX_ITEMS: usize = 120;
 
@@ -2219,52 +2218,16 @@ fn tool_completion_status(payload: &Value) -> &'static str {
     }
 }
 
-fn tool_text_content(tool: &str, envelope: &Value) -> String {
-    if envelope
-        .get("truncated")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        let hint = envelope
-            .get("truncation")
-            .and_then(|v| v.get("details_hint"))
-            .and_then(Value::as_str)
-            .unwrap_or("See structuredContent.truncation for reload guidance.");
-        return format!("{tool} result was truncated to fit payload limits. {hint}");
-    }
-
-    let pretty = to_pretty_json(envelope);
-    if pretty.chars().count() <= TOOL_TEXT_INLINE_JSON_MAX_CHARS {
-        return pretty;
-    }
-
-    let status = envelope
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    if status == "error" {
-        let error = envelope.get("error").unwrap_or(&Value::Null);
-        let code = error
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("tool_error");
-        let message = error
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("Tool call failed");
-        return format!(
-            "{tool} failed with `{code}`: {message}. Full error payload is in structuredContent."
-        );
-    }
-
-    let section_count = envelope
-        .get("data")
-        .and_then(Value::as_object)
-        .map(|obj| obj.keys().count())
-        .unwrap_or(0);
-    format!(
-        "{tool} completed with status `{status}`. Returned {section_count} top-level fields. Full payload is in structuredContent."
-    )
+fn tool_text_content(_tool: &str, envelope: &Value) -> String {
+    // Always inline the full envelope as JSON — LLM agents only read the text
+    // content block, not structuredContent.
+    //
+    // For truncated payloads this means:
+    //  - section_pruning: agent sees the pruned-but-still-useful data
+    //  - summary_only / minimal_fallback: agent sees shape summaries + reload hint
+    // In all cases the truncation metadata (strategy, hint) is part of the
+    // envelope and therefore visible in the inlined JSON.
+    to_pretty_json(envelope)
 }
 
 fn compact_openapi_section(result: &ApiCallResult) -> Value {
@@ -3621,7 +3584,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_text_content_summarizes_large_payloads() {
+    fn tool_text_content_inlines_large_payloads() {
         let envelope = json!({
             "status": "complete",
             "phase": "final",
@@ -3632,8 +3595,8 @@ mod tests {
         });
 
         let text = tool_text_content("kura_discover", &envelope);
-        assert!(text.contains("structuredContent"));
-        assert!(!text.contains("large_blob"));
+        assert!(text.contains("large_blob"));
+        assert!(!text.contains("structuredContent"));
     }
 
     #[test]
