@@ -12,6 +12,7 @@ use util::{client, resolve_token};
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MCP_SERVER_NAME: &str = "kura-mcp";
+const TOOL_TEXT_INLINE_JSON_MAX_CHARS: usize = 1500;
 
 #[derive(Subcommand)]
 pub enum McpCommands {
@@ -439,8 +440,9 @@ impl McpServer {
                     "tool": name,
                     "data": payload
                 });
+                let text = tool_text_content(name, &envelope);
                 json!({
-                    "content": [{ "type": "text", "text": to_pretty_json(&envelope) }],
+                    "content": [{ "type": "text", "text": text }],
                     "structuredContent": envelope
                 })
             }
@@ -452,9 +454,10 @@ impl McpServer {
                     "tool": name,
                     "error": payload
                 });
+                let text = tool_text_content(name, &envelope);
                 json!({
                     "isError": true,
-                    "content": [{ "type": "text", "text": to_pretty_json(&envelope) }],
+                    "content": [{ "type": "text", "text": text }],
                     "structuredContent": envelope
                 })
             }
@@ -494,9 +497,9 @@ impl McpServer {
     }
 
     async fn tool_discover(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
-        let include_openapi = arg_bool(args, "include_openapi", true)?;
+        let include_openapi = arg_bool(args, "include_openapi", false)?;
         let compact_openapi = arg_bool(args, "compact_openapi", true)?;
-        let include_system_config = arg_bool(args, "include_system_config", true)?;
+        let include_system_config = arg_bool(args, "include_system_config", false)?;
         let include_agent_capabilities = arg_bool(args, "include_agent_capabilities", true)?;
 
         let mut payload = json!({
@@ -523,12 +526,11 @@ impl McpServer {
                 .await
             {
                 Ok(result) => {
-                    let mut section = result.to_value();
                     if compact_openapi && result.is_success() {
-                        section["compact_endpoints"] =
-                            Value::Array(extract_openapi_endpoints(&result.body));
+                        compact_openapi_section(&result)
+                    } else {
+                        result.to_value()
                     }
-                    section
                 }
                 Err(err) => {
                     warnings.push("Failed to fetch OpenAPI spec".to_string());
@@ -1492,7 +1494,11 @@ impl McpServer {
                 .map(|r| r.to_value())
                 .map_err(|e| RpcError::internal(e.message))?,
             "kura://discovery/summary" => self
-                .tool_discover(&Map::new())
+                .tool_discover(&json_to_map(json!({
+                    "include_openapi": false,
+                    "include_system_config": false,
+                    "include_agent_capabilities": true
+                })))
                 .await
                 .map_err(|e| RpcError::internal(e.message))?,
             "kura://mcp/capability-status" => self.capability_profile.to_value(),
@@ -1770,13 +1776,13 @@ fn tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "kura_discover",
-            description: "Discover Kura capabilities, schemas, and endpoints.",
+            description: "Discover Kura capabilities, with optional large schema/system bundles for debugging.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "include_openapi": { "type": "boolean", "default": true },
+                    "include_openapi": { "type": "boolean", "default": false },
                     "compact_openapi": { "type": "boolean", "default": true },
-                    "include_system_config": { "type": "boolean", "default": true },
+                    "include_system_config": { "type": "boolean", "default": false },
                     "include_agent_capabilities": { "type": "boolean", "default": true }
                 },
                 "additionalProperties": false
@@ -2145,7 +2151,7 @@ fn resource_definitions() -> Vec<ResourceDefinition> {
         ResourceDefinition {
             uri: "kura://discovery/summary",
             name: "MCP Discovery Summary",
-            description: "Convenience bundle: openapi + capabilities + system config",
+            description: "Lean discovery bundle: agent capabilities + MCP status (openapi/system config are opt-in)",
         },
         ResourceDefinition {
             uri: "kura://mcp/capability-status",
@@ -2165,6 +2171,76 @@ fn tool_completion_status(payload: &Value) -> &'static str {
         "complete_with_fallback"
     } else {
         "complete"
+    }
+}
+
+fn tool_text_content(tool: &str, envelope: &Value) -> String {
+    let pretty = to_pretty_json(envelope);
+    if pretty.chars().count() <= TOOL_TEXT_INLINE_JSON_MAX_CHARS {
+        return pretty;
+    }
+
+    let status = envelope
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    if status == "error" {
+        let error = envelope.get("error").unwrap_or(&Value::Null);
+        let code = error
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("tool_error");
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("Tool call failed");
+        return format!(
+            "{tool} failed with `{code}`: {message}. Full error payload is in structuredContent."
+        );
+    }
+
+    let section_count = envelope
+        .get("data")
+        .and_then(Value::as_object)
+        .map(|obj| obj.keys().count())
+        .unwrap_or(0);
+    format!(
+        "{tool} completed with status `{status}`. Returned {section_count} top-level fields. Full payload is in structuredContent."
+    )
+}
+
+fn compact_openapi_section(result: &ApiCallResult) -> Value {
+    let title = result
+        .body
+        .get("info")
+        .and_then(|info| info.get("title"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let version = result
+        .body
+        .get("info")
+        .and_then(|info| info.get("version"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let endpoints = extract_openapi_endpoints(&result.body);
+    json!({
+        "ok": result.is_success(),
+        "status": result.status,
+        "summary": {
+            "title": title,
+            "version": version,
+            "endpoint_count": endpoints.len()
+        },
+        "compact_endpoints": endpoints
+    })
+}
+
+fn json_to_map(value: Value) -> Map<String, Value> {
+    match value {
+        Value::Object(map) => map,
+        _ => Map::new(),
     }
 }
 
@@ -3216,6 +3292,103 @@ mod tests {
         assert_eq!(endpoints[0]["path"], "/health");
         assert_eq!(endpoints[1]["method"], "GET");
         assert_eq!(endpoints[2]["method"], "POST");
+    }
+
+    #[test]
+    fn compact_openapi_section_omits_full_openapi_body() {
+        let result = ApiCallResult {
+            status: 200,
+            body: json!({
+                "openapi": "3.0.3",
+                "info": {
+                    "title": "Kura API",
+                    "version": "2026-02-17"
+                },
+                "paths": {
+                    "/v1/events": {
+                        "get": { "summary": "List events", "security": [{"bearer_auth": []}] }
+                    }
+                }
+            }),
+            headers: None,
+        };
+
+        let compact = compact_openapi_section(&result);
+        assert_eq!(compact["ok"], true);
+        assert_eq!(compact["status"], 200);
+        assert_eq!(compact["summary"]["title"], "Kura API");
+        assert_eq!(compact["summary"]["version"], "2026-02-17");
+        assert_eq!(compact["summary"]["endpoint_count"], 1);
+        assert!(compact.get("body").is_none());
+    }
+
+    #[test]
+    fn discover_tool_schema_defaults_to_lean_bundle() {
+        let tool = tool_definitions()
+            .into_iter()
+            .find(|tool| tool.name == "kura_discover")
+            .expect("kura_discover tool must exist");
+        let props = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("tool schema properties must exist");
+
+        assert_eq!(props["include_openapi"]["default"], false);
+        assert_eq!(props["include_system_config"]["default"], false);
+        assert_eq!(props["include_agent_capabilities"]["default"], true);
+        assert_eq!(props["compact_openapi"]["default"], true);
+    }
+
+    #[tokio::test]
+    async fn discover_defaults_only_include_capabilities_section() {
+        let server = McpServer::new(McpRuntimeConfig {
+            api_url: "http://127.0.0.1:9".to_string(),
+            no_auth: true,
+            explicit_token: None,
+            default_source: "mcp".to_string(),
+            default_agent: "kura-mcp".to_string(),
+            allow_admin: false,
+        });
+
+        let payload = server
+            .tool_discover(&Map::new())
+            .await
+            .expect("tool_discover should return structured errors instead of failing hard");
+        assert!(payload.get("agent_capabilities").is_some());
+        assert!(payload.get("openapi").is_none());
+        assert!(payload.get("system_config").is_none());
+    }
+
+    #[test]
+    fn tool_text_content_summarizes_large_payloads() {
+        let envelope = json!({
+            "status": "complete",
+            "phase": "final",
+            "tool": "kura_discover",
+            "data": {
+                "large_blob": "x".repeat(4000)
+            }
+        });
+
+        let text = tool_text_content("kura_discover", &envelope);
+        assert!(text.contains("structuredContent"));
+        assert!(!text.contains("large_blob"));
+    }
+
+    #[test]
+    fn tool_text_content_keeps_small_payload_inline() {
+        let envelope = json!({
+            "status": "complete",
+            "phase": "final",
+            "tool": "kura_mcp_status",
+            "data": {
+                "ok": true
+            }
+        });
+
+        let text = tool_text_content("kura_mcp_status", &envelope);
+        assert_eq!(text, to_pretty_json(&envelope));
     }
 
     #[test]
