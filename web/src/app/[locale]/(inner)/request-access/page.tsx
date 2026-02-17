@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/routing';
 import { TurnstileWidget } from '@/components/TurnstileWidget';
 import styles from './request-access.module.css';
@@ -11,6 +11,7 @@ const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim() ??
 export default function RequestAccessPage() {
   const t = useTranslations('requestAccess');
   const tn = useTranslations('nav');
+  const locale = useLocale();
   const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +38,7 @@ export default function RequestAccessPage() {
       email: (form.elements.namedItem('email') as HTMLInputElement).value,
       name: (form.elements.namedItem('name') as HTMLInputElement).value || undefined,
       context: (form.elements.namedItem('context') as HTMLTextAreaElement).value || undefined,
+      locale,
       turnstile_token: turnstileToken,
     };
 

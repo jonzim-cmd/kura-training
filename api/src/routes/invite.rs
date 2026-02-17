@@ -38,6 +38,8 @@ pub struct AccessRequestBody {
     #[serde(default)]
     pub context: Option<String>,
     #[serde(default)]
+    pub locale: Option<String>,
+    #[serde(default)]
     pub turnstile_token: Option<String>,
 }
 
@@ -83,15 +85,22 @@ pub async fn submit_access_request(
         .as_deref()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
+    let locale = req
+        .locale
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| matches!(*s, "de" | "en" | "ja"))
+        .unwrap_or("en");
 
     // Always return 201 even if duplicate (no info leak)
     let result = sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO access_requests (email, name, context) VALUES ($1, $2, $3) \
+        "INSERT INTO access_requests (email, name, context, locale) VALUES ($1, $2, $3, $4) \
          ON CONFLICT ((lower(email))) WHERE status = 'pending' DO NOTHING RETURNING id",
     )
     .bind(&email)
     .bind(name)
     .bind(context)
+    .bind(locale)
     .fetch_optional(&state.db)
     .await
     .map_err(AppError::Database)?;
@@ -219,15 +228,15 @@ pub async fn approve_access_request(
     let mut tx = state.db.begin().await.map_err(AppError::Database)?;
 
     // Fetch and lock the request
-    let row = sqlx::query_as::<_, (String, String)>(
-        "SELECT email, status FROM access_requests WHERE id = $1 FOR UPDATE",
+    let row = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT email, status, locale FROM access_requests WHERE id = $1 FOR UPDATE",
     )
     .bind(request_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(AppError::Database)?;
 
-    let (email, current_status) = match row {
+    let (email, current_status, locale) = match row {
         Some(r) => r,
         None => {
             return Err(AppError::NotFound {
@@ -279,7 +288,7 @@ pub async fn approve_access_request(
     let invite_url = format!("{frontend_url}/signup?invite={token}");
 
     // Send invite email
-    let email_sent = send_invite_email(&email, &invite_url, &expires_at).await;
+    let email_sent = send_invite_email(&email, &invite_url, &expires_at, &locale).await;
 
     Ok(Json(ApproveResponse {
         status: "approved".to_string(),
@@ -575,6 +584,7 @@ async fn send_invite_email(
     to_email: &str,
     invite_url: &str,
     expires_at: &chrono::DateTime<Utc>,
+    locale: &str,
 ) -> bool {
     let api_key = match std::env::var("RESEND_API_KEY") {
         Ok(k) if !k.is_empty() => k,
@@ -586,19 +596,45 @@ async fn send_invite_email(
 
     let from =
         std::env::var("EMAIL_FROM").unwrap_or_else(|_| "Kura <noreply@kura.dev>".to_string());
-    let expires_formatted = expires_at.format("%d.%m.%Y").to_string();
 
-    let body = format!(
-        "Hallo,\n\n\
-         du hast Zugang zu Kura.\n\n\
-         Erstelle dein Konto hier: {invite_url}\n\n\
-         Der Link ist gueltig bis {expires_formatted}.\n\n\
-         Kura ist in aktiver Entwicklung. Als Early-Access-Nutzer hilfst du dabei, \
-         das System besser zu machen. Deine Trainingsdaten fliessen anonymisiert \
-         in die Verbesserung der Algorithmen ein.\n\n\
-         Fragen? Antworte einfach auf diese Email.\n\n\
-         -- Kura"
-    );
+    let (subject, body) = match locale {
+        "de" => {
+            let expires_formatted = expires_at.format("%d.%m.%Y").to_string();
+            (
+                "Dein Zugang zu Kura",
+                format!(
+                    "Hallo,\n\n\
+                     cool, dass du dabei bist! Du hast Zugang zu Kura.\n\n\
+                     Erstelle dein Konto hier: {invite_url}\n\n\
+                     Der Link ist gültig bis {expires_formatted}.\n\n\
+                     Kura ist in aktiver Entwicklung. Als Early-Access-Nutzer hilfst du dabei, \
+                     das System besser zu machen. Deine Trainingsdaten fließen anonymisiert \
+                     in die Verbesserung der Algorithmen ein.\n\n\
+                     Wir würden uns über Feedback freuen, wenn dir bei der Nutzung etwas auffällt, \
+                     was man besser machen kann. Antworte einfach auf diese E-Mail.\n\n\
+                     -- Jonas"
+                ),
+            )
+        }
+        _ => {
+            let expires_formatted = expires_at.format("%B %d, %Y").to_string();
+            (
+                "Your access to Kura",
+                format!(
+                    "Hi,\n\n\
+                     great to have you on board! You've been granted access to Kura.\n\n\
+                     Create your account here: {invite_url}\n\n\
+                     This link is valid until {expires_formatted}.\n\n\
+                     Kura is in active development. As an early access user, you're helping \
+                     make the system better. Your training data flows anonymized into improving \
+                     the algorithms.\n\n\
+                     We'd love to hear your feedback if you notice anything that could be \
+                     improved. Just reply to this email.\n\n\
+                     -- Jonas"
+                ),
+            )
+        }
+    };
 
     let client = reqwest::Client::new();
     let result = client
@@ -607,7 +643,7 @@ async fn send_invite_email(
         .json(&serde_json::json!({
             "from": from,
             "to": [to_email],
-            "subject": "Dein Zugang zu Kura",
+            "subject": subject,
             "text": body
         }))
         .send()
@@ -918,15 +954,15 @@ async fn execute_approve(state: &AppState, request_id: Uuid) -> Result<(String, 
         .await
         .map_err(|e| format!("DB error: {e}"))?;
 
-    let row = sqlx::query_as::<_, (String, String)>(
-        "SELECT email, status FROM access_requests WHERE id = $1 FOR UPDATE",
+    let row = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT email, status, locale FROM access_requests WHERE id = $1 FOR UPDATE",
     )
     .bind(request_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(|e| format!("DB error: {e}"))?;
 
-    let (email, status) = match row {
+    let (email, status, locale) = match row {
         Some(r) => r,
         None => return Err("Anfrage nicht gefunden.".to_string()),
     };
@@ -966,7 +1002,7 @@ async fn execute_approve(state: &AppState, request_id: Uuid) -> Result<(String, 
     let frontend_url =
         std::env::var("FRONTEND_URL").unwrap_or_else(|_| "https://kura.dev".to_string());
     let invite_url = format!("{frontend_url}/signup?invite={token}");
-    let email_sent = send_invite_email(&email, &invite_url, &expires_at).await;
+    let email_sent = send_invite_email(&email, &invite_url, &expires_at, &locale).await;
 
     Ok((email, email_sent))
 }
