@@ -15,6 +15,7 @@ use util::{client, resolve_token};
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MCP_SERVER_NAME: &str = "kura-mcp";
 const TOOL_ENVELOPE_MAX_BYTES: usize = 28_000;
+const AGENT_CONTEXT_OVERFLOW_SCHEMA_VERSION: &str = "agent_context_overflow.v1";
 const COMPACT_ENDPOINT_PREVIEW_MAX_ITEMS: usize = 120;
 const CONTEXT_SESSION_TTL_SECS: u64 = 3600;
 
@@ -43,10 +44,7 @@ fn is_context_loaded(session_id: &str) -> bool {
 fn is_context_exempt_tool(name: &str) -> bool {
     matches!(
         name,
-        "kura_agent_context"
-            | "kura_discover"
-            | "kura_discover_debug"
-            | "kura_mcp_status"
+        "kura_agent_context" | "kura_discover" | "kura_discover_debug" | "kura_mcp_status"
     )
 }
 
@@ -481,8 +479,12 @@ impl McpServer {
 
         // Context gate: remind on EVERY tool until agent has loaded context.
         // Only kura_agent_context itself is exempt (it's what loads context — warning would be circular).
-        let context_warning = if name != "kura_agent_context" && !is_context_loaded(&self.session_id) {
-            Some("⚠ You MUST call kura_agent_context before responding to the user. Without it you have no knowledge of this user's training history, goals, or current state. Any response without this context will be incorrect.\n\n")
+        let context_warning = if name != "kura_agent_context"
+            && !is_context_loaded(&self.session_id)
+        {
+            Some(
+                "⚠ You MUST call kura_agent_context before responding to the user. Without it you have no knowledge of this user's training history, goals, or current state. Any response without this context will be incorrect.\n\n",
+            )
         } else {
             None
         };
@@ -497,11 +499,11 @@ impl McpServer {
                 let envelope = enforce_tool_payload_limit(
                     name,
                     json!({
-                    "status": status,
-                    "phase": "final",
-                    "tool": name,
-                    "data": payload
-                }),
+                        "status": status,
+                        "phase": "final",
+                        "tool": name,
+                        "data": payload
+                    }),
                 );
                 let mut text = tool_text_content(name, &envelope);
                 if let Some(warning) = context_warning {
@@ -517,11 +519,11 @@ impl McpServer {
                 let envelope = enforce_tool_payload_limit(
                     name,
                     json!({
-                    "status": "error",
-                    "phase": "final",
-                    "tool": name,
-                    "error": payload
-                }),
+                        "status": "error",
+                        "phase": "final",
+                        "tool": name,
+                        "error": payload
+                    }),
                 );
                 let mut text = tool_text_content(name, &envelope);
                 if let Some(warning) = context_warning {
@@ -2352,6 +2354,10 @@ fn json_to_map(value: Value) -> Map<String, Value> {
 }
 
 fn enforce_tool_payload_limit(tool: &str, envelope: Value) -> Value {
+    if tool == "kura_agent_context" {
+        return enforce_agent_context_payload_limit(envelope);
+    }
+
     let original_bytes = serialized_json_size_bytes(&envelope);
     if original_bytes <= TOOL_ENVELOPE_MAX_BYTES {
         return envelope;
@@ -2416,6 +2422,198 @@ fn enforce_tool_payload_limit(tool: &str, envelope: Value) -> Value {
     }
 }
 
+fn enforce_agent_context_payload_limit(envelope: Value) -> Value {
+    let original_bytes = serialized_json_size_bytes(&envelope);
+    if original_bytes <= TOOL_ENVELOPE_MAX_BYTES {
+        return envelope;
+    }
+
+    let mut trimmed = envelope;
+    let mut omitted_sections: Vec<Value> = Vec::new();
+    for section in [
+        "system",
+        "exercise_progression",
+        "strength_inference",
+        "custom",
+        "quality_health",
+        "consistency_inbox",
+        "semantic_memory",
+        "training_plan",
+        "recovery",
+        "nutrition",
+        "body_composition",
+        "session_feedback",
+        "causal_inference",
+        "readiness_inference",
+    ] {
+        let removed = trimmed
+            .pointer_mut("/data/response/body")
+            .and_then(Value::as_object_mut)
+            .and_then(|body| body.remove(section));
+        let Some(value) = removed else {
+            continue;
+        };
+        omitted_sections.push(json!({
+            "section": section,
+            "summary": summarize_json_shape(&value),
+            "reload_hint": agent_context_section_reload_hint(section),
+        }));
+        if serialized_json_size_bytes(&trimmed) <= TOOL_ENVELOPE_MAX_BYTES {
+            break;
+        }
+    }
+
+    if !omitted_sections.is_empty() {
+        if let Some(body) = trimmed
+            .pointer_mut("/data/response/body")
+            .and_then(Value::as_object_mut)
+        {
+            body.insert(
+                "overflow".to_string(),
+                json!({
+                    "schema_version": AGENT_CONTEXT_OVERFLOW_SCHEMA_VERSION,
+                    "reason": "payload_size_limit",
+                    "omitted_sections": omitted_sections,
+                    "reload_strategy": "reload listed sections via canonical read tools",
+                }),
+            );
+        }
+    }
+
+    let remaining_bytes = serialized_json_size_bytes(&trimmed);
+    if remaining_bytes <= TOOL_ENVELOPE_MAX_BYTES {
+        annotate_truncation(
+            &mut trimmed,
+            "agent_context_section_overflow",
+            original_bytes,
+            remaining_bytes,
+            "kura_agent_context",
+        );
+        return trimmed;
+    }
+
+    // Last-resort fallback still preserves action guidance + brief contract.
+    let status = trimmed
+        .get("status")
+        .cloned()
+        .unwrap_or_else(|| Value::String("complete".to_string()));
+    let mut fallback = json!({
+        "status": status,
+        "phase": "final",
+        "tool": "kura_agent_context",
+        "truncated": true,
+        "truncation": {
+            "reason": "payload_size_limit",
+            "strategy": "agent_context_minimal_overflow",
+            "limit_bytes": TOOL_ENVELOPE_MAX_BYTES,
+            "original_bytes": original_bytes,
+            "details_hint": payload_reload_hint("kura_agent_context")
+        },
+        "data": {
+            "response": {
+                "ok": true,
+                "status": 200,
+                "body": {
+                    "overflow": {
+                        "schema_version": AGENT_CONTEXT_OVERFLOW_SCHEMA_VERSION,
+                        "reason": "payload_size_limit",
+                        "omitted_sections": [
+                            {
+                                "section": "multiple",
+                                "reload_hint": "Reload sections via kura_projection_get/list and kura_discover_debug(include_system_config=true)."
+                            }
+                        ],
+                        "reload_strategy": "re-fetch context sections in smaller batches"
+                    }
+                }
+            }
+        }
+    });
+
+    if let Some(value) = trimmed.pointer("/data/response/body/action_required") {
+        fallback["data"]["response"]["body"]["action_required"] = value.clone();
+    }
+    if let Some(value) = trimmed.pointer("/data/response/body/agent_brief") {
+        fallback["data"]["response"]["body"]["agent_brief"] = value.clone();
+    }
+    if let Some(value) = trimmed.pointer("/data/response/body/meta") {
+        fallback["data"]["response"]["body"]["meta"] = value.clone();
+    }
+
+    if serialized_json_size_bytes(&fallback) <= TOOL_ENVELOPE_MAX_BYTES {
+        fallback
+    } else {
+        json!({
+            "status": status,
+            "phase": "final",
+            "tool": "kura_agent_context",
+            "truncated": true,
+            "truncation": {
+                "reason": "payload_size_limit",
+                "strategy": "agent_context_brief_only",
+                "limit_bytes": TOOL_ENVELOPE_MAX_BYTES,
+                "original_bytes": original_bytes,
+                "details_hint": payload_reload_hint("kura_agent_context")
+            },
+            "data": {
+                "response": {
+                    "ok": true,
+                    "status": 200,
+                    "body": {
+                        "overflow": {
+                            "schema_version": AGENT_CONTEXT_OVERFLOW_SCHEMA_VERSION,
+                            "reason": "payload_size_limit",
+                            "omitted_sections": [
+                                {
+                                    "section": "all_optional_sections",
+                                    "reload_hint": "Reload context progressively with narrower scope."
+                                }
+                            ],
+                            "reload_strategy": "recover with follow-up reads"
+                        }
+                    }
+                }
+            }
+        })
+    }
+}
+
+fn agent_context_section_reload_hint(section: &str) -> &'static str {
+    match section {
+        "system" => {
+            "Use kura_discover_debug(include_system_config=true) or read resource kura://system/config."
+        }
+        "exercise_progression" => "Use kura_projection_list(projection_type=exercise_progression).",
+        "strength_inference" => "Use kura_projection_list(projection_type=strength_inference).",
+        "custom" => "Use kura_projection_list(projection_type=custom).",
+        "quality_health" => {
+            "Use kura_projection_get(projection_type=quality_health, key=overview)."
+        }
+        "consistency_inbox" => {
+            "Use kura_projection_get(projection_type=consistency_inbox, key=overview)."
+        }
+        "semantic_memory" => {
+            "Use kura_projection_get(projection_type=semantic_memory, key=overview)."
+        }
+        "training_plan" => "Use kura_projection_get(projection_type=training_plan, key=overview).",
+        "recovery" => "Use kura_projection_get(projection_type=recovery, key=overview).",
+        "nutrition" => "Use kura_projection_get(projection_type=nutrition, key=overview).",
+        "body_composition" => {
+            "Use kura_projection_get(projection_type=body_composition, key=overview)."
+        }
+        "session_feedback" => {
+            "Use kura_projection_get(projection_type=session_feedback, key=overview)."
+        }
+        "causal_inference" => {
+            "Use kura_projection_get(projection_type=causal_inference, key=overview)."
+        }
+        "readiness_inference" => {
+            "Use kura_projection_get(projection_type=readiness_inference, key=overview)."
+        }
+        _ => "Use targeted projection reads to reload omitted context.",
+    }
+}
+
 fn annotate_truncation(
     envelope: &mut Value,
     strategy: &str,
@@ -2454,7 +2652,10 @@ fn trim_discovery_sections(data: &mut Map<String, Value>) {
         }
         if let Some(headers) = section_obj.remove("headers") {
             section_obj.insert("headers_omitted".to_string(), Value::Bool(true));
-            section_obj.insert("headers_summary".to_string(), summarize_json_shape(&headers));
+            section_obj.insert(
+                "headers_summary".to_string(),
+                summarize_json_shape(&headers),
+            );
         }
         if let Some(endpoints) = section_obj
             .get_mut("compact_endpoints")
@@ -2463,10 +2664,7 @@ fn trim_discovery_sections(data: &mut Map<String, Value>) {
             let total = endpoints.len();
             if total > COMPACT_ENDPOINT_PREVIEW_MAX_ITEMS {
                 endpoints.truncate(COMPACT_ENDPOINT_PREVIEW_MAX_ITEMS);
-                section_obj.insert(
-                    "compact_endpoints_truncated".to_string(),
-                    Value::Bool(true),
-                );
+                section_obj.insert("compact_endpoints_truncated".to_string(), Value::Bool(true));
                 section_obj.insert("compact_endpoints_total".to_string(), json!(total));
             }
         }
@@ -2519,6 +2717,8 @@ fn serialized_json_size_bytes(value: &Value) -> usize {
 fn payload_reload_hint(tool: &str) -> &'static str {
     if tool == "kura_discover" || tool == "kura_discover_debug" {
         "For full details, use kura_discover_debug with explicit include_* flags and fetch one large section at a time, or read kura://openapi, kura://system/config, and kura://agent/capabilities."
+    } else if tool == "kura_agent_context" {
+        "Context overflow is section-based: follow overflow.omitted_sections[*].reload_hint and re-fetch only the missing sections."
     } else {
         "Retry with narrower scope or pagination, then request follow-up chunks for full detail."
     }
@@ -3471,7 +3671,10 @@ mod tests {
         assert!(instructions.contains("onboarding_needed"));
         assert!(instructions.contains("first_contact_opening_v1"));
         assert!(instructions.contains("kura_discover for lean capability snapshots"));
-        assert!(instructions.contains("kura_discover_debug only for deep schema/capability troubleshooting"));
+        assert!(
+            instructions
+                .contains("kura_discover_debug only for deep schema/capability troubleshooting")
+        );
     }
 
     #[tokio::test]
@@ -3659,7 +3862,9 @@ mod tests {
         assert!(payload.get("system_config").is_none());
 
         // Session hint must be present and indicate context not yet loaded
-        let session = payload.get("session").expect("discover must include session field");
+        let session = payload
+            .get("session")
+            .expect("discover must include session field");
         assert_eq!(session["context_loaded"], false);
         assert!(
             session["next"]
@@ -3728,6 +3933,62 @@ mod tests {
                 .contains("kura_discover_debug")
         );
         assert!(serialized_json_size_bytes(&limited) <= TOOL_ENVELOPE_MAX_BYTES);
+    }
+
+    #[test]
+    fn agent_context_payload_limit_emits_structured_overflow_sections() {
+        let huge = "x".repeat(TOOL_ENVELOPE_MAX_BYTES * 2);
+        let envelope = json!({
+            "status": "complete",
+            "phase": "final",
+            "tool": "kura_agent_context",
+            "data": {
+                "response": {
+                    "ok": true,
+                    "status": 200,
+                    "body": {
+                        "action_required": {
+                            "action": "onboarding",
+                            "detail": "offer onboarding"
+                        },
+                        "agent_brief": {
+                            "schema_version": "agent_brief.v1",
+                            "must_cover_intents": ["offer_onboarding"]
+                        },
+                        "system": {
+                            "data": {
+                                "blob": huge
+                            }
+                        },
+                        "exercise_progression": [{
+                            "projection": {
+                                "data": {
+                                    "blob": huge
+                                }
+                            }
+                        }]
+                    }
+                }
+            }
+        });
+
+        let limited = enforce_tool_payload_limit("kura_agent_context", envelope);
+        assert_eq!(limited["truncated"], true);
+        assert_eq!(
+            limited["data"]["response"]["body"]["agent_brief"]["schema_version"],
+            "agent_brief.v1"
+        );
+        let overflow_sections = limited["data"]["response"]["body"]["overflow"]["omitted_sections"]
+            .as_array()
+            .expect("omitted_sections must be present");
+        assert!(!overflow_sections.is_empty());
+        assert!(
+            overflow_sections
+                .iter()
+                .filter_map(|entry| entry.get("section").and_then(Value::as_str))
+                .any(|section| section == "system")
+        );
+        assert!(limited.get("data_summary").is_none());
     }
 
     #[test]
@@ -3853,9 +4114,8 @@ mod tests {
         let sid = format!("test-gate-scope-{}", Uuid::now_v7());
 
         // Before context loaded: everything except kura_agent_context should trigger
-        let should_warn = |name: &str| -> bool {
-            name != "kura_agent_context" && !is_context_loaded(&sid)
-        };
+        let should_warn =
+            |name: &str| -> bool { name != "kura_agent_context" && !is_context_loaded(&sid) };
         assert!(should_warn("kura_discover"));
         assert!(should_warn("kura_discover_debug"));
         assert!(should_warn("kura_mcp_status"));

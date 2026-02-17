@@ -1,10 +1,10 @@
 use super::*;
 
 pub(super) const AGENT_CAPABILITIES_SCHEMA_VERSION: &str = "agent_capabilities.v2.self_model";
-pub(super) const AGENT_CONTEXT_CONTRACT_VERSION: &str =
-    "agent_context.v9.temporal_grounding.challenge_memory.decision_brief_detail_caps.consent_gate";
+pub(super) const AGENT_CONTEXT_CONTRACT_VERSION: &str = "agent_context.v10.brief_first.overflow_protocol.temporal_grounding.challenge_memory.decision_brief_detail_caps.consent_gate";
 pub(super) const AGENT_CONTEXT_SYSTEM_CONTRACT_VERSION: &str = "agent_context.system.v1";
 pub(super) const AGENT_CONTEXT_SYSTEM_PROFILE: &str = "redacted_v1";
+pub(super) const AGENT_BRIEF_SCHEMA_VERSION: &str = "agent_brief.v1";
 pub(super) const AGENT_TEMPORAL_CONTEXT_SCHEMA_VERSION: &str = "temporal_context.v1";
 pub(super) const AGENT_CONSENT_WRITE_GATE_SCHEMA_VERSION: &str = "consent_write_gate.v1";
 pub(super) const AGENT_HEALTH_CONSENT_ERROR_CODE: &str = "health_consent_required";

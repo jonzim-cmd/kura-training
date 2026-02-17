@@ -592,11 +592,29 @@ class TestOnboardingTrigger:
     def test_few_events_triggers_onboarding(self):
         assert _should_suggest_onboarding(3, self._all_uncovered()) is True
 
-    def test_enough_events_no_onboarding(self):
-        assert _should_suggest_onboarding(5, self._all_uncovered()) is False
+    def test_many_events_still_trigger_onboarding_when_gaps_are_open(self):
+        assert _should_suggest_onboarding(50, self._all_uncovered()) is True
 
     def test_mostly_covered_no_onboarding(self):
         assert _should_suggest_onboarding(2, self._mostly_covered()) is False
+
+    def test_required_coverage_gaps_override_event_count(self):
+        coverage = [
+            {"area": "training_background", "status": "uncovered"},
+            {"area": "baseline_profile", "status": "uncovered"},
+            {"area": "unit_preferences", "status": "covered"},
+        ]
+        assert _should_suggest_onboarding(200, coverage) is True
+
+    def test_onboarding_closed_disables_onboarding_prompt(self):
+        assert (
+            _should_suggest_onboarding(
+                0,
+                self._all_uncovered(),
+                onboarding_closed=True,
+            )
+            is False
+        )
 
     def test_refresh_with_many_events_and_gaps(self):
         coverage = [{"area": f"a{i}", "status": "uncovered"} for i in range(4)]

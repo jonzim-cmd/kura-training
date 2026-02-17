@@ -620,15 +620,36 @@ def _compute_interview_coverage(
 def _should_suggest_onboarding(
     total_events: int,
     coverage: list[dict[str, Any]],
+    *,
+    onboarding_closed: bool = False,
 ) -> bool:
     """Check if onboarding interview should be suggested.
 
-    True when most coverage areas are uncovered and data is sparse.
+    True while onboarding phase is open and key coverage remains unresolved.
     """
-    if total_events >= 5:
+    if onboarding_closed:
         return False
-    uncovered = sum(1 for c in coverage if c["status"] == "uncovered")
-    return uncovered >= 5
+
+    unresolved_status = {"uncovered", "needs_depth"}
+    unresolved_areas = {
+        str(entry.get("area", "")).strip()
+        for entry in coverage
+        if str(entry.get("status", "")).strip().lower() in unresolved_status
+    }
+    unresolved_areas.discard("")
+
+    # Core onboarding closure requirements from workflow gate.
+    required_areas = {"training_background", "baseline_profile", "unit_preferences"}
+    if required_areas & unresolved_areas:
+        return True
+
+    # Fallback for partial/synthetic coverage maps.
+    unresolved_count = sum(
+        1
+        for entry in coverage
+        if str(entry.get("status", "")).strip().lower() in unresolved_status
+    )
+    return unresolved_count >= 5
 
 
 def _should_suggest_refresh(
@@ -654,6 +675,7 @@ def _build_agenda(
     unconfirmed_aliases: list[dict[str, Any]],
     interview_coverage: list[dict[str, Any]] | None = None,
     total_events: int = 0,
+    workflow_onboarding_closed: bool = False,
     has_goals: bool = False,
     has_preferences: bool = False,
     observed_patterns: dict[str, Any] | None = None,
@@ -668,7 +690,11 @@ def _build_agenda(
 
     # Interview triggers (Decision 8)
     if interview_coverage is not None:
-        if _should_suggest_onboarding(total_events, interview_coverage):
+        if _should_suggest_onboarding(
+            total_events,
+            interview_coverage,
+            onboarding_closed=workflow_onboarding_closed,
+        ):
             agenda.append({
                 "priority": "high",
                 "type": "onboarding_needed",
@@ -1122,6 +1148,7 @@ async def update_user_profile(
         unconfirmed_aliases,
         interview_coverage=interview_coverage,
         total_events=total_events,
+        workflow_onboarding_closed=workflow_onboarding_closed,
         has_goals=bool(goals),
         has_preferences=bool(preferences),
         observed_patterns=observed_patterns,

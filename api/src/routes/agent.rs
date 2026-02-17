@@ -240,12 +240,51 @@ pub struct AgentActionRequired {
     pub detail: String,
 }
 
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentBriefWorkflowState {
+    /// onboarding | planning
+    pub phase: String,
+    pub onboarding_closed: bool,
+    pub override_active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentBriefSectionRef {
+    /// Stable section key for follow-up retrieval.
+    pub section: String,
+    /// Short guidance for when the section matters.
+    pub purpose: String,
+    /// Canonical way to load this section.
+    pub load_via: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentBriefSystemConfigRef {
+    pub handle: String,
+    pub version: i64,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentBrief {
+    pub schema_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_required: Option<AgentActionRequired>,
+    pub must_cover_intents: Vec<String>,
+    pub coverage_gaps: Vec<String>,
+    pub workflow_state: AgentBriefWorkflowState,
+    pub available_sections: Vec<AgentBriefSectionRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_config_ref: Option<AgentBriefSystemConfigRef>,
+}
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct AgentContextResponse {
     /// Immediate action the agent must take before anything else.
     /// Present only when a blocking prerequisite exists (e.g. onboarding).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action_required: Option<AgentActionRequired>,
+    pub agent_brief: AgentBrief,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<SystemConfigResponse>,
     pub self_model: AgentSelfModel,
@@ -1874,6 +1913,130 @@ fn extract_action_required(user_profile: &ProjectionResponse) -> Option<AgentAct
         }
     }
     None
+}
+
+fn agent_brief_workflow_state(user_profile: &ProjectionResponse) -> AgentBriefWorkflowState {
+    let workflow = user_profile
+        .projection
+        .data
+        .get("user")
+        .and_then(|value| value.get("workflow_state"))
+        .and_then(Value::as_object);
+
+    let onboarding_closed = workflow
+        .and_then(|state| state.get("onboarding_closed"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let override_active = workflow
+        .and_then(|state| state.get("override_active"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let phase = workflow
+        .and_then(|state| state.get("phase"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            if onboarding_closed {
+                "planning".to_string()
+            } else {
+                "onboarding".to_string()
+            }
+        });
+
+    AgentBriefWorkflowState {
+        phase,
+        onboarding_closed,
+        override_active,
+    }
+}
+
+fn agent_brief_available_sections() -> Vec<AgentBriefSectionRef> {
+    vec![
+        AgentBriefSectionRef {
+            section: "system_config.conventions.first_contact_opening_v1".to_string(),
+            purpose: "Erstkontakt: Kura kurz erklaeren und Onboarding sauber anbieten.".to_string(),
+            load_via:
+                "kura_discover_debug(include_system_config=true) oder resource kura://system/config"
+                    .to_string(),
+        },
+        AgentBriefSectionRef {
+            section: "system_config.conventions.exercise_normalization".to_string(),
+            purpose: "Logging-Qualitaet/Normalisierung fuer Exercise-Aliase.".to_string(),
+            load_via:
+                "kura_discover_debug(include_system_config=true) oder resource kura://system/config"
+                    .to_string(),
+        },
+        AgentBriefSectionRef {
+            section: "system_config.conventions.load_context_v1".to_string(),
+            purpose: "Vergleichbarkeit von Lasten (implements/equipment/comparability_group)."
+                .to_string(),
+            load_via:
+                "kura_discover_debug(include_system_config=true) oder resource kura://system/config"
+                    .to_string(),
+        },
+        AgentBriefSectionRef {
+            section: "projections.exercise_progression".to_string(),
+            purpose: "Detail-Progression fuer einzelne Uebungen.".to_string(),
+            load_via: "kura_projection_list(projection_type=exercise_progression)".to_string(),
+        },
+        AgentBriefSectionRef {
+            section: "projections.strength_inference".to_string(),
+            purpose: "Inference/Trends fuer Kraftsignale.".to_string(),
+            load_via: "kura_projection_list(projection_type=strength_inference)".to_string(),
+        },
+        AgentBriefSectionRef {
+            section: "projections.custom".to_string(),
+            purpose: "User-spezifische Regeln/Custom-Projections.".to_string(),
+            load_via: "kura_projection_list(projection_type=custom)".to_string(),
+        },
+    ]
+}
+
+fn build_agent_brief(
+    action_required: Option<&AgentActionRequired>,
+    user_profile: &ProjectionResponse,
+    system: Option<&SystemConfigResponse>,
+) -> AgentBrief {
+    let workflow_state = agent_brief_workflow_state(user_profile);
+    let mut coverage_gaps = if workflow_state.onboarding_closed {
+        Vec::new()
+    } else {
+        missing_onboarding_close_requirements(Some(user_profile))
+    };
+    coverage_gaps.sort();
+    coverage_gaps.dedup();
+
+    let mut must_cover_intents: Vec<String> = Vec::new();
+    if let Some(action) = action_required {
+        if action.action == "onboarding" {
+            must_cover_intents.push("explain_kura_short".to_string());
+            must_cover_intents.push("offer_onboarding".to_string());
+            must_cover_intents.push("allow_skip_and_log_now".to_string());
+        }
+    }
+    if !workflow_state.onboarding_closed && !coverage_gaps.is_empty() {
+        must_cover_intents.push("micro_onboarding_next_gap".to_string());
+    }
+    must_cover_intents.sort();
+    must_cover_intents.dedup();
+
+    let system_config_ref = system.map(|value| AgentBriefSystemConfigRef {
+        handle: format!("system_config/global@v{}", value.version),
+        version: value.version,
+        updated_at: value.updated_at,
+    });
+
+    AgentBrief {
+        schema_version: AGENT_BRIEF_SCHEMA_VERSION.to_string(),
+        action_required: action_required.cloned(),
+        must_cover_intents,
+        coverage_gaps,
+        workflow_state,
+        available_sections: agent_brief_available_sections(),
+        system_config_ref,
+    }
 }
 
 fn bootstrap_user_profile(user_id: Uuid) -> ProjectionResponse {
@@ -6383,10 +6546,12 @@ pub async fn get_agent_context(
         consistency_inbox.as_ref(),
         ranking_context.intent.as_deref(),
     );
+    let agent_brief = build_agent_brief(action_required.as_ref(), &user_profile, system.as_ref());
     let consent_write_gate = build_agent_consent_write_gate(health_data_processing_consent);
 
     Ok(Json(AgentContextResponse {
         action_required,
+        agent_brief,
         system,
         self_model,
         user_profile,
@@ -6440,12 +6605,12 @@ mod tests {
         build_visualization_outputs, clamp_limit, clamp_verify_timeout_ms,
         collect_reliability_inferred_facts, default_autonomy_gate, default_autonomy_policy,
         extract_action_required, extract_evidence_claim_drafts,
-        extract_set_context_mentions_from_text,
-        missing_onboarding_close_requirements, normalize_read_after_write_targets,
-        normalize_set_type, normalize_visualization_spec, parse_rest_seconds_from_text,
-        parse_rest_with_span, parse_rir_from_text, parse_rir_with_span, parse_set_type_with_span,
-        parse_tempo_from_text, parse_tempo_with_span, rank_projection_list,
-        ranking_candidate_limit, recover_receipts_for_idempotent_retry, resolve_visualization,
+        extract_set_context_mentions_from_text, missing_onboarding_close_requirements,
+        normalize_read_after_write_targets, normalize_set_type, normalize_visualization_spec,
+        parse_rest_seconds_from_text, parse_rest_with_span, parse_rir_from_text,
+        parse_rir_with_span, parse_set_type_with_span, parse_tempo_from_text,
+        parse_tempo_with_span, rank_projection_list, ranking_candidate_limit,
+        recover_receipts_for_idempotent_retry, resolve_visualization,
         validate_session_feedback_certainty_contract, visualization_policy_decision,
         workflow_gate_from_request,
     };
@@ -6879,6 +7044,81 @@ mod tests {
             },
         };
         assert!(extract_action_required(&profile).is_none());
+    }
+
+    #[test]
+    fn agent_context_brief_contract_exposes_required_fields() {
+        let profile = bootstrap_user_profile(Uuid::now_v7());
+        let action = extract_action_required(&profile);
+        let system = super::SystemConfigResponse {
+            data: json!({}),
+            version: 7,
+            updated_at: Utc::now(),
+        };
+
+        let brief = super::build_agent_brief(action.as_ref(), &profile, Some(&system));
+
+        assert_eq!(brief.schema_version, "agent_brief.v1");
+        assert_eq!(brief.workflow_state.phase, "onboarding");
+        assert!(!brief.workflow_state.onboarding_closed);
+        assert!(
+            brief
+                .must_cover_intents
+                .contains(&"offer_onboarding".to_string())
+        );
+        assert!(
+            brief
+                .must_cover_intents
+                .contains(&"allow_skip_and_log_now".to_string())
+        );
+        assert!(!brief.coverage_gaps.is_empty());
+        assert!(brief.available_sections.iter().any(|section| {
+            section.section == "system_config.conventions.first_contact_opening_v1"
+        }));
+        let system_ref = brief
+            .system_config_ref
+            .as_ref()
+            .expect("system_config_ref should be present");
+        assert_eq!(system_ref.version, 7);
+        assert_eq!(system_ref.handle, "system_config/global@v7");
+    }
+
+    #[test]
+    fn agent_context_brief_contract_clears_onboarding_gaps_when_closed() {
+        let now = Utc::now();
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            now,
+            json!({
+                "user": {
+                    "workflow_state": {
+                        "phase": "planning",
+                        "onboarding_closed": true,
+                        "override_active": false
+                    },
+                    "preferences": {
+                        "timezone": "Europe/Berlin"
+                    },
+                    "interview_coverage": [
+                        {"area": "training_background", "status": "covered"},
+                        {"area": "baseline_profile", "status": "covered"},
+                        {"area": "unit_preferences", "status": "covered"}
+                    ]
+                },
+                "agenda": []
+            }),
+        );
+
+        let brief = super::build_agent_brief(None, &profile, None);
+        assert_eq!(brief.workflow_state.phase, "planning");
+        assert!(brief.workflow_state.onboarding_closed);
+        assert!(brief.coverage_gaps.is_empty());
+        assert!(
+            !brief
+                .must_cover_intents
+                .contains(&"offer_onboarding".to_string())
+        );
     }
 
     #[test]
