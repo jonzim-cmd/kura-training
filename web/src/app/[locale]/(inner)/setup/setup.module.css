@@ -12,6 +12,24 @@
   flex-direction: column;
 }
 
+/* --- Welcome (first visit) --- */
+.welcome {
+  margin-bottom: var(--space-2xl);
+}
+
+.welcomeTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-3xl);
+  font-weight: 700;
+  margin-bottom: var(--space-sm);
+}
+
+.welcomeSubtitle {
+  color: var(--ink-faint);
+  font-size: var(--text-lg);
+  line-height: 1.5;
+}
+
 /* --- Header --- */
 .header {
   margin-bottom: var(--space-2xl);

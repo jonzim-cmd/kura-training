@@ -18,10 +18,14 @@ export default function SetupPage() {
   const [expertOpen, setExpertOpen] = useState(false);
   const [ocMethod, setOcMethod] = useState<'mcp' | 'cli'>('mcp');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [isFirstVisit, setIsFirstVisit] = useState(false);
   const { user, loading } = useAuth();
 
   useEffect(() => {
     if (!loading && user) {
+      if (localStorage.getItem(SETUP_SEEN_STORAGE_KEY) !== '1') {
+        setIsFirstVisit(true);
+      }
       localStorage.setItem(SETUP_SEEN_STORAGE_KEY, '1');
     }
   }, [loading, user]);
@@ -54,9 +58,15 @@ export default function SetupPage() {
   return (
     <div className={styles.setupPage}>
       <div className={`kura-container ${styles.container}`}>
-        {/* Header */}
+        {/* Welcome + Header */}
         <div className={styles.header}>
-          <h1 className={styles.title}>{t('title')}</h1>
+          {isFirstVisit && (
+            <div className={styles.welcome}>
+              <h1 className={styles.welcomeTitle}>{t('welcome')}</h1>
+              <p className={styles.welcomeSubtitle}>{t('welcomeSubtitle')}</p>
+            </div>
+          )}
+          <h2 className={styles.title}>{t('title')}</h2>
           <p className={styles.subtitle}>{t('subtitle')}</p>
         </div>
 

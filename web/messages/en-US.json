@@ -269,6 +269,8 @@
     }
   },
   "setup": {
+    "welcome": "Great to have you!",
+    "welcomeSubtitle": "Connect your AI to Kura next — then you're ready to go.",
     "title": "Connect your AI",
     "subtitle": "Choose your AI — we'll show you step by step how to set it up.",
     "cards": {

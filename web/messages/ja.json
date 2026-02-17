@@ -269,6 +269,8 @@
     }
   },
   "setup": {
+    "welcome": "ようこそ！",
+    "welcomeSubtitle": "次にAIをKuraに接続しましょう — すぐに始められます。",
     "title": "AIを接続",
     "subtitle": "AIを選んでください。ステップごとにご案内します。",
     "cards": {

@@ -269,6 +269,8 @@
     }
   },
   "setup": {
+    "welcome": "Cool, dass du dabei bist!",
+    "welcomeSubtitle": "Verbinde als Nächstes deine KI mit Kura — danach kannst du direkt loslegen.",
     "title": "Verbinde deine KI",
     "subtitle": "Wähle deine KI — wir zeigen dir Schritt für Schritt, wie es geht.",
     "cards": {

@@ -11,6 +11,7 @@ import {
   socialAuthorizeUrl,
   type SocialProvider,
 } from '@/lib/social-auth';
+import { SETUP_SEEN_STORAGE_KEY } from '@/lib/onboarding';
 import styles from '../../auth.module.css';
 
 function GoogleIcon() {
@@ -235,7 +236,8 @@ export default function SignupPage() {
 
   // Redirect if already logged in
   if (!loading && user) {
-    router.replace('/settings');
+    const dest = localStorage.getItem(SETUP_SEEN_STORAGE_KEY) === '1' ? '/settings' : '/setup';
+    router.replace(dest);
     return null;
   }
 
