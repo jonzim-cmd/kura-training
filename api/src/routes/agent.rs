@@ -232,8 +232,20 @@ pub struct AgentDecisionBrief {
     pub person_tradeoffs: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentActionRequired {
+    /// Machine-readable action type (e.g. "onboarding").
+    pub action: String,
+    /// Human-readable instruction for the agent.
+    pub detail: String,
+}
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct AgentContextResponse {
+    /// Immediate action the agent must take before anything else.
+    /// Present only when a blocking prerequisite exists (e.g. onboarding).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_required: Option<AgentActionRequired>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<SystemConfigResponse>,
     pub self_model: AgentSelfModel,
@@ -1841,6 +1853,27 @@ fn rank_projection_list(
 
 fn clamp_limit(value: Option<i64>, default: i64, max: i64) -> i64 {
     value.unwrap_or(default).max(1).min(max)
+}
+
+/// Inspect user_profile agenda for high-priority actions that must be surfaced
+/// as a top-level `action_required` field so agents cannot overlook them.
+fn extract_action_required(user_profile: &ProjectionResponse) -> Option<AgentActionRequired> {
+    let agenda = user_profile.projection.data.get("agenda")?.as_array()?;
+    for item in agenda {
+        if item.get("type").and_then(Value::as_str) == Some("onboarding_needed") {
+            return Some(AgentActionRequired {
+                action: "onboarding".to_string(),
+                detail: item
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .unwrap_or(
+                        "New user. Introduce Kura and propose onboarding interview before anything else.",
+                    )
+                    .to_string(),
+            });
+        }
+    }
+    None
 }
 
 fn bootstrap_user_profile(user_id: Uuid) -> ProjectionResponse {
@@ -6264,6 +6297,7 @@ pub async fn get_agent_context(
     let user_profile = fetch_projection(&mut tx, user_id, "user_profile", "me")
         .await?
         .unwrap_or_else(|| bootstrap_user_profile(user_id));
+    let action_required = extract_action_required(&user_profile);
     let health_data_processing_consent = sqlx::query_scalar::<_, bool>(
         "SELECT consent_health_data_processing FROM users WHERE id = $1",
     )
@@ -6352,6 +6386,7 @@ pub async fn get_agent_context(
     let consent_write_gate = build_agent_consent_write_gate(health_data_processing_consent);
 
     Ok(Json(AgentContextResponse {
+        action_required,
         system,
         self_model,
         user_profile,
@@ -6404,7 +6439,8 @@ mod tests {
         build_save_handshake_learning_signal_events, build_session_audit_artifacts,
         build_visualization_outputs, clamp_limit, clamp_verify_timeout_ms,
         collect_reliability_inferred_facts, default_autonomy_gate, default_autonomy_policy,
-        extract_evidence_claim_drafts, extract_set_context_mentions_from_text,
+        extract_action_required, extract_evidence_claim_drafts,
+        extract_set_context_mentions_from_text,
         missing_onboarding_close_requirements, normalize_read_after_write_targets,
         normalize_set_type, normalize_visualization_spec, parse_rest_seconds_from_text,
         parse_rest_with_span, parse_rir_from_text, parse_rir_with_span, parse_set_type_with_span,
@@ -6803,6 +6839,46 @@ mod tests {
         let agenda = response.projection.data["agenda"].as_array().unwrap();
         assert!(!agenda.is_empty());
         assert_eq!(agenda[0]["type"], "onboarding_needed");
+    }
+
+    #[test]
+    fn extract_action_required_returns_onboarding_for_new_user() {
+        let profile = bootstrap_user_profile(Uuid::now_v7());
+        let action = extract_action_required(&profile);
+        assert!(action.is_some());
+        let action = action.unwrap();
+        assert_eq!(action.action, "onboarding");
+        assert!(action.detail.contains("onboarding"));
+    }
+
+    #[test]
+    fn extract_action_required_returns_none_for_existing_user() {
+        let now = Utc::now();
+        let profile = ProjectionResponse {
+            projection: Projection {
+                id: Uuid::now_v7(),
+                user_id: Uuid::now_v7(),
+                projection_type: "user_profile".to_string(),
+                key: "me".to_string(),
+                data: json!({
+                    "user": { "name": "Max" },
+                    "agenda": [{
+                        "priority": "low",
+                        "type": "field_observed",
+                        "detail": "New field seen."
+                    }]
+                }),
+                version: 5,
+                last_event_id: None,
+                updated_at: now,
+            },
+            meta: ProjectionMeta {
+                projection_version: 5,
+                computed_at: now,
+                freshness: ProjectionFreshness::from_computed_at(now, now),
+            },
+        };
+        assert!(extract_action_required(&profile).is_none());
     }
 
     #[test]
