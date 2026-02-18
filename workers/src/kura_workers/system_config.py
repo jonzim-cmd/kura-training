@@ -1598,6 +1598,15 @@ def _get_agent_behavior() -> dict[str, Any]:
                     "no_saved_wording_without_proof": True,
                     "require_explicit_status_label": True,
                 },
+                "lifecycle": {
+                    "states": ["saved", "draft", "not_saved"],
+                    "review_loop_required_when_drafts_open": True,
+                    "review_loop_fields_in_context": [
+                        "review_status",
+                        "review_loop_required",
+                        "next_action_hint",
+                    ],
+                },
             },
             "observation_draft_context_v1": {
                 "schema_version": "observation_draft_context.v1",
@@ -1613,6 +1622,9 @@ def _get_agent_behavior() -> dict[str, Any]:
                 "context_fields": [
                     "open_count",
                     "oldest_draft_age_hours",
+                    "review_status",
+                    "review_loop_required",
+                    "next_action_hint",
                     "recent_drafts[]",
                 ],
                 "recent_drafts_item_fields": [
@@ -1620,6 +1632,7 @@ def _get_agent_behavior() -> dict[str, Any]:
                     "timestamp",
                     "summary",
                 ],
+                "review_status_levels": ["healthy", "monitor", "degraded"],
             },
             "observation_draft_promotion_v1": {
                 "schema_version": "observation_draft_promote.v1",
@@ -1714,6 +1727,44 @@ def _get_agent_behavior() -> dict[str, Any]:
                     "median_age_monitor_hours": 8.0,
                     "median_age_degraded_hours": 24.0,
                     "window_days": 7,
+                },
+            },
+            "formal_event_type_policy_v1": {
+                "schema_version": "formal_event_type_policy.v1",
+                "goal": (
+                    "Prevent silent writes to weakly projected event types by requiring "
+                    "formal dotted syntax and registration in event_conventions."
+                ),
+                "enforcement_surfaces": [
+                    "POST /v1/agent/write-with-proof",
+                    "POST /v1/agent/observation-drafts/{observation_id}/promote",
+                ],
+                "requires_dotted_lowercase_shape": True,
+                "requires_registry_membership": True,
+                "unknown_event_type_action": "block_with_reason",
+                "fallback_for_notes": "observation_drafts",
+            },
+            "write_preflight_v1": {
+                "schema_version": "write_preflight.v1",
+                "goal": (
+                    "Expose all active write blockers in one machine-readable payload to avoid "
+                    "agent retry loops and dead ends."
+                ),
+                "required_blocker_domains": [
+                    "event_type_policy",
+                    "consent_gate",
+                    "workflow_gate",
+                    "intent_handshake",
+                    "high_impact_confirmation",
+                    "autonomy_gate",
+                    "verification",
+                ],
+                "response_shape": {
+                    "schema_version": "write_preflight.v1",
+                    "status": "blocked|pass",
+                    "blockers": [
+                        {"code": "string", "stage": "string", "field": "string?", "message": "string"},
+                    ],
                 },
             },
             "draft_hygiene_feedback_v1": {

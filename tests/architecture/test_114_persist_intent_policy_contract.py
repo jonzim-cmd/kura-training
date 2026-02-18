@@ -44,6 +44,18 @@ def test_persist_intent_policy_declares_draft_persistence_contract() -> None:
     assert draft["dimension_prefix"] == "provisional.persist_intent."
 
 
+def test_persist_intent_policy_declares_lifecycle_review_fields() -> None:
+    policy = _persist_intent_policy()
+    lifecycle = policy["lifecycle"]
+    assert lifecycle["states"] == ["saved", "draft", "not_saved"]
+    assert lifecycle["review_loop_required_when_drafts_open"] is True
+    assert lifecycle["review_loop_fields_in_context"] == [
+        "review_status",
+        "review_loop_required",
+        "next_action_hint",
+    ]
+
+
 def test_persist_intent_runtime_contracts_pass() -> None:
     for test_name in RUNTIME_TESTS:
         assert_kura_api_test_passes(test_name)

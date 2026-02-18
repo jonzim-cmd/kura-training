@@ -2209,15 +2209,21 @@ class TestQualityHealthIntegration:
 
     async def test_save_claim_mismatch_slo_drives_autonomy_throttle(self, db, test_user_id):
         await create_test_user(db, test_user_id)
+        now = datetime.now(timezone.utc)
+        base = now - timedelta(minutes=40)
+
+        def ts(offset_minutes: int) -> str:
+            return f"TIMESTAMP '{(base + timedelta(minutes=offset_minutes)).isoformat()}'"
+
         await insert_event(db, test_user_id, "set.logged", {
             "exercise_id": "barbell_back_squat", "weight_kg": 105, "reps": 5,
-        }, "TIMESTAMP '2026-02-11 09:00:00+00'")
+        }, ts(0))
         await insert_event(db, test_user_id, "preference.set", {
             "key": "timezone", "value": "Europe/Berlin",
-        }, "TIMESTAMP '2026-02-11 09:05:00+00'")
+        }, ts(5))
         await insert_event(db, test_user_id, "profile.updated", {
             "age_deferred": True, "bodyweight_deferred": True,
-        }, "TIMESTAMP '2026-02-11 09:10:00+00'")
+        }, ts(10))
         for idx in range(20):
             mismatch = idx < 8
             await insert_event(db, test_user_id, "quality.save_claim.checked", {
@@ -2226,7 +2232,7 @@ class TestQualityHealthIntegration:
                 "mismatch_severity": "critical" if mismatch else "none",
                 "mismatch_weight": 1.0 if mismatch else 0.0,
                 "mismatch_domain": "save_echo" if mismatch else "none",
-            }, f"TIMESTAMP '2026-02-11 09:{15 + idx:02d}:00+00'")
+            }, ts(15 + idx))
 
         await db.execute("SET ROLE app_worker")
         await update_quality_health(db, {

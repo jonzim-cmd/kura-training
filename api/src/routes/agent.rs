@@ -339,6 +339,11 @@ pub struct AgentObservationsDraftContext {
     pub open_count: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oldest_draft_age_hours: Option<f64>,
+    /// healthy | monitor | degraded
+    pub review_status: String,
+    pub review_loop_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_action_hint: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub recent_drafts: Vec<AgentObservationDraftPreview>,
 }
@@ -372,6 +377,11 @@ pub struct AgentObservationDraftListResponse {
     pub open_count: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oldest_draft_age_hours: Option<f64>,
+    /// healthy | monitor | degraded
+    pub review_status: String,
+    pub review_loop_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_action_hint: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<AgentObservationDraftListItem>,
 }
@@ -791,6 +801,28 @@ pub struct AgentWorkflowGate {
     pub missing_requirements: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub planning_event_types: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentWritePreflightBlocker {
+    pub code: String,
+    pub stage: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docs_hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentWritePreflightSummary {
+    pub schema_version: String,
+    /// pass | blocked
+    pub status: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blockers: Vec<AgentWritePreflightBlocker>,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -1961,6 +1993,29 @@ fn derive_draft_hygiene_status_from_context(
     "healthy".to_string()
 }
 
+fn draft_review_next_action_hint(
+    review_status: &str,
+    review_loop_required: bool,
+) -> Option<String> {
+    if !review_loop_required {
+        return None;
+    }
+    match review_status {
+        "degraded" => Some(
+            "Draft backlog is degraded. Review oldest-first now and close each draft via dismiss, resolve-as-observation, or promote."
+                .to_string(),
+        ),
+        "monitor" => Some(
+            "Draft backlog is in monitor range. Close obvious drafts now and keep only entries with an explicit blocker."
+                .to_string(),
+        ),
+        _ => Some(
+            "Open drafts detected. Review oldest-first and keep drafts open only with an explicit blocker."
+                .to_string(),
+        ),
+    }
+}
+
 fn draft_hygiene_status_from_quality(quality_health: Option<&ProjectionResponse>) -> String {
     normalize_quality_label(
         quality_health
@@ -2255,6 +2310,106 @@ async fn fetch_training_timeline_projection(
     Ok(projection)
 }
 
+async fn fetch_health_data_processing_consent(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<bool, AppError> {
+    sqlx::query_scalar::<_, bool>("SELECT consent_health_data_processing FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::Unauthorized {
+            message: "Account not found".to_string(),
+            docs_hint: None,
+        })
+}
+
+fn agent_event_requires_health_data_consent(event_type: &str) -> bool {
+    if matches!(
+        event_type,
+        "set.logged"
+            | "set.corrected"
+            | "event.retracted"
+            | "session.logged"
+            | "session.completed"
+            | "bodyweight.logged"
+            | "measurement.logged"
+            | "meal.logged"
+            | "sleep.logged"
+            | "soreness.logged"
+            | "energy.logged"
+            | "training_plan.created"
+            | "training_plan.updated"
+            | "exercise.alias_created"
+    ) {
+        return true;
+    }
+
+    let normalized = event_type.trim().to_ascii_lowercase();
+    normalized.starts_with("sleep.")
+        || normalized.starts_with("recovery.")
+        || normalized.starts_with("pain.")
+        || normalized.starts_with("health.")
+        || normalized.starts_with("nutrition.")
+}
+
+fn batch_requires_health_data_consent(events: &[CreateEventRequest]) -> bool {
+    events
+        .iter()
+        .any(|event| agent_event_requires_health_data_consent(&event.event_type))
+}
+
+fn extract_known_event_types_from_event_conventions(value: &Value) -> HashSet<String> {
+    let mut known = HashSet::new();
+    if let Some(map) = value.as_object() {
+        for key in map.keys() {
+            let normalized = key.trim().to_lowercase();
+            if !normalized.is_empty() {
+                known.insert(normalized);
+            }
+        }
+    } else if let Some(items) = value.as_array() {
+        for item in items {
+            let normalized = item
+                .get("event_type")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .map(str::to_lowercase)
+                .unwrap_or_default();
+            if !normalized.is_empty() {
+                known.insert(normalized);
+            }
+        }
+    }
+    known
+}
+
+async fn fetch_known_event_types_from_system_config(
+    state: &AppState,
+) -> Result<HashSet<String>, AppError> {
+    let mut known = sqlx::query_scalar::<_, Value>("SELECT data FROM system_config WHERE key = 'global'")
+        .fetch_optional(&state.db)
+        .await?
+        .and_then(|data| data.get("event_conventions").cloned())
+        .map(|conventions| extract_known_event_types_from_event_conventions(&conventions))
+        .unwrap_or_default();
+
+    if known.is_empty() {
+        for event_type in DEFAULT_AGENT_FORMAL_EVENT_TYPES {
+            known.insert((*event_type).to_string());
+        }
+    }
+    Ok(known)
+}
+
+fn is_formal_event_type_shape(event_type: &str) -> bool {
+    static FORMAL_EVENT_TYPE_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$")
+            .expect("formal event_type regex must compile")
+    });
+    FORMAL_EVENT_TYPE_RE.is_match(event_type)
+}
+
 async fn resolve_visualization_sources(
     state: &AppState,
     user_id: Uuid,
@@ -2496,6 +2651,10 @@ fn draft_context_from_rows(
     oldest_timestamp: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
 ) -> AgentObservationsDraftContext {
+    let oldest_draft_age_hours = oldest_timestamp.map(|ts| draft_age_hours(ts, now));
+    let review_status = derive_draft_hygiene_status_from_context(open_count, oldest_draft_age_hours);
+    let review_loop_required = open_count > 0;
+    let next_action_hint = draft_review_next_action_hint(&review_status, review_loop_required);
     let recent_drafts = rows
         .iter()
         .map(|row| AgentObservationDraftPreview {
@@ -2508,7 +2667,10 @@ fn draft_context_from_rows(
     AgentObservationsDraftContext {
         schema_version: OBSERVATION_DRAFT_CONTEXT_SCHEMA_VERSION.to_string(),
         open_count,
-        oldest_draft_age_hours: oldest_timestamp.map(|ts| draft_age_hours(ts, now)),
+        oldest_draft_age_hours,
+        review_status,
+        review_loop_required,
+        next_action_hint,
         recent_drafts,
     }
 }
@@ -2719,7 +2881,47 @@ fn draft_promotion_hint(event_type: &str) -> String {
         .to_string()
 }
 
-fn validate_observation_draft_promote_event_type(raw_event_type: &str) -> Result<String, AppError> {
+fn validate_registered_formal_event_type(
+    event_type: &str,
+    known_event_types: &HashSet<String>,
+    field: &str,
+) -> Result<(), AppError> {
+    if !is_formal_event_type_shape(event_type) {
+        return Err(AppError::Validation {
+            message: "event_type must use formal dotted syntax (e.g. set.logged)".to_string(),
+            field: Some(field.to_string()),
+            received: Some(Value::String(event_type.to_string())),
+            docs_hint: Some(
+                "Use lowercase dotted event types like set.logged, session.completed, or training_plan.updated."
+                    .to_string(),
+            ),
+        });
+    }
+    if known_event_types.contains(event_type) {
+        return Ok(());
+    }
+    Err(AppError::PolicyViolation {
+        code: "formal_event_type_unknown".to_string(),
+        message: format!(
+            "event_type '{}' is not registered in event_conventions and may not project reliably",
+            event_type
+        ),
+        field: Some(field.to_string()),
+        received: Some(json!({
+            "event_type": event_type,
+            "policy_schema_version": AGENT_FORMAL_EVENT_TYPE_POLICY_SCHEMA_VERSION,
+        })),
+        docs_hint: Some(
+            "Use a registered event_type from system_config.event_conventions or route the note through observation drafts."
+                .to_string(),
+        ),
+    })
+}
+
+fn validate_observation_draft_promote_event_type(
+    raw_event_type: &str,
+    known_event_types: &HashSet<String>,
+) -> Result<String, AppError> {
     let event_type = raw_event_type.trim().to_lowercase();
     if event_type.is_empty() {
         return Err(AppError::Validation {
@@ -2749,6 +2951,7 @@ fn validate_observation_draft_promote_event_type(raw_event_type: &str) -> Result
             ),
         });
     }
+    validate_registered_formal_event_type(&event_type, known_event_types, "event_type")?;
     Ok(event_type)
 }
 
@@ -3095,11 +3298,39 @@ const OBSERVATION_DRAFT_DETAIL_SCHEMA_VERSION: &str = "observation_draft_detail.
 const OBSERVATION_DRAFT_PROMOTE_SCHEMA_VERSION: &str = "observation_draft_promote.v1";
 const OBSERVATION_DRAFT_RESOLVE_SCHEMA_VERSION: &str = "observation_draft_resolve.v1";
 const OBSERVATION_DRAFT_DISMISS_SCHEMA_VERSION: &str = "observation_draft_dismiss.v1";
+const AGENT_WRITE_PREFLIGHT_SCHEMA_VERSION: &str = "write_preflight.v1";
+const AGENT_FORMAL_EVENT_TYPE_POLICY_SCHEMA_VERSION: &str = "formal_event_type_policy.v1";
 const OBSERVATION_DRAFT_DIMENSION_PREFIX: &str = "provisional.persist_intent.";
 const DRAFT_REVIEW_BACKLOG_MONITOR_MIN: i64 = 2;
 const DRAFT_REVIEW_BACKLOG_DEGRADED_MIN: i64 = 5;
 const DRAFT_REVIEW_AGE_MONITOR_HOURS: f64 = 8.0;
 const DRAFT_REVIEW_AGE_DEGRADED_HOURS: f64 = 24.0;
+const DEFAULT_AGENT_FORMAL_EVENT_TYPES: &[&str] = &[
+    "set.logged",
+    "set.corrected",
+    "session.logged",
+    "session.completed",
+    "training_plan.created",
+    "training_plan.updated",
+    "exercise.alias_created",
+    "goal.set",
+    "profile.updated",
+    "injury.reported",
+    "bodyweight.logged",
+    "measurement.logged",
+    "meal.logged",
+    "sleep.logged",
+    "soreness.logged",
+    "energy.logged",
+    "preference.set",
+    "observation.logged",
+    "event.retracted",
+    "projection_rule.created",
+    "projection_rule.archived",
+    "quality.save_claim.checked",
+    "quality.consistency.review.decided",
+    "learning.signal.logged",
+];
 
 fn read_value_string(value: Option<&Value>) -> Option<String> {
     value
@@ -5611,10 +5842,18 @@ pub async fn list_observation_drafts(
 
     let now = Utc::now();
     let items = rows.iter().map(draft_list_item_from_row).collect();
+    let oldest_draft_age_hours = overview.oldest_timestamp.map(|ts| draft_age_hours(ts, now));
+    let review_status =
+        derive_draft_hygiene_status_from_context(overview.open_count, oldest_draft_age_hours);
+    let review_loop_required = overview.open_count > 0;
+    let next_action_hint = draft_review_next_action_hint(&review_status, review_loop_required);
     Ok(Json(AgentObservationDraftListResponse {
         schema_version: OBSERVATION_DRAFT_LIST_SCHEMA_VERSION.to_string(),
         open_count: overview.open_count,
-        oldest_draft_age_hours: overview.oldest_timestamp.map(|ts| draft_age_hours(ts, now)),
+        oldest_draft_age_hours,
+        review_status,
+        review_loop_required,
+        next_action_hint,
         items,
     }))
 }
@@ -5730,7 +5969,9 @@ pub async fn promote_observation_draft(
         })?
         .0;
     let user_id = auth.user_id;
-    let event_type = validate_observation_draft_promote_event_type(&req.event_type)?;
+    let known_event_types = fetch_known_event_types_from_system_config(&state).await?;
+    let event_type =
+        validate_observation_draft_promote_event_type(&req.event_type, &known_event_types)?;
 
     let mut tx = state.db.begin().await?;
     sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
@@ -6138,6 +6379,100 @@ pub async fn dismiss_observation_draft(
     ))
 }
 
+fn push_preflight_blocker(
+    blockers: &mut Vec<AgentWritePreflightBlocker>,
+    code: &str,
+    stage: &str,
+    message: impl Into<String>,
+    field: Option<&str>,
+    docs_hint: Option<String>,
+    details: Option<Value>,
+) {
+    if blockers.iter().any(|item| item.code == code) {
+        return;
+    }
+    blockers.push(AgentWritePreflightBlocker {
+        code: code.to_string(),
+        stage: stage.to_string(),
+        message: message.into(),
+        field: field.map(str::to_string),
+        docs_hint,
+        details,
+    });
+}
+
+fn push_preflight_blocker_from_error(
+    blockers: &mut Vec<AgentWritePreflightBlocker>,
+    code: &str,
+    stage: &str,
+    error: &AppError,
+) {
+    match error {
+        AppError::Validation {
+            message,
+            field,
+            received,
+            docs_hint,
+        } => {
+            push_preflight_blocker(
+                blockers,
+                code,
+                stage,
+                message.clone(),
+                field.as_deref(),
+                docs_hint.clone(),
+                received.clone(),
+            );
+        }
+        AppError::PolicyViolation {
+            code: policy_code,
+            message,
+            field,
+            received,
+            docs_hint,
+        } => {
+            let effective_code = if code.is_empty() { policy_code } else { code };
+            push_preflight_blocker(
+                blockers,
+                effective_code,
+                stage,
+                message.clone(),
+                field.as_deref(),
+                docs_hint.clone(),
+                received.clone(),
+            );
+        }
+        other => {
+            push_preflight_blocker(
+                blockers,
+                code,
+                stage,
+                format!("{other:?}"),
+                None,
+                None,
+                None,
+            );
+        }
+    }
+}
+
+fn write_with_proof_preflight_error(blockers: Vec<AgentWritePreflightBlocker>) -> AppError {
+    let preflight = AgentWritePreflightSummary {
+        schema_version: AGENT_WRITE_PREFLIGHT_SCHEMA_VERSION.to_string(),
+        status: "blocked".to_string(),
+        blockers: blockers.clone(),
+    };
+    AppError::Validation {
+        message: "write_with_proof blocked by preflight checks".to_string(),
+        field: Some("events".to_string()),
+        received: Some(json!(preflight)),
+        docs_hint: Some(
+            "Resolve all listed blockers before retrying. Do not assume partial writes were persisted."
+                .to_string(),
+        ),
+    }
+}
+
 /// Write events with durable receipts and read-after-write verification.
 ///
 /// This endpoint enforces Decision 13.5 protocol semantics:
@@ -6173,22 +6508,120 @@ pub async fn write_with_proof(
     let verify_timeout_ms = clamp_verify_timeout_ms(req.verify_timeout_ms);
     let read_after_write_targets =
         normalize_read_after_write_targets(req.read_after_write_targets.clone());
-
+    let mut preflight_blockers: Vec<AgentWritePreflightBlocker> = Vec::new();
     if read_after_write_targets.is_empty() {
-        return Err(AppError::Validation {
-            message: "read_after_write_targets must not be empty".to_string(),
-            field: Some("read_after_write_targets".to_string()),
-            received: None,
-            docs_hint: Some(
+        push_preflight_blocker(
+            &mut preflight_blockers,
+            "read_after_write_targets_required",
+            "verification",
+            "read_after_write_targets must not be empty",
+            Some("read_after_write_targets"),
+            Some(
                 "Provide at least one projection_type/key target for read-after-write verification."
                     .to_string(),
             ),
-        });
+            None,
+        );
     }
     validate_session_feedback_certainty_contract(&req.events)?;
 
+    let known_event_types = fetch_known_event_types_from_system_config(&state).await?;
+    for (event_index, event) in req.events.iter().enumerate() {
+        let event_type = event.event_type.trim().to_lowercase();
+        if event_type.is_empty() {
+            push_preflight_blocker(
+                &mut preflight_blockers,
+                "formal_event_type_missing",
+                "event_type_policy",
+                "event_type must not be empty",
+                Some("events"),
+                Some("Provide a formal event_type like set.logged.".to_string()),
+                Some(json!({ "event_index": event_index })),
+            );
+            continue;
+        }
+        if event.event_type != event_type {
+            push_preflight_blocker(
+                &mut preflight_blockers,
+                "formal_event_type_non_canonical",
+                "event_type_policy",
+                format!(
+                    "events[{event_index}].event_type must be canonical lowercase without surrounding whitespace: '{}'",
+                    event_type
+                ),
+                Some("events"),
+                Some(
+                    "Normalize event_type before write (trim + lowercase), for example set.logged."
+                        .to_string(),
+                ),
+                Some(json!({ "event_index": event_index, "event_type": event.event_type })),
+            );
+            continue;
+        }
+        if !is_formal_event_type_shape(&event_type) {
+            push_preflight_blocker(
+                &mut preflight_blockers,
+                "formal_event_type_invalid_shape",
+                "event_type_policy",
+                format!(
+                    "events[{event_index}].event_type '{}' does not match formal dotted syntax",
+                    event.event_type
+                ),
+                Some("events"),
+                Some(
+                    "Use lowercase dotted event types like set.logged or session.completed."
+                        .to_string(),
+                ),
+                Some(json!({ "event_index": event_index, "event_type": event.event_type })),
+            );
+            continue;
+        }
+        if !known_event_types.contains(&event_type) {
+            push_preflight_blocker(
+                &mut preflight_blockers,
+                "formal_event_type_unknown",
+                "event_type_policy",
+                format!(
+                    "events[{event_index}].event_type '{}' is not registered in event_conventions",
+                    event.event_type
+                ),
+                Some("events"),
+                Some(
+                    "Use a registered event_type from system_config.event_conventions or route the note through observation drafts."
+                        .to_string(),
+                ),
+                Some(json!({
+                    "event_index": event_index,
+                    "event_type": event.event_type,
+                    "policy_schema_version": AGENT_FORMAL_EVENT_TYPE_POLICY_SCHEMA_VERSION,
+                })),
+            );
+        }
+    }
+
     let user_profile = fetch_user_profile_projection(&state, user_id).await?;
     let training_timeline = fetch_training_timeline_projection(&state, user_id).await?;
+    if batch_requires_health_data_consent(&req.events) {
+        let health_data_processing_consent =
+            fetch_health_data_processing_consent(&state, user_id).await?;
+        if !health_data_processing_consent {
+            push_preflight_blocker(
+                &mut preflight_blockers,
+                AGENT_HEALTH_CONSENT_ERROR_CODE,
+                "consent_gate",
+                "Health/training writes require explicit health data processing consent.",
+                Some("events"),
+                Some(
+                    "Grant consent in Settings > Privacy & Data before creating health/training events."
+                        .to_string(),
+                ),
+                Some(json!({
+                    "next_action": AGENT_HEALTH_CONSENT_NEXT_ACTION,
+                    "next_action_url": AGENT_HEALTH_CONSENT_SETTINGS_URL,
+                })),
+            );
+        }
+    }
     let bootstrap_profile = user_profile
         .is_none()
         .then(|| bootstrap_user_profile(user_id));
@@ -6206,36 +6639,60 @@ pub async fn write_with_proof(
         .iter()
         .any(|event| is_planning_or_coaching_event_type(&event.event_type.trim().to_lowercase()));
 
-    let intent_handshake_confirmation = match req.intent_handshake.as_ref() {
+    let mut intent_handshake_confirmation = None;
+    match req.intent_handshake.as_ref() {
         Some(handshake) => {
-            validate_intent_handshake(handshake, &action_class)?;
-            validate_temporal_basis(
+            match validate_intent_handshake(handshake, &action_class) {
+                Ok(()) => {}
+                Err(err) => push_preflight_blocker_from_error(
+                    &mut preflight_blockers,
+                    "intent_handshake_invalid",
+                    "intent_handshake",
+                    &err,
+                ),
+            }
+            match validate_temporal_basis(
                 handshake,
                 &temporal_context,
                 temporal_basis_required,
                 Utc::now(),
-            )?;
-            Some(build_intent_handshake_confirmation(handshake))
+            ) {
+                Ok(()) => {
+                    if !preflight_blockers.iter().any(|blocker| {
+                        blocker.code == "intent_handshake_invalid"
+                            && blocker.stage == "intent_handshake"
+                    }) {
+                        intent_handshake_confirmation = Some(build_intent_handshake_confirmation(handshake));
+                    }
+                }
+                Err(err) => push_preflight_blocker_from_error(
+                    &mut preflight_blockers,
+                    "temporal_basis_invalid",
+                    "intent_handshake.temporal_basis",
+                    &err,
+                ),
+            }
         }
         None => {
             if temporal_basis_required {
-                return Err(AppError::Validation {
-                    message: "intent_handshake is required for temporal high-impact writes"
-                        .to_string(),
-                    field: Some("intent_handshake".to_string()),
-                    received: Some(serde_json::json!({
-                        "action_class": action_class,
-                        "requires_temporal_basis": true,
-                    })),
-                    docs_hint: Some(
+                push_preflight_blocker(
+                    &mut preflight_blockers,
+                    "intent_handshake_required",
+                    "intent_handshake",
+                    "intent_handshake is required for temporal high-impact writes",
+                    Some("intent_handshake"),
+                    Some(
                         "Provide intent_handshake.temporal_basis from GET /v1/agent/context meta.temporal_context before write-with-proof."
                             .to_string(),
                     ),
-                });
+                    Some(json!({
+                        "action_class": action_class,
+                        "requires_temporal_basis": true,
+                    })),
+                );
             }
-            None
         }
-    };
+    }
 
     let workflow_state = fetch_workflow_state(&state, user_id, user_profile.as_ref()).await?;
     let workflow_gate = workflow_gate_from_request(&req.events, &workflow_state);
@@ -6246,23 +6703,113 @@ pub async fn write_with_proof(
             .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE)
     });
     if workflow_gate.status == "blocked" {
-        if let Some(signal) = build_workflow_gate_learning_signal_event(user_id, &workflow_gate) {
-            let _ = create_events_batch_internal(&state, user_id, &[signal]).await;
-        }
-        let docs_hint = format!(
-            "Planning/coaching events require onboarding close ({WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE}) or explicit override ({WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE}). Missing requirements: {}",
-            workflow_gate.missing_requirements.join(", ")
-        );
-        return Err(AppError::Validation {
-            message: workflow_gate.message.clone(),
-            field: Some("events".to_string()),
-            received: Some(serde_json::json!({
+        push_preflight_blocker(
+            &mut preflight_blockers,
+            "workflow_onboarding_blocked",
+            "workflow_gate",
+            workflow_gate.message.clone(),
+            Some("events"),
+            Some(format!(
+                "Planning/coaching events require onboarding close ({WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE}) or explicit override ({WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE}). Missing requirements: {}",
+                workflow_gate.missing_requirements.join(", ")
+            )),
+            Some(serde_json::json!({
                 "planning_event_types": workflow_gate.planning_event_types,
                 "missing_requirements": workflow_gate.missing_requirements,
                 "phase": workflow_gate.phase,
             })),
-            docs_hint: Some(docs_hint),
-        });
+        );
+    }
+
+    let quality_health = fetch_quality_health_projection(&state, user_id).await?;
+    let model_identity = resolve_model_identity_for_write(&auth, &req, &action_class, Utc::now());
+    let (tier_policy, tier_reason_codes) =
+        resolve_model_tier_policy_for_write(&state, user_id, &model_identity).await?;
+    let mut model_reason_codes = model_identity.reason_codes.clone();
+    model_reason_codes.extend(tier_reason_codes);
+    dedupe_reason_codes(&mut model_reason_codes);
+    let policy_with_user_overrides = apply_user_preference_overrides(
+        autonomy_policy_from_quality_health(quality_health.as_ref()),
+        user_profile.as_ref(),
+    );
+    let autonomy_policy = apply_model_tier_policy(
+        policy_with_user_overrides,
+        &model_identity.model_identity,
+        &tier_policy,
+        &model_reason_codes,
+    );
+    let autonomy_gate = merge_autonomy_gate_with_memory_guard(
+        evaluate_autonomy_gate(
+            &action_class,
+            &autonomy_policy,
+            &tier_policy,
+            &model_reason_codes,
+        ),
+        &action_class,
+        user_profile.as_ref(),
+    );
+    if autonomy_gate.decision == "block" {
+        push_preflight_blocker(
+            &mut preflight_blockers,
+            "autonomy_gate_blocked",
+            "autonomy_gate",
+            "High-impact write blocked by adaptive autonomy gate.",
+            Some("events"),
+            Some(
+                "Request explicit user confirmation or reduce scope to low-impact writes before retry."
+                    .to_string(),
+            ),
+            Some(serde_json::json!({
+                "action_class": autonomy_gate.action_class,
+                "model_tier": autonomy_gate.model_tier,
+                "effective_quality_status": autonomy_gate.effective_quality_status,
+                "reason_codes": autonomy_gate.reason_codes,
+            })),
+        );
+    }
+    // Strict tier: require intent_handshake for high-impact writes (must explain reasoning).
+    if autonomy_gate.model_tier == "strict"
+        && action_class == "high_impact_write"
+        && intent_handshake_confirmation.is_none()
+    {
+        push_preflight_blocker(
+            &mut preflight_blockers,
+            "intent_handshake_required_strict_tier",
+            "intent_handshake",
+            "intent_handshake is required for high-impact writes in strict tier",
+            Some("intent_handshake"),
+            Some(
+                "Strict tier requires intent_handshake.v1 with goal, planned_action, assumptions, non_goals, impact_class, and success_criteria."
+                    .to_string(),
+            ),
+            Some(serde_json::json!({
+                "model_tier": autonomy_gate.model_tier,
+                "action_class": action_class,
+            })),
+        );
+    }
+    if autonomy_gate.decision == "confirm_first" && action_class == "high_impact_write" {
+        let confirmation_secret = std::env::var(MODEL_ATTESTATION_SECRET_ENV).ok();
+        if let Err(err) = validate_high_impact_confirmation(
+            req.high_impact_confirmation.as_ref(),
+            &req.events,
+            &autonomy_gate,
+            user_id,
+            &action_class,
+            &high_impact_confirmation_request_digest,
+            confirmation_secret.as_deref(),
+            Utc::now(),
+        ) {
+            push_preflight_blocker_from_error(
+                &mut preflight_blockers,
+                "high_impact_confirmation_invalid",
+                "high_impact_confirmation",
+                &err,
+            );
+        }
+    }
+    if !preflight_blockers.is_empty() {
+        return Err(write_with_proof_preflight_error(preflight_blockers));
     }
 
     let mut auto_close_applied = false;
@@ -6304,81 +6851,6 @@ pub async fn write_with_proof(
                 .to_string(),
             severity: "warning".to_string(),
         });
-    }
-
-    let quality_health = fetch_quality_health_projection(&state, user_id).await?;
-    let model_identity = resolve_model_identity_for_write(&auth, &req, &action_class, Utc::now());
-    let (tier_policy, tier_reason_codes) =
-        resolve_model_tier_policy_for_write(&state, user_id, &model_identity).await?;
-    let mut model_reason_codes = model_identity.reason_codes.clone();
-    model_reason_codes.extend(tier_reason_codes);
-    dedupe_reason_codes(&mut model_reason_codes);
-    let policy_with_user_overrides = apply_user_preference_overrides(
-        autonomy_policy_from_quality_health(quality_health.as_ref()),
-        user_profile.as_ref(),
-    );
-    let autonomy_policy = apply_model_tier_policy(
-        policy_with_user_overrides,
-        &model_identity.model_identity,
-        &tier_policy,
-        &model_reason_codes,
-    );
-    let autonomy_gate = merge_autonomy_gate_with_memory_guard(
-        evaluate_autonomy_gate(
-            &action_class,
-            &autonomy_policy,
-            &tier_policy,
-            &model_reason_codes,
-        ),
-        &action_class,
-        user_profile.as_ref(),
-    );
-    if autonomy_gate.decision == "block" {
-        return Err(AppError::Validation {
-            message: "High-impact write blocked by adaptive autonomy gate.".to_string(),
-            field: Some("events".to_string()),
-            received: Some(serde_json::json!({
-                "action_class": autonomy_gate.action_class,
-                "model_tier": autonomy_gate.model_tier,
-                "effective_quality_status": autonomy_gate.effective_quality_status,
-                "reason_codes": autonomy_gate.reason_codes,
-            })),
-            docs_hint: Some(
-                "Request explicit user confirmation or reduce scope to low-impact writes before retry."
-                    .to_string(),
-            ),
-        });
-    }
-    // Strict tier: require intent_handshake for high-impact writes (must explain reasoning).
-    if autonomy_gate.model_tier == "strict"
-        && action_class == "high_impact_write"
-        && intent_handshake_confirmation.is_none()
-    {
-        return Err(AppError::Validation {
-            message: "intent_handshake is required for high-impact writes in strict tier".to_string(),
-            field: Some("intent_handshake".to_string()),
-            received: Some(serde_json::json!({
-                "model_tier": autonomy_gate.model_tier,
-                "action_class": action_class,
-            })),
-            docs_hint: Some(
-                "Strict tier requires intent_handshake.v1 with goal, planned_action, assumptions, non_goals, impact_class, and success_criteria."
-                    .to_string(),
-            ),
-        });
-    }
-    if autonomy_gate.decision == "confirm_first" && action_class == "high_impact_write" {
-        let confirmation_secret = std::env::var(MODEL_ATTESTATION_SECRET_ENV).ok();
-        validate_high_impact_confirmation(
-            req.high_impact_confirmation.as_ref(),
-            &req.events,
-            &autonomy_gate,
-            user_id,
-            &action_class,
-            &high_impact_confirmation_request_digest,
-            confirmation_secret.as_deref(),
-            Utc::now(),
-        )?;
     }
     if autonomy_gate.decision == "confirm_first" {
         workflow_warnings.push(BatchEventWarning {
@@ -7398,6 +7870,9 @@ mod tests {
             schema_version: super::OBSERVATION_DRAFT_CONTEXT_SCHEMA_VERSION.to_string(),
             open_count: 3,
             oldest_draft_age_hours: Some(26.0),
+            review_status: "degraded".to_string(),
+            review_loop_required: true,
+            next_action_hint: Some("review now".to_string()),
             recent_drafts: Vec::new(),
         };
         let quality_health = make_projection_response(
@@ -7445,6 +7920,9 @@ mod tests {
             schema_version: super::OBSERVATION_DRAFT_CONTEXT_SCHEMA_VERSION.to_string(),
             open_count: 5,
             oldest_draft_age_hours: Some(48.0),
+            review_status: "degraded".to_string(),
+            review_loop_required: true,
+            next_action_hint: Some("review now".to_string()),
             recent_drafts: Vec::new(),
         };
 
@@ -7514,6 +7992,9 @@ mod tests {
             schema_version: super::OBSERVATION_DRAFT_CONTEXT_SCHEMA_VERSION.to_string(),
             open_count: 2,
             oldest_draft_age_hours: Some(9.0),
+            review_status: "monitor".to_string(),
+            review_loop_required: true,
+            next_action_hint: Some("review soon".to_string()),
             recent_drafts: Vec::new(),
         };
         let brief = super::build_agent_brief(None, &profile, None, Some(&drafts));
@@ -13370,6 +13851,8 @@ mod tests {
                 "observation_draft_dismissal_v1": {"schema_version": "observation_draft_dismiss.v1"},
                 "observation_draft_review_loop_v1": {"schema_version": "observation_draft_review_loop.v1"},
                 "draft_hygiene_feedback_v1": {"schema_version": "draft_hygiene_feedback.v1"},
+                "formal_event_type_policy_v1": {"schema_version": "formal_event_type_policy.v1"},
+                "write_preflight_v1": {"schema_version": "write_preflight.v1"},
                 "learning_clustering_v1": {"rules": ["internal"]},
                 "shadow_evaluation_gate_v1": {"rules": ["internal"]},
                 "unexpected_convention": {"rules": ["unknown"]}
@@ -13417,6 +13900,8 @@ mod tests {
         assert!(conventions.contains_key("observation_draft_dismissal_v1"));
         assert!(conventions.contains_key("observation_draft_review_loop_v1"));
         assert!(conventions.contains_key("draft_hygiene_feedback_v1"));
+        assert!(conventions.contains_key("formal_event_type_policy_v1"));
+        assert!(conventions.contains_key("write_preflight_v1"));
         assert!(!conventions.contains_key("learning_clustering_v1"));
         assert!(!conventions.contains_key("shadow_evaluation_gate_v1"));
         assert!(!conventions.contains_key("unexpected_convention"));
@@ -14587,6 +15072,9 @@ mod tests {
                 .contains("Empfehlung: Sprungtraining Bern")
         );
         assert_eq!(context.oldest_draft_age_hours, Some(4.0));
+        assert_eq!(context.review_status, "monitor");
+        assert!(context.review_loop_required);
+        assert!(context.next_action_hint.is_some());
     }
 
     #[test]
@@ -14615,12 +15103,19 @@ mod tests {
 
     #[test]
     fn observation_draft_promotion_contract_requires_non_plan_formal_event_type() {
-        let ok = super::validate_observation_draft_promote_event_type(" set.logged ");
+        let mut known_event_types = std::collections::HashSet::new();
+        known_event_types.insert("set.logged".to_string());
+        let ok = super::validate_observation_draft_promote_event_type(
+            " set.logged ",
+            &known_event_types,
+        );
         assert_eq!(ok.expect("set.logged should be valid"), "set.logged");
 
-        let plan_error =
-            super::validate_observation_draft_promote_event_type("training_plan.updated")
-                .expect_err("plan event should be rejected");
+        let plan_error = super::validate_observation_draft_promote_event_type(
+            "training_plan.updated",
+            &known_event_types,
+        )
+        .expect_err("plan event should be rejected");
         match plan_error {
             AppError::Validation {
                 field,
@@ -14638,8 +15133,11 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
 
-        let retract_error = super::validate_observation_draft_promote_event_type("event.retracted")
-            .expect_err("event.retracted should be rejected");
+        let retract_error = super::validate_observation_draft_promote_event_type(
+            "event.retracted",
+            &known_event_types,
+        )
+        .expect_err("event.retracted should be rejected");
         match retract_error {
             AppError::Validation { field, message, .. } => {
                 assert_eq!(field.as_deref(), Some("event_type"));
@@ -14647,6 +15145,130 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn formal_event_type_policy_contract_rejects_unknown_event_type() {
+        let mut known_event_types = std::collections::HashSet::new();
+        known_event_types.insert("set.logged".to_string());
+
+        let error = super::validate_observation_draft_promote_event_type(
+            "mystery.logged",
+            &known_event_types,
+        )
+        .expect_err("unknown event type must be blocked");
+        match error {
+            AppError::PolicyViolation {
+                code,
+                field,
+                docs_hint,
+                ..
+            } => {
+                assert_eq!(code, "formal_event_type_unknown");
+                assert_eq!(field.as_deref(), Some("event_type"));
+                assert!(
+                    docs_hint
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("event_conventions")
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn formal_event_type_policy_contract_schema_version_is_pinned() {
+        assert_eq!(
+            super::AGENT_FORMAL_EVENT_TYPE_POLICY_SCHEMA_VERSION,
+            "formal_event_type_policy.v1"
+        );
+    }
+
+    #[test]
+    fn formal_event_type_policy_contract_accepts_registered_event_type() {
+        let mut known_event_types = std::collections::HashSet::new();
+        known_event_types.insert("set.logged".to_string());
+        let event_type = super::validate_observation_draft_promote_event_type(
+            "set.logged",
+            &known_event_types,
+        )
+        .expect("registered event type should pass");
+        assert_eq!(event_type, "set.logged");
+    }
+
+    #[test]
+    fn write_with_proof_preflight_contract_schema_version_is_pinned() {
+        assert_eq!(
+            super::AGENT_WRITE_PREFLIGHT_SCHEMA_VERSION,
+            "write_preflight.v1"
+        );
+        assert_eq!(
+            super::AGENT_FORMAL_EVENT_TYPE_POLICY_SCHEMA_VERSION,
+            "formal_event_type_policy.v1"
+        );
+    }
+
+    #[test]
+    fn write_with_proof_preflight_contract_exposes_blockers() {
+        let mut blockers = Vec::new();
+        super::push_preflight_blocker(
+            &mut blockers,
+            "health_consent_required",
+            "consent_gate",
+            "consent missing",
+            Some("events"),
+            Some("open settings".to_string()),
+            Some(json!({"next_action": "open_settings_privacy"})),
+        );
+        let err = super::write_with_proof_preflight_error(blockers);
+        match err {
+            AppError::Validation {
+                message,
+                field,
+                received,
+                docs_hint,
+            } => {
+                assert!(message.contains("preflight"));
+                assert_eq!(field.as_deref(), Some("events"));
+                assert!(
+                    docs_hint
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("Resolve all listed blockers")
+                );
+                let payload = received.expect("preflight payload should exist");
+                assert_eq!(payload["schema_version"], "write_preflight.v1");
+                assert_eq!(payload["status"], "blocked");
+                assert_eq!(payload["blockers"][0]["code"], "health_consent_required");
+                assert_eq!(payload["blockers"][0]["stage"], "consent_gate");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_with_proof_preflight_contract_dedupes_blocker_codes() {
+        let mut blockers = Vec::new();
+        super::push_preflight_blocker(
+            &mut blockers,
+            "health_consent_required",
+            "consent_gate",
+            "first",
+            Some("events"),
+            None,
+            None,
+        );
+        super::push_preflight_blocker(
+            &mut blockers,
+            "health_consent_required",
+            "consent_gate",
+            "second",
+            Some("events"),
+            None,
+            None,
+        );
+        assert_eq!(blockers.len(), 1);
     }
 
     #[test]

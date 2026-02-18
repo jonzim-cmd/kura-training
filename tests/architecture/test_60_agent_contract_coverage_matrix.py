@@ -94,6 +94,16 @@ REQUIRED_AGENT_CONTRACT_MATRIX: dict[str, dict[str, str]] = {
         "positive_case": "routes::agent::tests::persist_intent_contract_auto_save_for_verified_routine_write",
         "negative_case": "routes::agent::tests::persist_intent_contract_asks_first_for_high_impact_when_unsaved",
     },
+    "write_preflight": {
+        "schema_pin": "routes::agent::tests::write_with_proof_preflight_contract_schema_version_is_pinned",
+        "positive_case": "routes::agent::tests::write_with_proof_preflight_contract_exposes_blockers",
+        "negative_case": "routes::agent::tests::write_with_proof_preflight_contract_dedupes_blocker_codes",
+    },
+    "formal_event_type_policy": {
+        "schema_pin": "routes::agent::tests::formal_event_type_policy_contract_schema_version_is_pinned",
+        "positive_case": "routes::agent::tests::formal_event_type_policy_contract_accepts_registered_event_type",
+        "negative_case": "routes::agent::tests::formal_event_type_policy_contract_rejects_unknown_event_type",
+    },
 }
 
 
@@ -117,6 +127,8 @@ def test_required_agent_contract_matrix_keys_are_explicit() -> None:
         "temporal_grounding",
         "temporal_phrase_regression",
         "persist_intent",
+        "write_preflight",
+        "formal_event_type_policy",
     }
     for contract_name, scenarios in REQUIRED_AGENT_CONTRACT_MATRIX.items():
         assert set(scenarios) == {"schema_pin", "positive_case", "negative_case"}, contract_name

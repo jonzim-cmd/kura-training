@@ -46,6 +46,9 @@ def test_observation_draft_context_contract_is_declared() -> None:
     assert contract["context_fields"] == [
         "open_count",
         "oldest_draft_age_hours",
+        "review_status",
+        "review_loop_required",
+        "next_action_hint",
         "recent_drafts[]",
     ]
     assert contract["recent_drafts_item_fields"] == [
@@ -53,6 +56,7 @@ def test_observation_draft_context_contract_is_declared() -> None:
         "timestamp",
         "summary",
     ]
+    assert contract["review_status_levels"] == ["healthy", "monitor", "degraded"]
 
 
 def test_observation_draft_promotion_contract_is_declared() -> None:

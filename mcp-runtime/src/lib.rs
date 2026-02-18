@@ -170,6 +170,14 @@ fn build_tool_call_response(
     }
 }
 
+fn should_emit_context_warning(name: &str, context_loaded: bool) -> bool {
+    name != "kura_agent_context" && !context_loaded
+}
+
+fn is_context_write_blocked_tool(name: &str) -> bool {
+    matches!(name, "kura_events_write" | "kura_observation_draft_dismiss")
+}
+
 /// Tools that don't operate on user data. Used in tests to document the semantic
 /// distinction — the context gate itself only exempts `kura_agent_context`.
 #[cfg(test)]
@@ -609,17 +617,38 @@ impl McpServer {
             }
         };
 
+        let context_loaded = is_context_loaded(&self.session_id);
         // Context gate: remind on EVERY tool until agent has loaded context.
         // Only kura_agent_context itself is exempt (it's what loads context — warning would be circular).
-        let context_warning = if name != "kura_agent_context"
-            && !is_context_loaded(&self.session_id)
-        {
+        let context_warning = if should_emit_context_warning(name, context_loaded) {
             Some(
                 "⚠ You MUST call kura_agent_context before responding to the user. Without it you have no knowledge of this user's training history, goals, or current state. Any response without this context will be incorrect.\n\n",
             )
         } else {
             None
         };
+
+        if is_context_write_blocked_tool(name) && !context_loaded {
+            let envelope = enforce_tool_payload_limit(
+                name,
+                json!({
+                    "status": "error",
+                    "phase": "blocked_precondition",
+                    "tool": name,
+                    "error": {
+                        "error": "context_required_before_write",
+                        "message": "Call kura_agent_context before invoking write tools.",
+                        "field": "tool",
+                        "docs_hint": "Load context first, then retry the write operation in the same session.",
+                        "details": {
+                            "required_first_tool": "kura_agent_context",
+                            "blocked_tool": name
+                        }
+                    }
+                }),
+            );
+            return Ok(build_tool_call_response(name, envelope, true, context_warning));
+        }
 
         if let Some((mut envelope, age_ms)) =
             get_tool_call_dedupe_entry(&self.session_id, name, &args)
@@ -885,10 +914,12 @@ impl McpServer {
     }
 
     async fn tool_events_write(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
-        let mode_raw = arg_string(args, "mode", "commit")?;
+        let mode_raw = arg_string(args, "mode", "simulate")?;
         let mode = parse_write_mode(&mode_raw)?;
         let strategy_raw = arg_string(args, "idempotency_strategy", "auto_if_missing")?;
         let strategy = parse_idempotency_strategy(&strategy_raw)?;
+        let allow_legacy_write_with_proof_fallback =
+            arg_bool(args, "allow_legacy_write_with_proof_fallback", false)?;
 
         let events_value = args.get("events").ok_or_else(|| {
             ToolError::new("validation_failed", "Missing required field 'events'")
@@ -979,10 +1010,26 @@ impl McpServer {
                         body,
                     )
                 } else {
+                    if !allow_legacy_write_with_proof_fallback {
+                        return Err(ToolError::new(
+                            "write_with_proof_fallback_blocked",
+                            "write_with_proof is unavailable in legacy compatibility mode and fallback commit is blocked by default",
+                        )
+                        .with_field("mode")
+                        .with_docs_hint(
+                            "Retry with mode=simulate (recommended) or explicit mode=commit. Set allow_legacy_write_with_proof_fallback=true only for controlled compatibility migrations.",
+                        )
+                        .with_details(json!({
+                            "requested_mode": mode.as_str(),
+                            "capability_mode": self.capability_profile.mode.as_str(),
+                            "fallback_default": "blocked",
+                            "compatibility_opt_in_flag": "allow_legacy_write_with_proof_fallback"
+                        })));
+                    }
                     fallback_applied = true;
                     effective_mode = "write_with_proof_fallback_commit".to_string();
                     compatibility_notes.push(
-                        "write_with_proof is unavailable in legacy compatibility mode; routing to classic event write endpoints.".to_string(),
+                        "write_with_proof is unavailable in legacy compatibility mode; explicit fallback opt-in routed to classic event write endpoints.".to_string(),
                     );
                     legacy_write_target(
                         &normalized_events,
@@ -1002,6 +1049,26 @@ impl McpServer {
             && requested_path.is_some()
             && should_apply_contract_fallback(response.status)
         {
+            if !allow_legacy_write_with_proof_fallback {
+                return Err(ToolError::new(
+                    "write_with_proof_fallback_blocked",
+                    format!(
+                        "Preferred write_with_proof endpoint returned unsupported status {} and fallback commit is blocked by default",
+                        response.status
+                    ),
+                )
+                .with_field("mode")
+                .with_docs_hint(
+                    "Retry with mode=simulate (recommended) or explicit mode=commit. Set allow_legacy_write_with_proof_fallback=true only for controlled compatibility migrations.",
+                )
+                .with_details(json!({
+                    "requested_mode": mode.as_str(),
+                    "requested_path": requested_path,
+                    "unsupported_status": response.status,
+                    "fallback_default": "blocked",
+                    "compatibility_opt_in_flag": "allow_legacy_write_with_proof_fallback"
+                })));
+            }
             let unsupported_status = response.status;
             let (legacy_path, legacy_body) = legacy_write_target(
                 &normalized_events,
@@ -2188,7 +2255,7 @@ fn tool_definitions() -> Vec<ToolDefinition> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "mode": { "type": "string", "enum": ["commit", "simulate", "write_with_proof"], "default": "commit" },
+                    "mode": { "type": "string", "enum": ["commit", "simulate", "write_with_proof"], "default": "simulate" },
                     "events": {
                         "type": "array",
                         "minItems": 1,
@@ -2228,6 +2295,11 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                     },
                     "verify_timeout_ms": { "type": "integer", "minimum": 100, "maximum": 10000 }
                     ,
+                    "allow_legacy_write_with_proof_fallback": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Compatibility opt-in only. When true, write_with_proof may fallback to legacy commit endpoints if preferred contract write is unavailable."
+                    },
                     "intent_goal": { "type": "string", "description": "Optional high-level goal used when auto-generating intent_handshake for high-impact write_with_proof calls." },
                     "intent_handshake": {
                         "type": "object",
@@ -2740,6 +2812,13 @@ fn enforce_agent_context_payload_limit(envelope: Value) -> Value {
     }
 
     if !omitted_sections.is_empty() {
+        let critical_missing_sections =
+            missing_agent_context_critical_sections(trimmed.pointer("/data/response/body"));
+        let integrity_status = if critical_missing_sections.is_empty() {
+            "degraded_optional_sections_omitted"
+        } else {
+            "critical_sections_missing"
+        };
         if let Some(body) = trimmed
             .pointer_mut("/data/response/body")
             .and_then(Value::as_object_mut)
@@ -2750,6 +2829,8 @@ fn enforce_agent_context_payload_limit(envelope: Value) -> Value {
                     "schema_version": AGENT_CONTEXT_OVERFLOW_SCHEMA_VERSION,
                     "reason": "payload_size_limit",
                     "omitted_sections": omitted_sections,
+                    "integrity_status": integrity_status,
+                    "critical_missing_sections": critical_missing_sections,
                     "reload_strategy": "reload listed sections via canonical read tools",
                 }),
             );
@@ -2799,6 +2880,12 @@ fn enforce_agent_context_payload_limit(envelope: Value) -> Value {
                                 "reload_hint": "Reload sections via kura_projection_get/list and kura_discover_debug(include_system_config=true)."
                             }
                         ],
+                        "integrity_status": "critical_sections_missing",
+                        "critical_missing_sections": [
+                            "action_required",
+                            "agent_brief",
+                            "meta"
+                        ],
                         "reload_strategy": "re-fetch context sections in smaller batches"
                     }
                 }
@@ -2815,11 +2902,22 @@ fn enforce_agent_context_payload_limit(envelope: Value) -> Value {
     if let Some(value) = trimmed.pointer("/data/response/body/meta") {
         fallback["data"]["response"]["body"]["meta"] = value.clone();
     }
+    let fallback_critical_missing =
+        missing_agent_context_critical_sections(fallback.pointer("/data/response/body"));
+    let fallback_integrity_status = if fallback_critical_missing.is_empty() {
+        "degraded_optional_sections_omitted"
+    } else {
+        "critical_sections_missing"
+    };
+    fallback["data"]["response"]["body"]["overflow"]["integrity_status"] =
+        json!(fallback_integrity_status);
+    fallback["data"]["response"]["body"]["overflow"]["critical_missing_sections"] =
+        json!(fallback_critical_missing);
 
     if serialized_json_size_bytes(&fallback) <= TOOL_ENVELOPE_MAX_BYTES {
         fallback
     } else {
-        json!({
+        let mut brief_only = json!({
             "status": status,
             "phase": "final",
             "tool": "kura_agent_context",
@@ -2845,13 +2943,44 @@ fn enforce_agent_context_payload_limit(envelope: Value) -> Value {
                                     "reload_hint": "Reload context progressively with narrower scope."
                                 }
                             ],
+                            "integrity_status": "critical_sections_missing",
+                            "critical_missing_sections": [
+                                "action_required",
+                                "agent_brief",
+                                "meta"
+                            ],
                             "reload_strategy": "recover with follow-up reads"
                         }
                     }
                 }
             }
-        })
+        });
+        let brief_critical_missing =
+            missing_agent_context_critical_sections(brief_only.pointer("/data/response/body"));
+        let brief_integrity_status = if brief_critical_missing.is_empty() {
+            "degraded_optional_sections_omitted"
+        } else {
+            "critical_sections_missing"
+        };
+        brief_only["data"]["response"]["body"]["overflow"]["integrity_status"] =
+            json!(brief_integrity_status);
+        brief_only["data"]["response"]["body"]["overflow"]["critical_missing_sections"] =
+            json!(brief_critical_missing);
+        brief_only
     }
+}
+
+fn missing_agent_context_critical_sections(body: Option<&Value>) -> Vec<&'static str> {
+    let Some(body_obj) = body.and_then(Value::as_object) else {
+        return vec!["action_required", "agent_brief", "meta"];
+    };
+    let mut missing = Vec::new();
+    for key in ["action_required", "agent_brief", "meta"] {
+        if !body_obj.contains_key(key) {
+            missing.push(key);
+        }
+    }
+    missing
 }
 
 fn agent_context_section_reload_hint(section: &str) -> &'static str {
@@ -4315,6 +4444,9 @@ mod tests {
                             "schema_version": "agent_brief.v1",
                             "must_cover_intents": ["offer_onboarding"]
                         },
+                        "meta": {
+                            "context_contract_version": "agent_context.v10"
+                        },
                         "system": {
                             "data": {
                                 "blob": huge
@@ -4349,6 +4481,14 @@ mod tests {
                 .any(|section| section == "system")
         );
         assert!(limited.get("data_summary").is_none());
+        assert_eq!(
+            limited["data"]["response"]["body"]["overflow"]["integrity_status"],
+            "degraded_optional_sections_omitted"
+        );
+        assert_eq!(
+            limited["data"]["response"]["body"]["overflow"]["critical_missing_sections"],
+            json!([])
+        );
     }
 
     #[test]
@@ -4449,6 +4589,24 @@ mod tests {
         assert_eq!(surface["persist_intent"], Value::Null);
     }
 
+    #[test]
+    fn kura_events_write_contract_defaults_to_simulate_and_opt_in_fallback_flag() {
+        let defs = tool_definitions();
+        let write_tool = defs
+            .iter()
+            .find(|definition| definition.name == "kura_events_write")
+            .expect("kura_events_write definition must exist");
+        assert_eq!(
+            write_tool.input_schema["properties"]["mode"]["default"],
+            json!("simulate")
+        );
+        assert_eq!(
+            write_tool.input_schema["properties"]["allow_legacy_write_with_proof_fallback"]
+                ["default"],
+            json!(false)
+        );
+    }
+
     // ── Context gate tests ──────────────────────────────────────────
 
     #[test]
@@ -4475,7 +4633,7 @@ mod tests {
 
         // Before context loaded: everything except kura_agent_context should trigger
         let should_warn =
-            |name: &str| -> bool { name != "kura_agent_context" && !is_context_loaded(&sid) };
+            |name: &str| -> bool { should_emit_context_warning(name, is_context_loaded(&sid)) };
         assert!(should_warn("kura_discover"));
         assert!(should_warn("kura_discover_debug"));
         assert!(should_warn("kura_mcp_status"));
@@ -4487,6 +4645,14 @@ mod tests {
         mark_context_loaded(&sid);
         assert!(!should_warn("kura_discover"));
         assert!(!should_warn("kura_read"));
+    }
+
+    #[test]
+    fn context_gate_blocks_high_risk_write_tools_until_context_is_loaded() {
+        assert!(is_context_write_blocked_tool("kura_events_write"));
+        assert!(is_context_write_blocked_tool("kura_observation_draft_dismiss"));
+        assert!(!is_context_write_blocked_tool("kura_projection_get"));
+        assert!(!is_context_write_blocked_tool("kura_discover"));
     }
 
     #[test]

@@ -53,7 +53,9 @@ pub(super) fn classify_system_convention_field(key: &str) -> SystemConventionFie
         | "observation_draft_resolution_v1"
         | "observation_draft_dismissal_v1"
         | "observation_draft_review_loop_v1"
-        | "draft_hygiene_feedback_v1" => SystemConventionFieldClass::PublicContract,
+        | "draft_hygiene_feedback_v1"
+        | "formal_event_type_policy_v1"
+        | "write_preflight_v1" => SystemConventionFieldClass::PublicContract,
         "learning_clustering_v1"
         | "extraction_calibration_v1"
         | "learning_backlog_bridge_v1"

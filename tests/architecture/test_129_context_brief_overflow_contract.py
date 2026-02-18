@@ -33,6 +33,8 @@ def test_mcp_runtime_declares_structured_agent_context_overflow() -> None:
     assert "if tool == \"kura_agent_context\"" in src
     assert "enforce_agent_context_payload_limit" in src
     assert "omitted_sections" in src
+    assert "integrity_status" in src
+    assert "critical_missing_sections" in src
     assert "agent_context_section_reload_hint" in src
 
 

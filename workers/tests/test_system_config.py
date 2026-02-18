@@ -704,6 +704,8 @@ class TestAgentBehavior:
         assert policy["status_labels"] == ["saved", "draft", "not_saved"]
         assert policy["anti_spam"]["max_save_confirmation_prompts_per_turn"] == 1
         assert policy["fail_safe"]["no_saved_wording_without_proof"] is True
+        assert policy["lifecycle"]["states"] == ["saved", "draft", "not_saved"]
+        assert policy["lifecycle"]["review_loop_required_when_drafts_open"] is True
 
     def test_operational_has_observation_draft_context_contract(self):
         result = _get_agent_behavior()
@@ -716,8 +718,12 @@ class TestAgentBehavior:
         assert contract["context_fields"] == [
             "open_count",
             "oldest_draft_age_hours",
+            "review_status",
+            "review_loop_required",
+            "next_action_hint",
             "recent_drafts[]",
         ]
+        assert contract["review_status_levels"] == ["healthy", "monitor", "degraded"]
 
     def test_operational_has_observation_draft_promotion_contract(self):
         result = _get_agent_behavior()
