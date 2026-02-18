@@ -31,17 +31,17 @@ const LEGAL_CONTENT: Record<LegalLocale, LegalBundle> = {
         {
           title: '1. Verantwortlicher und Kontakt',
           paragraphs: [
-            'Verantwortlicher fuer die Datenverarbeitung ist die im Impressum genannte Person bzw. Stelle.',
-            'Bei Fragen zum Datenschutz kannst du uns ueber die im Impressum angegebene E-Mail-Adresse oder ueber das Support-Formular in den Einstellungen kontaktieren.',
+            'Verantwortlicher für die Datenverarbeitung ist die im Impressum genannte Person bzw. Stelle.',
+            'Bei Fragen zum Datenschutz kannst du uns über die im Impressum angegebene E-Mail-Adresse oder über das Support-Formular in den Einstellungen kontaktieren.',
           ],
         },
         {
           title: '2. Welche Daten wir verarbeiten',
           bullets: [
             'Konto- und Profildaten: E-Mail-Adresse, optional Anzeigename, Kontostatus, Zeitstempel.',
-            'Authentifizierungsdaten: gehashte Passwoerter, Access-/Refresh-Token, OAuth- und Session-Metadaten.',
+            'Authentifizierungsdaten: gehashte Passwörter, Access-/Refresh-Token, OAuth- und Session-Metadaten.',
             'Social-Login-Daten: Provider, Provider-ID, verifizierte E-Mail (z. B. Google, GitHub, Apple via Supabase).',
-            'Nutzungs- und Inhaltsdaten: Trainings-/Gesundheits-/Ernaehrungseintraege, daraus berechnete Projektionen und zugehoerige Metadaten.',
+            'Nutzungs- und Inhaltsdaten: Trainings-/Gesundheits-/Ernährungseinträge, daraus berechnete Projektionen und zugehörige Metadaten.',
             'Access-Request-Daten: E-Mail, optional Name und Kontext.',
             'Supportdaten: Kategorie, Nachricht, Absenderadresse.',
             'Technische Daten: Spracheinstellung, sicherheitsrelevante Log- und Zugriffsdaten.',
@@ -50,85 +50,85 @@ const LEGAL_CONTENT: Record<LegalLocale, LegalBundle> = {
         {
           title: '3. Zwecke und Rechtsgrundlagen (Art. 6 DSGVO)',
           bullets: [
-            'Vertragserfuellung (Art. 6 Abs. 1 lit. b): Kontoanlage, Login, Bereitstellung der Web-App und API-Funktionen.',
+            'Vertragserfüllung (Art. 6 Abs. 1 lit. b): Kontoanlage, Login, Bereitstellung der Web-App und API-Funktionen.',
             'Sicherheit und Missbrauchsabwehr (Art. 6 Abs. 1 lit. f): Rate-Limiting, Session-Schutz, Token-Widerruf, technische Fehleranalyse.',
             'Kommunikation und Support (Art. 6 Abs. 1 lit. b und f): Bearbeitung von Anfragen und Service-Nachrichten.',
             'Anonymisierte Lern- und Verbesserungsprozesse (Art. 6 Abs. 1 lit. a und/oder b): sofern und soweit im jeweiligen Produktmodus vorgesehen.',
-            'Besondere Kategorien personenbezogener Daten (Gesundheitsbezug, Art. 9 DSGVO): Verarbeitung nur bei ausdruecklicher Einwilligung gemaess Art. 9 Abs. 2 lit. a DSGVO.',
-            'Erfuellung rechtlicher Pflichten (Art. 6 Abs. 1 lit. c), sofern einschlaegig.',
+            'Besondere Kategorien personenbezogener Daten (Gesundheitsbezug, Art. 9 DSGVO): Verarbeitung nur bei ausdrücklicher Einwilligung gemäß Art. 9 Abs. 2 lit. a DSGVO.',
+            'Erfüllung rechtlicher Pflichten (Art. 6 Abs. 1 lit. c), sofern einschlägig.',
           ],
         },
         {
           title: '4. Registrierung, Login und Kontofunktionen',
           paragraphs: [
-            'Bei der Registrierung verarbeiten wir E-Mail, Passwort (nur als Hash), optional Anzeigename, Invite-Informationen, die explizite Art.-9-Einwilligung fuer gesundheitsbezogene Daten sowie ggf. die Zustimmung zur anonymisierten Datennutzung im Early-Access-Kontext.',
-            'Ohne aktive Art.-9-Einwilligung koennen gesundheitsbezogene Trainings-, Recovery-, Schlaf- und Schmerz-Events nicht gespeichert werden.',
-            'Bei Passwort-Reset werden zeitlich begrenzte Reset-Token verwendet (derzeit 60 Minuten gueltig). Beim Zuruecksetzen werden bestehende Sessions/Tokens widerrufen.',
-            'Bei Kontoloeschung wird dein Konto zunaechst deaktiviert; die endgueltige Loeschung ist derzeit nach einer Schonfrist von 30 Tagen vorgesehen.',
+            'Bei der Registrierung verarbeiten wir E-Mail, Passwort (nur als Hash), optional Anzeigename, Invite-Informationen, die explizite Art.-9-Einwilligung für gesundheitsbezogene Daten sowie ggf. die Zustimmung zur anonymisierten Datennutzung im Early-Access-Kontext.',
+            'Ohne aktive Art.-9-Einwilligung können gesundheitsbezogene Trainings-, Recovery-, Schlaf- und Schmerz-Events nicht gespeichert werden.',
+            'Bei Passwort-Reset werden zeitlich begrenzte Reset-Token verwendet (derzeit 60 Minuten gültig). Beim Zurücksetzen werden bestehende Sessions/Tokens widerrufen.',
+            'Bei Kontolöschung wird dein Konto zunächst deaktiviert; die endgültige Löschung ist derzeit nach einer Schonfrist von 30 Tagen vorgesehen.',
           ],
         },
         {
           title: '5. Social Login (Google, GitHub, Apple)',
           paragraphs: [
-            'Wenn du Social Login nutzt, pruefen wir den bereitgestellten Session-Token ueber Supabase und uebernehmen nur die fuer Anmeldung/Verknuepfung erforderlichen Identitaetsdaten.',
-            'Es werden keine Passwoerter der Social-Provider bei uns gespeichert. Wir speichern nur die fuer die Kontoverknuepfung notwendigen Kennungen.',
+            'Wenn du Social Login nutzt, prüfen wir den bereitgestellten Session-Token über Supabase und übernehmen nur die für Anmeldung/Verknüpfung erforderlichen Identitätsdaten.',
+            'Es werden keine Passwörter der Social-Provider bei uns gespeichert. Wir speichern nur die für die Kontoverknüpfung notwendigen Kennungen.',
           ],
         },
         {
           title: '6. E-Mail-Kommunikation',
           paragraphs: [
-            'Fuer transaktionale E-Mails (z. B. Zugangseinladung, Passwort-Reset, Kontaktformular) nutzen wir derzeit Resend als Versanddienstleister.',
-            'Dabei werden insbesondere Empfaengeradresse, Nachrichteninhalt und technische Versanddaten verarbeitet.',
+            'Für transaktionale E-Mails (z. B. Zugangseinladung, Passwort-Reset, Kontaktformular) nutzen wir derzeit Resend als Versanddienstleister.',
+            'Dabei werden insbesondere Empfängeradresse, Nachrichteninhalt und technische Versanddaten verarbeitet.',
           ],
         },
         {
-          title: '7. Cookies, Local Storage und aehnliche Technologien',
+          title: '7. Cookies, Local Storage und ähnliche Technologien',
           bullets: [
-            'NEXT_LOCALE (Cookie): Speicherung der gewaehlten Sprache (technisch notwendig fuer konsistente Lokalisierung).',
+            'NEXT_LOCALE (Cookie): Speicherung der gewählten Sprache (technisch notwendig für konsistente Lokalisierung).',
             'kura_rt (Local Storage): Refresh-Token zur Aufrechterhaltung der Sitzung.',
-            'kura_setup_seen (Local Storage): Merker fuer den Onboarding-Status.',
-            'kura_oauth_session (HttpOnly Cookie im OAuth-Kontext): Session-Unterstuetzung fuer OAuth-Autorisierung.',
+            'kura_setup_seen (Local Storage): Merker für den Onboarding-Status.',
+            'kura_oauth_session (HttpOnly Cookie im OAuth-Kontext): Session-Unterstützung für OAuth-Autorisierung.',
             'Aktuell verwenden wir keine Marketing- oder Werbetracker im Web-Frontend.',
           ],
         },
         {
           title: '8. Zugriffsdaten und Sicherheitstelemetrie',
           paragraphs: [
-            'Zur Stabilitaet und Sicherheit protokollieren wir API-Zugriffe (u. a. Methode, Pfad, Statuscode, Antwortzeit, ggf. Benutzer-ID).',
-            'IP-basierte Informationen koennen fuer Rate-Limits und Missbrauchsabwehr technisch verarbeitet werden.',
+            'Zur Stabilität und Sicherheit protokollieren wir API-Zugriffe (u. a. Methode, Pfad, Statuscode, Antwortzeit, ggf. Benutzer-ID).',
+            'IP-basierte Informationen können für Rate-Limits und Missbrauchsabwehr technisch verarbeitet werden.',
           ],
         },
         {
-          title: '9. Empfaenger und Auftragsverarbeiter',
+          title: '9. Empfänger und Auftragsverarbeiter',
           bullets: [
-            'Supabase (Region EU West / eu-west-1, Projekt-Ref slawzzhovquintrsmfby): Hosting fuer Auth-/Datenbankfunktionen als Auftragsverarbeiter.',
-            'Resend (USA): Versand transaktionaler E-Mails (z. B. Einladungen, Passwort-Reset, Support-Bestaetigungen) als Auftragsverarbeiter.',
-            'OpenAI API (optional, USA): nur falls Embeddings-Funktionen aktiviert sind; Verarbeitung als Auftragsverarbeiter gemaess separatem Vertrag.',
+            'Supabase (Region EU West / eu-west-1, Projekt-Ref slawzzhovquintrsmfby): Hosting für Auth-/Datenbankfunktionen als Auftragsverarbeiter.',
+            'Resend (USA): Versand transaktionaler E-Mails (z. B. Einladungen, Passwort-Reset, Support-Bestätigungen) als Auftragsverarbeiter.',
+            'OpenAI API (optional, USA): nur falls Embeddings-Funktionen aktiviert sind; Verarbeitung als Auftragsverarbeiter gemäß separatem Vertrag.',
             'Interne Administratoren und Support nur im erforderlichen Umfang (Need-to-know-Prinzip, mit Auditierung).',
-            'Massgeblich ist die versionierte Auftragsverarbeiter-/Drittlandliste in docs/legal/processors-and-transfers.md.',
+            'Maßgeblich ist die versionierte Auftragsverarbeiter-/Drittlandliste in docs/legal/processors-and-transfers.md.',
           ],
         },
         {
-          title: '10. Drittlanduebermittlungen',
+          title: '10. Drittlandübermittlungen',
           paragraphs: [
-            'Supabase wird produktiv in der EU-Region eu-west-1 betrieben. Fuer Resend (USA) und optional OpenAI (USA) koennen Drittlanduebermittlungen erfolgen.',
-            'Drittlanduebermittlungen erfolgen nur unter den gesetzlichen Voraussetzungen, insbesondere auf Basis von EU-Standardvertragsklauseln (SCC) und Auftragsverarbeitungsvertraegen.',
+            'Supabase wird produktiv in der EU-Region eu-west-1 betrieben. Für Resend (USA) und optional OpenAI (USA) können Drittlandübermittlungen erfolgen.',
+            'Drittlandübermittlungen erfolgen nur unter den gesetzlichen Voraussetzungen, insbesondere auf Basis von EU-Standardvertragsklauseln (SCC) und Auftragsverarbeitungsverträgen.',
           ],
         },
         {
           title: '11. Speicherdauer',
           bullets: [
-            'Kontodaten: bis zur Kontoloeschung bzw. bis zum Ablauf gesetzlicher Aufbewahrungspflichten.',
-            'Kontoloeschung: derzeit 30 Tage Schonfrist nach Deaktivierung; anschliessend Hard-Delete der zugeordneten Daten gemaess Systemlogik.',
-            'Invite-Token: derzeit 7 Tage gueltig.',
-            'Passwort-Reset-Token: derzeit 60 Minuten gueltig.',
-            'API-Schluessel: bis Widerruf oder Kontoloeschung.',
+            'Kontodaten: bis zur Kontolöschung bzw. bis zum Ablauf gesetzlicher Aufbewahrungspflichten.',
+            'Kontolöschung: derzeit 30 Tage Schonfrist nach Deaktivierung; anschließend Hard-Delete der zugeordneten Daten gemäß Systemlogik.',
+            'Invite-Token: derzeit 7 Tage gültig.',
+            'Passwort-Reset-Token: derzeit 60 Minuten gültig.',
+            'API-Schlüssel: bis Widerruf oder Kontolöschung.',
             'API-Zugriffslogs (api_access_log): 30 Tage.',
             'Security-Abuse-Telemetrie (security_abuse_telemetry): 90 Tage.',
             'Kill-Switch-Audit (security_kill_switch_audit): 365 Tage.',
             'Support-Zugriffsaudit (support_access_audit): 730 Tage (24 Monate).',
             'Ablauf-/genutzte Passwort-Reset-Token: 30 Tage.',
-            'Log-Loeschfristen werden technisch ueber einen wiederkehrenden Maintenance-Job durchgesetzt und in log_retention_runs auditiert.',
+            'Log-Löschfristen werden technisch über einen wiederkehrenden Maintenance-Job durchgesetzt und in log_retention_runs auditiert.',
           ],
         },
         {
@@ -136,29 +136,29 @@ const LEGAL_CONTENT: Record<LegalLocale, LegalBundle> = {
           bullets: [
             'Auskunft (Art. 15 DSGVO)',
             'Berichtigung (Art. 16 DSGVO)',
-            'Loeschung (Art. 17 DSGVO)',
-            'Einschraenkung der Verarbeitung (Art. 18 DSGVO)',
-            'Datenuebertragbarkeit (Art. 20 DSGVO)',
+            'Löschung (Art. 17 DSGVO)',
+            'Einschränkung der Verarbeitung (Art. 18 DSGVO)',
+            'Datenübertragbarkeit (Art. 20 DSGVO)',
             'Widerspruch (Art. 21 DSGVO) bei Verarbeitungen nach Art. 6 Abs. 1 lit. f',
-            'Widerruf erteilter Einwilligungen mit Wirkung fuer die Zukunft (Art. 7 Abs. 3 DSGVO)',
+            'Widerruf erteilter Einwilligungen mit Wirkung für die Zukunft (Art. 7 Abs. 3 DSGVO)',
           ],
         },
         {
           title: '13. Beschwerderecht',
           paragraphs: [
-            'Du hast das Recht, dich bei einer Datenschutz-Aufsichtsbehoerde zu beschweren, insbesondere in dem Mitgliedstaat deines gewoehnlichen Aufenthalts, deines Arbeitsplatzes oder des Orts des mutmasslichen Verstosses (Art. 77 DSGVO).',
+            'Du hast das Recht, dich bei einer Datenschutz-Aufsichtsbehörde zu beschweren, insbesondere in dem Mitgliedstaat deines gewöhnlichen Aufenthalts, deines Arbeitsplatzes oder des Orts des mutmaßlichen Verstoßes (Art. 77 DSGVO).',
           ],
         },
         {
           title: '14. Datensicherheit',
           paragraphs: [
-            'Wir setzen angemessene technische und organisatorische Massnahmen ein, insbesondere rollenbasierten Zugriff, Token-Widerruf, Hashing sensibler Geheimnisse, Transportverschluesselung sowie sicherheitsbezogene Audits und Logging.',
+            'Wir setzen angemessene technische und organisatorische Maßnahmen ein, insbesondere rollenbasierten Zugriff, Token-Widerruf, Hashing sensibler Geheimnisse, Transportverschlüsselung sowie sicherheitsbezogene Audits und Logging.',
           ],
         },
         {
           title: '15. Aktualisierung dieser Hinweise',
           paragraphs: [
-            'Wir koennen diese Datenschutzhinweise anpassen, wenn sich Funktionen, Rechtslage oder Datenverarbeitungen aendern. Die jeweils aktuelle Version ist in der Web-App abrufbar.',
+            'Wir können diese Datenschutzhinweise anpassen, wenn sich Funktionen, Rechtslage oder Datenverarbeitungen ändern. Die jeweils aktuelle Version ist in der Web-App abrufbar.',
           ],
         },
       ],
@@ -166,68 +166,68 @@ const LEGAL_CONTENT: Record<LegalLocale, LegalBundle> = {
     terms: {
       title: 'Nutzungsbedingungen',
       subtitle:
-        'Diese Bedingungen regeln die Nutzung der Kura-Web-Anwendung, der zugehoerigen API-Zugaenge und Early-Access-Funktionen.',
+        'Diese Bedingungen regeln die Nutzung der Kura-Web-Anwendung, der zugehörigen API-Zugänge und Early-Access-Funktionen.',
       updatedLabel: 'Stand',
       updatedAt: '16. Februar 2026',
       sections: [
         {
           title: '1. Anbieter und Geltungsbereich',
           paragraphs: [
-            'Vertragspartner fuer die Nutzung von Kura ist die im Impressum genannte Person bzw. Stelle.',
-            'Diese Bedingungen gelten fuer die Nutzung der Web-App, der Kontofunktionen sowie der bereitgestellten API-Zugaenge.',
+            'Vertragspartner für die Nutzung von Kura ist die im Impressum genannte Person bzw. Stelle.',
+            'Diese Bedingungen gelten für die Nutzung der Web-App, der Kontofunktionen sowie der bereitgestellten API-Zugänge.',
           ],
         },
         {
           title: '2. Leistungsbeschreibung und Early Access',
           paragraphs: [
-            'Kura ist eine softwaregestuetzte Plattform zur strukturierten Erfassung und Auswertung von Trainingsdaten fuer die Zusammenarbeit mit KI-Agenten.',
-            'Der Dienst kann ganz oder teilweise als Early-Access/Beta angeboten werden. In diesem Modus koennen Funktionen unvollstaendig sein, sich kurzfristig aendern oder entfallen.',
+            'Kura ist eine softwaregestützte Plattform zur strukturierten Erfassung und Auswertung von Trainingsdaten für die Zusammenarbeit mit KI-Agenten.',
+            'Der Dienst kann ganz oder teilweise als Early-Access/Beta angeboten werden. In diesem Modus können Funktionen unvollständig sein, sich kurzfristig ändern oder entfallen.',
           ],
         },
         {
           title: '3. Registrierung und Konto',
           bullets: [
-            'Fuer wesentliche Funktionen ist ein Nutzerkonto erforderlich.',
-            'Du musst bei der Registrierung wahrheitsgemaesse Angaben machen und Zugangsdaten vertraulich behandeln.',
-            'Fuer die Verarbeitung gesundheitsbezogener Trainings-/Recoverydaten ist eine ausdrueckliche Einwilligung erforderlich; ohne Einwilligung sind entsprechende Funktionen eingeschraenkt.',
-            'Einladungs- oder Zugangsgates koennen je nach Betriebsmodus Voraussetzung fuer die Registrierung sein.',
+            'Für wesentliche Funktionen ist ein Nutzerkonto erforderlich.',
+            'Du musst bei der Registrierung wahrheitsgemäße Angaben machen und Zugangsdaten vertraulich behandeln.',
+            'Für die Verarbeitung gesundheitsbezogener Trainings-/Recoverydaten ist eine ausdrückliche Einwilligung erforderlich; ohne Einwilligung sind entsprechende Funktionen eingeschränkt.',
+            'Einladungs- oder Zugangsgates können je nach Betriebsmodus Voraussetzung für die Registrierung sein.',
           ],
         },
         {
-          title: '4. Login, API-Schluessel und Sicherheit',
+          title: '4. Login, API-Schlüssel und Sicherheit',
           bullets: [
-            'Du bist fuer alle Aktivitaeten verantwortlich, die ueber dein Konto oder deine API-Schluessel erfolgen.',
-            'API-Schluessel muessen sicher gespeichert werden und duerfen nicht unbefugt weitergegeben werden.',
-            'Bei Verdacht auf Missbrauch musst du Zugangsdaten unverzueglich aendern bzw. Schluessel widerrufen und uns informieren.',
+            'Du bist für alle Aktivitäten verantwortlich, die über dein Konto oder deine API-Schlüssel erfolgen.',
+            'API-Schlüssel müssen sicher gespeichert werden und dürfen nicht unbefugt weitergegeben werden.',
+            'Bei Verdacht auf Missbrauch musst du Zugangsdaten unverzüglich ändern bzw. Schlüssel widerrufen und uns informieren.',
           ],
         },
         {
-          title: '5. Zulaessige Nutzung',
+          title: '5. Zulässige Nutzung',
           bullets: [
             'Die Nutzung muss mit geltendem Recht vereinbar sein.',
-            'Untersagt sind insbesondere missbraeuchliche, sicherheitsgefaehrdende, automatisiert-angreifende oder rechtsverletzende Nutzungen.',
+            'Untersagt sind insbesondere missbräuchliche, sicherheitsgefährdende, automatisiert-angreifende oder rechtsverletzende Nutzungen.',
             'Untersagt sind auch Versuche, Schutzmechanismen zu umgehen oder unberechtigten Zugriff auf Systeme und Daten zu erlangen.',
           ],
         },
         {
           title: '6. Inhalte und Verantwortlichkeit',
           paragraphs: [
-            'Du bleibst fuer die von dir bereitgestellten Inhalte verantwortlich. Stelle sicher, dass du berechtigt bist, diese zu verarbeiten und an Kura zu uebermitteln.',
-            'Bitte gib nur solche Daten ein, deren Verarbeitung fuer deinen Nutzungszweck erforderlich und rechtlich zulaessig ist.',
+            'Du bleibst für die von dir bereitgestellten Inhalte verantwortlich. Stelle sicher, dass du berechtigt bist, diese zu verarbeiten und an Kura zu übermitteln.',
+            'Bitte gib nur solche Daten ein, deren Verarbeitung für deinen Nutzungszweck erforderlich und rechtlich zulässig ist.',
           ],
         },
         {
           title: '7. Datennutzung zur Produktverbesserung',
           paragraphs: [
-            'Soweit vorgesehen, koennen anonymisierte oder aggregierte Nutzungs- und Trainingsdaten fuer Qualitaetssicherung, Statistik und Weiterentwicklung verwendet werden.',
+            'Soweit vorgesehen, können anonymisierte oder aggregierte Nutzungs- und Trainingsdaten für Qualitätssicherung, Statistik und Weiterentwicklung verwendet werden.',
             'Details zur Datenverarbeitung findest du in den Datenschutzhinweisen.',
           ],
         },
         {
-          title: '8. Verfuegbarkeit und Aenderungen',
+          title: '8. Verfügbarkeit und Änderungen',
           paragraphs: [
-            'Wir bemuehen uns um einen moeglichst unterbrechungsfreien Betrieb, garantieren aber keine jederzeitige Verfuegbarkeit.',
-            'Wir duerfen Funktionen, Schnittstellen, Sicherheitsmassnahmen und Leistungsumfang anpassen, soweit dies aus technischen, rechtlichen oder produktbezogenen Gruenden erforderlich ist.',
+            'Wir bemühen uns um einen möglichst unterbrechungsfreien Betrieb, garantieren aber keine jederzeitige Verfügbarkeit.',
+            'Wir dürfen Funktionen, Schnittstellen, Sicherheitsmaßnahmen und Leistungsumfang anpassen, soweit dies aus technischen, rechtlichen oder produktbezogenen Gründen erforderlich ist.',
           ],
         },
         {
@@ -241,44 +241,44 @@ const LEGAL_CONTENT: Record<LegalLocale, LegalBundle> = {
           title: '10. Entgelte',
           paragraphs: [
             'Sofern nicht anders ausgewiesen, kann der Dienst im jeweiligen Zeitraum kostenfrei bereitgestellt werden (z. B. Early Access).',
-            'Fuer spaetere kostenpflichtige Angebote gelten die jeweils vor Vertragsschluss angegebenen Preise und Bedingungen.',
+            'Für spätere kostenpflichtige Angebote gelten die jeweils vor Vertragsschluss angegebenen Preise und Bedingungen.',
           ],
         },
         {
-          title: '11. Laufzeit, Kuendigung und Kontoloeschung',
+          title: '11. Laufzeit, Kündigung und Kontolöschung',
           paragraphs: [
-            'Du kannst die Nutzung jederzeit beenden und eine Kontoloeschung veranlassen.',
-            'Nach Loeschanforderung kann eine technische Schonfrist gelten (derzeit 30 Tage), bevor die endgueltige Loeschung erfolgt.',
-            'Wir duerfen Konten sperren oder kuendigen, wenn erhebliche Verstoesse gegen diese Bedingungen vorliegen oder Sicherheitsrisiken bestehen.',
+            'Du kannst die Nutzung jederzeit beenden und eine Kontolöschung veranlassen.',
+            'Nach Löschanforderung kann eine technische Schonfrist gelten (derzeit 30 Tage), bevor die endgültige Löschung erfolgt.',
+            'Wir dürfen Konten sperren oder kündigen, wenn erhebliche Verstöße gegen diese Bedingungen vorliegen oder Sicherheitsrisiken bestehen.',
           ],
         },
         {
           title: '12. Geistiges Eigentum',
           paragraphs: [
             'Alle Rechte an der Plattform, Software, Marken, Dokumentation und nicht von dir stammenden Inhalten verbleiben bei uns bzw. den jeweiligen Rechteinhabern.',
-            'Du erhaeltst ein nicht ausschliessliches, nicht uebertragbares Recht zur Nutzung im Rahmen dieser Bedingungen.',
+            'Du erhältst ein nicht ausschließliches, nicht übertragbares Recht zur Nutzung im Rahmen dieser Bedingungen.',
           ],
         },
         {
           title: '13. Haftung',
           paragraphs: [
-            'Wir haften unbeschraenkt bei Vorsatz und grober Fahrlaessigkeit sowie bei Verletzung von Leben, Koerper oder Gesundheit.',
-            'Bei leichter Fahrlaessigkeit haften wir nur bei Verletzung wesentlicher Vertragspflichten und begrenzt auf den vertragstypischen, vorhersehbaren Schaden.',
-            'Zwingende gesetzliche Haftungsregeln (insbesondere nach EU-Verbraucherrecht) bleiben unberuehrt.',
+            'Wir haften unbeschränkt bei Vorsatz und grober Fahrlässigkeit sowie bei Verletzung von Leben, Körper oder Gesundheit.',
+            'Bei leichter Fahrlässigkeit haften wir nur bei Verletzung wesentlicher Vertragspflichten und begrenzt auf den vertragstypischen, vorhersehbaren Schaden.',
+            'Zwingende gesetzliche Haftungsregeln (insbesondere nach EU-Verbraucherrecht) bleiben unberührt.',
           ],
         },
         {
           title: '14. Rechtswahl und Gerichtsstand',
           paragraphs: [
             'Es gilt deutsches Recht unter Ausschluss des UN-Kaufrechts.',
-            'Fuer Verbraucherinnen und Verbraucher in der EU bleiben zwingende Verbraucherschutzvorschriften des Wohnsitzstaates unberuehrt.',
-            'Ist der Nutzer Kaufmann, juristische Person des oeffentlichen Rechts oder oeffentlich-rechtliches Sondervermoegen, ist Gerichtsstand Muenchen, soweit gesetzlich zulaessig.',
+            'Für Verbraucherinnen und Verbraucher in der EU bleiben zwingende Verbraucherschutzvorschriften des Wohnsitzstaates unberührt.',
+            'Ist der Nutzer Kaufmann, juristische Person des öffentlichen Rechts oder öffentlich-rechtliches Sondervermögen, ist Gerichtsstand München, soweit gesetzlich zulässig.',
           ],
         },
         {
-          title: '15. Aenderungen dieser Bedingungen',
+          title: '15. Änderungen dieser Bedingungen',
           paragraphs: [
-            'Wir koennen diese Bedingungen mit Wirkung fuer die Zukunft aendern, wenn dies aus sachlichen Gruenden erforderlich ist (z. B. Funktions- oder Rechtsaenderungen).',
+            'Wir können diese Bedingungen mit Wirkung für die Zukunft ändern, wenn dies aus sachlichen Gründen erforderlich ist (z. B. Funktions- oder Rechtsänderungen).',
             'Die jeweils aktuelle Fassung ist in der Web-App abrufbar.',
           ],
         },

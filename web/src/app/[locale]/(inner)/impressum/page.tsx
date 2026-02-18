@@ -3,8 +3,8 @@ import styles from './impressum.module.css';
 
 const CONTACT_INFO = {
   name: 'Jonas Zimmermann',
-  street: 'Faeustlestr. 3',
-  city: '80339 Muenchen',
+  street: 'Fäustlestr. 3',
+  city: '80339 München',
   email: 'jzimmermann.dev@gmail.com',
 };
 
