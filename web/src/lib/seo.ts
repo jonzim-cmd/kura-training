@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { routing } from '@/i18n/routing';
 
-export const BASE_URL = 'https://withkura.com';
+export const BASE_URL = 'https://www.withkura.com';
 
 const LOCALIZED_PATHS: Record<string, Record<string, string>> = {
   '/datenschutz': {
