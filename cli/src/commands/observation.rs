@@ -31,6 +31,8 @@ pub enum ObservationDraftCommands {
     Promote(ObservationDraftPromoteArgs),
     /// Resolve draft as durable observation and retract the draft
     Resolve(ObservationDraftResolveArgs),
+    /// Dismiss non-actionable draft and retract it
+    Dismiss(ObservationDraftDismissArgs),
 }
 
 #[derive(Args)]
@@ -113,6 +115,31 @@ pub struct ObservationDraftResolveArgs {
     pub retract_reason: Option<String>,
 }
 
+#[derive(Args)]
+pub struct ObservationDraftDismissArgs {
+    /// Draft observation event id
+    #[arg(long)]
+    pub id: Uuid,
+    /// Optional dismiss reason (e.g. duplicate, test, noise)
+    #[arg(long)]
+    pub reason: Option<String>,
+    /// Optional metadata.source override
+    #[arg(long)]
+    pub source: Option<String>,
+    /// Optional metadata.agent override
+    #[arg(long)]
+    pub agent: Option<String>,
+    /// Optional metadata.device override
+    #[arg(long)]
+    pub device: Option<String>,
+    /// Optional metadata.session_id override
+    #[arg(long)]
+    pub session_id: Option<String>,
+    /// Optional metadata.idempotency_key override
+    #[arg(long)]
+    pub idempotency_key: Option<String>,
+}
+
 pub async fn run(api_url: &str, token: Option<&str>, command: ObservationCommands) -> i32 {
     match command {
         ObservationCommands::Draft { command } => draft(api_url, token, command).await,
@@ -125,6 +152,7 @@ async fn draft(api_url: &str, token: Option<&str>, command: ObservationDraftComm
         ObservationDraftCommands::Show { id } => show_draft(api_url, token, id).await,
         ObservationDraftCommands::Promote(args) => promote_draft(api_url, token, args).await,
         ObservationDraftCommands::Resolve(args) => resolve_draft(api_url, token, args).await,
+        ObservationDraftCommands::Dismiss(args) => dismiss_draft(api_url, token, args).await,
     }
 }
 
@@ -305,6 +333,52 @@ async fn resolve_draft(
         &path,
         token,
         Some(body),
+        &[],
+        &[],
+        false,
+        false,
+    )
+    .await
+}
+
+async fn dismiss_draft(
+    api_url: &str,
+    token: Option<&str>,
+    args: ObservationDraftDismissArgs,
+) -> i32 {
+    let path = format!("/v1/agent/observation-drafts/{}/dismiss", args.id);
+    let mut body = serde_json::Map::new();
+    if let Some(reason) = args.reason {
+        body.insert("reason".to_string(), json!(reason));
+    }
+    if let Some(source) = args.source {
+        body.insert("source".to_string(), json!(source));
+    }
+    if let Some(agent) = args.agent {
+        body.insert("agent".to_string(), json!(agent));
+    }
+    if let Some(device) = args.device {
+        body.insert("device".to_string(), json!(device));
+    }
+    if let Some(session_id) = args.session_id {
+        body.insert("session_id".to_string(), json!(session_id));
+    }
+    if let Some(idempotency_key) = args.idempotency_key {
+        body.insert("idempotency_key".to_string(), json!(idempotency_key));
+    }
+
+    let request_body = if body.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Object(body))
+    };
+
+    api_request(
+        api_url,
+        reqwest::Method::POST,
+        &path,
+        token,
+        request_body,
         &[],
         &[],
         false,

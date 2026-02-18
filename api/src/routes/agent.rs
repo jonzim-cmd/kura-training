@@ -44,6 +44,10 @@ pub fn router() -> Router<AppState> {
             post(resolve_observation_draft_as_observation),
         )
         .route(
+            "/v1/agent/observation-drafts/{observation_id}/dismiss",
+            post(dismiss_observation_draft),
+        )
+        .route(
             "/v1/agent/evidence/event/{event_id}",
             get(get_event_evidence_lineage),
         )
@@ -465,6 +469,30 @@ pub struct AgentObservationDraftResolveRequest {
     pub idempotency_key: Option<String>,
     #[serde(default)]
     pub retract_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, utoipa::ToSchema)]
+pub struct AgentObservationDraftDismissRequest {
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub device: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentObservationDraftDismissResponse {
+    pub schema_version: String,
+    pub draft_observation_id: Uuid,
+    pub retraction_event_id: Uuid,
+    pub dismissal_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -1915,6 +1943,77 @@ fn extract_action_required(user_profile: &ProjectionResponse) -> Option<AgentAct
     None
 }
 
+fn derive_draft_hygiene_status_from_context(
+    open_count: i64,
+    oldest_draft_age_hours: Option<f64>,
+) -> String {
+    let oldest_age = oldest_draft_age_hours.unwrap_or(0.0);
+    if open_count >= DRAFT_REVIEW_BACKLOG_DEGRADED_MIN
+        || oldest_age >= DRAFT_REVIEW_AGE_DEGRADED_HOURS
+    {
+        return "degraded".to_string();
+    }
+    if open_count >= DRAFT_REVIEW_BACKLOG_MONITOR_MIN
+        || oldest_age >= DRAFT_REVIEW_AGE_MONITOR_HOURS
+    {
+        return "monitor".to_string();
+    }
+    "healthy".to_string()
+}
+
+fn draft_hygiene_status_from_quality(quality_health: Option<&ProjectionResponse>) -> String {
+    normalize_quality_label(
+        quality_health
+            .and_then(|projection| projection.projection.data.get("draft_hygiene"))
+            .and_then(|draft_hygiene| draft_hygiene.get("status")),
+    )
+}
+
+fn build_draft_review_action_required(
+    observations_draft: &AgentObservationsDraftContext,
+    quality_health: Option<&ProjectionResponse>,
+) -> Option<AgentActionRequired> {
+    if observations_draft.open_count <= 0 {
+        return None;
+    }
+
+    let status_from_quality = draft_hygiene_status_from_quality(quality_health);
+    let draft_hygiene_status = if status_from_quality == "unknown" {
+        derive_draft_hygiene_status_from_context(
+            observations_draft.open_count,
+            observations_draft.oldest_draft_age_hours,
+        )
+    } else {
+        status_from_quality
+    };
+    let oldest_age_label = observations_draft
+        .oldest_draft_age_hours
+        .map(|age| format!("{age:.1}h"))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    Some(AgentActionRequired {
+        action: "draft_review".to_string(),
+        detail: format!(
+            "Open persist-intent drafts require review: {} open (oldest {}). Draft hygiene is {}. \
+Review oldest-first and choose one closure path: duplicate/test/noise => POST \
+/v1/agent/observation-drafts/{{observation_id}}/dismiss (optional body {{\"reason\":\"duplicate\"}}); \
+informal note should stay observation => POST \
+/v1/agent/observation-drafts/{{observation_id}}/resolve-as-observation with at least {{\"dimension\":\"competition_note\"}}; \
+formal domain event => POST /v1/agent/observation-drafts/{{observation_id}}/promote with \
+{{\"event_type\":\"set.logged\",\"data\":{{...}}}}. Keep drafts open only with an explicit blocker.",
+            observations_draft.open_count, oldest_age_label, draft_hygiene_status
+        ),
+    })
+}
+
+fn select_action_required(
+    primary: Option<AgentActionRequired>,
+    observations_draft: &AgentObservationsDraftContext,
+    quality_health: Option<&ProjectionResponse>,
+) -> Option<AgentActionRequired> {
+    primary.or_else(|| build_draft_review_action_required(observations_draft, quality_health))
+}
+
 fn agent_brief_workflow_state(user_profile: &ProjectionResponse) -> AgentBriefWorkflowState {
     let workflow = user_profile
         .projection
@@ -1991,6 +2090,20 @@ fn agent_brief_available_sections() -> Vec<AgentBriefSectionRef> {
             purpose: "User-spezifische Regeln/Custom-Projections.".to_string(),
             load_via: "kura_projection_list(projection_type=custom)".to_string(),
         },
+        AgentBriefSectionRef {
+            section: "system_config.conventions.observation_draft_review_loop_v1".to_string(),
+            purpose: "Persist-Intent-Drafts mit kurzem Review gezielt schliessen.".to_string(),
+            load_via:
+                "kura_discover_debug(include_system_config=true) oder resource kura://system/config"
+                    .to_string(),
+        },
+        AgentBriefSectionRef {
+            section: "system_config.conventions.observation_draft_dismissal_v1".to_string(),
+            purpose: "Duplikate/Test-Drafts ohne Datenverschmutzung sauber verwerfen.".to_string(),
+            load_via:
+                "kura_discover_debug(include_system_config=true) oder resource kura://system/config"
+                    .to_string(),
+        },
     ]
 }
 
@@ -1998,6 +2111,7 @@ fn build_agent_brief(
     action_required: Option<&AgentActionRequired>,
     user_profile: &ProjectionResponse,
     system: Option<&SystemConfigResponse>,
+    observations_draft: Option<&AgentObservationsDraftContext>,
 ) -> AgentBrief {
     let workflow_state = agent_brief_workflow_state(user_profile);
     let mut coverage_gaps = if workflow_state.onboarding_closed {
@@ -2018,6 +2132,14 @@ fn build_agent_brief(
     }
     if !workflow_state.onboarding_closed && !coverage_gaps.is_empty() {
         must_cover_intents.push("micro_onboarding_next_gap".to_string());
+    }
+    if observations_draft
+        .map(|drafts| drafts.open_count > 0)
+        .unwrap_or(false)
+    {
+        must_cover_intents.push("review_open_drafts".to_string());
+        must_cover_intents.push("close_closable_drafts".to_string());
+        must_cover_intents.push("state_blocker_for_remaining_drafts".to_string());
     }
     must_cover_intents.sort();
     must_cover_intents.dedup();
@@ -2509,6 +2631,37 @@ async fn fetch_draft_observations(
               AND r.event_type = 'event.retracted'
               AND r.data->>'retracted_event_id' = e.id::text
           )
+        ORDER BY e.timestamp ASC, e.id ASC
+        LIMIT $3
+        "#,
+    )
+    .bind(user_id)
+    .bind(format!("{OBSERVATION_DRAFT_DIMENSION_PREFIX}%"))
+    .bind(limit.max(1))
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows)
+}
+
+async fn fetch_recent_draft_observations(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+    limit: i64,
+) -> Result<Vec<DraftObservationEventRow>, AppError> {
+    let rows = sqlx::query_as::<_, DraftObservationEventRow>(
+        r#"
+        SELECT e.id, e.timestamp, e.data, e.metadata
+        FROM events e
+        WHERE e.user_id = $1
+          AND e.event_type = 'observation.logged'
+          AND e.data->>'dimension' LIKE $2
+          AND NOT EXISTS (
+            SELECT 1
+            FROM events r
+            WHERE r.user_id = e.user_id
+              AND r.event_type = 'event.retracted'
+              AND r.data->>'retracted_event_id' = e.id::text
+          )
         ORDER BY e.timestamp DESC, e.id DESC
         LIMIT $3
         "#,
@@ -2631,6 +2784,12 @@ fn validate_observation_draft_resolve_dimension(raw_dimension: &str) -> Result<S
         });
     }
     Ok(dimension)
+}
+
+fn normalize_draft_dismiss_reason(raw_reason: Option<&str>) -> String {
+    trim_or_none(raw_reason)
+        .unwrap_or_else(|| "dismissed_non_actionable".to_string())
+        .to_ascii_lowercase()
 }
 
 fn clamp_verify_timeout_ms(value: Option<u64>) -> u64 {
@@ -2839,6 +2998,10 @@ struct RuntimeQualitySignals {
     historical_challenge_rate_pct: f64,
     historical_regret_exceeded_rate_pct: f64,
     historical_save_verified_rate_pct: f64,
+    draft_hygiene_status: String,
+    draft_backlog_open: usize,
+    draft_median_age_hours: f64,
+    draft_resolution_rate_7d: f64,
 }
 
 impl Default for RuntimeQualitySignals {
@@ -2859,6 +3022,10 @@ impl Default for RuntimeQualitySignals {
             historical_challenge_rate_pct: 0.0,
             historical_regret_exceeded_rate_pct: 0.0,
             historical_save_verified_rate_pct: 0.0,
+            draft_hygiene_status: "unknown".to_string(),
+            draft_backlog_open: 0,
+            draft_median_age_hours: 0.0,
+            draft_resolution_rate_7d: 0.0,
         }
     }
 }
@@ -2927,7 +3094,12 @@ const OBSERVATION_DRAFT_LIST_SCHEMA_VERSION: &str = "observation_draft_list.v1";
 const OBSERVATION_DRAFT_DETAIL_SCHEMA_VERSION: &str = "observation_draft_detail.v1";
 const OBSERVATION_DRAFT_PROMOTE_SCHEMA_VERSION: &str = "observation_draft_promote.v1";
 const OBSERVATION_DRAFT_RESOLVE_SCHEMA_VERSION: &str = "observation_draft_resolve.v1";
+const OBSERVATION_DRAFT_DISMISS_SCHEMA_VERSION: &str = "observation_draft_dismiss.v1";
 const OBSERVATION_DRAFT_DIMENSION_PREFIX: &str = "provisional.persist_intent.";
+const DRAFT_REVIEW_BACKLOG_MONITOR_MIN: i64 = 2;
+const DRAFT_REVIEW_BACKLOG_DEGRADED_MIN: i64 = 5;
+const DRAFT_REVIEW_AGE_MONITOR_HOURS: f64 = 8.0;
+const DRAFT_REVIEW_AGE_DEGRADED_HOURS: f64 = 24.0;
 
 fn read_value_string(value: Option<&Value>) -> Option<String> {
     value
@@ -3134,6 +3306,32 @@ fn build_decision_brief(
         push_decision_brief_entry(
             &mut high_impact_decisions,
             "Autonomieumfang und Schreibverhalten konservativ halten, bis Qualität stabilisiert ist.",
+        );
+    }
+    if quality.draft_backlog_open > 0 {
+        push_decision_brief_entry(
+            &mut recent_person_failures,
+            format!(
+                "Persist-Intent-Draft-Backlog offen: {} (median_age_hours={:.1}, resolution_rate_7d={:.1}%).",
+                quality.draft_backlog_open,
+                quality.draft_median_age_hours,
+                quality.draft_resolution_rate_7d
+            ),
+        );
+    }
+    if matches!(
+        quality.draft_hygiene_status.as_str(),
+        "monitor" | "degraded"
+    ) {
+        push_decision_brief_entry(
+            &mut high_impact_decisions,
+            "Open Drafts priorisieren: kurz reviewen und closable Drafts sauber resolve/promote.",
+        );
+    }
+    if quality.draft_backlog_open > 0 && quality.draft_resolution_rate_7d == 0.0 {
+        push_decision_brief_entry(
+            &mut unclear,
+            "Draft-Resolution in den letzten 7 Tagen ist 0%; unklar, ob offene Drafts aktiv abgearbeitet werden.",
         );
     }
 
@@ -3534,6 +3732,21 @@ fn extract_runtime_quality_signals(
     )
     .unwrap_or(0.0)
     .clamp(0.0, 100.0);
+
+    let draft_hygiene = payload.get("draft_hygiene");
+    signals.draft_hygiene_status =
+        normalize_quality_label(draft_hygiene.and_then(|hygiene| hygiene.get("status")));
+    signals.draft_backlog_open =
+        read_value_usize(draft_hygiene.and_then(|hygiene| hygiene.get("backlog_open")))
+            .unwrap_or(0);
+    signals.draft_median_age_hours =
+        read_value_f64(draft_hygiene.and_then(|hygiene| hygiene.get("median_age_hours")))
+            .unwrap_or(0.0)
+            .clamp(0.0, 720.0);
+    signals.draft_resolution_rate_7d =
+        read_value_f64(draft_hygiene.and_then(|hygiene| hygiene.get("resolution_rate_7d")))
+            .unwrap_or(0.0)
+            .clamp(0.0, 100.0);
     signals
 }
 
@@ -5500,13 +5713,22 @@ pub async fn promote_observation_draft(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     Path(observation_id): Path<Uuid>,
-    Json(req): Json<AgentObservationDraftPromoteRequest>,
+    req: Result<Json<AgentObservationDraftPromoteRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<AgentObservationDraftPromoteResponse>), AppError> {
     require_scopes(
         &auth,
         &["agent:write"],
         "POST /v1/agent/observation-drafts/{observation_id}/promote",
     )?;
+    let req = req
+        .map_err(|rejection| {
+            map_json_rejection_to_validation(
+                rejection,
+                "POST /v1/agent/observation-drafts/{observation_id}/promote",
+                "Provide JSON with event_type and data, e.g. {\"event_type\":\"set.logged\",\"data\":{...}}.",
+            )
+        })?
+        .0;
     let user_id = auth.user_id;
     let event_type = validate_observation_draft_promote_event_type(&req.event_type)?;
 
@@ -5628,13 +5850,22 @@ pub async fn resolve_observation_draft_as_observation(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     Path(observation_id): Path<Uuid>,
-    Json(req): Json<AgentObservationDraftResolveRequest>,
+    req: Result<Json<AgentObservationDraftResolveRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<AgentObservationDraftResolveResponse>), AppError> {
     require_scopes(
         &auth,
         &["agent:write"],
         "POST /v1/agent/observation-drafts/{observation_id}/resolve-as-observation",
     )?;
+    let req = req
+        .map_err(|rejection| {
+            map_json_rejection_to_validation(
+                rejection,
+                "POST /v1/agent/observation-drafts/{observation_id}/resolve-as-observation",
+                "Provide JSON with a stable non-provisional dimension, e.g. {\"dimension\":\"competition_note\"}.",
+            )
+        })?
+        .0;
     let user_id = auth.user_id;
     let resolved_dimension = validate_observation_draft_resolve_dimension(&req.dimension)?;
     if let Some(confidence) = req.confidence {
@@ -5798,6 +6029,111 @@ pub async fn resolve_observation_draft_as_observation(
             retraction_event_id: batch.events[1].id,
             resolved_dimension,
             warnings: batch.warnings,
+        }),
+    ))
+}
+
+/// Dismiss one open draft observation as non-actionable (duplicate/test/noise) and retract it.
+#[utoipa::path(
+    post,
+    path = "/v1/agent/observation-drafts/{observation_id}/dismiss",
+    params(
+        ("observation_id" = Uuid, Path, description = "Draft observation event ID")
+    ),
+    request_body = AgentObservationDraftDismissRequest,
+    responses(
+        (status = 201, description = "Draft dismissed and retracted", body = AgentObservationDraftDismissResponse),
+        (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 404, description = "Draft not found", body = ApiError),
+        (status = 409, description = "Idempotency conflict", body = ApiError)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "system"
+)]
+pub async fn dismiss_observation_draft(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Path(observation_id): Path<Uuid>,
+    req: Result<Option<Json<AgentObservationDraftDismissRequest>>, JsonRejection>,
+) -> Result<(StatusCode, Json<AgentObservationDraftDismissResponse>), AppError> {
+    require_scopes(
+        &auth,
+        &["agent:write"],
+        "POST /v1/agent/observation-drafts/{observation_id}/dismiss",
+    )?;
+    let req = req
+        .map_err(|rejection| {
+            map_json_rejection_to_validation(
+                rejection,
+                "POST /v1/agent/observation-drafts/{observation_id}/dismiss",
+                "Body is optional. If present provide JSON like {\"reason\":\"duplicate\"}.",
+            )
+        })?
+        .map(|json| json.0)
+        .unwrap_or_default();
+    let user_id = auth.user_id;
+
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let draft = fetch_draft_observation_by_id(&mut tx, user_id, observation_id).await?;
+    tx.commit().await?;
+
+    let draft = draft.ok_or_else(|| AppError::NotFound {
+        resource: format!("observation draft '{}'", observation_id),
+    })?;
+    let draft_session_id = draft
+        .metadata
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let dismissal_reason = normalize_draft_dismiss_reason(req.reason.as_deref());
+    let dismissed_source =
+        trim_or_none(req.source.as_deref()).or_else(|| Some("agent_draft_dismiss".to_string()));
+    let dismissed_agent =
+        trim_or_none(req.agent.as_deref()).or_else(|| Some("agent-api".to_string()));
+    let dismissed_device = trim_or_none(req.device.as_deref());
+    let dismissed_session_id = trim_or_none(req.session_id.as_deref()).or(draft_session_id);
+    let dismissed_idempotency_key =
+        trim_or_none(req.idempotency_key.as_deref()).unwrap_or_else(|| {
+            let seed = format!("{user_id}|{observation_id}|{dismissal_reason}");
+            format!("draft-dismiss-retract-{}", stable_hash_suffix(&seed, 20))
+        });
+
+    let dismiss_event = CreateEventRequest {
+        timestamp: Utc::now(),
+        event_type: "event.retracted".to_string(),
+        data: json!({
+            "retracted_event_id": observation_id,
+            "retracted_event_type": "observation.logged",
+            "reason": dismissal_reason,
+        }),
+        metadata: EventMetadata {
+            source: dismissed_source,
+            agent: dismissed_agent,
+            device: dismissed_device,
+            session_id: dismissed_session_id,
+            idempotency_key: dismissed_idempotency_key,
+        },
+    };
+    let batch = create_events_batch_internal(&state, user_id, &[dismiss_event]).await?;
+    if batch.events.is_empty() {
+        return Err(AppError::Internal(
+            "dismiss batch did not return a retraction event".to_string(),
+        ));
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(AgentObservationDraftDismissResponse {
+            schema_version: OBSERVATION_DRAFT_DISMISS_SCHEMA_VERSION.to_string(),
+            draft_observation_id: observation_id,
+            retraction_event_id: batch.events[0].id,
+            dismissal_reason,
         }),
     ))
 }
@@ -6460,7 +6796,7 @@ pub async fn get_agent_context(
     let user_profile = fetch_projection(&mut tx, user_id, "user_profile", "me")
         .await?
         .unwrap_or_else(|| bootstrap_user_profile(user_id));
-    let action_required = extract_action_required(&user_profile);
+    let profile_action_required = extract_action_required(&user_profile);
     let health_data_processing_consent = sqlx::query_scalar::<_, bool>(
         "SELECT consent_health_data_processing FROM users WHERE id = $1",
     )
@@ -6515,7 +6851,7 @@ pub async fn get_agent_context(
     )
     .await?;
     let draft_overview = fetch_draft_observations_overview(&mut tx, user_id).await?;
-    let draft_rows = fetch_draft_observations(&mut tx, user_id, 5).await?;
+    let draft_rows = fetch_recent_draft_observations(&mut tx, user_id, 5).await?;
 
     tx.commit().await?;
 
@@ -6530,6 +6866,11 @@ pub async fn get_agent_context(
         draft_overview.open_count,
         draft_overview.oldest_timestamp,
         generated_at,
+    );
+    let action_required = select_action_required(
+        profile_action_required,
+        &observations_draft,
+        quality_health.as_ref(),
     );
     let challenge_mode = resolve_challenge_mode(Some(&user_profile));
     let temporal_context =
@@ -6546,7 +6887,12 @@ pub async fn get_agent_context(
         consistency_inbox.as_ref(),
         ranking_context.intent.as_deref(),
     );
-    let agent_brief = build_agent_brief(action_required.as_ref(), &user_profile, system.as_ref());
+    let agent_brief = build_agent_brief(
+        action_required.as_ref(),
+        &user_profile,
+        system.as_ref(),
+        Some(&observations_draft),
+    );
     let consent_write_gate = build_agent_consent_write_gate(health_data_processing_consent);
 
     Ok(Json(AgentContextResponse {
@@ -7047,6 +7393,67 @@ mod tests {
     }
 
     #[test]
+    fn draft_review_action_required_contract_triggers_for_open_drafts() {
+        let draft_context = super::AgentObservationsDraftContext {
+            schema_version: super::OBSERVATION_DRAFT_CONTEXT_SCHEMA_VERSION.to_string(),
+            open_count: 3,
+            oldest_draft_age_hours: Some(26.0),
+            recent_drafts: Vec::new(),
+        };
+        let quality_health = make_projection_response(
+            "quality_health",
+            "overview",
+            Utc::now(),
+            json!({
+                "draft_hygiene": {
+                    "status": "degraded"
+                }
+            }),
+        );
+
+        let action =
+            super::build_draft_review_action_required(&draft_context, Some(&quality_health))
+                .expect("draft review action should be present");
+        assert_eq!(action.action, "draft_review");
+        assert!(action.detail.contains("3 open"));
+        assert!(action.detail.contains("degraded"));
+        assert!(action.detail.contains("/v1/agent/observation-drafts"));
+        assert!(
+            action
+                .detail
+                .contains("/v1/agent/observation-drafts/{observation_id}/resolve-as-observation")
+        );
+        assert!(
+            action
+                .detail
+                .contains("/v1/agent/observation-drafts/{observation_id}/dismiss")
+        );
+        assert!(
+            action
+                .detail
+                .contains("/v1/agent/observation-drafts/{observation_id}/promote")
+        );
+    }
+
+    #[test]
+    fn select_action_required_prefers_existing_primary_action() {
+        let primary = Some(super::AgentActionRequired {
+            action: "onboarding".to_string(),
+            detail: "Onboarding zuerst".to_string(),
+        });
+        let draft_context = super::AgentObservationsDraftContext {
+            schema_version: super::OBSERVATION_DRAFT_CONTEXT_SCHEMA_VERSION.to_string(),
+            open_count: 5,
+            oldest_draft_age_hours: Some(48.0),
+            recent_drafts: Vec::new(),
+        };
+
+        let selected = super::select_action_required(primary, &draft_context, None)
+            .expect("primary action should stay active");
+        assert_eq!(selected.action, "onboarding");
+    }
+
+    #[test]
     fn agent_context_brief_contract_exposes_required_fields() {
         let profile = bootstrap_user_profile(Uuid::now_v7());
         let action = extract_action_required(&profile);
@@ -7056,7 +7463,7 @@ mod tests {
             updated_at: Utc::now(),
         };
 
-        let brief = super::build_agent_brief(action.as_ref(), &profile, Some(&system));
+        let brief = super::build_agent_brief(action.as_ref(), &profile, Some(&system), None);
 
         assert_eq!(brief.schema_version, "agent_brief.v1");
         assert_eq!(brief.workflow_state.phase, "onboarding");
@@ -7075,12 +7482,57 @@ mod tests {
         assert!(brief.available_sections.iter().any(|section| {
             section.section == "system_config.conventions.first_contact_opening_v1"
         }));
+        assert!(brief.available_sections.iter().any(|section| {
+            section.section == "system_config.conventions.observation_draft_dismissal_v1"
+        }));
         let system_ref = brief
             .system_config_ref
             .as_ref()
             .expect("system_config_ref should be present");
         assert_eq!(system_ref.version, 7);
         assert_eq!(system_ref.handle, "system_config/global@v7");
+    }
+
+    #[test]
+    fn agent_context_brief_contract_adds_draft_review_intents_when_open_drafts_exist() {
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "workflow_state": {
+                        "phase": "planning",
+                        "onboarding_closed": true,
+                        "override_active": false
+                    }
+                },
+                "agenda": []
+            }),
+        );
+        let drafts = super::AgentObservationsDraftContext {
+            schema_version: super::OBSERVATION_DRAFT_CONTEXT_SCHEMA_VERSION.to_string(),
+            open_count: 2,
+            oldest_draft_age_hours: Some(9.0),
+            recent_drafts: Vec::new(),
+        };
+        let brief = super::build_agent_brief(None, &profile, None, Some(&drafts));
+
+        assert!(
+            brief
+                .must_cover_intents
+                .contains(&"review_open_drafts".to_string())
+        );
+        assert!(
+            brief
+                .must_cover_intents
+                .contains(&"close_closable_drafts".to_string())
+        );
+        assert!(
+            brief
+                .must_cover_intents
+                .contains(&"state_blocker_for_remaining_drafts".to_string())
+        );
     }
 
     #[test]
@@ -7110,7 +7562,7 @@ mod tests {
             }),
         );
 
-        let brief = super::build_agent_brief(None, &profile, None);
+        let brief = super::build_agent_brief(None, &profile, None, None);
         assert_eq!(brief.workflow_state.phase, "planning");
         assert!(brief.workflow_state.onboarding_closed);
         assert!(brief.coverage_gaps.is_empty());
@@ -12912,6 +13364,12 @@ mod tests {
                 "temporal_grounding_v1": {"schema_version": "temporal_grounding.v1"},
                 "decision_brief_v1": {"schema_version": "decision_brief.v1"},
                 "high_impact_plan_update_v1": {"schema_version": "high_impact_plan_update.v1"},
+                "observation_draft_context_v1": {"schema_version": "observation_draft_context.v1"},
+                "observation_draft_promotion_v1": {"schema_version": "observation_draft_promote.v1"},
+                "observation_draft_resolution_v1": {"schema_version": "observation_draft_resolve.v1"},
+                "observation_draft_dismissal_v1": {"schema_version": "observation_draft_dismiss.v1"},
+                "observation_draft_review_loop_v1": {"schema_version": "observation_draft_review_loop.v1"},
+                "draft_hygiene_feedback_v1": {"schema_version": "draft_hygiene_feedback.v1"},
                 "learning_clustering_v1": {"rules": ["internal"]},
                 "shadow_evaluation_gate_v1": {"rules": ["internal"]},
                 "unexpected_convention": {"rules": ["unknown"]}
@@ -12953,6 +13411,12 @@ mod tests {
         assert!(conventions.contains_key("temporal_grounding_v1"));
         assert!(conventions.contains_key("decision_brief_v1"));
         assert!(conventions.contains_key("high_impact_plan_update_v1"));
+        assert!(conventions.contains_key("observation_draft_context_v1"));
+        assert!(conventions.contains_key("observation_draft_promotion_v1"));
+        assert!(conventions.contains_key("observation_draft_resolution_v1"));
+        assert!(conventions.contains_key("observation_draft_dismissal_v1"));
+        assert!(conventions.contains_key("observation_draft_review_loop_v1"));
+        assert!(conventions.contains_key("draft_hygiene_feedback_v1"));
         assert!(!conventions.contains_key("learning_clustering_v1"));
         assert!(!conventions.contains_key("shadow_evaluation_gate_v1"));
         assert!(!conventions.contains_key("unexpected_convention"));
@@ -14072,6 +14536,10 @@ mod tests {
             "observation_draft_resolve.v1"
         );
         assert_eq!(
+            super::OBSERVATION_DRAFT_DISMISS_SCHEMA_VERSION,
+            "observation_draft_dismiss.v1"
+        );
+        assert_eq!(
             super::OBSERVATION_DRAFT_DIMENSION_PREFIX,
             "provisional.persist_intent."
         );
@@ -14209,6 +14677,16 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn observation_draft_dismiss_reason_defaults_for_blank_input() {
+        let default_reason = super::normalize_draft_dismiss_reason(None);
+        let blank_reason = super::normalize_draft_dismiss_reason(Some("   "));
+        let explicit_reason = super::normalize_draft_dismiss_reason(Some("  DUPLICATE  "));
+        assert_eq!(default_reason, "dismissed_non_actionable");
+        assert_eq!(blank_reason, "dismissed_non_actionable");
+        assert_eq!(explicit_reason, "duplicate");
     }
 
     #[test]

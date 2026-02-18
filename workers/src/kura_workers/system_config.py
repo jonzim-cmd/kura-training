@@ -1633,6 +1633,10 @@ def _get_agent_behavior() -> dict[str, Any]:
                     "promote_endpoint": (
                         "POST /v1/agent/observation-drafts/{observation_id}/promote"
                     ),
+                    "promote_minimal_payload": {
+                        "event_type": "set.logged",
+                        "data": {"example": "fill with formal event data"},
+                    },
                 },
                 "promote_write_guards": {
                     "requires_formal_event_type": True,
@@ -1651,12 +1655,65 @@ def _get_agent_behavior() -> dict[str, Any]:
                     "resolve_endpoint": (
                         "POST /v1/agent/observation-drafts/{observation_id}/resolve-as-observation"
                     ),
+                    "resolve_minimal_payload": {"dimension": "competition_note"},
                 },
                 "resolve_write_guards": {
                     "requires_non_provisional_dimension": True,
                     "event_type": "observation.logged",
                     "atomic_observation_write_plus_retract": True,
                     "default_retract_reason": "resolved_as_observation",
+                },
+            },
+            "observation_draft_dismissal_v1": {
+                "schema_version": "observation_draft_dismiss.v1",
+                "goal": (
+                    "Close non-actionable drafts (duplicates/test/noise) without writing a "
+                    "new formal or observation event."
+                ),
+                "api_contract": {
+                    "dismiss_endpoint": (
+                        "POST /v1/agent/observation-drafts/{observation_id}/dismiss"
+                    ),
+                    "dismiss_payload_optional": True,
+                    "dismiss_reason_example": {"reason": "duplicate"},
+                },
+                "dismiss_write_guards": {
+                    "event_type": "event.retracted",
+                    "target_event_type": "observation.logged",
+                    "default_reason": "dismissed_non_actionable",
+                },
+            },
+            "observation_draft_review_loop_v1": {
+                "schema_version": "observation_draft_review_loop.v1",
+                "goal": (
+                    "Treat open persist-intent drafts as a first-class review queue so unresolved "
+                    "notes do not silently accumulate."
+                ),
+                "trigger_when": (
+                    "agent_context.observations_draft.open_count > 0 OR "
+                    "quality_health.draft_hygiene.status in [monitor,degraded]"
+                ),
+                "review_steps": [
+                    "List open drafts oldest-first and inspect summary + provenance.",
+                    "Classify each draft: duplicate/test/noise => dismiss; informal note => resolve-as-observation; formal event candidate => promote.",
+                    "If draft content should remain an observation, resolve-as-observation with a stable non-provisional dimension.",
+                    "If draft content should become a formal domain event, promote it and let the endpoint retract the draft atomically.",
+                    "Keep a draft open only when clarification is missing; state the blocker explicitly.",
+                    "After review, restate how many drafts remain open.",
+                ],
+                "close_endpoints": {
+                    "list": "GET /v1/agent/observation-drafts",
+                    "detail": "GET /v1/agent/observation-drafts/{observation_id}",
+                    "dismiss": "POST /v1/agent/observation-drafts/{observation_id}/dismiss",
+                    "resolve": "POST /v1/agent/observation-drafts/{observation_id}/resolve-as-observation",
+                    "promote": "POST /v1/agent/observation-drafts/{observation_id}/promote",
+                },
+                "hygiene_targets": {
+                    "backlog_monitor_min": 2,
+                    "backlog_degraded_min": 5,
+                    "median_age_monitor_hours": 8.0,
+                    "median_age_degraded_hours": 24.0,
+                    "window_days": 7,
                 },
             },
             "draft_hygiene_feedback_v1": {

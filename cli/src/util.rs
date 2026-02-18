@@ -239,9 +239,17 @@ pub async fn api_request(
         serde_json::Map::new()
     };
 
-    let resp_body: serde_json::Value = match resp.json().await {
-        Ok(v) => v,
-        Err(e) => json!({"raw_error": format!("Failed to parse response as JSON: {e}")}),
+    let resp_body: serde_json::Value = match resp.bytes().await {
+        Ok(bytes) => {
+            if bytes.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                    serde_json::Value::String(String::from_utf8_lossy(&bytes).to_string())
+                })
+            }
+        }
+        Err(e) => json!({"raw_error": format!("Failed to read response body: {e}")}),
     };
 
     let output = if include {

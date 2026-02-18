@@ -701,6 +701,7 @@ impl McpServer {
             "kura_provider_connections_upsert" => self.tool_provider_connections_upsert(args).await,
             "kura_provider_connection_revoke" => self.tool_provider_connection_revoke(args).await,
             "kura_agent_visualization_resolve" => self.tool_agent_visualization_resolve(args).await,
+            "kura_observation_draft_dismiss" => self.tool_observation_draft_dismiss(args).await,
             _ => Err(ToolError::new(
                 "unknown_tool",
                 format!("Unknown tool '{tool_name}'"),
@@ -1732,6 +1733,50 @@ impl McpServer {
         }))
     }
 
+    async fn tool_observation_draft_dismiss(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        let observation_id = required_string(args, "observation_id")?;
+        let observation_id = parse_uuid_string(&observation_id, "observation_id")?;
+        let path = format!("/v1/agent/observation-drafts/{observation_id}/dismiss");
+
+        let mut body = json!({});
+        if let Some(reason) = arg_optional_string(args, "reason")? {
+            body["reason"] = json!(reason);
+        }
+        if let Some(source) = arg_optional_string(args, "source")? {
+            body["source"] = json!(source);
+        }
+        if let Some(agent) = arg_optional_string(args, "agent")? {
+            body["agent"] = json!(agent);
+        }
+        if let Some(device) = arg_optional_string(args, "device")? {
+            body["device"] = json!(device);
+        }
+        if let Some(session_id) = arg_optional_string(args, "session_id")? {
+            body["session_id"] = json!(session_id);
+        }
+        if let Some(idempotency_key) = arg_optional_string(args, "idempotency_key")? {
+            body["idempotency_key"] = json!(idempotency_key);
+        }
+
+        let has_body = body
+            .as_object()
+            .map(|payload| !payload.is_empty())
+            .unwrap_or(false);
+        let body = if has_body { Some(body) } else { None };
+
+        let response = self
+            .send_api_request(Method::POST, &path, &[], body, true, false)
+            .await?;
+
+        Ok(json!({
+            "request": { "path": path, "observation_id": observation_id },
+            "response": response.to_value()
+        }))
+    }
+
     fn resources_list_payload(&self) -> Value {
         let resources: Vec<Value> = resource_definitions()
             .into_iter()
@@ -2460,6 +2505,24 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                     "telemetry_session_id": { "type": "string" }
                 },
                 "required": ["task_intent"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "kura_observation_draft_dismiss",
+            description: "Dismiss one observation draft (duplicate/test/noise) and retract it.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "observation_id": { "type": "string", "description": "UUID" },
+                    "reason": { "type": "string" },
+                    "source": { "type": "string" },
+                    "agent": { "type": "string" },
+                    "device": { "type": "string" },
+                    "session_id": { "type": "string" },
+                    "idempotency_key": { "type": "string" }
+                },
+                "required": ["observation_id"],
                 "additionalProperties": false
             }),
         },

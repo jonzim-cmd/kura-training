@@ -47,7 +47,13 @@ pub(super) fn classify_system_convention_field(key: &str) -> SystemConventionFie
         | "synthetic_adversarial_corpus_v1"
         | "temporal_grounding_v1"
         | "decision_brief_v1"
-        | "high_impact_plan_update_v1" => SystemConventionFieldClass::PublicContract,
+        | "high_impact_plan_update_v1"
+        | "observation_draft_context_v1"
+        | "observation_draft_promotion_v1"
+        | "observation_draft_resolution_v1"
+        | "observation_draft_dismissal_v1"
+        | "observation_draft_review_loop_v1"
+        | "draft_hygiene_feedback_v1" => SystemConventionFieldClass::PublicContract,
         "learning_clustering_v1"
         | "extraction_calibration_v1"
         | "learning_backlog_bridge_v1"
