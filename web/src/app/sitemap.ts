@@ -4,6 +4,13 @@ const BASE_URL = 'https://withkura.com';
 const LOCALES = ['en', 'de', 'en-US', 'ja'] as const;
 const DEFAULT_LOCALE = 'en';
 
+/** Locale-specific path overrides (mirrors routing.ts pathnames). */
+const LOCALIZED_PATHS: Record<string, Record<string, string>> = {
+  '/datenschutz': { en: '/privacy', 'en-US': '/privacy', de: '/datenschutz', ja: '/privacy' },
+  '/nutzungsbedingungen': { en: '/terms', 'en-US': '/terms', de: '/nutzungsbedingungen', ja: '/terms' },
+  '/impressum': { en: '/legal', 'en-US': '/legal', de: '/impressum', ja: '/legal' },
+};
+
 const PAGES: Array<{
   path: string;
   changeFrequency: MetadataRoute.Sitemap[number]['changeFrequency'];
@@ -18,9 +25,10 @@ const PAGES: Array<{
   { path: '/impressum', changeFrequency: 'yearly', priority: 0.2 },
 ];
 
-function localeUrl(locale: string, path: string): string {
+function localeUrl(locale: string, internalPath: string): string {
   const prefix = locale === DEFAULT_LOCALE ? '' : `/${locale}`;
-  const suffix = path === '/' ? '' : path;
+  const localizedPath = LOCALIZED_PATHS[internalPath]?.[locale] ?? internalPath;
+  const suffix = localizedPath === '/' ? '' : localizedPath;
   return `${BASE_URL}${prefix}${suffix}`;
 }
 
