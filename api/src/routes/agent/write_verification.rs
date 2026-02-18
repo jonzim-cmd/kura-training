@@ -482,100 +482,122 @@ pub(super) fn validate_high_impact_confirmation(
     Ok(())
 }
 
+/// Represents a single field-level validation error within intent_handshake.
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct IntentHandshakeFieldError {
+    pub field: String,
+    pub message: String,
+    pub docs_hint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub received: Option<Value>,
+}
+
+/// Validates all intent_handshake fields and returns all errors at once.
+/// Returns `Ok(())` if valid, or a single `AppError` with all field errors in `details.field_errors`.
 pub(super) fn validate_intent_handshake(
     handshake: &AgentIntentHandshake,
     action_class: &str,
 ) -> Result<(), AppError> {
+    let mut field_errors: Vec<IntentHandshakeFieldError> = Vec::new();
+
     if handshake.schema_version.trim() != INTENT_HANDSHAKE_SCHEMA_VERSION {
-        return Err(AppError::Validation {
-            message: "intent_handshake.schema_version is not supported".to_string(),
-            field: Some("intent_handshake.schema_version".to_string()),
+        field_errors.push(IntentHandshakeFieldError {
+            field: "intent_handshake.schema_version".to_string(),
+            message: "schema_version is not supported".to_string(),
+            docs_hint: format!("Use schema_version '{INTENT_HANDSHAKE_SCHEMA_VERSION}'."),
             received: Some(json!(handshake.schema_version)),
-            docs_hint: Some(format!(
-                "Use schema_version '{INTENT_HANDSHAKE_SCHEMA_VERSION}'."
-            )),
         });
     }
-
     if handshake.goal.trim().is_empty() {
-        return Err(AppError::Validation {
-            message: "intent_handshake.goal must not be empty".to_string(),
-            field: Some("intent_handshake.goal".to_string()),
-            received: Some(json!(handshake.goal)),
-            docs_hint: Some("Provide a concise execution goal.".to_string()),
+        field_errors.push(IntentHandshakeFieldError {
+            field: "intent_handshake.goal".to_string(),
+            message: "goal must not be empty".to_string(),
+            docs_hint: "Provide a concise execution goal.".to_string(),
+            received: None,
         });
     }
     if handshake.planned_action.trim().is_empty() {
-        return Err(AppError::Validation {
-            message: "intent_handshake.planned_action must not be empty".to_string(),
-            field: Some("intent_handshake.planned_action".to_string()),
-            received: Some(json!(handshake.planned_action)),
-            docs_hint: Some("Describe the planned write action before execution.".to_string()),
+        field_errors.push(IntentHandshakeFieldError {
+            field: "intent_handshake.planned_action".to_string(),
+            message: "planned_action must not be empty".to_string(),
+            docs_hint: "Describe the planned write action before execution.".to_string(),
+            received: None,
         });
     }
     if handshake.success_criteria.trim().is_empty() {
-        return Err(AppError::Validation {
-            message: "intent_handshake.success_criteria must not be empty".to_string(),
-            field: Some("intent_handshake.success_criteria".to_string()),
-            received: Some(json!(handshake.success_criteria)),
-            docs_hint: Some("Define how success is validated.".to_string()),
+        field_errors.push(IntentHandshakeFieldError {
+            field: "intent_handshake.success_criteria".to_string(),
+            message: "success_criteria must not be empty".to_string(),
+            docs_hint: "Define how success is validated.".to_string(),
+            received: None,
         });
     }
     if handshake.assumptions.is_empty() {
-        return Err(AppError::Validation {
-            message: "intent_handshake.assumptions must not be empty".to_string(),
-            field: Some("intent_handshake.assumptions".to_string()),
+        field_errors.push(IntentHandshakeFieldError {
+            field: "intent_handshake.assumptions".to_string(),
+            message: "assumptions must not be empty".to_string(),
+            docs_hint: "List at least one explicit assumption.".to_string(),
             received: None,
-            docs_hint: Some("List at least one explicit assumption.".to_string()),
         });
     }
     if handshake.non_goals.is_empty() {
-        return Err(AppError::Validation {
-            message: "intent_handshake.non_goals must not be empty".to_string(),
-            field: Some("intent_handshake.non_goals".to_string()),
+        field_errors.push(IntentHandshakeFieldError {
+            field: "intent_handshake.non_goals".to_string(),
+            message: "non_goals must not be empty".to_string(),
+            docs_hint: "List at least one explicit non-goal.".to_string(),
             received: None,
-            docs_hint: Some("List at least one explicit non-goal.".to_string()),
         });
     }
 
     let impact_class = handshake.impact_class.trim().to_lowercase();
     if impact_class != "high_impact_write" && impact_class != "low_impact_write" {
-        return Err(AppError::Validation {
-            message: "intent_handshake.impact_class must be low_impact_write or high_impact_write"
-                .to_string(),
-            field: Some("intent_handshake.impact_class".to_string()),
+        field_errors.push(IntentHandshakeFieldError {
+            field: "intent_handshake.impact_class".to_string(),
+            message: "impact_class must be low_impact_write or high_impact_write".to_string(),
+            docs_hint: "Set impact_class to match the intended write scope.".to_string(),
             received: Some(json!(handshake.impact_class)),
-            docs_hint: Some("Set impact_class to match the intended write scope.".to_string()),
         });
-    }
-    if impact_class != action_class {
-        return Err(AppError::Validation {
-            message: "intent_handshake.impact_class does not match detected action class"
+    } else if impact_class != action_class {
+        field_errors.push(IntentHandshakeFieldError {
+            field: "intent_handshake.impact_class".to_string(),
+            message: "impact_class does not match detected action class".to_string(),
+            docs_hint: "Refresh the handshake for the current action scope before executing."
                 .to_string(),
-            field: Some("intent_handshake.impact_class".to_string()),
             received: Some(json!({
                 "handshake": impact_class,
                 "detected_action_class": action_class,
             })),
-            docs_hint: Some(
-                "Refresh the handshake for the current action scope before executing.".to_string(),
-            ),
         });
     }
 
     let max_age = chrono::Duration::minutes(INTENT_HANDSHAKE_MAX_AGE_MINUTES);
     if Utc::now() - handshake.created_at > max_age {
-        return Err(AppError::Validation {
+        field_errors.push(IntentHandshakeFieldError {
+            field: "intent_handshake.created_at".to_string(),
             message: "intent_handshake is stale".to_string(),
-            field: Some("intent_handshake.created_at".to_string()),
-            received: Some(json!(handshake.created_at)),
-            docs_hint: Some(format!(
+            docs_hint: format!(
                 "Create a fresh handshake within {INTENT_HANDSHAKE_MAX_AGE_MINUTES} minutes of execution."
-            )),
+            ),
+            received: Some(json!(handshake.created_at)),
         });
     }
 
-    Ok(())
+    if field_errors.is_empty() {
+        Ok(())
+    } else {
+        let count = field_errors.len();
+        Err(AppError::Validation {
+            message: format!(
+                "intent_handshake has {count} validation error{}",
+                if count == 1 { "" } else { "s" }
+            ),
+            field: Some("intent_handshake".to_string()),
+            received: Some(json!({ "field_errors": field_errors })),
+            docs_hint: Some(
+                "Resolve all listed field_errors in a single retry.".to_string(),
+            ),
+        })
+    }
 }
 
 pub(super) fn validate_temporal_basis(
@@ -593,7 +615,7 @@ pub(super) fn validate_temporal_basis(
                 field: Some("intent_handshake.temporal_basis".to_string()),
                 received: None,
                 docs_hint: Some(
-                    "Fetch fresh /v1/agent/context and include meta.temporal_context as intent_handshake.temporal_basis."
+                    "Copy meta.temporal_basis from GET /v1/agent/context directly into intent_handshake.temporal_basis."
                         .to_string(),
                 ),
             });

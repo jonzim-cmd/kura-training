@@ -176,6 +176,8 @@ pub struct AgentContextMeta {
     pub context_contract_version: String,
     pub system_contract: AgentContextSystemContract,
     pub temporal_context: AgentTemporalContext,
+    /// Ready-to-embed temporal_basis for intent_handshake (derived from temporal_context).
+    pub temporal_basis: AgentTemporalBasis,
     pub challenge_mode: AgentChallengeMode,
     pub memory_tier_contract: AgentMemoryTierContract,
     pub consent_write_gate: AgentConsentWriteGate,
@@ -6476,6 +6478,8 @@ pub async fn write_with_proof(
         }
         None => {
             if temporal_basis_required {
+                let temporal_basis_template =
+                    build_temporal_basis_from_context(&temporal_context);
                 push_preflight_blocker(
                     &mut preflight_blockers,
                     WritePreflightBlockerCode::IntentHandshakeRequired,
@@ -6483,12 +6487,30 @@ pub async fn write_with_proof(
                     "intent_handshake is required for temporal high-impact writes",
                     Some("intent_handshake"),
                     Some(
-                        "Provide intent_handshake.temporal_basis from GET /v1/agent/context meta.temporal_context before write-with-proof."
+                        "Copy meta.temporal_basis from GET /v1/agent/context into intent_handshake.temporal_basis, then fill the semantic fields listed in fill_required."
                             .to_string(),
                     ),
                     Some(json!({
                         "action_class": action_class,
                         "requires_temporal_basis": true,
+                        "template": {
+                            "schema_version": INTENT_HANDSHAKE_SCHEMA_VERSION,
+                            "goal": "",
+                            "planned_action": "",
+                            "assumptions": [],
+                            "non_goals": [],
+                            "impact_class": action_class,
+                            "success_criteria": "",
+                            "created_at": Utc::now(),
+                            "temporal_basis": temporal_basis_template,
+                        },
+                        "fill_required": [
+                            "goal",
+                            "planned_action",
+                            "assumptions",
+                            "non_goals",
+                            "success_criteria"
+                        ],
                     })),
                 );
             }
@@ -6573,6 +6595,8 @@ pub async fn write_with_proof(
         && action_class == "high_impact_write"
         && intent_handshake_confirmation.is_none()
     {
+        let temporal_basis_template =
+            build_temporal_basis_from_context(&temporal_context);
         push_preflight_blocker(
             &mut preflight_blockers,
             WritePreflightBlockerCode::IntentHandshakeRequiredStrictTier,
@@ -6580,16 +6604,39 @@ pub async fn write_with_proof(
             "intent_handshake is required for high-impact writes in strict tier",
             Some("intent_handshake"),
             Some(
-                "Strict tier requires intent_handshake.v1 with goal, planned_action, assumptions, non_goals, impact_class, and success_criteria."
+                "Strict tier requires intent_handshake.v1. Fill the semantic fields listed in fill_required."
                     .to_string(),
             ),
             Some(serde_json::json!({
                 "model_tier": autonomy_gate.model_tier,
                 "action_class": action_class,
+                "template": {
+                    "schema_version": INTENT_HANDSHAKE_SCHEMA_VERSION,
+                    "goal": "",
+                    "planned_action": "",
+                    "assumptions": [],
+                    "non_goals": [],
+                    "impact_class": action_class,
+                    "success_criteria": "",
+                    "created_at": Utc::now(),
+                    "temporal_basis": temporal_basis_template,
+                },
+                "fill_required": [
+                    "goal",
+                    "planned_action",
+                    "assumptions",
+                    "non_goals",
+                    "success_criteria"
+                ],
             })),
         );
     }
-    if autonomy_gate.decision == "confirm_first" && action_class == "high_impact_write" {
+    // Confirmation gate runs ONLY when all other checks pass.
+    // Issuing a token for an invalid payload wastes it (payload hash changes after fixes).
+    if preflight_blockers.is_empty()
+        && autonomy_gate.decision == "confirm_first"
+        && action_class == "high_impact_write"
+    {
         let confirmation_secret = std::env::var(MODEL_ATTESTATION_SECRET_ENV).ok();
         if let Err(err) = validate_high_impact_confirmation(
             req.high_impact_confirmation.as_ref(),
@@ -7200,6 +7247,7 @@ pub async fn get_agent_context(
                 .to_string(),
             context_contract_version: AGENT_CONTEXT_CONTRACT_VERSION.to_string(),
             system_contract: build_agent_context_system_contract(),
+            temporal_basis: build_temporal_basis_from_context(&temporal_context),
             temporal_context,
             challenge_mode,
             memory_tier_contract,
@@ -11742,12 +11790,97 @@ mod tests {
 
         let err = super::validate_intent_handshake(&handshake, "high_impact_write")
             .expect_err("stale handshake should be rejected");
-        match err {
-            AppError::Validation { field, .. } => {
-                assert_eq!(field.as_deref(), Some("intent_handshake.created_at"));
+        match &err {
+            AppError::Validation {
+                field, received, ..
+            } => {
+                assert_eq!(field.as_deref(), Some("intent_handshake"));
+                // Batch error — stale created_at should appear in field_errors
+                let details = received.as_ref().expect("should have details");
+                let field_errors = details["field_errors"]
+                    .as_array()
+                    .expect("should have field_errors array");
+                assert_eq!(field_errors.len(), 1, "only staleness should fail");
+                assert_eq!(
+                    field_errors[0]["field"].as_str().unwrap(),
+                    "intent_handshake.created_at"
+                );
             }
             other => panic!("expected validation error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn intent_handshake_contract_batches_all_field_errors() {
+        // Handshake with multiple invalid fields: empty goal, empty planned_action,
+        // no assumptions, no non_goals, wrong impact_class.
+        let handshake = super::AgentIntentHandshake {
+            schema_version: "intent_handshake.v1".to_string(),
+            goal: "".to_string(),
+            planned_action: "".to_string(),
+            assumptions: vec![],
+            non_goals: vec![],
+            impact_class: "invalid_class".to_string(),
+            success_criteria: "".to_string(),
+            created_at: Utc::now() - Duration::minutes(5),
+            handshake_id: None,
+            temporal_basis: None,
+        };
+
+        let err = super::validate_intent_handshake(&handshake, "high_impact_write")
+            .expect_err("multiple invalid fields should be rejected");
+        match &err {
+            AppError::Validation {
+                message,
+                field,
+                received,
+                ..
+            } => {
+                assert_eq!(field.as_deref(), Some("intent_handshake"));
+                let details = received.as_ref().expect("should have details");
+                let field_errors = details["field_errors"]
+                    .as_array()
+                    .expect("should have field_errors array");
+                // goal, planned_action, success_criteria, assumptions, non_goals, impact_class = 6
+                assert_eq!(
+                    field_errors.len(),
+                    6,
+                    "should report all 6 field errors at once, got: {field_errors:?}"
+                );
+                assert!(
+                    message.contains("6 validation errors"),
+                    "message should mention count: {message}"
+                );
+                // Verify specific fields are present
+                let error_fields: Vec<&str> = field_errors
+                    .iter()
+                    .map(|e| e["field"].as_str().unwrap())
+                    .collect();
+                assert!(error_fields.contains(&"intent_handshake.goal"));
+                assert!(error_fields.contains(&"intent_handshake.assumptions"));
+                assert!(error_fields.contains(&"intent_handshake.impact_class"));
+            }
+            other => panic!("expected validation error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn intent_handshake_contract_accepts_fresh_valid_handshake() {
+        let handshake = super::AgentIntentHandshake {
+            schema_version: "intent_handshake.v1".to_string(),
+            goal: "update training plan".to_string(),
+            planned_action: "write training_plan.updated".to_string(),
+            assumptions: vec!["latest profile is complete".to_string()],
+            non_goals: vec!["no nutrition changes".to_string()],
+            impact_class: "high_impact_write".to_string(),
+            success_criteria: "plan projection reflects update".to_string(),
+            created_at: Utc::now() - Duration::minutes(5),
+            handshake_id: Some("hs-1".to_string()),
+            temporal_basis: None,
+        };
+
+        super::validate_intent_handshake(&handshake, "high_impact_write")
+            .expect("fresh valid handshake should be accepted");
     }
 
     #[test]
