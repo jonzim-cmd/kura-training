@@ -610,7 +610,9 @@
 
 .bottomNav {
   display: flex;
-  gap: 2rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem 2rem;
 }
 
 .bottomLink {
