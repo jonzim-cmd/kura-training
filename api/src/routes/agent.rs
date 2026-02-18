@@ -1509,6 +1509,9 @@ use policy::*;
 mod system_contract;
 use system_contract::*;
 
+mod event_type_policy;
+use event_type_policy::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IntentClass {
     Strength,
@@ -2359,57 +2362,6 @@ fn batch_requires_health_data_consent(events: &[CreateEventRequest]) -> bool {
         .any(|event| agent_event_requires_health_data_consent(&event.event_type))
 }
 
-fn extract_known_event_types_from_event_conventions(value: &Value) -> HashSet<String> {
-    let mut known = HashSet::new();
-    if let Some(map) = value.as_object() {
-        for key in map.keys() {
-            let normalized = key.trim().to_lowercase();
-            if !normalized.is_empty() {
-                known.insert(normalized);
-            }
-        }
-    } else if let Some(items) = value.as_array() {
-        for item in items {
-            let normalized = item
-                .get("event_type")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .map(str::to_lowercase)
-                .unwrap_or_default();
-            if !normalized.is_empty() {
-                known.insert(normalized);
-            }
-        }
-    }
-    known
-}
-
-async fn fetch_known_event_types_from_system_config(
-    state: &AppState,
-) -> Result<HashSet<String>, AppError> {
-    let mut known = sqlx::query_scalar::<_, Value>("SELECT data FROM system_config WHERE key = 'global'")
-        .fetch_optional(&state.db)
-        .await?
-        .and_then(|data| data.get("event_conventions").cloned())
-        .map(|conventions| extract_known_event_types_from_event_conventions(&conventions))
-        .unwrap_or_default();
-
-    if known.is_empty() {
-        for event_type in DEFAULT_AGENT_FORMAL_EVENT_TYPES {
-            known.insert((*event_type).to_string());
-        }
-    }
-    Ok(known)
-}
-
-fn is_formal_event_type_shape(event_type: &str) -> bool {
-    static FORMAL_EVENT_TYPE_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$")
-            .expect("formal event_type regex must compile")
-    });
-    FORMAL_EVENT_TYPE_RE.is_match(event_type)
-}
-
 async fn resolve_visualization_sources(
     state: &AppState,
     user_id: Uuid,
@@ -2881,43 +2833,6 @@ fn draft_promotion_hint(event_type: &str) -> String {
         .to_string()
 }
 
-fn validate_registered_formal_event_type(
-    event_type: &str,
-    known_event_types: &HashSet<String>,
-    field: &str,
-) -> Result<(), AppError> {
-    if !is_formal_event_type_shape(event_type) {
-        return Err(AppError::Validation {
-            message: "event_type must use formal dotted syntax (e.g. set.logged)".to_string(),
-            field: Some(field.to_string()),
-            received: Some(Value::String(event_type.to_string())),
-            docs_hint: Some(
-                "Use lowercase dotted event types like set.logged, session.completed, or training_plan.updated."
-                    .to_string(),
-            ),
-        });
-    }
-    if known_event_types.contains(event_type) {
-        return Ok(());
-    }
-    Err(AppError::PolicyViolation {
-        code: "formal_event_type_unknown".to_string(),
-        message: format!(
-            "event_type '{}' is not registered in event_conventions and may not project reliably",
-            event_type
-        ),
-        field: Some(field.to_string()),
-        received: Some(json!({
-            "event_type": event_type,
-            "policy_schema_version": AGENT_FORMAL_EVENT_TYPE_POLICY_SCHEMA_VERSION,
-        })),
-        docs_hint: Some(
-            "Use a registered event_type from system_config.event_conventions or route the note through observation drafts."
-                .to_string(),
-        ),
-    })
-}
-
 fn validate_observation_draft_promote_event_type(
     raw_event_type: &str,
     known_event_types: &HashSet<String>,
@@ -3025,6 +2940,9 @@ use session_audit::*;
 
 mod write_verification;
 use write_verification::*;
+
+mod write_preflight;
+use write_preflight::*;
 
 mod persist_intent;
 use persist_intent::*;
@@ -3299,38 +3217,13 @@ const OBSERVATION_DRAFT_PROMOTE_SCHEMA_VERSION: &str = "observation_draft_promot
 const OBSERVATION_DRAFT_RESOLVE_SCHEMA_VERSION: &str = "observation_draft_resolve.v1";
 const OBSERVATION_DRAFT_DISMISS_SCHEMA_VERSION: &str = "observation_draft_dismiss.v1";
 const AGENT_WRITE_PREFLIGHT_SCHEMA_VERSION: &str = "write_preflight.v1";
-const AGENT_FORMAL_EVENT_TYPE_POLICY_SCHEMA_VERSION: &str = "formal_event_type_policy.v1";
+const AGENT_WRITE_PREFLIGHT_BLOCKED_MESSAGE: &str = "write_with_proof blocked by preflight checks";
+const AGENT_FORMAL_EVENT_TYPE_POLICY_SCHEMA_VERSION: &str = FORMAL_EVENT_TYPE_POLICY_SCHEMA_VERSION;
 const OBSERVATION_DRAFT_DIMENSION_PREFIX: &str = "provisional.persist_intent.";
 const DRAFT_REVIEW_BACKLOG_MONITOR_MIN: i64 = 2;
 const DRAFT_REVIEW_BACKLOG_DEGRADED_MIN: i64 = 5;
 const DRAFT_REVIEW_AGE_MONITOR_HOURS: f64 = 8.0;
 const DRAFT_REVIEW_AGE_DEGRADED_HOURS: f64 = 24.0;
-const DEFAULT_AGENT_FORMAL_EVENT_TYPES: &[&str] = &[
-    "set.logged",
-    "set.corrected",
-    "session.logged",
-    "session.completed",
-    "training_plan.created",
-    "training_plan.updated",
-    "exercise.alias_created",
-    "goal.set",
-    "profile.updated",
-    "injury.reported",
-    "bodyweight.logged",
-    "measurement.logged",
-    "meal.logged",
-    "sleep.logged",
-    "soreness.logged",
-    "energy.logged",
-    "preference.set",
-    "observation.logged",
-    "event.retracted",
-    "projection_rule.created",
-    "projection_rule.archived",
-    "quality.save_claim.checked",
-    "quality.consistency.review.decided",
-    "learning.signal.logged",
-];
 
 fn read_value_string(value: Option<&Value>) -> Option<String> {
     value
@@ -6379,100 +6272,6 @@ pub async fn dismiss_observation_draft(
     ))
 }
 
-fn push_preflight_blocker(
-    blockers: &mut Vec<AgentWritePreflightBlocker>,
-    code: &str,
-    stage: &str,
-    message: impl Into<String>,
-    field: Option<&str>,
-    docs_hint: Option<String>,
-    details: Option<Value>,
-) {
-    if blockers.iter().any(|item| item.code == code) {
-        return;
-    }
-    blockers.push(AgentWritePreflightBlocker {
-        code: code.to_string(),
-        stage: stage.to_string(),
-        message: message.into(),
-        field: field.map(str::to_string),
-        docs_hint,
-        details,
-    });
-}
-
-fn push_preflight_blocker_from_error(
-    blockers: &mut Vec<AgentWritePreflightBlocker>,
-    code: &str,
-    stage: &str,
-    error: &AppError,
-) {
-    match error {
-        AppError::Validation {
-            message,
-            field,
-            received,
-            docs_hint,
-        } => {
-            push_preflight_blocker(
-                blockers,
-                code,
-                stage,
-                message.clone(),
-                field.as_deref(),
-                docs_hint.clone(),
-                received.clone(),
-            );
-        }
-        AppError::PolicyViolation {
-            code: policy_code,
-            message,
-            field,
-            received,
-            docs_hint,
-        } => {
-            let effective_code = if code.is_empty() { policy_code } else { code };
-            push_preflight_blocker(
-                blockers,
-                effective_code,
-                stage,
-                message.clone(),
-                field.as_deref(),
-                docs_hint.clone(),
-                received.clone(),
-            );
-        }
-        other => {
-            push_preflight_blocker(
-                blockers,
-                code,
-                stage,
-                format!("{other:?}"),
-                None,
-                None,
-                None,
-            );
-        }
-    }
-}
-
-fn write_with_proof_preflight_error(blockers: Vec<AgentWritePreflightBlocker>) -> AppError {
-    let preflight = AgentWritePreflightSummary {
-        schema_version: AGENT_WRITE_PREFLIGHT_SCHEMA_VERSION.to_string(),
-        status: "blocked".to_string(),
-        blockers: blockers.clone(),
-    };
-    AppError::Validation {
-        message: "write_with_proof blocked by preflight checks".to_string(),
-        field: Some("events".to_string()),
-        received: Some(json!(preflight)),
-        docs_hint: Some(
-            "Resolve all listed blockers before retrying. Do not assume partial writes were persisted."
-                .to_string(),
-        ),
-    }
-}
-
 /// Write events with durable receipts and read-after-write verification.
 ///
 /// This endpoint enforces Decision 13.5 protocol semantics:
@@ -6512,7 +6311,7 @@ pub async fn write_with_proof(
     if read_after_write_targets.is_empty() {
         push_preflight_blocker(
             &mut preflight_blockers,
-            "read_after_write_targets_required",
+            WritePreflightBlockerCode::ReadAfterWriteTargetsRequired,
             "verification",
             "read_after_write_targets must not be empty",
             Some("read_after_write_targets"),
@@ -6531,7 +6330,7 @@ pub async fn write_with_proof(
         if event_type.is_empty() {
             push_preflight_blocker(
                 &mut preflight_blockers,
-                "formal_event_type_missing",
+                WritePreflightBlockerCode::FormalEventTypeMissing,
                 "event_type_policy",
                 "event_type must not be empty",
                 Some("events"),
@@ -6543,7 +6342,7 @@ pub async fn write_with_proof(
         if event.event_type != event_type {
             push_preflight_blocker(
                 &mut preflight_blockers,
-                "formal_event_type_non_canonical",
+                WritePreflightBlockerCode::FormalEventTypeNonCanonical,
                 "event_type_policy",
                 format!(
                     "events[{event_index}].event_type must be canonical lowercase without surrounding whitespace: '{}'",
@@ -6561,7 +6360,7 @@ pub async fn write_with_proof(
         if !is_formal_event_type_shape(&event_type) {
             push_preflight_blocker(
                 &mut preflight_blockers,
-                "formal_event_type_invalid_shape",
+                WritePreflightBlockerCode::FormalEventTypeInvalidShape,
                 "event_type_policy",
                 format!(
                     "events[{event_index}].event_type '{}' does not match formal dotted syntax",
@@ -6579,7 +6378,7 @@ pub async fn write_with_proof(
         if !known_event_types.contains(&event_type) {
             push_preflight_blocker(
                 &mut preflight_blockers,
-                "formal_event_type_unknown",
+                WritePreflightBlockerCode::FormalEventTypeUnknown,
                 "event_type_policy",
                 format!(
                     "events[{event_index}].event_type '{}' is not registered in event_conventions",
@@ -6607,7 +6406,7 @@ pub async fn write_with_proof(
         if !health_data_processing_consent {
             push_preflight_blocker(
                 &mut preflight_blockers,
-                AGENT_HEALTH_CONSENT_ERROR_CODE,
+                WritePreflightBlockerCode::HealthConsentRequired,
                 "consent_gate",
                 "Health/training writes require explicit health data processing consent.",
                 Some("events"),
@@ -6646,7 +6445,7 @@ pub async fn write_with_proof(
                 Ok(()) => {}
                 Err(err) => push_preflight_blocker_from_error(
                     &mut preflight_blockers,
-                    "intent_handshake_invalid",
+                    WritePreflightBlockerCode::IntentHandshakeInvalid,
                     "intent_handshake",
                     &err,
                 ),
@@ -6658,16 +6457,18 @@ pub async fn write_with_proof(
                 Utc::now(),
             ) {
                 Ok(()) => {
-                    if !preflight_blockers.iter().any(|blocker| {
-                        blocker.code == "intent_handshake_invalid"
-                            && blocker.stage == "intent_handshake"
-                    }) {
-                        intent_handshake_confirmation = Some(build_intent_handshake_confirmation(handshake));
+                    if !has_preflight_blocker(
+                        &preflight_blockers,
+                        WritePreflightBlockerCode::IntentHandshakeInvalid,
+                        "intent_handshake",
+                    ) {
+                        intent_handshake_confirmation =
+                            Some(build_intent_handshake_confirmation(handshake));
                     }
                 }
                 Err(err) => push_preflight_blocker_from_error(
                     &mut preflight_blockers,
-                    "temporal_basis_invalid",
+                    WritePreflightBlockerCode::TemporalBasisInvalid,
                     "intent_handshake.temporal_basis",
                     &err,
                 ),
@@ -6677,7 +6478,7 @@ pub async fn write_with_proof(
             if temporal_basis_required {
                 push_preflight_blocker(
                     &mut preflight_blockers,
-                    "intent_handshake_required",
+                    WritePreflightBlockerCode::IntentHandshakeRequired,
                     "intent_handshake",
                     "intent_handshake is required for temporal high-impact writes",
                     Some("intent_handshake"),
@@ -6705,7 +6506,7 @@ pub async fn write_with_proof(
     if workflow_gate.status == "blocked" {
         push_preflight_blocker(
             &mut preflight_blockers,
-            "workflow_onboarding_blocked",
+            WritePreflightBlockerCode::WorkflowOnboardingBlocked,
             "workflow_gate",
             workflow_gate.message.clone(),
             Some("events"),
@@ -6751,7 +6552,7 @@ pub async fn write_with_proof(
     if autonomy_gate.decision == "block" {
         push_preflight_blocker(
             &mut preflight_blockers,
-            "autonomy_gate_blocked",
+            WritePreflightBlockerCode::AutonomyGateBlocked,
             "autonomy_gate",
             "High-impact write blocked by adaptive autonomy gate.",
             Some("events"),
@@ -6774,7 +6575,7 @@ pub async fn write_with_proof(
     {
         push_preflight_blocker(
             &mut preflight_blockers,
-            "intent_handshake_required_strict_tier",
+            WritePreflightBlockerCode::IntentHandshakeRequiredStrictTier,
             "intent_handshake",
             "intent_handshake is required for high-impact writes in strict tier",
             Some("intent_handshake"),
@@ -6802,7 +6603,7 @@ pub async fn write_with_proof(
         ) {
             push_preflight_blocker_from_error(
                 &mut preflight_blockers,
-                "high_impact_confirmation_invalid",
+                WritePreflightBlockerCode::HighImpactConfirmationInvalid,
                 "high_impact_confirmation",
                 &err,
             );
@@ -15214,7 +15015,7 @@ mod tests {
         let mut blockers = Vec::new();
         super::push_preflight_blocker(
             &mut blockers,
-            "health_consent_required",
+            super::WritePreflightBlockerCode::HealthConsentRequired,
             "consent_gate",
             "consent missing",
             Some("events"),
@@ -15252,7 +15053,7 @@ mod tests {
         let mut blockers = Vec::new();
         super::push_preflight_blocker(
             &mut blockers,
-            "health_consent_required",
+            super::WritePreflightBlockerCode::HealthConsentRequired,
             "consent_gate",
             "first",
             Some("events"),
@@ -15261,7 +15062,7 @@ mod tests {
         );
         super::push_preflight_blocker(
             &mut blockers,
-            "health_consent_required",
+            super::WritePreflightBlockerCode::HealthConsentRequired,
             "consent_gate",
             "second",
             Some("events"),
