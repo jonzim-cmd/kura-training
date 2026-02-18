@@ -705,7 +705,7 @@ async fn send_admin_notification(
         .unwrap_or_else(|| "(Link konnte nicht erzeugt werden)".to_string());
 
     let body = format!(
-        "Neue Zugangsanfrage fuer Kura:\n\n\
+        "Neue Zugangsanfrage für Kura:\n\n\
          Email: {requester_email}\n\
          {name_line}{context_line}\n\
          Annehmen: {approve_url}\n\n\
@@ -832,7 +832,7 @@ pub async fn email_action_page(
     }
 
     if !verify_action_token(&action, &request_id, &query.t) {
-        return Ok(Html(error_page("Link ungueltig oder abgelaufen.")));
+        return Ok(Html(error_page("Link ungültig oder abgelaufen.")));
     }
 
     // Fetch request details
@@ -896,7 +896,7 @@ pub async fn email_action_page(
     <input type="hidden" name="t" value="{token}">
     <button type="submit">{action_label}</button>
   </form>
-  <p class="subtle">Dieser Link ist 7 Tage gueltig.</p>
+  <p class="subtle">Dieser Link ist 7 Tage gültig.</p>
 </div></body></html>"#,
         escaped_email = html_escape(&email),
         token = html_escape(&query.t),
@@ -921,7 +921,7 @@ pub async fn email_action_execute(
     }
 
     if !verify_action_token(&action, &request_id, &form.t) {
-        return Ok(Html(error_page("Link ungueltig oder abgelaufen.")));
+        return Ok(Html(error_page("Link ungültig oder abgelaufen.")));
     }
 
     if action == "approve" {

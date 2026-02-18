@@ -429,6 +429,10 @@ pub async fn register(
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ForgotPasswordRequest {
     pub email: String,
+    /// Optional locale hint from the frontend (e.g. "de", "en").
+    /// Defaults to English if absent.
+    #[serde(default)]
+    pub locale: Option<String>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -501,9 +505,14 @@ pub async fn forgot_password(
         });
     }
 
+    let locale = req.locale.as_deref().unwrap_or("en");
     let generic = ForgotPasswordResponse {
-        message: "Falls ein Account existiert, haben wir eine E-Mail zum Zuruecksetzen gesendet."
-            .to_string(),
+        message: if locale.starts_with("de") {
+            "Falls ein Account existiert, haben wir eine E-Mail zum Zurücksetzen gesendet."
+        } else {
+            "If an account exists, we have sent a password reset email."
+        }
+        .to_string(),
     };
 
     let user = sqlx::query_as::<_, PasswordResetUserRow>(
@@ -557,7 +566,7 @@ pub async fn forgot_password(
         frontend_url.trim_end_matches('/'),
         token
     );
-    let _sent = send_password_reset_email(&user.email, &reset_url, &expires_at).await;
+    let _sent = send_password_reset_email(&user.email, &reset_url, &expires_at, locale).await;
 
     Ok(Json(generic))
 }
@@ -758,6 +767,7 @@ async fn send_password_reset_email(
     to_email: &str,
     reset_url: &str,
     expires_at: &chrono::DateTime<Utc>,
+    locale: &str,
 ) -> bool {
     let api_key = match std::env::var("RESEND_API_KEY") {
         Ok(k) if !k.is_empty() => k,
@@ -769,15 +779,34 @@ async fn send_password_reset_email(
 
     let from =
         std::env::var("EMAIL_FROM").unwrap_or_else(|_| "Kura <noreply@kura.dev>".to_string());
-    let expires_formatted = expires_at.format("%d.%m.%Y %H:%M UTC").to_string();
-    let body = format!(
-        "Hallo,\n\n\
-         du hast ein neues Passwort fuer Kura angefordert.\n\n\
-         Setze dein Passwort hier zurueck: {reset_url}\n\n\
-         Der Link ist gueltig bis {expires_formatted}.\n\
-         Wenn du das nicht angefordert hast, kannst du diese E-Mail ignorieren.\n\n\
-         -- Kura"
-    );
+
+    let (subject, body) = if locale.starts_with("de") {
+        let expires_formatted = expires_at.format("%d.%m.%Y %H:%M UTC").to_string();
+        (
+            "Kura — Passwort zurücksetzen",
+            format!(
+                "Hallo,\n\n\
+                 du hast ein neues Passwort für Kura angefordert.\n\n\
+                 Setze dein Passwort hier zurück: {reset_url}\n\n\
+                 Der Link ist gültig bis {expires_formatted}.\n\
+                 Wenn du das nicht angefordert hast, kannst du diese E-Mail ignorieren.\n\n\
+                 -- Kura"
+            ),
+        )
+    } else {
+        let expires_formatted = expires_at.format("%B %d, %Y %H:%M UTC").to_string();
+        (
+            "Kura — Reset your password",
+            format!(
+                "Hi,\n\n\
+                 you requested a new password for Kura.\n\n\
+                 Reset your password here: {reset_url}\n\n\
+                 This link is valid until {expires_formatted}.\n\
+                 If you didn't request this, you can safely ignore this email.\n\n\
+                 -- Kura"
+            ),
+        )
+    };
 
     let client = reqwest::Client::new();
     let result = client
@@ -786,7 +815,7 @@ async fn send_password_reset_email(
         .json(&serde_json::json!({
             "from": from,
             "to": [to_email],
-            "subject": "Kura Passwort zuruecksetzen",
+            "subject": subject,
             "text": body
         }))
         .send()
@@ -3749,11 +3778,12 @@ mod tests {
             State(state),
             Json(ForgotPasswordRequest {
                 email: missing_email.clone(),
+                locale: None,
             }),
         )
         .await
         .expect("forgot-password should always return success for unknown email");
-        assert!(response.message.contains("Falls ein Account existiert"));
+        assert!(response.message.contains("If an account exists"));
 
         let count_for_email: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) \

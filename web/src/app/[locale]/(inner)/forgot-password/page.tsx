@@ -1,13 +1,14 @@
 'use client';
 
 import { useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useTranslations, useLocale } from 'next-intl';
 import { Link } from '@/i18n/routing';
 import { apiFetch } from '@/lib/api';
 import styles from '../../auth.module.css';
 
 export default function ForgotPasswordPage() {
   const t = useTranslations('auth');
+  const locale = useLocale();
   const [email, setEmail] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
@@ -20,7 +21,7 @@ export default function ForgotPasswordPage() {
     try {
       const response = await apiFetch('/v1/auth/forgot-password', {
         method: 'POST',
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, locale }),
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
