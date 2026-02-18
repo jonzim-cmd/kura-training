@@ -56,9 +56,6 @@ export default function LandingContent() {
         <div className={styles.bottomInner}>
           <div className={styles.bottomMark}>KU<span style={{letterSpacing: '0.06em'}}>R</span>A</div>
           <nav className={styles.bottomNav}>
-            <Link href="/request-access" className={styles.bottomLink}>{tn('requestAccess')}</Link>
-            <Link href="/login" className={styles.bottomLink}>{tn('login')}</Link>
-            <Link href="/setup" className={styles.bottomLink}>{tn('setup')}</Link>
             <Link href="/datenschutz" className={styles.bottomLink}>{tf('privacy')}</Link>
             <Link href="/nutzungsbedingungen" className={styles.bottomLink}>{tf('terms')}</Link>
             <Link href="/impressum" className={styles.bottomLink}>{tf('impressum')}</Link>
