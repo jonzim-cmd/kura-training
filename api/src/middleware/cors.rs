@@ -14,7 +14,7 @@ const CONNECTOR_ORIGINS: &[&str] = &[
 /// Build a CORS layer from the `KURA_CORS_ORIGINS` env var.
 ///
 /// - Origins: comma-separated list (default: `http://localhost:3000`)
-/// - Methods: GET, POST, OPTIONS
+/// - Methods: GET, POST, PATCH, DELETE, OPTIONS
 /// - Headers: Authorization, Content-Type
 /// - Credentials: allowed
 /// - Max age: 3600s
@@ -76,7 +76,7 @@ pub fn build_cors_layer() -> CorsLayer {
 
     CorsLayer::new()
         .allow_origin(allow_origin)
-        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE, Method::OPTIONS])
         .allow_headers([
             HeaderName::from_static("authorization"),
             HeaderName::from_static("content-type"),
