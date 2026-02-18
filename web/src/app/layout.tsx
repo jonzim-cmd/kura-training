@@ -2,7 +2,11 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Kura',
+  metadataBase: new URL('https://withkura.com'),
+  title: {
+    default: 'Kura',
+    template: '%s',
+  },
   description: 'Your body, understood.',
 };
 

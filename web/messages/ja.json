@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "Kura | Training",
-    "description": "あなたと共に成長するAI。トレーニング、栄養、回復を学び、共により良い判断を下します。"
+    "title": "Kura — AIトレーニング日記 & ワークアウトログ",
+    "description": "AIに話しかけてトレーニングを記録。Kuraがワークアウトデータを構造化し保存・分析。セット、レップ、ラン、ライド。Claude、ChatGPT、あらゆるAIエージェントに対応。"
   },
   "nav": {
     "home": "KURAとは?",
@@ -44,6 +44,7 @@
       "recommendation": "推奨エンジン"
     },
     "getStarted": "始める",
+    "subtitle": "AIトレーニング日記 & ワークアウトログ",
     "sportTabs": {
       "strength": "ウエイト",
       "running": "ランニング",

@@ -29,6 +29,22 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+.surfaceInner {
+  text-align: center;
+}
+
+.surfaceSubtitle {
+  font-family: var(--font-mono);
+  font-weight: 300;
+  font-size: clamp(0.7rem, 1.5vw, 1rem);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.18);
+  margin-top: 1.2rem;
+  animation: surfaceIn 1.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: 0.4s;
+}
+
 /* === SPORT TABS === */
 .sportTabs {
   display: flex;

@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "Kura | Training",
-    "description": "An AI that grows with you — learning your training, nutrition, and recovery to make better decisions together."
+    "title": "Kura — AI Training Diary & Workout Logger",
+    "description": "Log your training by talking to AI. Kura structures, stores, and analyzes your workout data — sets, reps, runs, rides. Your AI training diary that works with Claude, ChatGPT, and any AI agent."
   },
   "nav": {
     "home": "Why KURA?",
@@ -44,6 +44,7 @@
       "recommendation": "recommendation engine"
     },
     "getStarted": "Request access",
+    "subtitle": "AI Training Diary & Workout Logger",
     "sportTabs": {
       "strength": "Strength",
       "running": "Running",

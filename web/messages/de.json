@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "Kura | Training",
-    "description": "Das Langzeitgedächtnis für dein Training. Du redest, dein Agent versteht und speichert — strukturiert, dauerhaft, modellunabhängig."
+    "title": "Kura — KI-Trainingstagebuch & Workout-Logger",
+    "description": "Logge dein Training per KI. Kura strukturiert, speichert und analysiert deine Trainingsdaten — Sätze, Wiederholungen, Läufe, Fahrten. Dein KI-Trainingstagebuch für Claude, ChatGPT und jede KI."
   },
   "nav": {
     "home": "Warum KURA?",
@@ -13,6 +13,7 @@
     "logout": "Abmelden"
   },
   "landing": {
+    "subtitle": "KI-Trainingstagebuch & Workout-Logger",
     "sportTabs": {
       "strength": "Kraft",
       "running": "Laufen",
