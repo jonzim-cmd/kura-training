@@ -5,7 +5,7 @@ const CONTACT_INFO = {
   name: 'Jonas Zimmermann',
   street: 'Fäustlestr. 3',
   city: '80339 München',
-  email: 'jzimmermann.dev@gmail.com',
+  email: 'contact@withkura.com',
 };
 
 export default function ImpressumPage() {
