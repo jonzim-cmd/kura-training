@@ -1,24 +1,24 @@
 import { getTranslations } from 'next-intl/server';
 import type { Metadata } from 'next';
-import LandingContent from './LandingContent';
 import { buildPageMetadata } from '@/lib/seo';
 
 type Props = {
+  children: React.ReactNode;
   params: Promise<{ locale: string }>;
 };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { locale } = await params;
-  const t = await getTranslations({ locale, namespace: 'meta' });
+  const t = await getTranslations({ locale, namespace: 'setup' });
 
   return buildPageMetadata({
     locale,
-    internalPath: '/',
-    title: t('title'),
-    description: t('description'),
+    internalPath: '/setup',
+    title: `${t('title')} | Kura`,
+    description: t('subtitle'),
   });
 }
 
-export default function LandingPage() {
-  return <LandingContent />;
+export default function SetupLayout({ children }: Props) {
+  return children;
 }

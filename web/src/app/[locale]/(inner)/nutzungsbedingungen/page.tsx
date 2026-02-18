@@ -1,9 +1,23 @@
 import styles from './nutzungsbedingungen.module.css';
 import { getTermsContent } from '@/lib/legal-content';
+import type { Metadata } from 'next';
+import { buildPageMetadata } from '@/lib/seo';
 
 type Props = {
   params: Promise<{ locale: string }>;
 };
+
+export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  const { locale } = await params;
+  const content = getTermsContent(locale);
+
+  return buildPageMetadata({
+    locale,
+    internalPath: '/nutzungsbedingungen',
+    title: `${content.title} | Kura`,
+    description: content.subtitle,
+  });
+}
 
 export default async function NutzungsbedingungenPage({ params }: Props) {
   const { locale } = await params;

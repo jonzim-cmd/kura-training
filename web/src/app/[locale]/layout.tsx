@@ -4,19 +4,14 @@ import { getMessages, getTranslations } from 'next-intl/server';
 import { routing } from '@/i18n/routing';
 import { AuthProvider } from '@/lib/auth-context';
 import type { Metadata } from 'next';
+import { BASE_URL } from '@/lib/seo';
 
-const BASE_URL = 'https://withkura.com';
 const LOCALES = routing.locales;
-const DEFAULT_LOCALE = 'en';
 
 type Props = {
   children: React.ReactNode;
   params: Promise<{ locale: string }>;
 };
-
-function localePath(locale: string): string {
-  return locale === DEFAULT_LOCALE ? '' : `/${locale}`;
-}
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { locale } = await params;
@@ -24,30 +19,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
   const title = t('title');
   const description = t('description');
-  const url = `${BASE_URL}${localePath(locale)}`;
 
   return {
     title,
     description,
-    openGraph: {
-      title,
-      description,
-      url,
-      siteName: 'Kura',
-      locale: locale.replace('-', '_'),
-      type: 'website',
-    },
-    twitter: {
-      card: 'summary_large_image',
-      title,
-      description,
-    },
-    alternates: {
-      canonical: url,
-      languages: Object.fromEntries(
-        LOCALES.map((l) => [l, `${BASE_URL}${localePath(l)}`])
-      ),
-    },
     robots: {
       index: true,
       follow: true,

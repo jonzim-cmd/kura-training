@@ -1,9 +1,23 @@
 import styles from './datenschutz.module.css';
 import { getPrivacyContent } from '@/lib/legal-content';
+import type { Metadata } from 'next';
+import { buildPageMetadata } from '@/lib/seo';
 
 type Props = {
   params: Promise<{ locale: string }>;
 };
+
+export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  const { locale } = await params;
+  const content = getPrivacyContent(locale);
+
+  return buildPageMetadata({
+    locale,
+    internalPath: '/datenschutz',
+    title: `${content.title} | Kura`,
+    description: content.subtitle,
+  });
+}
 
 export default async function DatenschutzPage({ params }: Props) {
   const { locale } = await params;

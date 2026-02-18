@@ -6,14 +6,7 @@ export default function robots(): MetadataRoute.Robots {
       {
         userAgent: '*',
         allow: '/',
-        disallow: [
-          '/api/',
-          '/settings/',
-          '/login',
-          '/signup',
-          '/forgot-password',
-          '/reset-password',
-        ],
+        disallow: ['/api/'],
       },
     ],
     sitemap: 'https://withkura.com/sitemap.xml',

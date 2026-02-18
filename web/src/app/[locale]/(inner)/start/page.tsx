@@ -1,7 +1,27 @@
 import { useTranslations } from 'next-intl';
+import { getTranslations } from 'next-intl/server';
 import { Link } from '@/i18n/routing';
+import type { Metadata } from 'next';
 import styles from './start.module.css';
 import StoryMedia from './StoryMedia';
+import { buildPageMetadata } from '@/lib/seo';
+
+type Props = {
+  params: Promise<{ locale: string }>;
+};
+
+export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  const { locale } = await params;
+  const tStart = await getTranslations({ locale, namespace: 'start' });
+  const tMeta = await getTranslations({ locale, namespace: 'meta' });
+
+  return buildPageMetadata({
+    locale,
+    internalPath: '/start',
+    title: `${tStart('title')} | Kura`,
+    description: tMeta('description'),
+  });
+}
 
 export default function StartPage() {
   const t = useTranslations('start');
