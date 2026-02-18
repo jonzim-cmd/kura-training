@@ -3,6 +3,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use crate::extract::AppJson;
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use chrono_tz::Tz;
 use hmac::{Hmac, Mac};
@@ -5468,22 +5469,14 @@ fn map_json_rejection_to_validation(
 pub async fn resolve_visualization(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
-    req: Result<Json<AgentResolveVisualizationRequest>, JsonRejection>,
+    AppJson(req): AppJson<AgentResolveVisualizationRequest>,
 ) -> Result<Json<AgentResolveVisualizationResponse>, AppError> {
     require_scopes(
         &auth,
         &["agent:resolve"],
         "POST /v1/agent/visualization/resolve",
     )?;
-    let req = req
-        .map_err(|rejection| {
-            map_json_rejection_to_validation(
-                rejection,
-                "POST /v1/agent/visualization/resolve",
-                "Provide JSON with task_intent and optional visualization_spec/user_preference_override/complexity_hint fields.",
-            )
-        })?
-        .0;
+    let req = req;
     let user_id = auth.user_id;
     let task_intent = req.task_intent.trim();
     if task_intent.is_empty() {
@@ -5847,22 +5840,13 @@ pub async fn promote_observation_draft(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     Path(observation_id): Path<Uuid>,
-    req: Result<Json<AgentObservationDraftPromoteRequest>, JsonRejection>,
+    AppJson(req): AppJson<AgentObservationDraftPromoteRequest>,
 ) -> Result<(StatusCode, Json<AgentObservationDraftPromoteResponse>), AppError> {
     require_scopes(
         &auth,
         &["agent:write"],
         "POST /v1/agent/observation-drafts/{observation_id}/promote",
     )?;
-    let req = req
-        .map_err(|rejection| {
-            map_json_rejection_to_validation(
-                rejection,
-                "POST /v1/agent/observation-drafts/{observation_id}/promote",
-                "Provide JSON with event_type and data, e.g. {\"event_type\":\"set.logged\",\"data\":{...}}.",
-            )
-        })?
-        .0;
     let user_id = auth.user_id;
     let known_event_types = fetch_known_event_types_from_system_config(&state).await?;
     let event_type =
@@ -5986,22 +5970,13 @@ pub async fn resolve_observation_draft_as_observation(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     Path(observation_id): Path<Uuid>,
-    req: Result<Json<AgentObservationDraftResolveRequest>, JsonRejection>,
+    AppJson(req): AppJson<AgentObservationDraftResolveRequest>,
 ) -> Result<(StatusCode, Json<AgentObservationDraftResolveResponse>), AppError> {
     require_scopes(
         &auth,
         &["agent:write"],
         "POST /v1/agent/observation-drafts/{observation_id}/resolve-as-observation",
     )?;
-    let req = req
-        .map_err(|rejection| {
-            map_json_rejection_to_validation(
-                rejection,
-                "POST /v1/agent/observation-drafts/{observation_id}/resolve-as-observation",
-                "Provide JSON with a stable non-provisional dimension, e.g. {\"dimension\":\"competition_note\"}.",
-            )
-        })?
-        .0;
     let user_id = auth.user_id;
     let resolved_dimension = validate_observation_draft_resolve_dimension(&req.dimension)?;
     if let Some(confidence) = req.confidence {
@@ -6297,7 +6272,7 @@ pub async fn write_with_proof(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Json(req): Json<AgentWriteWithProofRequest>,
+    AppJson(req): AppJson<AgentWriteWithProofRequest>,
 ) -> Result<impl axum::response::IntoResponse, AppError> {
     require_scopes(&auth, &["agent:write"], "POST /v1/agent/write-with-proof")?;
     let language_mode = resolve_agent_language_mode(&auth, &headers);
@@ -7283,11 +7258,9 @@ mod tests {
     };
     use crate::auth::{AuthMethod, AuthenticatedUser};
     use crate::error::AppError;
+    use crate::extract::AppJson;
     use crate::state::AppState;
-    use axum::{
-        Json,
-        extract::{Path, State},
-    };
+    use axum::extract::{Path, State};
     use chrono::{Duration, Utc};
     use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
     use kura_core::projections::{Projection, ProjectionFreshness, ProjectionMeta};
@@ -8511,7 +8484,7 @@ mod tests {
             telemetry_session_id: Some("viz-e2e-visualize".to_string()),
         };
 
-        let response = resolve_visualization(State(state.clone()), auth.clone(), Ok(Json(req)))
+        let response = resolve_visualization(State(state.clone()), auth.clone(), AppJson(req))
             .await
             .expect("resolve visualization should succeed")
             .0;
@@ -8594,7 +8567,7 @@ mod tests {
             telemetry_session_id: Some("viz-e2e-invalid".to_string()),
         };
 
-        let error = resolve_visualization(State(state), auth, Ok(Json(req)))
+        let error = resolve_visualization(State(state), auth, AppJson(req))
             .await
             .expect_err("invalid json_path must fail");
 
@@ -8659,14 +8632,14 @@ mod tests {
         let rich_response = resolve_visualization(
             State(state.clone()),
             auth.clone(),
-            Ok(Json(AgentResolveVisualizationRequest {
+            AppJson(AgentResolveVisualizationRequest {
                 task_intent: "compare weekly trend".to_string(),
                 user_preference_override: None,
                 complexity_hint: None,
                 allow_rich_rendering: true,
                 visualization_spec: Some(base_spec.clone()),
                 telemetry_session_id: Some("viz-e2e-rich".to_string()),
-            })),
+            }),
         )
         .await
         .expect("rich rendering should succeed")
@@ -8680,14 +8653,14 @@ mod tests {
         let fallback_response = resolve_visualization(
             State(state.clone()),
             auth.clone(),
-            Ok(Json(AgentResolveVisualizationRequest {
+            AppJson(AgentResolveVisualizationRequest {
                 task_intent: "compare weekly trend".to_string(),
                 user_preference_override: None,
                 complexity_hint: None,
                 allow_rich_rendering: false,
                 visualization_spec: Some(base_spec),
                 telemetry_session_id: Some("viz-e2e-fallback".to_string()),
-            })),
+            }),
         )
         .await
         .expect("fallback rendering should succeed")
@@ -8721,14 +8694,14 @@ mod tests {
         let response = resolve_visualization(
             State(state.clone()),
             auth.clone(),
-            Ok(Json(AgentResolveVisualizationRequest {
+            AppJson(AgentResolveVisualizationRequest {
                 task_intent: "what is my latest bodyweight entry".to_string(),
                 user_preference_override: None,
                 complexity_hint: None,
                 allow_rich_rendering: true,
                 visualization_spec: None,
                 telemetry_session_id: Some("viz-e2e-skipped".to_string()),
-            })),
+            }),
         )
         .await
         .expect("skip path should succeed")

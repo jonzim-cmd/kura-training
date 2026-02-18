@@ -11,6 +11,7 @@ use utoipa_swagger_ui::SwaggerUi;
 
 mod auth;
 mod error;
+mod extract;
 mod middleware;
 mod privacy;
 mod routes;
