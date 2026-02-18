@@ -12,6 +12,7 @@ type Sport = (typeof SPORTS)[number];
 export default function LandingContent() {
   const t = useTranslations('landing');
   const tn = useTranslations('nav');
+  const tf = useTranslations('footer');
   const [activeSport, setActiveSport] = useState<Sport>('strength');
 
   return (
@@ -58,6 +59,9 @@ export default function LandingContent() {
             <Link href="/request-access" className={styles.bottomLink}>{tn('requestAccess')}</Link>
             <Link href="/login" className={styles.bottomLink}>{tn('login')}</Link>
             <Link href="/setup" className={styles.bottomLink}>{tn('setup')}</Link>
+            <Link href="/datenschutz" className={styles.bottomLink}>{tf('privacy')}</Link>
+            <Link href="/nutzungsbedingungen" className={styles.bottomLink}>{tf('terms')}</Link>
+            <Link href="/impressum" className={styles.bottomLink}>{tf('impressum')}</Link>
           </nav>
         </div>
       </section>

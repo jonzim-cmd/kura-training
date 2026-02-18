@@ -34,15 +34,15 @@
 }
 
 .surfaceSubtitle {
-  font-family: var(--font-mono);
-  font-weight: 300;
-  font-size: clamp(0.7rem, 1.5vw, 1rem);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.18);
-  margin-top: 1.2rem;
-  animation: surfaceIn 1.2s cubic-bezier(0.16, 1, 0.3, 1) both;
-  animation-delay: 0.4s;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* === SPORT TABS === */
