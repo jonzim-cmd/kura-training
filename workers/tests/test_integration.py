@@ -1422,6 +1422,9 @@ class TestInferenceNightlyRefitIntegration:
         other_user_id = str(uuid.uuid4())
         await create_test_user(db, test_user_id)
         await create_test_user(db, other_user_id)
+        # Isolate from seeded learning signals so the test cluster isn't
+        # pushed out by higher-scoring clusters from datagen data.
+        await db.execute("DELETE FROM events WHERE event_type = 'learning.signal.logged'")
         cluster_signature = "ls_backlog_bridge_signature"
         # Use current timestamps so test data lands in the latest ISO week,
         # ensuring _load_latest_week_clusters picks it up even when existing
