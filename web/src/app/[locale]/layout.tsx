@@ -7,6 +7,7 @@ import type { Metadata } from 'next';
 import { BASE_URL } from '@/lib/seo';
 
 const LOCALES = routing.locales;
+const GOOGLE_ADS_TAG_ID = 'AW-17957929836';
 
 type Props = {
   children: React.ReactNode;
@@ -85,6 +86,22 @@ export default async function LocaleLayout({ children, params }: Props) {
 
   return (
     <html lang={locale}>
+      <head>
+        <script
+          async
+          src={`https://www.googletagmanager.com/gtag/js?id=${GOOGLE_ADS_TAG_ID}`}
+        />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              window.dataLayer = window.dataLayer || [];
+              function gtag(){dataLayer.push(arguments);}
+              gtag('js', new Date());
+              gtag('config', '${GOOGLE_ADS_TAG_ID}');
+            `,
+          }}
+        />
+      </head>
       <body>
         <script
           type="application/ld+json"
