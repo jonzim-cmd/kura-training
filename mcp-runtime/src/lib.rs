@@ -24,6 +24,16 @@ const TOOL_CALL_DEDUPE_CACHE_TTL_SECS: u64 = 20;
 const RETRIEVAL_FSM_WINDOW_SECS: u64 = 90;
 const RETRIEVAL_FSM_MAX_RELOADS_PER_WINDOW: u32 = 12;
 const RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK: u32 = 3;
+const RETRIEVAL_FSM_WINDOW_SECS_MIN: u64 = 10;
+const RETRIEVAL_FSM_WINDOW_SECS_MAX: u64 = 3600;
+const RETRIEVAL_FSM_MAX_RELOADS_PER_WINDOW_MIN: u32 = 1;
+const RETRIEVAL_FSM_MAX_RELOADS_PER_WINDOW_MAX: u32 = 200;
+const RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK_MIN: u32 = 1;
+const RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK_MAX: u32 = 20;
+const RETRIEVAL_FSM_WINDOW_SECS_ENV: &str = "KURA_MCP_RETRIEVAL_FSM_WINDOW_SECS";
+const RETRIEVAL_FSM_MAX_RELOADS_ENV: &str = "KURA_MCP_RETRIEVAL_FSM_MAX_RELOADS";
+const RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK_ENV: &str =
+    "KURA_MCP_RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK";
 const RETRIEVAL_OBSERVABILITY_SCHEMA_VERSION: &str = "mcp_retrieval_observability.v1";
 
 /// Tracks which sessions have loaded agent context. Shared across HTTP requests
@@ -35,6 +45,27 @@ static TOOL_CALL_DEDUPE_CACHE: LazyLock<Mutex<HashMap<String, ToolCallDedupeEntr
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static RETRIEVAL_CONTROL_STATE: LazyLock<Mutex<HashMap<String, RetrievalControlState>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static RETRIEVAL_FSM_POLICY: LazyLock<RetrievalFsmPolicy> =
+    LazyLock::new(load_retrieval_fsm_policy_from_env);
+
+#[derive(Clone, Debug)]
+struct RetrievalFsmPolicy {
+    window_secs: u64,
+    max_reloads_per_window: u32,
+    max_repeat_signature_streak: u32,
+    configured_via_env: bool,
+}
+
+impl RetrievalFsmPolicy {
+    fn defaults() -> Self {
+        Self {
+            window_secs: RETRIEVAL_FSM_WINDOW_SECS,
+            max_reloads_per_window: RETRIEVAL_FSM_MAX_RELOADS_PER_WINDOW,
+            max_repeat_signature_streak: RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK,
+            configured_via_env: false,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 struct ToolCallDedupeEntry {
@@ -103,6 +134,64 @@ fn is_context_loaded(session_id: &str) -> bool {
     let cutoff = Instant::now() - std::time::Duration::from_secs(CONTEXT_SESSION_TTL_SECS);
     map.retain(|_, seen| *seen > cutoff);
     map.contains_key(session_id)
+}
+
+fn parse_env_u64_with_bounds(raw: Option<String>, min: u64, max: u64, default: u64) -> (u64, bool) {
+    match raw.and_then(|value| value.parse::<u64>().ok()) {
+        Some(parsed) => (parsed.clamp(min, max), true),
+        None => (default, false),
+    }
+}
+
+fn parse_env_u32_with_bounds(raw: Option<String>, min: u32, max: u32, default: u32) -> (u32, bool) {
+    match raw.and_then(|value| value.parse::<u32>().ok()) {
+        Some(parsed) => (parsed.clamp(min, max), true),
+        None => (default, false),
+    }
+}
+
+fn parse_retrieval_fsm_policy_from_raw(
+    window_raw: Option<String>,
+    max_reloads_raw: Option<String>,
+    max_repeat_raw: Option<String>,
+) -> RetrievalFsmPolicy {
+    let defaults = RetrievalFsmPolicy::defaults();
+    let (window_secs, window_set) = parse_env_u64_with_bounds(
+        window_raw,
+        RETRIEVAL_FSM_WINDOW_SECS_MIN,
+        RETRIEVAL_FSM_WINDOW_SECS_MAX,
+        defaults.window_secs,
+    );
+    let (max_reloads_per_window, max_reloads_set) = parse_env_u32_with_bounds(
+        max_reloads_raw,
+        RETRIEVAL_FSM_MAX_RELOADS_PER_WINDOW_MIN,
+        RETRIEVAL_FSM_MAX_RELOADS_PER_WINDOW_MAX,
+        defaults.max_reloads_per_window,
+    );
+    let (max_repeat_signature_streak, max_repeat_set) = parse_env_u32_with_bounds(
+        max_repeat_raw,
+        RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK_MIN,
+        RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK_MAX,
+        defaults.max_repeat_signature_streak,
+    );
+    RetrievalFsmPolicy {
+        window_secs,
+        max_reloads_per_window,
+        max_repeat_signature_streak,
+        configured_via_env: window_set || max_reloads_set || max_repeat_set,
+    }
+}
+
+fn load_retrieval_fsm_policy_from_env() -> RetrievalFsmPolicy {
+    parse_retrieval_fsm_policy_from_raw(
+        std::env::var(RETRIEVAL_FSM_WINDOW_SECS_ENV).ok(),
+        std::env::var(RETRIEVAL_FSM_MAX_RELOADS_ENV).ok(),
+        std::env::var(RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK_ENV).ok(),
+    )
+}
+
+fn retrieval_fsm_policy() -> &'static RetrievalFsmPolicy {
+    &RETRIEVAL_FSM_POLICY
 }
 
 fn with_retrieval_state_mut<R>(
@@ -201,15 +290,14 @@ fn maybe_block_retrieval_loop(
     session_id: &str,
     name: &str,
     args: &Map<String, Value>,
+    policy: &RetrievalFsmPolicy,
 ) -> Option<RetrievalGuardBlock> {
     if !is_retrieval_guarded_tool(name) {
         return None;
     }
 
     with_retrieval_state_mut(session_id, |state, now| {
-        if now.duration_since(state.window_started_at)
-            > Duration::from_secs(RETRIEVAL_FSM_WINDOW_SECS)
-        {
+        if now.duration_since(state.window_started_at) > Duration::from_secs(policy.window_secs) {
             reset_retrieval_window(state, now);
         }
 
@@ -238,13 +326,13 @@ fn maybe_block_retrieval_loop(
             state.last_retrieval_signature = Some(signature);
         }
 
-        if state.repeated_signature_streak > RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK {
+        if state.repeated_signature_streak > policy.max_repeat_signature_streak {
             state.stop_reason = Some("repeated_reload_signature".to_string());
             record_abort_reason(state, "repeated_reload_signature");
             return Some(retrieval_guard_for_reason("repeated_reload_signature"));
         }
 
-        if state.reload_count_in_window > RETRIEVAL_FSM_MAX_RELOADS_PER_WINDOW {
+        if state.reload_count_in_window > policy.max_reloads_per_window {
             state.stop_reason = Some("max_reloads_exceeded".to_string());
             record_abort_reason(state, "max_reloads_exceeded");
             return Some(retrieval_guard_for_reason("max_reloads_exceeded"));
@@ -289,14 +377,15 @@ fn observe_tool_error(session_id: &str, payload: &Value) {
     }
 }
 
-fn retrieval_observability_snapshot(session_id: &str) -> Value {
+fn retrieval_observability_snapshot(session_id: &str, policy: &RetrievalFsmPolicy) -> Value {
     with_retrieval_state_mut(session_id, |state, _| {
         json!({
             "schema_version": RETRIEVAL_OBSERVABILITY_SCHEMA_VERSION,
             "fsm": {
-                "window_seconds": RETRIEVAL_FSM_WINDOW_SECS,
-                "max_reloads_per_window": RETRIEVAL_FSM_MAX_RELOADS_PER_WINDOW,
-                "max_repeat_signature_streak": RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK,
+                "window_seconds": policy.window_secs,
+                "max_reloads_per_window": policy.max_reloads_per_window,
+                "max_repeat_signature_streak": policy.max_repeat_signature_streak,
+                "configured_via_env": policy.configured_via_env,
                 "reload_count_in_window": state.reload_count_in_window,
                 "current_reload_depth": state.current_reload_depth,
                 "max_reload_depth": state.max_reload_depth,
@@ -317,11 +406,15 @@ fn retrieval_observability_snapshot(session_id: &str) -> Value {
     })
 }
 
-fn attach_runtime_observability(session_id: &str, envelope: &mut Value) {
+fn attach_runtime_observability(
+    session_id: &str,
+    envelope: &mut Value,
+    policy: &RetrievalFsmPolicy,
+) {
     if let Some(obj) = envelope.as_object_mut() {
         obj.insert(
             "runtime_observability".to_string(),
-            retrieval_observability_snapshot(session_id),
+            retrieval_observability_snapshot(session_id, policy),
         );
     }
 }
@@ -917,7 +1010,11 @@ impl McpServer {
             None
         };
 
-        if let Some(guard_block) = maybe_block_retrieval_loop(&self.session_id, name, &args) {
+        let retrieval_policy = retrieval_fsm_policy();
+
+        if let Some(guard_block) =
+            maybe_block_retrieval_loop(&self.session_id, name, &args, retrieval_policy)
+        {
             let mut envelope = enforce_tool_payload_limit(
                 name,
                 json!({
@@ -931,15 +1028,15 @@ impl McpServer {
                         "docs_hint": guard_block.docs_hint,
                         "details": {
                             "reason_code": guard_block.reason_code,
-                            "reload_window_seconds": RETRIEVAL_FSM_WINDOW_SECS,
-                            "max_reloads_per_window": RETRIEVAL_FSM_MAX_RELOADS_PER_WINDOW,
-                            "max_repeat_signature_streak": RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK,
+                            "reload_window_seconds": retrieval_policy.window_secs,
+                            "max_reloads_per_window": retrieval_policy.max_reloads_per_window,
+                            "max_repeat_signature_streak": retrieval_policy.max_repeat_signature_streak,
                             "next_action": "Use narrower retrieval scope or advance next_cursor before retrying."
                         }
                     }
                 }),
             );
-            attach_runtime_observability(&self.session_id, &mut envelope);
+            attach_runtime_observability(&self.session_id, &mut envelope, retrieval_policy);
             return Ok(build_tool_call_response(
                 name,
                 envelope,
@@ -968,7 +1065,7 @@ impl McpServer {
                     }
                 }),
             );
-            attach_runtime_observability(&self.session_id, &mut envelope);
+            attach_runtime_observability(&self.session_id, &mut envelope, retrieval_policy);
             return Ok(build_tool_call_response(
                 name,
                 envelope,
@@ -986,7 +1083,7 @@ impl McpServer {
                 "window_ms": TOOL_CALL_DEDUPE_WINDOW_MS,
                 "age_ms": age_ms
             });
-            attach_runtime_observability(&self.session_id, &mut envelope);
+            attach_runtime_observability(&self.session_id, &mut envelope, retrieval_policy);
             return Ok(build_tool_call_response(
                 name,
                 envelope,
@@ -1013,7 +1110,7 @@ impl McpServer {
                 );
                 observe_tool_outcome(&self.session_id, name, &envelope);
                 store_tool_call_dedupe_entry(&self.session_id, name, &args, &envelope);
-                attach_runtime_observability(&self.session_id, &mut envelope);
+                attach_runtime_observability(&self.session_id, &mut envelope, retrieval_policy);
                 build_tool_call_response(name, envelope, false, context_warning)
             }
             Err(err) => {
@@ -1028,7 +1125,7 @@ impl McpServer {
                         "error": payload
                     }),
                 );
-                attach_runtime_observability(&self.session_id, &mut envelope);
+                attach_runtime_observability(&self.session_id, &mut envelope, retrieval_policy);
                 build_tool_call_response(name, envelope, true, context_warning)
             }
         })
@@ -1188,7 +1285,7 @@ impl McpServer {
             } else {
                 "Call kura_agent_context now to load this user's training data before responding."
             },
-            "retrieval_observability": retrieval_observability_snapshot(&self.session_id)
+            "retrieval_observability": retrieval_observability_snapshot(&self.session_id, retrieval_fsm_policy())
         });
 
         Ok(payload)
@@ -1205,7 +1302,7 @@ impl McpServer {
             "session": {
                 "session_id": self.session_id.clone(),
                 "context_loaded": is_context_loaded(&self.session_id),
-                "retrieval_observability": retrieval_observability_snapshot(&self.session_id)
+                "retrieval_observability": retrieval_observability_snapshot(&self.session_id, retrieval_fsm_policy())
             }
         }))
     }
@@ -5296,26 +5393,77 @@ mod tests {
     }
 
     #[test]
+    fn retrieval_fsm_policy_parser_uses_defaults_when_unset() {
+        let policy = parse_retrieval_fsm_policy_from_raw(None, None, None);
+        assert_eq!(policy.window_secs, RETRIEVAL_FSM_WINDOW_SECS);
+        assert_eq!(
+            policy.max_reloads_per_window,
+            RETRIEVAL_FSM_MAX_RELOADS_PER_WINDOW
+        );
+        assert_eq!(
+            policy.max_repeat_signature_streak,
+            RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK
+        );
+        assert!(!policy.configured_via_env);
+    }
+
+    #[test]
+    fn retrieval_fsm_policy_parser_accepts_env_overrides() {
+        let policy = parse_retrieval_fsm_policy_from_raw(
+            Some("120".to_string()),
+            Some("40".to_string()),
+            Some("5".to_string()),
+        );
+        assert_eq!(policy.window_secs, 120);
+        assert_eq!(policy.max_reloads_per_window, 40);
+        assert_eq!(policy.max_repeat_signature_streak, 5);
+        assert!(policy.configured_via_env);
+    }
+
+    #[test]
+    fn retrieval_fsm_policy_parser_clamps_out_of_range_values() {
+        let policy = parse_retrieval_fsm_policy_from_raw(
+            Some("99999".to_string()),
+            Some("0".to_string()),
+            Some("-3".to_string()),
+        );
+        assert_eq!(policy.window_secs, RETRIEVAL_FSM_WINDOW_SECS_MAX);
+        assert_eq!(
+            policy.max_reloads_per_window,
+            RETRIEVAL_FSM_MAX_RELOADS_PER_WINDOW_MIN
+        );
+        // negative numbers fail parsing and therefore fall back to default.
+        assert_eq!(
+            policy.max_repeat_signature_streak,
+            RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK
+        );
+        assert!(policy.configured_via_env);
+    }
+
+    #[test]
     fn retrieval_fsm_blocks_repeated_signature_loops() {
         let sid = format!("test-retrieval-repeat-{}", Uuid::now_v7());
         clear_retrieval_state(&sid);
+        let policy = RetrievalFsmPolicy::defaults();
         let args = json_to_map(json!({
             "projection_type": "exercise_progression",
             "limit": 50,
             "cursor": "abc"
         }));
 
-        for _ in 0..RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK {
+        for _ in 0..policy.max_repeat_signature_streak {
             observe_tool_call_start(&sid, "kura_projection_list", true);
-            assert!(maybe_block_retrieval_loop(&sid, "kura_projection_list", &args).is_none());
+            assert!(
+                maybe_block_retrieval_loop(&sid, "kura_projection_list", &args, &policy).is_none()
+            );
         }
 
         observe_tool_call_start(&sid, "kura_projection_list", true);
-        let blocked = maybe_block_retrieval_loop(&sid, "kura_projection_list", &args)
+        let blocked = maybe_block_retrieval_loop(&sid, "kura_projection_list", &args, &policy)
             .expect("loop guard should block repeated retrieval signature");
         assert_eq!(blocked.reason_code, "repeated_reload_signature");
 
-        let snapshot = retrieval_observability_snapshot(&sid);
+        let snapshot = retrieval_observability_snapshot(&sid, &policy);
         assert_eq!(snapshot["fsm"]["stop_reason"], "repeated_reload_signature");
         assert_eq!(
             snapshot["metrics"]["abort_reasons"]["repeated_reload_signature"],
@@ -5327,15 +5475,18 @@ mod tests {
     fn retrieval_fsm_blocks_when_max_reload_budget_is_exhausted() {
         let sid = format!("test-retrieval-max-{}", Uuid::now_v7());
         clear_retrieval_state(&sid);
+        let policy = RetrievalFsmPolicy::defaults();
 
-        for idx in 0..RETRIEVAL_FSM_MAX_RELOADS_PER_WINDOW {
+        for idx in 0..policy.max_reloads_per_window {
             let args = json_to_map(json!({
                 "projection_type": "exercise_progression",
                 "limit": 50,
                 "cursor": format!("cursor-{idx}")
             }));
             observe_tool_call_start(&sid, "kura_projection_list", true);
-            assert!(maybe_block_retrieval_loop(&sid, "kura_projection_list", &args).is_none());
+            assert!(
+                maybe_block_retrieval_loop(&sid, "kura_projection_list", &args, &policy).is_none()
+            );
         }
 
         let overflow_args = json_to_map(json!({
@@ -5344,8 +5495,9 @@ mod tests {
             "cursor": "cursor-overflow"
         }));
         observe_tool_call_start(&sid, "kura_projection_list", true);
-        let blocked = maybe_block_retrieval_loop(&sid, "kura_projection_list", &overflow_args)
-            .expect("loop guard should enforce max reload cap");
+        let blocked =
+            maybe_block_retrieval_loop(&sid, "kura_projection_list", &overflow_args, &policy)
+                .expect("loop guard should enforce max reload cap");
         assert_eq!(blocked.reason_code, "max_reloads_exceeded");
     }
 
@@ -5353,19 +5505,20 @@ mod tests {
     fn retrieval_fsm_resets_after_non_retrieval_step() {
         let sid = format!("test-retrieval-reset-{}", Uuid::now_v7());
         clear_retrieval_state(&sid);
+        let policy = RetrievalFsmPolicy::defaults();
 
         let args = json_to_map(json!({
             "projection_type": "exercise_progression",
             "limit": 50
         }));
         observe_tool_call_start(&sid, "kura_projection_list", true);
-        assert!(maybe_block_retrieval_loop(&sid, "kura_projection_list", &args).is_none());
+        assert!(maybe_block_retrieval_loop(&sid, "kura_projection_list", &args, &policy).is_none());
 
         observe_tool_call_start(&sid, "kura_discover", true);
         observe_tool_call_start(&sid, "kura_projection_list", true);
-        assert!(maybe_block_retrieval_loop(&sid, "kura_projection_list", &args).is_none());
+        assert!(maybe_block_retrieval_loop(&sid, "kura_projection_list", &args, &policy).is_none());
 
-        let snapshot = retrieval_observability_snapshot(&sid);
+        let snapshot = retrieval_observability_snapshot(&sid, &policy);
         assert_eq!(snapshot["fsm"]["reload_count_in_window"], 1);
         assert_eq!(snapshot["fsm"]["current_reload_depth"], 1);
         assert!(snapshot["fsm"]["stop_reason"].is_null());
@@ -5375,6 +5528,7 @@ mod tests {
     fn retrieval_observability_tracks_overflow_and_abort_reasons() {
         let sid = format!("test-retrieval-observe-{}", Uuid::now_v7());
         clear_retrieval_state(&sid);
+        let policy = RetrievalFsmPolicy::defaults();
 
         observe_tool_call_start(&sid, "kura_agent_context", false);
         observe_tool_outcome(
@@ -5405,7 +5559,7 @@ mod tests {
         observe_tool_call_start(&sid, "kura_projection_get", true);
         record_abort_reason_for_session(&sid, "context_required_before_write");
 
-        let snapshot = retrieval_observability_snapshot(&sid);
+        let snapshot = retrieval_observability_snapshot(&sid, &policy);
         assert_eq!(snapshot["metrics"]["context_calls"], 1);
         assert_eq!(snapshot["metrics"]["context_overflow_count"], 1);
         assert_eq!(snapshot["metrics"]["overflow_rate"], 1.0);
@@ -5421,6 +5575,7 @@ mod tests {
     fn retrieval_replay_contract_allows_progressive_reload_then_resets() {
         let sid = format!("test-retrieval-replay-ok-{}", Uuid::now_v7());
         clear_retrieval_state(&sid);
+        let policy = RetrievalFsmPolicy::defaults();
 
         let agent_context_args = json_to_map(json!({
             "budget_tokens": 1200,
@@ -5428,7 +5583,8 @@ mod tests {
         }));
         observe_tool_call_start(&sid, "kura_agent_context", true);
         assert!(
-            maybe_block_retrieval_loop(&sid, "kura_agent_context", &agent_context_args).is_none()
+            maybe_block_retrieval_loop(&sid, "kura_agent_context", &agent_context_args, &policy)
+                .is_none()
         );
 
         for cursor in [None, Some("c1"), Some("c2")] {
@@ -5440,11 +5596,13 @@ mod tests {
                 args.insert("cursor".to_string(), json!(value));
             }
             observe_tool_call_start(&sid, "kura_projection_list", true);
-            assert!(maybe_block_retrieval_loop(&sid, "kura_projection_list", &args).is_none());
+            assert!(
+                maybe_block_retrieval_loop(&sid, "kura_projection_list", &args, &policy).is_none()
+            );
         }
 
         observe_tool_call_start(&sid, "kura_discover", true);
-        let snapshot = retrieval_observability_snapshot(&sid);
+        let snapshot = retrieval_observability_snapshot(&sid, &policy);
         assert_eq!(snapshot["fsm"]["reload_count_in_window"], 0);
         assert_eq!(snapshot["fsm"]["current_reload_depth"], 0);
         assert!(snapshot["fsm"]["stop_reason"].is_null());
@@ -5454,6 +5612,7 @@ mod tests {
     fn retrieval_replay_contract_stops_cursor_loop_with_reason() {
         let sid = format!("test-retrieval-replay-loop-{}", Uuid::now_v7());
         clear_retrieval_state(&sid);
+        let policy = RetrievalFsmPolicy::defaults();
 
         let args = json_to_map(json!({
             "projection_type": "exercise_progression",
@@ -5461,16 +5620,18 @@ mod tests {
             "cursor": "same-cursor"
         }));
 
-        for _ in 0..RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK {
+        for _ in 0..policy.max_repeat_signature_streak {
             observe_tool_call_start(&sid, "kura_projection_list", true);
-            assert!(maybe_block_retrieval_loop(&sid, "kura_projection_list", &args).is_none());
+            assert!(
+                maybe_block_retrieval_loop(&sid, "kura_projection_list", &args, &policy).is_none()
+            );
         }
         observe_tool_call_start(&sid, "kura_projection_list", true);
-        let blocked = maybe_block_retrieval_loop(&sid, "kura_projection_list", &args)
+        let blocked = maybe_block_retrieval_loop(&sid, "kura_projection_list", &args, &policy)
             .expect("loop replay should terminate with repeated signature stop reason");
         assert_eq!(blocked.reason_code, "repeated_reload_signature");
 
-        let snapshot = retrieval_observability_snapshot(&sid);
+        let snapshot = retrieval_observability_snapshot(&sid, &policy);
         assert_eq!(snapshot["fsm"]["stop_reason"], "repeated_reload_signature");
         assert_eq!(
             snapshot["metrics"]["abort_reasons"]["repeated_reload_signature"],
