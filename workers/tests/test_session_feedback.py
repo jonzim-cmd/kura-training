@@ -152,6 +152,18 @@ def test_load_to_enjoyment_alignment_positive_correlation():
     assert alignment["correlation"] > 0
 
 
+def test_load_to_enjoyment_alignment_prefers_modality_agnostic_load_score():
+    entries = [
+        {"enjoyment": 3.0, "session_load": {"load_score": 4.0, "total_volume_kg": 0.0}},
+        {"enjoyment": 5.0, "session_load": {"load_score": 7.5, "total_volume_kg": 0.0}},
+        {"enjoyment": 7.0, "session_load": {"load_score": 10.0, "total_volume_kg": 0.0}},
+    ]
+    alignment = _compute_load_to_enjoyment_alignment(entries)
+    assert alignment["status"] == "positive"
+    assert alignment["correlation"] is not None
+    assert alignment["correlation"] > 0
+
+
 def test_build_projection_includes_ingestion_output_and_trends():
     feedback_rows = [
         _feedback_row(
@@ -244,3 +256,5 @@ def test_build_projection_accepts_session_logged_expanded_rows_for_load():
     assert recent["session_id"] == "track-1"
     assert recent["session_load"]["total_sets"] == 8
     assert recent["session_load"]["total_reps"] == 0
+    assert recent["session_load"]["total_duration_seconds"] > 0.0
+    assert recent["session_load"]["load_score"] > 0.0

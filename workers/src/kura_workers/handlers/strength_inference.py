@@ -152,8 +152,9 @@ async def update_strength_inference(
                 SELECT id, timestamp, data, metadata
                 FROM events
                 WHERE id = %s
+                  AND user_id = %s
                 """,
-                (event_id,),
+                (event_id, user_id),
             )
             row = await cur.fetchone()
             if row is None:
@@ -225,15 +226,16 @@ async def update_strength_inference(
                         break
             if not raw_key:
                 target_event_id = str(event_data.get("target_event_id") or "").strip()
+                target_row: dict[str, Any] | None = None
                 if target_event_id:
                     async with conn.cursor(row_factory=dict_row) as cur:
                         await cur.execute(
-                            "SELECT data FROM events WHERE id = %s",
-                            (target_event_id,),
+                            "SELECT data FROM events WHERE id = %s AND user_id = %s",
+                            (target_event_id, user_id),
                         )
                         target_row = await cur.fetchone()
-                    if target_row and isinstance(target_row.get("data"), dict):
-                        raw_key = resolve_exercise_key(target_row["data"])
+                if target_row and isinstance(target_row.get("data"), dict):
+                    raw_key = resolve_exercise_key(target_row["data"])
             if not raw_key:
                 await _record(
                     "skipped",

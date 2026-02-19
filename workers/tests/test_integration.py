@@ -899,6 +899,63 @@ class TestInferenceIntegration:
         assert readiness_run["status"] == "success"
         assert readiness_run["engine"] == "normal_normal"
 
+    async def test_strength_inference_event_lookup_is_user_scoped(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        other_user_id = str(uuid.uuid4())
+        await create_test_user(db, other_user_id)
+        foreign_event_id = await insert_event(db, other_user_id, "set.logged", {
+            "exercise_id": "bench_press",
+            "exercise": "Bench Press",
+            "weight_kg": 90,
+            "reps": 5,
+        }, "TIMESTAMP '2026-02-10 10:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_strength_inference(db, {
+            "user_id": test_user_id,
+            "event_type": "set.logged",
+            "event_id": foreign_event_id,
+        })
+        await db.execute("RESET ROLE")
+
+        projection = await get_projection(db, test_user_id, "strength_inference", "bench_press")
+        assert projection is None
+        run = await get_latest_inference_run(db, test_user_id, "strength_inference", "unknown")
+        assert run is not None
+        assert run["status"] == "skipped"
+        assert run["diagnostics"]["skip_reason"] == "event_not_found"
+
+    async def test_strength_inference_set_correction_target_lookup_is_user_scoped(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        other_user_id = str(uuid.uuid4())
+        await create_test_user(db, other_user_id)
+        foreign_target_event_id = await insert_event(db, other_user_id, "set.logged", {
+            "exercise_id": "bench_press",
+            "exercise": "Bench Press",
+            "weight_kg": 95,
+            "reps": 5,
+        }, "TIMESTAMP '2026-02-10 10:00:00+01'")
+        correction_event_id = await insert_event(db, test_user_id, "set.corrected", {
+            "target_event_id": foreign_target_event_id,
+            "changed_fields": {"weight_kg": 96},
+            "reason": "typo",
+        }, "TIMESTAMP '2026-02-10 10:05:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_strength_inference(db, {
+            "user_id": test_user_id,
+            "event_type": "set.corrected",
+            "event_id": correction_event_id,
+        })
+        await db.execute("RESET ROLE")
+
+        projection = await get_projection(db, test_user_id, "strength_inference", "bench_press")
+        assert projection is None
+        run = await get_latest_inference_run(db, test_user_id, "strength_inference", "unknown")
+        assert run is not None
+        assert run["status"] == "skipped"
+        assert run["diagnostics"]["skip_reason"] == "set_correction_without_resolved_exercise"
+
     async def test_readiness_inference_uses_timezone_first_day_grouping(self, db, test_user_id):
         await create_test_user(db, test_user_id)
         await insert_event(db, test_user_id, "preference.set", {

@@ -18,6 +18,11 @@ from psycopg.rows import dict_row
 from ..registry import projection_handler
 from ..session_block_expansion import expand_session_logged_rows
 from ..set_corrections import apply_set_correction_chain
+from ..training_load_calibration_v1 import (
+    active_calibration_version,
+    calibration_profile_for_version,
+    compute_row_load_components_v2,
+)
 from ..utils import get_retracted_event_ids, merge_observed_attributes, separate_known_unknown
 
 logger = logging.getLogger(__name__)
@@ -334,7 +339,10 @@ def _compute_load_to_enjoyment_alignment(entries: list[dict[str, Any]]) -> dict[
 
     for entry in entries:
         enjoyment = entry.get("enjoyment")
-        load = (entry.get("session_load") or {}).get("total_volume_kg")
+        session_load = entry.get("session_load") or {}
+        load = session_load.get("load_score")
+        if load is None:
+            load = session_load.get("total_volume_kg")
         if enjoyment is None or load is None:
             continue
         loads.append(float(load))
@@ -354,8 +362,17 @@ def _compute_load_to_enjoyment_alignment(entries: list[dict[str, Any]]) -> dict[
 
 
 def _aggregate_session_load(set_rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    profile = calibration_profile_for_version(active_calibration_version())
     by_session: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"total_sets": 0, "total_reps": 0, "total_volume_kg": 0.0}
+        lambda: {
+            "total_sets": 0,
+            "total_reps": 0,
+            "total_volume_kg": 0.0,
+            "total_duration_seconds": 0.0,
+            "total_distance_meters": 0.0,
+            "total_contacts": 0,
+            "load_score": 0.0,
+        }
     )
 
     for row in set_rows:
@@ -377,9 +394,28 @@ def _aggregate_session_load(set_rows: list[dict[str, Any]]) -> dict[str, dict[st
         bucket["total_sets"] += 1
         bucket["total_reps"] += max(reps, 0)
         bucket["total_volume_kg"] += max(weight, 0.0) * max(reps, 0)
+        components = compute_row_load_components_v2(
+            data=data if isinstance(data, dict) else {},
+            profile=profile,
+        )
+        bucket["total_duration_seconds"] += max(
+            float(components.get("duration_seconds", 0.0) or 0.0),
+            0.0,
+        )
+        bucket["total_distance_meters"] += max(
+            float(components.get("distance_meters", 0.0) or 0.0),
+            0.0,
+        )
+        bucket["total_contacts"] += int(
+            round(max(float(components.get("contacts", 0.0) or 0.0), 0.0))
+        )
+        bucket["load_score"] += max(float(components.get("load_score", 0.0) or 0.0), 0.0)
 
     for bucket in by_session.values():
         bucket["total_volume_kg"] = _round2(bucket["total_volume_kg"])
+        bucket["total_duration_seconds"] = _round2(bucket["total_duration_seconds"])
+        bucket["total_distance_meters"] = _round2(bucket["total_distance_meters"])
+        bucket["load_score"] = _round2(bucket["load_score"])
 
     return by_session
 
@@ -522,6 +558,10 @@ def _build_session_feedback_projection(
                         "total_sets": "integer",
                         "total_reps": "integer",
                         "total_volume_kg": "number",
+                        "total_duration_seconds": "number",
+                        "total_distance_meters": "number",
+                        "total_contacts": "integer",
+                        "load_score": "number",
                     },
                 }
             ],
