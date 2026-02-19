@@ -21,6 +21,10 @@ const COMPACT_ENDPOINT_PREVIEW_MAX_ITEMS: usize = 120;
 const CONTEXT_SESSION_TTL_SECS: u64 = 3600;
 const TOOL_CALL_DEDUPE_WINDOW_MS: u64 = 2500;
 const TOOL_CALL_DEDUPE_CACHE_TTL_SECS: u64 = 20;
+const RETRIEVAL_FSM_WINDOW_SECS: u64 = 90;
+const RETRIEVAL_FSM_MAX_RELOADS_PER_WINDOW: u32 = 12;
+const RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK: u32 = 3;
+const RETRIEVAL_OBSERVABILITY_SCHEMA_VERSION: &str = "mcp_retrieval_observability.v1";
 
 /// Tracks which sessions have loaded agent context. Shared across HTTP requests
 /// (where each request creates a new McpServer) and stdio (single long-lived server).
@@ -29,11 +33,63 @@ static CONTEXT_SESSIONS: LazyLock<Mutex<HashMap<String, Instant>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static TOOL_CALL_DEDUPE_CACHE: LazyLock<Mutex<HashMap<String, ToolCallDedupeEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static RETRIEVAL_CONTROL_STATE: LazyLock<Mutex<HashMap<String, RetrievalControlState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Clone, Debug)]
 struct ToolCallDedupeEntry {
     created_at: Instant,
     envelope: Value,
+}
+
+#[derive(Clone, Debug)]
+struct RetrievalControlState {
+    last_seen: Instant,
+    window_started_at: Instant,
+    reload_count_in_window: u32,
+    current_reload_depth: u32,
+    max_reload_depth: u32,
+    total_reload_depth: u64,
+    reload_depth_samples: u64,
+    last_retrieval_signature: Option<String>,
+    repeated_signature_streak: u32,
+    stop_reason: Option<String>,
+    total_tool_calls: u64,
+    context_loaded_calls: u64,
+    context_calls: u64,
+    context_overflow_count: u64,
+    projection_page_calls: u64,
+    abort_reasons: BTreeMap<String, u64>,
+}
+
+impl RetrievalControlState {
+    fn new(now: Instant) -> Self {
+        Self {
+            last_seen: now,
+            window_started_at: now,
+            reload_count_in_window: 0,
+            current_reload_depth: 0,
+            max_reload_depth: 0,
+            total_reload_depth: 0,
+            reload_depth_samples: 0,
+            last_retrieval_signature: None,
+            repeated_signature_streak: 0,
+            stop_reason: None,
+            total_tool_calls: 0,
+            context_loaded_calls: 0,
+            context_calls: 0,
+            context_overflow_count: 0,
+            projection_page_calls: 0,
+            abort_reasons: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RetrievalGuardBlock {
+    reason_code: &'static str,
+    message: &'static str,
+    docs_hint: &'static str,
 }
 
 fn mark_context_loaded(session_id: &str) {
@@ -47,6 +103,235 @@ fn is_context_loaded(session_id: &str) -> bool {
     let cutoff = Instant::now() - std::time::Duration::from_secs(CONTEXT_SESSION_TTL_SECS);
     map.retain(|_, seen| *seen > cutoff);
     map.contains_key(session_id)
+}
+
+fn with_retrieval_state_mut<R>(
+    session_id: &str,
+    f: impl FnOnce(&mut RetrievalControlState, Instant) -> R,
+) -> R {
+    let now = Instant::now();
+    let mut map = RETRIEVAL_CONTROL_STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let cutoff = now - Duration::from_secs(CONTEXT_SESSION_TTL_SECS);
+    map.retain(|_, state| state.last_seen > cutoff);
+    let state = map
+        .entry(session_id.to_string())
+        .or_insert_with(|| RetrievalControlState::new(now));
+    state.last_seen = now;
+    f(state, now)
+}
+
+fn reset_retrieval_window(state: &mut RetrievalControlState, now: Instant) {
+    state.window_started_at = now;
+    state.reload_count_in_window = 0;
+    state.current_reload_depth = 0;
+    state.last_retrieval_signature = None;
+    state.repeated_signature_streak = 0;
+    state.stop_reason = None;
+}
+
+fn saturating_ratio(numerator: u64, denominator: u64) -> f64 {
+    if denominator == 0 {
+        return 0.0;
+    }
+    let raw = numerator as f64 / denominator as f64;
+    (raw * 10_000.0).round() / 10_000.0
+}
+
+fn is_retrieval_guarded_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "kura_agent_context"
+            | "kura_projection_list"
+            | "kura_projection_get"
+            | "kura_system_manifest"
+            | "kura_system_section_get"
+    )
+}
+
+fn retrieval_signature(name: &str, args: &Map<String, Value>) -> String {
+    format!("{name}|{}", stable_dedupe_args_signature(args))
+}
+
+fn observe_tool_call_start(session_id: &str, name: &str, context_loaded: bool) {
+    with_retrieval_state_mut(session_id, |state, now| {
+        state.total_tool_calls = state.total_tool_calls.saturating_add(1);
+        if context_loaded {
+            state.context_loaded_calls = state.context_loaded_calls.saturating_add(1);
+        }
+        if !is_retrieval_guarded_tool(name) {
+            reset_retrieval_window(state, now);
+        }
+    });
+}
+
+fn record_abort_reason(state: &mut RetrievalControlState, reason: &str) {
+    let entry = state.abort_reasons.entry(reason.to_string()).or_insert(0);
+    *entry = entry.saturating_add(1);
+}
+
+fn record_abort_reason_for_session(session_id: &str, reason: &str) {
+    with_retrieval_state_mut(session_id, |state, _| {
+        record_abort_reason(state, reason);
+    });
+}
+
+fn retrieval_guard_for_reason(reason_code: &str) -> RetrievalGuardBlock {
+    match reason_code {
+        "max_reloads_exceeded" => RetrievalGuardBlock {
+            reason_code: "max_reloads_exceeded",
+            message: "Retrieval loop guard blocked more reload attempts in this window.",
+            docs_hint: "Switch to a narrower query, use next_cursor progression, or continue with available context before reloading.",
+        },
+        "repeated_reload_signature" => RetrievalGuardBlock {
+            reason_code: "repeated_reload_signature",
+            message: "Retrieval loop guard blocked repeated identical reload calls.",
+            docs_hint: "Do not retry the same retrieval signature. Advance cursor or change scope before retry.",
+        },
+        _ => RetrievalGuardBlock {
+            reason_code: "loop_guard_reentry_blocked",
+            message: "Retrieval loop guard is active for this repeated call signature.",
+            docs_hint: "Adjust retrieval arguments before retrying.",
+        },
+    }
+}
+
+fn maybe_block_retrieval_loop(
+    session_id: &str,
+    name: &str,
+    args: &Map<String, Value>,
+) -> Option<RetrievalGuardBlock> {
+    if !is_retrieval_guarded_tool(name) {
+        return None;
+    }
+
+    with_retrieval_state_mut(session_id, |state, now| {
+        if now.duration_since(state.window_started_at)
+            > Duration::from_secs(RETRIEVAL_FSM_WINDOW_SECS)
+        {
+            reset_retrieval_window(state, now);
+        }
+
+        let signature = retrieval_signature(name, args);
+        if let Some(active_reason) = state.stop_reason.clone() {
+            if state.last_retrieval_signature.as_deref() == Some(signature.as_str()) {
+                record_abort_reason(state, &active_reason);
+                return Some(retrieval_guard_for_reason(&active_reason));
+            }
+            state.stop_reason = None;
+            state.repeated_signature_streak = 0;
+        }
+
+        state.reload_count_in_window = state.reload_count_in_window.saturating_add(1);
+        state.current_reload_depth = state.current_reload_depth.saturating_add(1);
+        state.max_reload_depth = state.max_reload_depth.max(state.current_reload_depth);
+        state.total_reload_depth = state
+            .total_reload_depth
+            .saturating_add(u64::from(state.current_reload_depth));
+        state.reload_depth_samples = state.reload_depth_samples.saturating_add(1);
+
+        if state.last_retrieval_signature.as_deref() == Some(signature.as_str()) {
+            state.repeated_signature_streak = state.repeated_signature_streak.saturating_add(1);
+        } else {
+            state.repeated_signature_streak = 1;
+            state.last_retrieval_signature = Some(signature);
+        }
+
+        if state.repeated_signature_streak > RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK {
+            state.stop_reason = Some("repeated_reload_signature".to_string());
+            record_abort_reason(state, "repeated_reload_signature");
+            return Some(retrieval_guard_for_reason("repeated_reload_signature"));
+        }
+
+        if state.reload_count_in_window > RETRIEVAL_FSM_MAX_RELOADS_PER_WINDOW {
+            state.stop_reason = Some("max_reloads_exceeded".to_string());
+            record_abort_reason(state, "max_reloads_exceeded");
+            return Some(retrieval_guard_for_reason("max_reloads_exceeded"));
+        }
+
+        None
+    })
+}
+
+fn envelope_contains_context_overflow(envelope: &Value) -> bool {
+    envelope
+        .pointer("/data/response/body/meta/overflow")
+        .is_some()
+        || envelope.pointer("/data/response/body/overflow").is_some()
+}
+
+fn envelope_uses_projection_paging(envelope: &Value) -> bool {
+    envelope
+        .pointer("/data/request/path")
+        .and_then(Value::as_str)
+        .map(|path| path.ends_with("/paged"))
+        .unwrap_or(false)
+}
+
+fn observe_tool_outcome(session_id: &str, name: &str, envelope: &Value) {
+    with_retrieval_state_mut(session_id, |state, _| {
+        if name == "kura_agent_context" {
+            state.context_calls = state.context_calls.saturating_add(1);
+            if envelope_contains_context_overflow(envelope) {
+                state.context_overflow_count = state.context_overflow_count.saturating_add(1);
+            }
+        }
+        if name == "kura_projection_list" && envelope_uses_projection_paging(envelope) {
+            state.projection_page_calls = state.projection_page_calls.saturating_add(1);
+        }
+    });
+}
+
+fn observe_tool_error(session_id: &str, payload: &Value) {
+    if let Some(reason) = payload.get("error").and_then(Value::as_str) {
+        record_abort_reason_for_session(session_id, reason);
+    }
+}
+
+fn retrieval_observability_snapshot(session_id: &str) -> Value {
+    with_retrieval_state_mut(session_id, |state, _| {
+        json!({
+            "schema_version": RETRIEVAL_OBSERVABILITY_SCHEMA_VERSION,
+            "fsm": {
+                "window_seconds": RETRIEVAL_FSM_WINDOW_SECS,
+                "max_reloads_per_window": RETRIEVAL_FSM_MAX_RELOADS_PER_WINDOW,
+                "max_repeat_signature_streak": RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK,
+                "reload_count_in_window": state.reload_count_in_window,
+                "current_reload_depth": state.current_reload_depth,
+                "max_reload_depth": state.max_reload_depth,
+                "stop_reason": state.stop_reason.clone()
+            },
+            "metrics": {
+                "total_tool_calls": state.total_tool_calls,
+                "context_loaded_calls": state.context_loaded_calls,
+                "context_hit_rate": saturating_ratio(state.context_loaded_calls, state.total_tool_calls),
+                "context_calls": state.context_calls,
+                "context_overflow_count": state.context_overflow_count,
+                "overflow_rate": saturating_ratio(state.context_overflow_count, state.context_calls),
+                "projection_page_calls": state.projection_page_calls,
+                "avg_reload_depth": saturating_ratio(state.total_reload_depth, state.reload_depth_samples),
+                "abort_reasons": state.abort_reasons.clone()
+            }
+        })
+    })
+}
+
+fn attach_runtime_observability(session_id: &str, envelope: &mut Value) {
+    if let Some(obj) = envelope.as_object_mut() {
+        obj.insert(
+            "runtime_observability".to_string(),
+            retrieval_observability_snapshot(session_id),
+        );
+    }
+}
+
+#[cfg(test)]
+fn clear_retrieval_state(session_id: &str) {
+    let mut map = RETRIEVAL_CONTROL_STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    map.remove(session_id);
 }
 
 fn canonicalize_json(value: &Value) -> Value {
@@ -621,6 +906,7 @@ impl McpServer {
         };
 
         let context_loaded = is_context_loaded(&self.session_id);
+        observe_tool_call_start(&self.session_id, name, context_loaded);
         // Context gate: remind on EVERY tool until agent has loaded context.
         // Only kura_agent_context itself is exempt (it's what loads context — warning would be circular).
         let context_warning = if should_emit_context_warning(name, context_loaded) {
@@ -631,8 +917,40 @@ impl McpServer {
             None
         };
 
+        if let Some(guard_block) = maybe_block_retrieval_loop(&self.session_id, name, &args) {
+            let mut envelope = enforce_tool_payload_limit(
+                name,
+                json!({
+                    "status": "error",
+                    "phase": "blocked_precondition",
+                    "tool": name,
+                    "error": {
+                        "error": "retrieval_loop_guard_blocked",
+                        "message": guard_block.message,
+                        "field": "arguments",
+                        "docs_hint": guard_block.docs_hint,
+                        "details": {
+                            "reason_code": guard_block.reason_code,
+                            "reload_window_seconds": RETRIEVAL_FSM_WINDOW_SECS,
+                            "max_reloads_per_window": RETRIEVAL_FSM_MAX_RELOADS_PER_WINDOW,
+                            "max_repeat_signature_streak": RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK,
+                            "next_action": "Use narrower retrieval scope or advance next_cursor before retrying."
+                        }
+                    }
+                }),
+            );
+            attach_runtime_observability(&self.session_id, &mut envelope);
+            return Ok(build_tool_call_response(
+                name,
+                envelope,
+                true,
+                context_warning,
+            ));
+        }
+
         if is_context_write_blocked_tool(name) && !context_loaded {
-            let envelope = enforce_tool_payload_limit(
+            record_abort_reason_for_session(&self.session_id, "context_required_before_write");
+            let mut envelope = enforce_tool_payload_limit(
                 name,
                 json!({
                     "status": "error",
@@ -650,6 +968,7 @@ impl McpServer {
                     }
                 }),
             );
+            attach_runtime_observability(&self.session_id, &mut envelope);
             return Ok(build_tool_call_response(
                 name,
                 envelope,
@@ -667,6 +986,7 @@ impl McpServer {
                 "window_ms": TOOL_CALL_DEDUPE_WINDOW_MS,
                 "age_ms": age_ms
             });
+            attach_runtime_observability(&self.session_id, &mut envelope);
             return Ok(build_tool_call_response(
                 name,
                 envelope,
@@ -682,7 +1002,7 @@ impl McpServer {
                     mark_context_loaded(&self.session_id);
                 }
                 let status = tool_completion_status(&payload);
-                let envelope = enforce_tool_payload_limit(
+                let mut envelope = enforce_tool_payload_limit(
                     name,
                     json!({
                         "status": status,
@@ -691,12 +1011,15 @@ impl McpServer {
                         "data": payload
                     }),
                 );
+                observe_tool_outcome(&self.session_id, name, &envelope);
                 store_tool_call_dedupe_entry(&self.session_id, name, &args, &envelope);
+                attach_runtime_observability(&self.session_id, &mut envelope);
                 build_tool_call_response(name, envelope, false, context_warning)
             }
             Err(err) => {
                 let payload = err.to_value();
-                let envelope = enforce_tool_payload_limit(
+                observe_tool_error(&self.session_id, &payload);
+                let mut envelope = enforce_tool_payload_limit(
                     name,
                     json!({
                         "status": "error",
@@ -705,6 +1028,7 @@ impl McpServer {
                         "error": payload
                     }),
                 );
+                attach_runtime_observability(&self.session_id, &mut envelope);
                 build_tool_call_response(name, envelope, true, context_warning)
             }
         })
@@ -857,12 +1181,14 @@ impl McpServer {
         // Session hint: tell the agent whether context is loaded and what to do next.
         let context_loaded = is_context_loaded(&self.session_id);
         payload["session"] = json!({
+            "session_id": self.session_id.clone(),
             "context_loaded": context_loaded,
             "next": if context_loaded {
                 "Context is loaded. You can respond to the user."
             } else {
                 "Call kura_agent_context now to load this user's training data before responding."
-            }
+            },
+            "retrieval_observability": retrieval_observability_snapshot(&self.session_id)
         });
 
         Ok(payload)
@@ -875,7 +1201,12 @@ impl McpServer {
                 "version": env!("CARGO_PKG_VERSION"),
                 "protocol_version": MCP_PROTOCOL_VERSION
             },
-            "capability_negotiation": self.capability_profile.to_value()
+            "capability_negotiation": self.capability_profile.to_value(),
+            "session": {
+                "session_id": self.session_id.clone(),
+                "context_loaded": is_context_loaded(&self.session_id),
+                "retrieval_observability": retrieval_observability_snapshot(&self.session_id)
+            }
         }))
     }
 
@@ -4961,6 +5292,189 @@ mod tests {
         assert_ne!(
             a.session_id, b.session_id,
             "each stdio server should get a unique session_id"
+        );
+    }
+
+    #[test]
+    fn retrieval_fsm_blocks_repeated_signature_loops() {
+        let sid = format!("test-retrieval-repeat-{}", Uuid::now_v7());
+        clear_retrieval_state(&sid);
+        let args = json_to_map(json!({
+            "projection_type": "exercise_progression",
+            "limit": 50,
+            "cursor": "abc"
+        }));
+
+        for _ in 0..RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK {
+            observe_tool_call_start(&sid, "kura_projection_list", true);
+            assert!(maybe_block_retrieval_loop(&sid, "kura_projection_list", &args).is_none());
+        }
+
+        observe_tool_call_start(&sid, "kura_projection_list", true);
+        let blocked = maybe_block_retrieval_loop(&sid, "kura_projection_list", &args)
+            .expect("loop guard should block repeated retrieval signature");
+        assert_eq!(blocked.reason_code, "repeated_reload_signature");
+
+        let snapshot = retrieval_observability_snapshot(&sid);
+        assert_eq!(snapshot["fsm"]["stop_reason"], "repeated_reload_signature");
+        assert_eq!(
+            snapshot["metrics"]["abort_reasons"]["repeated_reload_signature"],
+            1
+        );
+    }
+
+    #[test]
+    fn retrieval_fsm_blocks_when_max_reload_budget_is_exhausted() {
+        let sid = format!("test-retrieval-max-{}", Uuid::now_v7());
+        clear_retrieval_state(&sid);
+
+        for idx in 0..RETRIEVAL_FSM_MAX_RELOADS_PER_WINDOW {
+            let args = json_to_map(json!({
+                "projection_type": "exercise_progression",
+                "limit": 50,
+                "cursor": format!("cursor-{idx}")
+            }));
+            observe_tool_call_start(&sid, "kura_projection_list", true);
+            assert!(maybe_block_retrieval_loop(&sid, "kura_projection_list", &args).is_none());
+        }
+
+        let overflow_args = json_to_map(json!({
+            "projection_type": "exercise_progression",
+            "limit": 50,
+            "cursor": "cursor-overflow"
+        }));
+        observe_tool_call_start(&sid, "kura_projection_list", true);
+        let blocked = maybe_block_retrieval_loop(&sid, "kura_projection_list", &overflow_args)
+            .expect("loop guard should enforce max reload cap");
+        assert_eq!(blocked.reason_code, "max_reloads_exceeded");
+    }
+
+    #[test]
+    fn retrieval_fsm_resets_after_non_retrieval_step() {
+        let sid = format!("test-retrieval-reset-{}", Uuid::now_v7());
+        clear_retrieval_state(&sid);
+
+        let args = json_to_map(json!({
+            "projection_type": "exercise_progression",
+            "limit": 50
+        }));
+        observe_tool_call_start(&sid, "kura_projection_list", true);
+        assert!(maybe_block_retrieval_loop(&sid, "kura_projection_list", &args).is_none());
+
+        observe_tool_call_start(&sid, "kura_discover", true);
+        observe_tool_call_start(&sid, "kura_projection_list", true);
+        assert!(maybe_block_retrieval_loop(&sid, "kura_projection_list", &args).is_none());
+
+        let snapshot = retrieval_observability_snapshot(&sid);
+        assert_eq!(snapshot["fsm"]["reload_count_in_window"], 1);
+        assert_eq!(snapshot["fsm"]["current_reload_depth"], 1);
+        assert!(snapshot["fsm"]["stop_reason"].is_null());
+    }
+
+    #[test]
+    fn retrieval_observability_tracks_overflow_and_abort_reasons() {
+        let sid = format!("test-retrieval-observe-{}", Uuid::now_v7());
+        clear_retrieval_state(&sid);
+
+        observe_tool_call_start(&sid, "kura_agent_context", false);
+        observe_tool_outcome(
+            &sid,
+            "kura_agent_context",
+            &json!({
+                "data": {
+                    "response": {
+                        "body": {
+                            "meta": {
+                                "overflow": { "reason": "budget_exceeded_optional_sections_omitted" }
+                            }
+                        }
+                    }
+                }
+            }),
+        );
+        observe_tool_call_start(&sid, "kura_projection_list", true);
+        observe_tool_outcome(
+            &sid,
+            "kura_projection_list",
+            &json!({
+                "data": {
+                    "request": { "path": "/v1/projections/exercise_progression/paged" }
+                }
+            }),
+        );
+        observe_tool_call_start(&sid, "kura_projection_get", true);
+        record_abort_reason_for_session(&sid, "context_required_before_write");
+
+        let snapshot = retrieval_observability_snapshot(&sid);
+        assert_eq!(snapshot["metrics"]["context_calls"], 1);
+        assert_eq!(snapshot["metrics"]["context_overflow_count"], 1);
+        assert_eq!(snapshot["metrics"]["overflow_rate"], 1.0);
+        assert_eq!(snapshot["metrics"]["projection_page_calls"], 1);
+        assert_eq!(
+            snapshot["metrics"]["abort_reasons"]["context_required_before_write"],
+            1
+        );
+        assert_eq!(snapshot["metrics"]["context_hit_rate"], 0.6667);
+    }
+
+    #[test]
+    fn retrieval_replay_contract_allows_progressive_reload_then_resets() {
+        let sid = format!("test-retrieval-replay-ok-{}", Uuid::now_v7());
+        clear_retrieval_state(&sid);
+
+        let agent_context_args = json_to_map(json!({
+            "budget_tokens": 1200,
+            "include_system": false
+        }));
+        observe_tool_call_start(&sid, "kura_agent_context", true);
+        assert!(
+            maybe_block_retrieval_loop(&sid, "kura_agent_context", &agent_context_args).is_none()
+        );
+
+        for cursor in [None, Some("c1"), Some("c2")] {
+            let mut args = json_to_map(json!({
+                "projection_type": "exercise_progression",
+                "limit": 50
+            }));
+            if let Some(value) = cursor {
+                args.insert("cursor".to_string(), json!(value));
+            }
+            observe_tool_call_start(&sid, "kura_projection_list", true);
+            assert!(maybe_block_retrieval_loop(&sid, "kura_projection_list", &args).is_none());
+        }
+
+        observe_tool_call_start(&sid, "kura_discover", true);
+        let snapshot = retrieval_observability_snapshot(&sid);
+        assert_eq!(snapshot["fsm"]["reload_count_in_window"], 0);
+        assert_eq!(snapshot["fsm"]["current_reload_depth"], 0);
+        assert!(snapshot["fsm"]["stop_reason"].is_null());
+    }
+
+    #[test]
+    fn retrieval_replay_contract_stops_cursor_loop_with_reason() {
+        let sid = format!("test-retrieval-replay-loop-{}", Uuid::now_v7());
+        clear_retrieval_state(&sid);
+
+        let args = json_to_map(json!({
+            "projection_type": "exercise_progression",
+            "limit": 50,
+            "cursor": "same-cursor"
+        }));
+
+        for _ in 0..RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK {
+            observe_tool_call_start(&sid, "kura_projection_list", true);
+            assert!(maybe_block_retrieval_loop(&sid, "kura_projection_list", &args).is_none());
+        }
+        observe_tool_call_start(&sid, "kura_projection_list", true);
+        let blocked = maybe_block_retrieval_loop(&sid, "kura_projection_list", &args)
+            .expect("loop replay should terminate with repeated signature stop reason");
+        assert_eq!(blocked.reason_code, "repeated_reload_signature");
+
+        let snapshot = retrieval_observability_snapshot(&sid);
+        assert_eq!(snapshot["fsm"]["stop_reason"], "repeated_reload_signature");
+        assert_eq!(
+            snapshot["metrics"]["abort_reasons"]["repeated_reload_signature"],
+            1
         );
     }
 }
