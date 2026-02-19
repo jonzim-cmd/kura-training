@@ -241,6 +241,25 @@ class TestComputeFrequency:
         result = _compute_frequency(training_dates, ref)
         assert result["last_4_weeks"] == 0.5
 
+    def test_stale_training_dates_drop_out_of_current_window(self):
+        training_dates = {
+            date(2025, 12, 29),
+            date(2025, 12, 31),
+            date(2026, 1, 2),
+        }
+        result = _compute_frequency(training_dates, date(2026, 2, 19))
+        assert result["last_4_weeks"] == 0.0
+
+    def test_future_training_dates_are_not_counted(self):
+        ref = date(2026, 2, 8)
+        training_dates = {
+            date(2026, 2, 1),
+            date(2026, 2, 5),
+            date(2026, 2, 10),  # future relative to reference
+        }
+        result = _compute_frequency(training_dates, ref)
+        assert result["last_4_weeks"] == 0.5
+
 
 class TestComputeStreak:
     def test_consecutive_weeks(self):

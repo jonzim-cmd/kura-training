@@ -9,6 +9,7 @@ from kura_workers.training_load_calibration_v1 import (
     FEATURE_FLAG_TRAINING_LOAD_RELATIVE_INTENSITY,
     active_calibration_version,
     build_calibration_runner_report,
+    compute_row_confidence_v1,
     compute_row_load_components_v2,
     calibration_profile_for_version,
     calibration_protocol_v1,
@@ -259,3 +260,43 @@ def test_flattened_dotted_relative_intensity_keys_are_supported() -> None:
     )
     assert components["relative_intensity_status"] == "used"
     assert str(components["internal_response_source"]).startswith("relative_intensity:mss")
+
+
+def test_sensor_bonus_requires_valid_numeric_signal_values() -> None:
+    profile = calibration_profile_for_version(CALIBRATED_PARAMETER_VERSION)
+    base = compute_row_confidence_v1(
+        data={"weight_kg": 100, "reps": 5},
+        source_type="manual",
+        session_confidence_hint=None,
+        profile=profile,
+    )
+    with_null_sensor = compute_row_confidence_v1(
+        data={"weight_kg": 100, "reps": 5, "heart_rate_avg": None},
+        source_type="manual",
+        session_confidence_hint=None,
+        profile=profile,
+    )
+    with_valid_sensor = compute_row_confidence_v1(
+        data={"weight_kg": 100, "reps": 5, "heart_rate_avg": 150},
+        source_type="manual",
+        session_confidence_hint=None,
+        profile=profile,
+    )
+
+    assert with_null_sensor == base
+    assert with_valid_sensor > base
+
+
+def test_rir_zero_is_treated_as_max_effort_signal() -> None:
+    profile = calibration_profile_for_version(CALIBRATED_PARAMETER_VERSION)
+    rir_zero = compute_row_load_components_v2(
+        data={"weight_kg": 100, "reps": 5, "rir": 0},
+        profile=profile,
+    )
+    rir_one = compute_row_load_components_v2(
+        data={"weight_kg": 100, "reps": 5, "rir": 1},
+        profile=profile,
+    )
+
+    assert rir_zero["internal_response_source"] == "rir_inverse"
+    assert float(rir_zero["internal_response"]) >= float(rir_one["internal_response"])

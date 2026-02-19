@@ -13,7 +13,7 @@ Full recompute on every event — idempotent by design.
 import json
 import logging
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import psycopg
@@ -178,7 +178,7 @@ def _compute_frequency(
     """Compute rolling average training days per week."""
     def _avg_for_weeks(n_weeks: int) -> float:
         cutoff = reference_date - timedelta(weeks=n_weeks)
-        days_in_range = sum(1 for d in training_dates if d >= cutoff)
+        days_in_range = sum(1 for d in training_dates if cutoff <= d <= reference_date)
         return round(days_in_range / n_weeks, 2)
 
     return {
@@ -879,7 +879,8 @@ async def update_training_timeline(
         w_entry["training_days"] = len(w_entry["training_days"])
 
     training_dates = set(day_data.keys())
-    reference_date = max(training_dates)
+    reference_date = _local_date_for_timezone(datetime.now(tz=timezone.utc), timezone_name)
+    last_training_date = max(training_dates)
     load_v2_overview = (
         {
             **summarize_timeline_load_v2(session_data),
@@ -899,7 +900,7 @@ async def update_training_timeline(
         "load_v2_overview": load_v2_overview,
         "weekly_summary": _compute_weekly_summary(week_data),
         "current_frequency": _compute_frequency(training_dates, reference_date),
-        "last_training": reference_date.isoformat(),
+        "last_training": last_training_date.isoformat(),
         "total_training_days": len(training_dates),
         "streak": _compute_streak(training_dates, reference_date),
         "data_quality": {

@@ -12,6 +12,7 @@ from .training_load_calibration_v1 import (
     calibration_protocol_v1,
     compute_row_confidence_v1,
     compute_row_load_components_v2,
+    sensor_presence_v1,
 )
 
 _ROW_MODALITIES = ("strength", "sprint", "endurance", "plyometric", "mixed")
@@ -359,12 +360,12 @@ def accumulate_row_load_v2(
     ):
         global_part["signal_density"]["objective_rows"] += 1
 
-    data_keys = {str(key).strip().lower() for key in data.keys()}
-    if {"heart_rate_avg", "heart_rate_max", "hr_avg", "hr_bpm"} & data_keys:
+    sensors = sensor_presence_v1(data)
+    if sensors["hr"]:
         global_part["signal_density"]["rows_with_hr"] += 1
-    if {"power", "power_watt", "watts"} & data_keys:
+    if sensors["power"]:
         global_part["signal_density"]["rows_with_power"] += 1
-    if {"pace", "pace_min_per_km", "min_per_km"} & data_keys:
+    if sensors["pace"]:
         global_part["signal_density"]["rows_with_pace"] += 1
 
     assignment_source = str(modality_info.get("assignment_source") or "")

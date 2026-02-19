@@ -449,6 +449,34 @@ class TestTrainingTimelineIntegration:
         assert data["total_training_days"] == 3
         assert len(data["recent_days"]) == 3
 
+    async def test_current_frequency_and_streak_are_anchored_to_today(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        now_utc = datetime.now(timezone.utc)
+        stale_offsets = (56, 54, 52)  # ~8 weeks ago
+        for offset in stale_offsets:
+            ts = now_utc - timedelta(days=offset)
+            await insert_event(
+                db,
+                test_user_id,
+                "set.logged",
+                {"exercise_id": "squat", "weight_kg": 100, "reps": 5},
+                f"TIMESTAMP '{ts.strftime('%Y-%m-%d %H:%M:%S+00')}'",
+            )
+
+        await db.execute("SET ROLE app_worker")
+        await update_training_timeline(db, {
+            "user_id": test_user_id, "event_type": "set.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "training_timeline")
+        assert proj is not None
+        data = proj["data"]
+        assert data["total_training_days"] == 3
+        assert data["current_frequency"]["last_4_weeks"] == 0.0
+        assert data["streak"]["current_weeks"] == 0
+        assert data["streak"]["longest_weeks"] >= 1
+
     async def test_timezone_preference_controls_day_grouping(self, db, test_user_id):
         await create_test_user(db, test_user_id)
         await insert_event(db, test_user_id, "preference.set", {

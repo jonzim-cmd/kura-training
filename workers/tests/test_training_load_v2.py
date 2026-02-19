@@ -127,6 +127,24 @@ def test_relative_intensity_signal_density_and_confidence_are_persisted() -> Non
     assert finalized["global"]["relative_intensity"]["reference_confidence_avg"] == 0.81
 
 
+def test_signal_density_counts_only_valid_sensor_values() -> None:
+    session = init_session_load_v2()
+    accumulate_row_load_v2(
+        session,
+        data={"exercise_id": "back_squat", "weight_kg": 100, "reps": 5, "heart_rate_avg": None},
+        source_type="manual",
+    )
+    accumulate_row_load_v2(
+        session,
+        data={"exercise_id": "back_squat", "weight_kg": 100, "reps": 5, "heart_rate_avg": 152},
+        source_type="manual",
+    )
+    finalized = finalize_session_load_v2(session)
+
+    assert finalized["global"]["signal_density"]["rows_total"] == 2
+    assert finalized["global"]["signal_density"]["rows_with_hr"] == 1
+
+
 def test_timeline_summary_aggregates_modalities_and_global_confidence() -> None:
     session_a = init_session_load_v2()
     accumulate_row_load_v2(

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import os
 from copy import deepcopy
+import math
+import os
 from typing import Any, Iterable
 
 FEATURE_FLAG_TRAINING_LOAD_CALIBRATED = "KURA_FEATURE_TRAINING_LOAD_CALIBRATED"
@@ -239,8 +240,20 @@ def _to_float(value: Any) -> float:
         parsed = float(value)
     except (TypeError, ValueError):
         return 0.0
-    if parsed < 0:
+    if not math.isfinite(parsed) or parsed < 0:
         return 0.0
+    return parsed
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
     return parsed
 
 
@@ -272,12 +285,22 @@ def _intensity_model(profile: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def _sensor_presence(data: dict[str, Any]) -> dict[str, bool]:
-    keys = {str(key).strip().lower() for key in data.keys()}
+def _has_positive_numeric_signal(data: dict[str, Any], keys: tuple[str, ...]) -> bool:
+    for key in keys:
+        value = _finite_float(data.get(key))
+        if value is not None and value > 0.0:
+            return True
+    return False
+
+
+def sensor_presence_v1(data: dict[str, Any]) -> dict[str, bool]:
     return {
-        "hr": bool({"heart_rate_avg", "heart_rate_max", "hr_avg", "hr_bpm"} & keys),
-        "power": bool({"power", "power_watt", "watts"} & keys),
-        "pace": bool({"pace", "pace_min_per_km", "min_per_km"} & keys),
+        "hr": _has_positive_numeric_signal(
+            data,
+            ("heart_rate_avg", "heart_rate_max", "hr_avg", "hr_bpm"),
+        ),
+        "power": _has_positive_numeric_signal(data, ("power", "power_watt", "watts")),
+        "pace": _has_positive_numeric_signal(data, ("pace", "pace_min_per_km", "min_per_km")),
     }
 
 
@@ -756,10 +779,10 @@ def _rpe_internal_response(
             _profile_number(direct_cfg.get("uncertainty"), default=0.34, minimum=0.0),
         )
 
-    rir = _to_float(data.get("rir"))
-    if rir > 0.0:
+    rir_raw = _finite_float(data.get("rir"))
+    if rir_raw is not None and rir_raw >= 0.0:
         scale = _profile_number(rir_cfg.get("scale"), default=10.0, minimum=0.001)
-        normalized = _clamp(1.0 - (rir / scale), 0.0, 1.0)
+        normalized = _clamp(1.0 - (rir_raw / scale), 0.0, 1.0)
         return (
             normalized,
             str(rir_cfg.get("source") or "rir_inverse"),
@@ -922,7 +945,7 @@ def compute_row_confidence_v1(
     if objective_dims >= 2:
         base += float(profile["objective_dim_bonus_second"])
 
-    sensors = _sensor_presence(data)
+    sensors = sensor_presence_v1(data)
     sensor_bonus = profile["sensor_bonus"]
     if sensors["hr"]:
         base += float(sensor_bonus["hr"])
