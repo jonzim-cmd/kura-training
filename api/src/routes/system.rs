@@ -1,8 +1,14 @@
 use axum::extract::{Query, State};
+use axum::http::{
+    HeaderMap, HeaderValue, StatusCode,
+    header::{CACHE_CONTROL, ETAG, IF_NONE_MATCH, VARY},
+};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use kura_core::error::ApiError;
 
@@ -14,6 +20,8 @@ pub const SYSTEM_CONFIG_MANIFEST_SCHEMA_VERSION: &str = "system_config_manifest.
 pub const SYSTEM_CONFIG_SECTION_SCHEMA_VERSION: &str = "system_config_section.v1";
 const SYSTEM_CONFIG_SECTION_QUERY_ENDPOINT: &str = "/v1/system/config/section";
 const SYSTEM_CONFIG_MANIFEST_RESOURCE_URI: &str = "kura://system/config/manifest";
+const SYSTEM_CONFIG_CACHE_CONTROL_VALUE: &str = "private, max-age=0, must-revalidate";
+const SYSTEM_CONFIG_VARY_VALUE: &str = "Authorization";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -91,11 +99,16 @@ struct SystemConfigRow {
 /// Returns dimensions, event conventions, interview guide, and normalization
 /// conventions. This data is identical for all users and changes only on
 /// code deployment. Agents should cache this per session.
+///
+/// Conditional cache contract:
+/// - Response includes `ETag`, `Cache-Control`, and `Vary`.
+/// - Clients should send `If-None-Match` to receive `304 Not Modified`.
 #[utoipa::path(
     get,
     path = "/v1/system/config",
     responses(
         (status = 200, description = "System configuration", body = SystemConfigResponse),
+        (status = 304, description = "Not Modified (client cache is up-to-date)"),
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 404, description = "System config not yet available (worker has not started)")
     ),
@@ -105,15 +118,25 @@ struct SystemConfigRow {
 pub async fn get_system_config(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
-) -> Result<Json<SystemConfigResponse>, AppError> {
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
     let row = fetch_system_config_row(&state).await?;
 
     match row {
-        Some(r) => Ok(Json(SystemConfigResponse {
-            data: r.data,
-            version: r.version,
-            updated_at: r.updated_at,
-        })),
+        Some(r) => {
+            let etag = build_system_config_etag(r.version);
+            if if_none_match_matches(&headers, &etag) {
+                return not_modified_system_response(&etag);
+            }
+            ok_system_json_response(
+                &etag,
+                SystemConfigResponse {
+                    data: r.data,
+                    version: r.version,
+                    updated_at: r.updated_at,
+                },
+            )
+        }
         None => Err(AppError::NotFound {
             resource: "system_config/global".to_string(),
         }),
@@ -123,11 +146,16 @@ pub async fn get_system_config(
 /// Get machine-readable section manifest for deployment-static system config.
 ///
 /// Returns a complete index of section ids with fetch contracts and size hints.
+///
+/// Conditional cache contract:
+/// - Response includes `ETag`, `Cache-Control`, and `Vary`.
+/// - Clients should send `If-None-Match` to receive `304 Not Modified`.
 #[utoipa::path(
     get,
     path = "/v1/system/config/manifest",
     responses(
         (status = 200, description = "System config section manifest", body = SystemConfigManifestResponse),
+        (status = 304, description = "Not Modified (client cache is up-to-date)"),
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 404, description = "System config not yet available (worker has not started)")
     ),
@@ -137,7 +165,8 @@ pub async fn get_system_config(
 pub async fn get_system_config_manifest(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
-) -> Result<Json<SystemConfigManifestResponse>, AppError> {
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
     let row = fetch_system_config_row(&state).await?;
     match row {
         Some(r) => {
@@ -146,7 +175,11 @@ pub async fn get_system_config_manifest(
                 version: r.version,
                 updated_at: r.updated_at,
             };
-            Ok(Json(build_system_config_manifest(&system)))
+            let etag = build_system_config_manifest_etag(system.version);
+            if if_none_match_matches(&headers, &etag) {
+                return not_modified_system_response(&etag);
+            }
+            ok_system_json_response(&etag, build_system_config_manifest(&system))
         }
         None => Err(AppError::NotFound {
             resource: "system_config/global".to_string(),
@@ -157,12 +190,17 @@ pub async fn get_system_config_manifest(
 /// Get one section from deployment-static system config by section id.
 ///
 /// Use section ids from `/v1/system/config/manifest`.
+///
+/// Conditional cache contract:
+/// - Response includes `ETag`, `Cache-Control`, and `Vary`.
+/// - Clients should send `If-None-Match` to receive `304 Not Modified`.
 #[utoipa::path(
     get,
     path = "/v1/system/config/section",
     params(SystemConfigSectionQuery),
     responses(
         (status = 200, description = "One system config section", body = SystemConfigSectionResponse),
+        (status = 304, description = "Not Modified (client cache is up-to-date)"),
         (status = 400, description = "Validation failed", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 404, description = "System config or section not found", body = ApiError)
@@ -173,8 +211,9 @@ pub async fn get_system_config_manifest(
 pub async fn get_system_config_section(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
+    headers: HeaderMap,
     Query(query): Query<SystemConfigSectionQuery>,
-) -> Result<Json<SystemConfigSectionResponse>, AppError> {
+) -> Result<impl IntoResponse, AppError> {
     let section = query.section.trim();
     if section.is_empty() {
         return Err(AppError::Validation {
@@ -206,18 +245,98 @@ pub async fn get_system_config_section(
         });
     };
 
-    Ok(Json(SystemConfigSectionResponse {
-        schema_version: SYSTEM_CONFIG_SECTION_SCHEMA_VERSION.to_string(),
-        handle: build_system_config_handle(system.version),
-        section: section.to_string(),
-        version: system.version,
-        updated_at: system.updated_at,
-        value,
-    }))
+    let etag = build_system_config_section_etag(system.version, section);
+    if if_none_match_matches(&headers, &etag) {
+        return not_modified_system_response(&etag);
+    }
+
+    ok_system_json_response(
+        &etag,
+        SystemConfigSectionResponse {
+            schema_version: SYSTEM_CONFIG_SECTION_SCHEMA_VERSION.to_string(),
+            handle: build_system_config_handle(system.version),
+            section: section.to_string(),
+            version: system.version,
+            updated_at: system.updated_at,
+            value,
+        },
+    )
 }
 
 pub(crate) fn build_system_config_handle(version: i64) -> String {
     format!("system_config/global@v{version}")
+}
+
+fn build_system_config_etag(version: i64) -> String {
+    format!("W/\"system-config-v{version}\"")
+}
+
+fn build_system_config_manifest_etag(version: i64) -> String {
+    format!("W/\"system-config-manifest-{SYSTEM_CONFIG_MANIFEST_SCHEMA_VERSION}-v{version}\"")
+}
+
+fn build_system_config_section_etag(version: i64, section: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(section.as_bytes());
+    let digest = hasher.finalize();
+    let digest_hex = hex::encode(digest);
+    let short = &digest_hex[..16];
+    format!("W/\"system-config-section-v{version}-{short}\"")
+}
+
+fn if_none_match_matches(headers: &HeaderMap, current_etag: &str) -> bool {
+    let Some(current_opaque) = etag_opaque_value(current_etag) else {
+        return false;
+    };
+    headers
+        .get(IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|raw| {
+            raw.split(',').any(|candidate| {
+                let candidate = candidate.trim();
+                if candidate == "*" {
+                    return true;
+                }
+                etag_opaque_value(candidate).is_some_and(|opaque| opaque == current_opaque)
+            })
+        })
+}
+
+fn etag_opaque_value(raw: &str) -> Option<&str> {
+    let raw = raw.trim();
+    let raw = raw
+        .strip_prefix("W/")
+        .or_else(|| raw.strip_prefix("w/"))
+        .unwrap_or(raw)
+        .trim();
+    if raw.len() < 2 || !raw.starts_with('"') || !raw.ends_with('"') {
+        return None;
+    }
+    Some(&raw[1..raw.len() - 1])
+}
+
+fn build_system_cache_headers(etag: &str) -> Result<HeaderMap, AppError> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        ETAG,
+        HeaderValue::from_str(etag).map_err(|e| AppError::Internal(e.to_string()))?,
+    );
+    headers.insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static(SYSTEM_CONFIG_CACHE_CONTROL_VALUE),
+    );
+    headers.insert(VARY, HeaderValue::from_static(SYSTEM_CONFIG_VARY_VALUE));
+    Ok(headers)
+}
+
+fn ok_system_json_response<T: Serialize>(etag: &str, payload: T) -> Result<Response, AppError> {
+    let headers = build_system_cache_headers(etag)?;
+    Ok((StatusCode::OK, headers, Json(payload)).into_response())
+}
+
+fn not_modified_system_response(etag: &str) -> Result<Response, AppError> {
+    let headers = build_system_cache_headers(etag)?;
+    Ok((StatusCode::NOT_MODIFIED, headers).into_response())
 }
 
 pub(crate) fn build_system_config_manifest(
@@ -359,8 +478,13 @@ async fn fetch_system_config_row(state: &AppState) -> Result<Option<SystemConfig
 
 #[cfg(test)]
 mod tests {
-    use super::{build_system_config_manifest_sections, resolve_system_config_section_value};
+    use axum::http::{HeaderMap, HeaderValue, StatusCode, header::IF_NONE_MATCH};
     use serde_json::json;
+
+    use super::{
+        build_system_config_manifest_sections, build_system_config_section_etag,
+        if_none_match_matches, ok_system_json_response, resolve_system_config_section_value,
+    };
 
     #[test]
     fn resolve_system_config_section_value_reads_root_and_nested_entries() {
@@ -425,5 +549,63 @@ mod tests {
         assert!(ids.contains(&"system_config.conventions::write_preflight_v1"));
         assert!(ids.contains(&"system_config.dimensions::training_timeline"));
         assert!(ids.contains(&"system_config.projection_schemas::user_profile"));
+    }
+
+    #[test]
+    fn if_none_match_matches_supports_weak_and_strong_forms() {
+        let etag = build_system_config_section_etag(7, "system_config.event_conventions");
+        let strong = etag.trim_start_matches("W/").to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            IF_NONE_MATCH,
+            HeaderValue::from_str(&format!("{strong}, \"other\"")).expect("valid header"),
+        );
+        assert!(if_none_match_matches(&headers, &etag));
+
+        headers.insert(
+            IF_NONE_MATCH,
+            HeaderValue::from_str("W/\"mismatch\"").expect("valid header"),
+        );
+        assert!(!if_none_match_matches(&headers, &etag));
+
+        headers.insert(IF_NONE_MATCH, HeaderValue::from_static("*"));
+        assert!(if_none_match_matches(&headers, &etag));
+    }
+
+    #[test]
+    fn system_cache_response_returns_not_modified_on_matching_etag() {
+        let etag = build_system_config_section_etag(3, "system_config.operational_model");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            IF_NONE_MATCH,
+            HeaderValue::from_str(&etag).expect("etag must be a valid header value"),
+        );
+
+        let response = if if_none_match_matches(&headers, &etag) {
+            super::not_modified_system_response(&etag).expect("response")
+        } else {
+            ok_system_json_response(&etag, json!({"unused": true})).expect("response")
+        };
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(response.headers()["etag"], etag);
+    }
+
+    #[test]
+    fn system_cache_response_returns_ok_on_etag_miss() {
+        let etag = build_system_config_section_etag(4, "system_config.operational_model");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            IF_NONE_MATCH,
+            HeaderValue::from_static("W/\"something-else\""),
+        );
+
+        let response = if if_none_match_matches(&headers, &etag) {
+            super::not_modified_system_response(&etag).expect("response")
+        } else {
+            ok_system_json_response(&etag, json!({"ok": true})).expect("response")
+        };
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["etag"], etag);
     }
 }

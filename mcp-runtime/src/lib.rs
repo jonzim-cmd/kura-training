@@ -16,6 +16,7 @@ const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MCP_SERVER_NAME: &str = "kura-mcp";
 const TOOL_ENVELOPE_MAX_BYTES: usize = 28_000;
 const AGENT_CONTEXT_OVERFLOW_SCHEMA_VERSION: &str = "agent_context_overflow.v1";
+const AGENT_CONTEXT_CRITICAL_SECTION_KEYS: [&str; 2] = ["agent_brief", "meta"];
 const COMPACT_ENDPOINT_PREVIEW_MAX_ITEMS: usize = 120;
 const CONTEXT_SESSION_TTL_SECS: u64 = 3600;
 const TOOL_CALL_DEDUPE_WINDOW_MS: u64 = 2500;
@@ -2964,11 +2965,7 @@ fn enforce_agent_context_payload_limit(envelope: Value) -> Value {
                             }
                         ],
                         "integrity_status": "critical_sections_missing",
-                        "critical_missing_sections": [
-                            "action_required",
-                            "agent_brief",
-                            "meta"
-                        ],
+                        "critical_missing_sections": AGENT_CONTEXT_CRITICAL_SECTION_KEYS,
                         "reload_strategy": "re-fetch context sections in smaller batches"
                     }
                 }
@@ -3027,11 +3024,7 @@ fn enforce_agent_context_payload_limit(envelope: Value) -> Value {
                                 }
                             ],
                             "integrity_status": "critical_sections_missing",
-                            "critical_missing_sections": [
-                                "action_required",
-                                "agent_brief",
-                                "meta"
-                            ],
+                            "critical_missing_sections": AGENT_CONTEXT_CRITICAL_SECTION_KEYS,
                             "reload_strategy": "recover with follow-up reads"
                         }
                     }
@@ -3055,10 +3048,10 @@ fn enforce_agent_context_payload_limit(envelope: Value) -> Value {
 
 fn missing_agent_context_critical_sections(body: Option<&Value>) -> Vec<&'static str> {
     let Some(body_obj) = body.and_then(Value::as_object) else {
-        return vec!["action_required", "agent_brief", "meta"];
+        return AGENT_CONTEXT_CRITICAL_SECTION_KEYS.to_vec();
     };
     let mut missing = Vec::new();
-    for key in ["action_required", "agent_brief", "meta"] {
+    for key in AGENT_CONTEXT_CRITICAL_SECTION_KEYS {
         if !body_obj.contains_key(key) {
             missing.push(key);
         }
@@ -4604,6 +4597,55 @@ mod tests {
                 .any(|section| section == "system")
         );
         assert!(limited.get("data_summary").is_none());
+        assert_eq!(
+            limited["data"]["response"]["body"]["overflow"]["integrity_status"],
+            "degraded_optional_sections_omitted"
+        );
+        assert_eq!(
+            limited["data"]["response"]["body"]["overflow"]["critical_missing_sections"],
+            json!([])
+        );
+    }
+
+    #[test]
+    fn agent_context_overflow_keeps_optional_action_required_non_critical() {
+        let huge = "x".repeat(TOOL_ENVELOPE_MAX_BYTES * 2);
+        let envelope = json!({
+            "status": "complete",
+            "phase": "final",
+            "tool": "kura_agent_context",
+            "data": {
+                "response": {
+                    "ok": true,
+                    "status": 200,
+                    "body": {
+                        "agent_brief": {
+                            "schema_version": "agent_brief.v1",
+                            "must_cover_intents": ["offer_onboarding"]
+                        },
+                        "meta": {
+                            "context_contract_version": "agent_context.v10"
+                        },
+                        "system": {
+                            "data": {
+                                "blob": huge
+                            }
+                        },
+                        "exercise_progression": [{
+                            "projection": {
+                                "data": {
+                                    "blob": huge
+                                }
+                            }
+                        }]
+                    }
+                }
+            }
+        });
+
+        let limited = enforce_tool_payload_limit("kura_agent_context", envelope);
+        assert_eq!(limited["truncated"], true);
+        assert!(limited["data"]["response"]["body"]["action_required"].is_null());
         assert_eq!(
             limited["data"]["response"]["body"]["overflow"]["integrity_status"],
             "degraded_optional_sections_omitted"

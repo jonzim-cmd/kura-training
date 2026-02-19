@@ -30,12 +30,15 @@ def test_agent_context_declares_brief_first_contract_surface() -> None:
 def test_mcp_runtime_declares_structured_agent_context_overflow() -> None:
     src = MCP_RUNTIME.read_text(encoding="utf-8")
     assert "AGENT_CONTEXT_OVERFLOW_SCHEMA_VERSION" in src
+    assert "AGENT_CONTEXT_CRITICAL_SECTION_KEYS" in src
+    assert "[\"agent_brief\", \"meta\"]" in src
     assert "if tool == \"kura_agent_context\"" in src
     assert "enforce_agent_context_payload_limit" in src
     assert "omitted_sections" in src
     assert "integrity_status" in src
     assert "critical_missing_sections" in src
     assert "agent_context_section_reload_hint" in src
+    assert "agent_context_overflow_keeps_optional_action_required_non_critical" in src
 
 
 def test_agent_context_brief_runtime_contracts_pass() -> None:

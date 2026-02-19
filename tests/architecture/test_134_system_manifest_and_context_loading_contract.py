@@ -20,6 +20,9 @@ MCP_RUNTIME = Path("mcp-runtime/src/lib.rs")
 RUST_TESTS: tuple[str, ...] = (
     "routes::system::tests::resolve_system_config_section_value_reads_root_and_nested_entries",
     "routes::system::tests::system_manifest_sections_include_nested_event_and_convention_entries",
+    "routes::system::tests::if_none_match_matches_supports_weak_and_strong_forms",
+    "routes::system::tests::system_cache_response_returns_not_modified_on_matching_etag",
+    "routes::system::tests::system_cache_response_returns_ok_on_etag_miss",
     "routes::agent::tests::agent_context_brief_contract_exposes_required_fields",
 )
 
@@ -30,6 +33,10 @@ def test_system_routes_expose_manifest_and_section_contract() -> None:
     assert "/v1/system/config/section" in src
     assert "build_system_config_manifest_sections" in src
     assert "resolve_system_config_section_value" in src
+    assert "status = 304" in src
+    assert "IF_NONE_MATCH" in src
+    assert "ETAG" in src
+    assert "if_none_match_matches" in src
 
 
 def test_agent_context_declares_include_system_and_manifest_driven_sections() -> None:
