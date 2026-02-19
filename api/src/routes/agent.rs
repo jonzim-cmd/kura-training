@@ -25,7 +25,7 @@ use crate::auth::{AuthMethod, AuthenticatedUser, require_scopes};
 use crate::error::AppError;
 use crate::routes::events::{create_events_batch_internal, enforce_legacy_domain_invariants};
 use crate::routes::system::{
-    SystemConfigResponse, build_system_config_handle, build_system_config_manifest_sections,
+    SystemConfigResponse, build_system_config_handle, build_system_config_manifest_sections_cached,
 };
 use crate::state::AppState;
 
@@ -2187,7 +2187,7 @@ fn agent_brief_available_sections(
     let mut sections: Vec<AgentBriefSectionRef> = Vec::new();
     if let Some(system) = system {
         sections.extend(
-            build_system_config_manifest_sections(&system.data)
+            build_system_config_manifest_sections_cached(system.version, &system.data)
                 .into_iter()
                 .map(|entry| {
                     let query = entry.fetch.query.clone();
@@ -7847,6 +7847,10 @@ mod tests {
         assert_eq!(
             section.fetch.query.as_deref(),
             Some("section=system_config.operational_model")
+        );
+        assert_eq!(
+            section.fetch.resource_uri.as_deref(),
+            Some("kura://system/config/section?section=system_config.operational_model")
         );
         let system_ref = brief
             .system_config_ref
@@ -13799,6 +13803,15 @@ mod tests {
             "projection_schemas": {"user_profile": {"required_fields": ["user"]}},
             "operational_model": {"paradigm": "Event Sourcing", "mutations": "POST /v1/events"},
             "time_conventions": {"week": "ISO 8601 (2026-W06)"},
+            "section_metadata": {
+                "schema_version": "system_config_section_metadata.v1",
+                "sections": {
+                    "system_config.operational_model": {
+                        "purpose": "Event Sourcing paradigm and correction model (event.retracted, set.corrected).",
+                        "criticality": "core"
+                    }
+                }
+            },
             "conventions": {
                 "first_contact_opening_v1": {"schema_version": "first_contact_opening.v1"},
                 "exercise_normalization": {"rules": ["rule"]},
@@ -13843,6 +13856,7 @@ mod tests {
         assert!(root.contains_key("conventions"));
         assert!(root.contains_key("operational_model"));
         assert!(root.contains_key("time_conventions"));
+        assert!(root.contains_key("section_metadata"));
         assert!(!root.contains_key("interview_guide"));
         assert!(!root.contains_key("agent_behavior"));
         assert!(!root.contains_key("unexpected_root"));

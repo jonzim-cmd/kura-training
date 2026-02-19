@@ -9,6 +9,8 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{LazyLock, Mutex};
 
 use kura_core::error::ApiError;
 
@@ -18,10 +20,15 @@ use crate::state::AppState;
 
 pub const SYSTEM_CONFIG_MANIFEST_SCHEMA_VERSION: &str = "system_config_manifest.v1";
 pub const SYSTEM_CONFIG_SECTION_SCHEMA_VERSION: &str = "system_config_section.v1";
+const SYSTEM_CONFIG_SECTION_METADATA_SCHEMA_VERSION: &str = "system_config_section_metadata.v1";
 const SYSTEM_CONFIG_SECTION_QUERY_ENDPOINT: &str = "/v1/system/config/section";
-const SYSTEM_CONFIG_MANIFEST_RESOURCE_URI: &str = "kura://system/config/manifest";
 const SYSTEM_CONFIG_CACHE_CONTROL_VALUE: &str = "private, max-age=0, must-revalidate";
 const SYSTEM_CONFIG_VARY_VALUE: &str = "Authorization";
+const SYSTEM_CONFIG_MANIFEST_CACHE_MAX_VERSIONS: usize = 8;
+
+static SYSTEM_CONFIG_MANIFEST_SECTIONS_CACHE: LazyLock<
+    Mutex<BTreeMap<i64, Vec<SystemConfigSectionManifestItem>>>,
+> = LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -92,6 +99,12 @@ struct SystemConfigRow {
     data: serde_json::Value,
     version: i64,
     updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone)]
+struct SectionMetadata {
+    purpose: Option<String>,
+    criticality: Option<String>,
 }
 
 /// Get deployment-static system configuration
@@ -347,16 +360,48 @@ pub(crate) fn build_system_config_manifest(
         handle: build_system_config_handle(system.version),
         version: system.version,
         updated_at: system.updated_at,
-        sections: build_system_config_manifest_sections(&system.data),
+        sections: build_system_config_manifest_sections_cached(system.version, &system.data),
     }
+}
+
+pub(crate) fn build_system_config_manifest_sections_cached(
+    version: i64,
+    data: &Value,
+) -> Vec<SystemConfigSectionManifestItem> {
+    if let Some(cached) = SYSTEM_CONFIG_MANIFEST_SECTIONS_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&version)
+        .cloned()
+    {
+        return cached;
+    }
+
+    let sections = build_system_config_manifest_sections(data);
+    let mut cache = SYSTEM_CONFIG_MANIFEST_SECTIONS_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    cache.insert(version, sections.clone());
+    while cache.len() > SYSTEM_CONFIG_MANIFEST_CACHE_MAX_VERSIONS {
+        let Some(oldest_version) = cache.keys().next().copied() else {
+            break;
+        };
+        cache.remove(&oldest_version);
+    }
+    sections
 }
 
 pub(crate) fn build_system_config_manifest_sections(
     data: &Value,
 ) -> Vec<SystemConfigSectionManifestItem> {
     let mut sections = Vec::new();
+    let section_metadata = extract_system_section_metadata(data);
 
-    sections.push(section_manifest_item("system_config".to_string(), data));
+    sections.push(section_manifest_item(
+        "system_config".to_string(),
+        data,
+        section_metadata.get("system_config"),
+    ));
 
     let Some(root) = data.as_object() else {
         return sections;
@@ -365,7 +410,11 @@ pub(crate) fn build_system_config_manifest_sections(
     for key in root.keys() {
         let section = format!("system_config.{key}");
         if let Some(value) = resolve_system_config_section_value(data, &section) {
-            sections.push(section_manifest_item(section, &value));
+            sections.push(section_manifest_item(
+                section.clone(),
+                &value,
+                section_metadata.get(section.as_str()),
+            ));
         }
     }
 
@@ -379,7 +428,11 @@ pub(crate) fn build_system_config_manifest_sections(
             for nested_key in entries.keys() {
                 let section = format!("system_config.{map_root}::{nested_key}");
                 if let Some(value) = resolve_system_config_section_value(data, &section) {
-                    sections.push(section_manifest_item(section, &value));
+                    sections.push(section_manifest_item(
+                        section.clone(),
+                        &value,
+                        section_metadata.get(section.as_str()),
+                    ));
                 }
             }
         }
@@ -387,6 +440,60 @@ pub(crate) fn build_system_config_manifest_sections(
 
     sections.sort_by(|a, b| a.section.cmp(&b.section));
     sections
+}
+
+fn extract_system_section_metadata(data: &Value) -> HashMap<String, SectionMetadata> {
+    let Some(root) = data.as_object() else {
+        return HashMap::new();
+    };
+    let Some(metadata_root) = root.get("section_metadata").and_then(Value::as_object) else {
+        return HashMap::new();
+    };
+    let Some(schema_version) = metadata_root.get("schema_version").and_then(Value::as_str) else {
+        return HashMap::new();
+    };
+    if schema_version != SYSTEM_CONFIG_SECTION_METADATA_SCHEMA_VERSION {
+        return HashMap::new();
+    }
+    let Some(sections) = metadata_root.get("sections").and_then(Value::as_object) else {
+        return HashMap::new();
+    };
+
+    let mut map = HashMap::new();
+    for (section_id, raw_metadata) in sections {
+        let Some(metadata_obj) = raw_metadata.as_object() else {
+            continue;
+        };
+        let purpose = metadata_obj
+            .get("purpose")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let criticality = metadata_obj
+            .get("criticality")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .and_then(normalize_section_criticality);
+        if purpose.is_none() && criticality.is_none() {
+            continue;
+        }
+        map.insert(
+            section_id.clone(),
+            SectionMetadata {
+                purpose,
+                criticality,
+            },
+        );
+    }
+    map
+}
+
+fn normalize_section_criticality(value: &str) -> Option<String> {
+    match value {
+        "core" | "extended" => Some(value.to_string()),
+        _ => None,
+    }
 }
 
 pub(crate) fn resolve_system_config_section_value(data: &Value, section: &str) -> Option<Value> {
@@ -410,24 +517,41 @@ pub(crate) fn resolve_system_config_section_value(data: &Value, section: &str) -
     }
 }
 
-fn section_manifest_item(section: String, value: &Value) -> SystemConfigSectionManifestItem {
+fn section_manifest_item(
+    section: String,
+    value: &Value,
+    metadata: Option<&SectionMetadata>,
+) -> SystemConfigSectionManifestItem {
     let approx_bytes = serde_json::to_vec(value)
         .map(|bytes| bytes.len())
         .unwrap_or(0);
     let approx_tokens = approx_bytes.div_ceil(4);
+    let purpose = metadata
+        .and_then(|value| value.purpose.as_ref())
+        .cloned()
+        .unwrap_or_else(|| section_purpose(&section));
+    let criticality = metadata
+        .and_then(|value| value.criticality.as_ref())
+        .cloned()
+        .unwrap_or_else(|| section_criticality(&section).to_string());
     SystemConfigSectionManifestItem {
-        purpose: section_purpose(&section),
-        criticality: section_criticality(&section).to_string(),
+        purpose,
+        criticality,
         fetch: SystemConfigSectionFetchContract {
             method: "GET".to_string(),
             path: SYSTEM_CONFIG_SECTION_QUERY_ENDPOINT.to_string(),
             query: format!("section={section}"),
-            resource_uri: SYSTEM_CONFIG_MANIFEST_RESOURCE_URI.to_string(),
+            resource_uri: section_resource_uri(&section),
         },
         section,
         approx_bytes,
         approx_tokens,
     }
+}
+
+fn section_resource_uri(section: &str) -> String {
+    let encoded: String = url::form_urlencoded::byte_serialize(section.as_bytes()).collect();
+    format!("kura://system/config/section?section={encoded}")
 }
 
 fn section_criticality(section: &str) -> &'static str {
@@ -482,8 +606,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        build_system_config_manifest_sections, build_system_config_section_etag,
-        if_none_match_matches, ok_system_json_response, resolve_system_config_section_value,
+        build_system_config_manifest_sections, build_system_config_manifest_sections_cached,
+        build_system_config_section_etag, if_none_match_matches, ok_system_json_response,
+        resolve_system_config_section_value,
     };
 
     #[test]
@@ -549,6 +674,86 @@ mod tests {
         assert!(ids.contains(&"system_config.conventions::write_preflight_v1"));
         assert!(ids.contains(&"system_config.dimensions::training_timeline"));
         assert!(ids.contains(&"system_config.projection_schemas::user_profile"));
+    }
+
+    #[test]
+    fn system_manifest_prefers_section_metadata_when_present() {
+        let data = json!({
+            "operational_model": {"paradigm": "Event Sourcing"},
+            "section_metadata": {
+                "schema_version": "system_config_section_metadata.v1",
+                "sections": {
+                    "system_config.operational_model": {
+                        "purpose": "Custom operational model purpose.",
+                        "criticality": "core"
+                    }
+                }
+            }
+        });
+
+        let sections = build_system_config_manifest_sections(&data);
+        let operational_model = sections
+            .iter()
+            .find(|item| item.section == "system_config.operational_model")
+            .expect("operational model section should be present");
+        assert_eq!(
+            operational_model.purpose,
+            "Custom operational model purpose.".to_string()
+        );
+        assert_eq!(operational_model.criticality, "core");
+    }
+
+    #[test]
+    fn system_manifest_resource_uri_points_to_resolvable_section_uri() {
+        let data = json!({
+            "event_conventions": {
+                "set.logged": {"fields": {"reps": "number"}}
+            }
+        });
+
+        let sections = build_system_config_manifest_sections(&data);
+        let event_section = sections
+            .iter()
+            .find(|item| item.section == "system_config.event_conventions::set.logged")
+            .expect("nested event section should be present");
+        assert_eq!(
+            event_section.fetch.resource_uri,
+            "kura://system/config/section?section=system_config.event_conventions%3A%3Aset.logged"
+        );
+    }
+
+    #[test]
+    fn system_manifest_sections_cache_reuses_sections_for_same_version() {
+        let version = 7_001;
+        let first_data = json!({
+            "operational_model": {"paradigm": "Event Sourcing"}
+        });
+        let second_data = json!({
+            "operational_model": {"paradigm": "Changed"}
+        });
+
+        let first = build_system_config_manifest_sections_cached(version, &first_data);
+        let second = build_system_config_manifest_sections_cached(version, &second_data);
+        let third = build_system_config_manifest_sections_cached(version + 1, &second_data);
+
+        let first_bytes = first
+            .iter()
+            .find(|item| item.section == "system_config.operational_model")
+            .expect("operational model section in first result")
+            .approx_bytes;
+        let second_bytes = second
+            .iter()
+            .find(|item| item.section == "system_config.operational_model")
+            .expect("operational model section in second result")
+            .approx_bytes;
+        let third_bytes = third
+            .iter()
+            .find(|item| item.section == "system_config.operational_model")
+            .expect("operational model section in third result")
+            .approx_bytes;
+
+        assert_eq!(first_bytes, second_bytes);
+        assert_ne!(first_bytes, third_bytes);
     }
 
     #[test]

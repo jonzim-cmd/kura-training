@@ -30,6 +30,7 @@ from .training_session_contract import block_catalog_v1
 from .training_core_fields import core_field_registry
 
 logger = logging.getLogger(__name__)
+SECTION_METADATA_SCHEMA_VERSION = "system_config_section_metadata.v1"
 
 
 def _get_conventions() -> dict[str, Any]:
@@ -2318,13 +2319,85 @@ def _build_operational_model() -> dict[str, Any]:
     }
 
 
+def _default_manifest_section_criticality(section: str) -> str:
+    core_sections = {
+        "system_config",
+        "system_config.event_conventions",
+        "system_config.operational_model",
+        "system_config.dimensions",
+        "system_config.projection_schemas",
+        "system_config.conventions::formal_event_type_policy_v1",
+        "system_config.conventions::write_preflight_v1",
+    }
+    if section in core_sections:
+        return "core"
+    return "extended"
+
+
+def _default_manifest_section_purpose(section: str) -> str:
+    if section == "system_config":
+        return "Complete deployment-static system contract snapshot."
+    if section.startswith("system_config.event_conventions"):
+        return "Formal event schema contract for writes and corrections."
+    if section.startswith("system_config.conventions"):
+        return "Behavior/policy convention contract for agent operation."
+    if section.startswith("system_config.dimensions"):
+        return "Projection dimension catalog and relationships."
+    if section.startswith("system_config.projection_schemas"):
+        return "Expected projection output shapes."
+    if section == "system_config.operational_model":
+        return (
+            "Event Sourcing paradigm and correction model "
+            "(event.retracted, set.corrected)."
+        )
+    if section == "system_config.section_metadata":
+        return "Manifest annotations for section purpose and criticality."
+    return "Deployment-static system section."
+
+
+def _build_section_metadata(config: dict[str, Any]) -> dict[str, Any]:
+    sections: dict[str, dict[str, str]] = {}
+
+    def register(section: str) -> None:
+        sections[section] = {
+            "purpose": _default_manifest_section_purpose(section),
+            "criticality": _default_manifest_section_criticality(section),
+        }
+
+    register("system_config")
+
+    for key in sorted(config.keys()):
+        register(f"system_config.{key}")
+
+    for map_root in (
+        "conventions",
+        "event_conventions",
+        "dimensions",
+        "projection_schemas",
+    ):
+        entries = config.get(map_root)
+        if not isinstance(entries, dict):
+            continue
+        for nested_key in sorted(entries.keys()):
+            register(f"system_config.{map_root}::{nested_key}")
+
+    sections["system_config.section_metadata"] = {
+        "purpose": "Manifest annotations for section purpose and criticality.",
+        "criticality": "extended",
+    }
+    return {
+        "schema_version": SECTION_METADATA_SCHEMA_VERSION,
+        "sections": sections,
+    }
+
+
 def build_system_config() -> dict[str, Any]:
     """Build the complete system config from all registered sources.
 
     This is deployment-static: same output for same code version.
     """
     dimension_metadata = get_dimension_metadata()
-    return {
+    config: dict[str, Any] = {
         "dimensions": build_dimensions(dimension_metadata),
         "event_conventions": get_event_conventions(),
         "conventions": _get_conventions(),
@@ -2338,6 +2411,8 @@ def build_system_config() -> dict[str, Any]:
         "projection_schemas": _get_projection_schemas(),
         "operational_model": _build_operational_model(),
     }
+    config["section_metadata"] = _build_section_metadata(config)
+    return config
 
 
 async def ensure_system_config(conn: psycopg.AsyncConnection[Any]) -> None:

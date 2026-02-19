@@ -136,6 +136,7 @@ class TestBuildSystemConfig:
         assert "interview_guide" in result
         assert "agent_behavior" in result
         assert "projection_schemas" in result
+        assert "section_metadata" in result
 
     def test_time_conventions(self):
         result = build_system_config()
@@ -194,6 +195,20 @@ class TestBuildSystemConfig:
         assert "patterns" in schemas["custom"]
         assert "field_tracking" in schemas["custom"]["patterns"]
         assert "categorized_tracking" in schemas["custom"]["patterns"]
+
+    def test_section_metadata_contains_core_and_nested_sections(self):
+        result = build_system_config()
+        metadata = result["section_metadata"]
+        assert metadata["schema_version"] == "system_config_section_metadata.v1"
+        sections = metadata["sections"]
+        assert sections["system_config"]["criticality"] == "core"
+        assert sections["system_config.operational_model"]["criticality"] == "core"
+        assert "Event Sourcing" in sections["system_config.operational_model"]["purpose"]
+        assert (
+            sections["system_config.event_conventions::set.logged"]["purpose"]
+            == "Formal event schema contract for writes and corrections."
+        )
+        assert sections["system_config.section_metadata"]["criticality"] == "extended"
 
 
 # --- TestConventions ---

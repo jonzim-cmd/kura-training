@@ -18,7 +18,9 @@ pub(super) enum SystemConventionFieldClass {
 pub(super) fn classify_system_config_field(key: &str) -> SystemConfigFieldClass {
     match key {
         "dimensions" | "event_conventions" | "projection_schemas" | "conventions"
-        | "operational_model" | "time_conventions" => SystemConfigFieldClass::PublicContract,
+        | "operational_model" | "time_conventions" | "section_metadata" => {
+            SystemConfigFieldClass::PublicContract
+        }
         "interview_guide" => SystemConfigFieldClass::SensitiveGuidance,
         "agent_behavior" => SystemConfigFieldClass::InternalStrategy,
         _ => SystemConfigFieldClass::Unknown,
