@@ -130,14 +130,20 @@ def test_operational_model_common_operations_is_list() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_agent_brief_declares_operational_model_field() -> None:
-    """INV: AgentBrief struct must include an operational_model field."""
+def test_agent_brief_references_operational_model_in_available_sections() -> None:
+    """INV: AgentBrief available_sections must reference operational_model.
+
+    The brief is a compact index — it references system_config.operational_model
+    via available_sections with a purpose hint, NOT by inlining the full struct.
+    The full operational_model lives in system_config (always delivered inline
+    with /v1/agent/context).
+    """
     src = AGENT_ROUTE.read_text(encoding="utf-8")
-    assert "pub struct AgentOperationalModel" in src, (
-        "api/src/routes/agent.rs must declare AgentOperationalModel struct"
+    assert "system_config.operational_model" in src, (
+        "available_sections must reference system_config.operational_model"
     )
-    assert "operational_model" in src, (
-        "AgentBrief must include operational_model field"
+    assert "Event Sourcing" in src, (
+        "The section purpose must establish the ES paradigm"
     )
 
 
@@ -147,7 +153,7 @@ RUST_TESTS: tuple[str, ...] = (
 
 
 def test_agent_brief_operational_model_runtime_contract() -> None:
-    """Rust unit test: agent_brief populates operational_model from system_config."""
+    """Rust unit test: agent_brief references operational_model in available_sections."""
     import subprocess
     from tests.architecture.conftest import REPO_ROOT
 
