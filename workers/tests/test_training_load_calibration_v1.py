@@ -241,3 +241,21 @@ def test_legacy_intensity_percent_max_alias_is_consumed_as_relative_intensity() 
         "relative_intensity:custom:unstamped"
     )
     assert float(components["load_score"]) > float(fallback["load_score"])
+
+
+def test_flattened_dotted_relative_intensity_keys_are_supported() -> None:
+    profile = calibration_profile_for_version(CALIBRATED_PARAMETER_VERSION)
+    now_iso = datetime.now(tz=UTC).isoformat()
+    components = compute_row_load_components_v2(
+        data={
+            "duration_seconds": 600,
+            "distance_meters": 1800,
+            "rpe": 7,
+            "relative_intensity.value_pct": 0.82,
+            "relative_intensity.reference_type": "mss",
+            "relative_intensity.reference_measured_at": now_iso,
+        },
+        profile=profile,
+    )
+    assert components["relative_intensity_status"] == "used"
+    assert str(components["internal_response_source"]).startswith("relative_intensity:mss")

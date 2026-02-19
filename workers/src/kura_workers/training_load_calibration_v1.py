@@ -320,6 +320,8 @@ def _nested_lookup(data: dict[str, Any], dotted_path: str) -> Any:
 def _pick_first(data: dict[str, Any], paths: Iterable[str]) -> Any:
     for path in paths:
         if "." in path:
+            if path in data and data.get(path) is not None:
+                return data.get(path)
             value = _nested_lookup(data, path)
             if value is not None:
                 return value
@@ -332,6 +334,8 @@ def _pick_first(data: dict[str, Any], paths: Iterable[str]) -> Any:
 def _pick_first_with_path(data: dict[str, Any], paths: Iterable[str]) -> tuple[Any, str | None]:
     for path in paths:
         if "." in path:
+            if path in data and data.get(path) is not None:
+                return data.get(path), path
             value = _nested_lookup(data, path)
             if value is not None:
                 return value, path
