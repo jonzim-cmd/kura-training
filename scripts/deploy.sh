@@ -165,6 +165,82 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
+# ── Post-Deploy Recompute Hook ─────────────────────────
+# Trigger a one-shot nightly refit after successful deploy so projection logic
+# changes are reflected without waiting for the next scheduler interval.
+POST_DEPLOY_REFIT_RAW="${KURA_DEPLOY_TRIGGER_REFIT:-true}"
+POST_DEPLOY_REFIT="$(printf '%s' "$POST_DEPLOY_REFIT_RAW" | tr '[:upper:]' '[:lower:]')"
+NIGHTLY_INTERVAL_H_RAW="${KURA_NIGHTLY_REFIT_HOURS:-24}"
+if ! [[ "$NIGHTLY_INTERVAL_H_RAW" =~ ^[0-9]+$ ]] || [ "$NIGHTLY_INTERVAL_H_RAW" -lt 1 ]; then
+    NIGHTLY_INTERVAL_H=24
+else
+    NIGHTLY_INTERVAL_H="$NIGHTLY_INTERVAL_H_RAW"
+fi
+
+case "$POST_DEPLOY_REFIT" in
+    1|true|yes|on)
+        info "Triggering post-deploy inference.nightly_refit (interval_h=${NIGHTLY_INTERVAL_H})..."
+        REFIT_STATUS="$(
+            docker run --rm postgres:17 psql "$TARGET_DATABASE_URL" -Atqc "
+                WITH seed AS (
+                    SELECT user_id
+                    FROM events
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                ),
+                inflight AS (
+                    SELECT 1
+                    FROM background_jobs
+                    WHERE job_type = 'inference.nightly_refit'
+                      AND status IN ('pending', 'processing')
+                    LIMIT 1
+                ),
+                ins AS (
+                    INSERT INTO background_jobs (user_id, job_type, payload, scheduled_for)
+                    SELECT seed.user_id,
+                           'inference.nightly_refit',
+                           jsonb_build_object(
+                               'interval_hours', ${NIGHTLY_INTERVAL_H},
+                               'source', 'deploy.post_release',
+                               'trigger', 'post_deploy'
+                           ),
+                           NOW()
+                    FROM seed
+                    WHERE NOT EXISTS (SELECT 1 FROM inflight)
+                    RETURNING id
+                )
+                SELECT CASE
+                    WHEN NOT EXISTS (SELECT 1 FROM seed) THEN 'no_seed_user'
+                    WHEN EXISTS (SELECT 1 FROM inflight) THEN 'already_inflight'
+                    WHEN EXISTS (SELECT 1 FROM ins) THEN 'enqueued:' || (SELECT id::text FROM ins LIMIT 1)
+                    ELSE 'skipped'
+                END
+            " 2>/dev/null
+        )" || REFIT_STATUS="failed"
+
+        case "$REFIT_STATUS" in
+            enqueued:*)
+                info "Post-deploy refit job created (${REFIT_STATUS#enqueued:})."
+                ;;
+            already_inflight)
+                info "Skipped post-deploy refit enqueue (job already pending/processing)."
+                ;;
+            no_seed_user)
+                info "Skipped post-deploy refit enqueue (no events yet)."
+                ;;
+            *)
+                warn "Post-deploy refit enqueue failed or returned unexpected status: ${REFIT_STATUS}"
+                ;;
+        esac
+        ;;
+    0|false|no|off)
+        info "Skipping post-deploy inference.nightly_refit (KURA_DEPLOY_TRIGGER_REFIT=${POST_DEPLOY_REFIT_RAW})."
+        ;;
+    *)
+        warn "Unknown KURA_DEPLOY_TRIGGER_REFIT='${POST_DEPLOY_REFIT_RAW}'. Expected true/false. Skipping hook."
+        ;;
+esac
+
 # ── Extract CLI binary ────────────────────────────────
 
 if [[ "${1:-}" == "--extract" ]]; then
