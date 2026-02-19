@@ -1,12 +1,27 @@
 # Agent Instructions
 
-This project uses **bd** (beads) for issue tracking.
+This project uses **bd** (beads) for issue tracking and work coordination.
 
-## Issue Tracking
+## Work Tracking
 
-Run `bd prime` for workflow context, or install hooks (`bd hooks install`) for auto-injection.
-For full workflow details: `bd prime`.
-When working in a git worktree, use `scripts/bd-safe.sh` (auto-sets `BEADS_NO_DAEMON=1`).
+**bd ist der primäre Work-Tracker.** Keine Markdown-Dateien für Arbeitsverfolgung, entdeckte Aufgaben oder offene Fragen anlegen — alles gehört in bd-Issues. Markdown ist für Dokumentation (CLAUDE.md, AGENTS.md), nicht für Arbeitsmanagement.
+
+- `bd prime` — Workflow-Kontext laden (Hooks injizieren das automatisch)
+- `bd ready` — Verfügbare Arbeit finden
+- `bd create --title="..." --type=task|bug|feature --priority=2` — Neue Arbeit erfassen
+- Entdeckte Arbeit, offene Fragen, Follow-ups → sofort als bd-Issue anlegen
+
+## Quick Reference
+
+```bash
+bd ready                              # Find available work
+bd show <id>                          # View issue details
+bd update <id> --status in_progress   # Claim work
+bd close <id>                         # Complete work
+bd sync                               # Sync with git
+```
+
+> **Worktrees:** In git worktrees `scripts/bd-safe.sh` statt `bd` verwenden (setzt `BEADS_NO_DAEMON=1` automatisch).
 
 ## Collaboration Principle
 
@@ -14,16 +29,6 @@ This product is co-created by humans and agents as equal partners.
 Agents should actively shape architecture and product decisions, not just execute tasks.
 All collaboration should align with the partnership and integrity principles in `CLAUDE.md`:
 clear reasoning, honest uncertainty, and shared ownership of quality.
-
-## Quick Reference
-
-```bash
-scripts/bd-safe.sh ready              # Find available work
-scripts/bd-safe.sh show <id>          # View issue details
-scripts/bd-safe.sh update <id> --status in_progress  # Claim work
-scripts/bd-safe.sh close <id>         # Complete work
-scripts/bd-safe.sh sync               # Sync with git
-```
 
 ## Environment Setup
 
@@ -93,7 +98,7 @@ If integration tests show "skipped", `DATABASE_URL` is not set. Re-run `set -a &
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   scripts/bd-safe.sh sync
+   bd sync
    git push
    git status  # MUST show "up to date with origin"
    ```

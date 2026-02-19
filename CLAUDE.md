@@ -110,9 +110,13 @@ Not every dimension needs all levels. But the question must be asked.
 
 **Declaration (Decision 7):** Every handler declares `dimension_meta` at registration: description, key_structure, granularity levels, relationships to other dimensions. See Design Doc 002, Decision 7.
 
+### Work Tracking: bd (Beads)
+
+Arbeitsverfolgung läuft über `bd` (beads), nicht über Markdown-Dateien. Entdeckte Aufgaben, Follow-ups, offene Fragen → `bd create`. Keine TODO.md, BACKLOG.md oder ähnliche Tracking-Dateien anlegen. Details zum Workflow in `AGENTS.md`.
+
 ### Architektur-Entscheidungen: Executable Specs
 
-Neue Architektur-Entscheidungen werden nicht als Design Docs (Markdown) festgehalten, sondern als ausführbare Tests in `tests/architecture/`. Das "Warum" bleibt kurz in Beads oder hier. Das "Was muss gelten" wird Code, den CI dauerhaft erzwingt. Vollständiger Workflow in `AGENTS.md`.
+Neue Architektur-Entscheidungen werden nicht als Design Docs (Markdown) festgehalten, sondern als ausführbare Tests in `tests/architecture/`. Das "Warum" bleibt kurz in bd-Issues oder hier. Das "Was muss gelten" wird Code, den CI dauerhaft erzwingt. Vollständiger Workflow in `AGENTS.md`.
 
 ### Supabase Cutover Decision Record (2026-02-15)
 
