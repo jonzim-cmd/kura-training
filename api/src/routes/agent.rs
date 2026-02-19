@@ -272,6 +272,16 @@ pub struct AgentBriefSystemConfigRef {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct AgentOperationalModel {
+    pub paradigm: String,
+    pub mutations: String,
+    pub corrections: String,
+    pub state_access: String,
+    pub event_types: Value,
+    pub common_operations: Vec<Value>,
+}
+
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AgentBrief {
     pub schema_version: String,
@@ -283,6 +293,8 @@ pub struct AgentBrief {
     pub available_sections: Vec<AgentBriefSectionRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_config_ref: Option<AgentBriefSystemConfigRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operational_model: Option<AgentOperationalModel>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -2211,6 +2223,12 @@ fn build_agent_brief(
         updated_at: value.updated_at,
     });
 
+    let operational_model = system.and_then(|s| {
+        s.data.get("operational_model").and_then(|v| {
+            serde_json::from_value::<AgentOperationalModel>(v.clone()).ok()
+        })
+    });
+
     AgentBrief {
         schema_version: AGENT_BRIEF_SCHEMA_VERSION.to_string(),
         action_required: action_required.cloned(),
@@ -2219,6 +2237,7 @@ fn build_agent_brief(
         workflow_state,
         available_sections: agent_brief_available_sections(),
         system_config_ref,
+        operational_model,
     }
 }
 
@@ -15229,5 +15248,41 @@ mod tests {
             "  note  ".to_string(),
         ]);
         assert_eq!(tags, vec!["competition".to_string(), "note".to_string()]);
+    }
+
+    #[test]
+    fn agent_brief_includes_operational_model_from_system_config() {
+        let profile = bootstrap_user_profile(Uuid::now_v7());
+        let action = extract_action_required(&profile);
+        let system = super::SystemConfigResponse {
+            data: json!({
+                "operational_model": {
+                    "paradigm": "Event Sourcing",
+                    "mutations": "POST /v1/events",
+                    "corrections": "- event.retracted: retract and relog",
+                    "state_access": "GET /v1/projections",
+                    "event_types": {
+                        "tracking": ["set.logged"],
+                        "correction": ["event.retracted"]
+                    },
+                    "common_operations": [
+                        {
+                            "pattern": "Record any data",
+                            "via": "POST /v1/events",
+                            "hint": "All state changes are new events."
+                        }
+                    ]
+                }
+            }),
+            version: 1,
+            updated_at: Utc::now(),
+        };
+
+        let brief = super::build_agent_brief(action.as_ref(), &profile, Some(&system), None);
+
+        let model = brief.operational_model.expect("operational_model must be present");
+        assert_eq!(model.paradigm, "Event Sourcing");
+        assert!(model.corrections.contains("event.retracted"));
+        assert!(!model.common_operations.is_empty());
     }
 }

@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use axum::response::IntoResponse;
 use axum::Router;
 use serde::Serialize;
 use sqlx::postgres::PgPoolOptions;
@@ -397,6 +398,7 @@ async fn main() {
                 )
                 .layer(cors_layer),
         )
+        .fallback(paradigm_hint_fallback)
         .with_state(app_state);
 
     let port: u16 = std::env::var("PORT")
@@ -414,4 +416,44 @@ async fn main() {
     )
     .await
     .unwrap();
+}
+
+/// Fallback handler that enriches 404 responses with Event Sourcing
+/// paradigm hints when the request looks like a REST-CRUD attempt.
+async fn paradigm_hint_fallback(
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+) -> impl IntoResponse {
+    let path = uri.path();
+
+    // Detect REST-style mutation attempts on event resources
+    let rest_action_verbs = ["/retract", "/delete", "/update", "/void", "/cancel", "/undo"];
+    let is_crud_verb = matches!(
+        method,
+        axum::http::Method::DELETE | axum::http::Method::PUT | axum::http::Method::PATCH
+    );
+    let has_action_suffix = rest_action_verbs.iter().any(|v| path.contains(v));
+
+    let needs_hint = path.starts_with("/v1/events/") && (is_crud_verb || has_action_suffix);
+
+    if needs_hint {
+        let body = serde_json::json!({
+            "error": "not_found",
+            "message": format!("No endpoint at {} {}", method, path),
+            "paradigm_hint": concat!(
+                "Kura uses Event Sourcing. Corrections are compensating events, ",
+                "not REST verbs. To retract: POST /v1/events with event_type ",
+                "'event.retracted'. To correct a set: POST /v1/events with ",
+                "event_type 'set.corrected'. See operational_model in ",
+                "system_config for the full pattern."
+            ),
+        });
+        (axum::http::StatusCode::NOT_FOUND, axum::Json(body)).into_response()
+    } else {
+        let body = serde_json::json!({
+            "error": "not_found",
+            "message": format!("No endpoint at {} {}", method, path),
+        });
+        (axum::http::StatusCode::NOT_FOUND, axum::Json(body)).into_response()
+    }
 }

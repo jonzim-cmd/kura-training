@@ -20,6 +20,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
     return {
         # --- Identity & preferences ---
         "profile.updated": {
+            "category": "identity",
             "description": (
                 "User attributes (delta merge, latest per field wins). Includes "
                 "baseline-profile tri-state markers for known/unknown/deferred "
@@ -65,6 +66,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             ),
         },
         "preference.set": {
+            "category": "identity",
             "description": "User preference (latest per key wins)",
             "fields": {
                 "key": "string (required)",
@@ -94,6 +96,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             ],
         },
         "goal.set": {
+            "category": "identity",
             "description": "Training or health goal",
             "fields": {
                 "goal_type": "string (strength, hypertrophy, endurance, weight_loss, health)",
@@ -110,6 +113,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
         },
         "injury.reported": {
+            "category": "identity",
             "description": "Current injury or limitation",
             "fields": {
                 "description": "string (required, free text)",
@@ -125,6 +129,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
         },
         # --- Training ---
         "set.logged": {
+            "category": "tracking",
             "description": "A single training set (the core training event)",
             "fields": {
                 "exercise": "string (required, what the user says)",
@@ -199,6 +204,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
         },
         "session.logged": {
+            "category": "tracking",
             "description": (
                 "Unified modality-neutral session event with block-based structure. "
                 "Supports strength, endurance, sprint, plyometrics, and hybrid sessions."
@@ -317,6 +323,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             ),
         },
         "exercise.alias_created": {
+            "category": "meta",
             "description": "Maps user term to canonical exercise ID",
             "fields": {
                 "alias": "string (required, what the user says)",
@@ -337,6 +344,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
         },
         "training_plan.created": {
+            "category": "planning",
             "description": "Create a new training plan",
             "fields": {
                 "name": "string (optional, plan name)",
@@ -361,6 +369,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
         },
         "training_plan.updated": {
+            "category": "planning",
             "description": "Update an existing training plan (delta merge)",
             "fields": {
                 "plan_id": "string (optional, defaults to 'default')",
@@ -376,6 +385,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             "example": {"plan_id": "default", "name": "Updated Plan Name"},
         },
         "training_plan.archived": {
+            "category": "planning",
             "description": "Archive a training plan",
             "fields": {
                 "plan_id": "string (optional, defaults to 'default')",
@@ -384,6 +394,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             "example": {"plan_id": "default", "reason": "Switching to new program"},
         },
         "program.started": {
+            "category": "planning",
             "description": "Marks that the user started a named program",
             "fields": {
                 "name": "string (required, program name)",
@@ -398,6 +409,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
         },
         "session.completed": {
+            "category": "tracking",
             "description": (
                 "Post-session subjective feedback. Canonical event for enjoyment, "
                 "session quality, exertion summary, pain/discomfort, and context."
@@ -452,6 +464,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             ),
         },
         "observation.logged": {
+            "category": "tracking",
             "description": (
                 "Open-world observation contract for session facts that do not fit "
                 "fixed schemas. Validation tier is inferred from dimension naming."
@@ -506,6 +519,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
         },
         "external.activity_imported": {
+            "category": "tracking",
             "description": (
                 "Canonical external activity import artifact produced by the "
                 "file/connector ingestion pipeline."
@@ -543,6 +557,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
         },
         # --- Body composition ---
         "bodyweight.logged": {
+            "category": "tracking",
             "description": "Body weight measurement",
             "fields": {
                 "weight_kg": "number (required)",
@@ -552,6 +567,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             "example": {"weight_kg": 82.5, "time_of_day": "morning"},
         },
         "measurement.logged": {
+            "category": "tracking",
             "description": "Body measurement (e.g. waist, chest, arm)",
             "fields": {
                 "type": "string (required: waist, chest, arm, thigh, etc.)",
@@ -562,6 +578,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
         },
         # --- Recovery ---
         "sleep.logged": {
+            "category": "tracking",
             "description": "Sleep entry for one night",
             "fields": {
                 "duration_hours": "number (required)",
@@ -577,6 +594,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
         },
         "soreness.logged": {
+            "category": "tracking",
             "description": "Muscle soreness report",
             "fields": {
                 "area": "string (required: chest, back, shoulders, legs, etc.)",
@@ -586,6 +604,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             "example": {"area": "chest", "severity": 3},
         },
         "energy.logged": {
+            "category": "tracking",
             "description": "Subjective energy level",
             "fields": {
                 "level": "number (required, 1-10 scale)",
@@ -595,6 +614,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
         },
         # --- Nutrition ---
         "meal.logged": {
+            "category": "tracking",
             "description": "Nutrition entry for a single meal",
             "fields": {
                 "calories": "number (optional)",
@@ -614,6 +634,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
         },
         # --- Targets (Soll-Werte) ---
         "weight_target.set": {
+            "category": "planning",
             "description": "Set body weight goal",
             "fields": {
                 "target_weight_kg": "number (required)",
@@ -627,6 +648,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
         },
         "sleep_target.set": {
+            "category": "planning",
             "description": "Set sleep goal",
             "fields": {
                 "target_hours": "number (required)",
@@ -635,6 +657,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             "example": {"target_hours": 8, "target_bed_time": "22:30"},
         },
         "nutrition_target.set": {
+            "category": "planning",
             "description": "Set daily nutrition targets",
             "fields": {
                 "target_calories": "number (optional)",
@@ -651,6 +674,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
         },
         # --- Adaptive Projections (Phase 3, Decision 10) ---
         "projection_rule.created": {
+            "category": "meta",
             "description": (
                 "Agent creates a custom projection rule. The system builds "
                 "a pre-computed projection from matching events. Rules are "
@@ -678,6 +702,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
         },
         "projection_rule.archived": {
+            "category": "meta",
             "description": (
                 "Deactivate a custom projection rule. The corresponding "
                 "custom projection will be deleted."
@@ -688,6 +713,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             "example": {"name": "hrv_tracking"},
         },
         "workflow.onboarding.closed": {
+            "category": "meta",
             "description": (
                 "Explicit transition marker: onboarding phase is closed and planning/coaching "
                 "actions are now allowed by workflow gate."
@@ -704,6 +730,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
         },
         "workflow.onboarding.override_granted": {
+            "category": "meta",
             "description": (
                 "Explicit user override marker that temporarily allows planning/coaching "
                 "before onboarding closure."
@@ -721,6 +748,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
         },
         # --- Data corrections ---
         "learning.signal.logged": {
+            "category": "system",
             "description": (
                 "Canonical implicit-learning telemetry signal for cross-session "
                 "quality/friction/outcome/correction analysis."
@@ -780,6 +808,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
         },
         "evidence.claim.logged": {
+            "category": "system",
             "description": (
                 "Lineage evidence for deterministic free-text extraction. "
                 "Links a parsed claim to the persisted target event."
@@ -838,6 +867,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
         },
         "set.corrected": {
+            "category": "correction",
             "description": (
                 "Patch-style correction for a previously logged set without "
                 "retract-and-relog. Keeps immutable history and applies overlay "
@@ -882,6 +912,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
         },
         "event.retracted": {
+            "category": "correction",
             "description": (
                 "Retracts a previously logged event. The retracted event "
                 "will be excluded from all projection computations. "
@@ -919,7 +950,7 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "surfaced in the chat. The agent must log this event after the "
                 "user approves, declines, or snoozes a proposed fix."
             ),
-            "category": "system_quality",
+            "category": "system",
             "fields": {
                 "required": {
                     "item_ids": "string[] (IDs of consistency_inbox items decided on)",

@@ -2230,6 +2230,94 @@ def _get_projection_schemas() -> dict[str, Any]:
     }
 
 
+def _build_operational_model() -> dict[str, Any]:
+    """Derive operational model from event_conventions categories + usage.
+
+    Establishes the Event Sourcing paradigm before the agent's first action.
+    Entirely derived from existing convention metadata — no manual maintenance.
+    """
+    conventions = get_event_conventions()
+
+    # Group by category
+    by_category: dict[str, list[str]] = {}
+    for event_type, conv in conventions.items():
+        cat = conv.get("category", "unknown")
+        by_category.setdefault(cat, []).append(event_type)
+
+    # Build corrections text from correction-category usage texts
+    correction_parts = []
+    for et in sorted(by_category.get("correction", [])):
+        conv = conventions[et]
+        text = conv.get("usage", conv.get("description", ""))
+        correction_parts.append(f"- {et}: {text}")
+    corrections_text = (
+        "\n".join(correction_parts) if correction_parts
+        else "No correction events defined."
+    )
+
+    # Common operations: universal patterns + one per correction event
+    common_operations: list[dict[str, str]] = [
+        {
+            "pattern": "Record any data",
+            "via": "POST /v1/events",
+            "hint": (
+                "All state changes are new events. Choose the appropriate "
+                "event_type from event_conventions."
+            ),
+        },
+        {
+            "pattern": "Record multiple related events atomically",
+            "via": "POST /v1/events/batch",
+            "hint": (
+                "Max 100 events per batch. Each needs its own "
+                "idempotency_key in metadata."
+            ),
+        },
+        {
+            "pattern": "Read current state",
+            "via": "GET /v1/projections/{type}/{key} or GET /v1/projections",
+            "hint": (
+                "Projections are pre-computed views. "
+                "GET /v1/projections returns all at once (agent bootstrap)."
+            ),
+        },
+    ]
+
+    # Add one operation per correction-category event (these are the ones
+    # agents most often get wrong — they look for REST endpoints instead)
+    for et in sorted(by_category.get("correction", [])):
+        conv = conventions[et]
+        usage = conv.get("usage", conv.get("description", ""))
+        common_operations.append({
+            "pattern": f"Correct data: {et}",
+            "via": f"POST /v1/events with event_type=\"{et}\"",
+            "hint": usage,
+        })
+
+    return {
+        "paradigm": (
+            "Event Sourcing — all state changes are new events appended to an "
+            "immutable log. There is no UPDATE or DELETE on existing events. "
+            "There are no REST-style /resource/:id/action endpoints."
+        ),
+        "mutations": (
+            "All writes go through POST /v1/events (single) or "
+            "POST /v1/events/batch (atomic batch up to 100). "
+            "Every write creates a new event — never try to PUT, PATCH, or DELETE."
+        ),
+        "corrections": corrections_text,
+        "state_access": (
+            "Read state from projections: GET /v1/projections/{type}/{key} for one, "
+            "GET /v1/projections for all. Projections are pre-computed by background "
+            "workers. Never query the event store directly."
+        ),
+        "event_types": {
+            cat: sorted(types) for cat, types in sorted(by_category.items())
+        },
+        "common_operations": common_operations,
+    }
+
+
 def build_system_config() -> dict[str, Any]:
     """Build the complete system config from all registered sources.
 
@@ -2248,6 +2336,7 @@ def build_system_config() -> dict[str, Any]:
         "interview_guide": get_interview_guide(),
         "agent_behavior": _get_agent_behavior(),
         "projection_schemas": _get_projection_schemas(),
+        "operational_model": _build_operational_model(),
     }
 
 
