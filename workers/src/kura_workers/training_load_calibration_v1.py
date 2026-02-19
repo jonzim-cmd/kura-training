@@ -151,11 +151,109 @@ def _sensor_presence(data: dict[str, Any]) -> dict[str, bool]:
     }
 
 
-def compute_row_load_components_v1(
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def _resolve_modality_prior(data: dict[str, Any]) -> float:
+    text = " ".join(
+        str(data.get(key) or "").strip().lower()
+        for key in ("block_type", "workout_type", "sport", "exercise", "exercise_id")
+    )
+    if any(token in text for token in ("strength", "squat", "bench", "deadlift", "lift")):
+        return 0.68
+    if any(token in text for token in ("sprint", "accel", "speed", "maxv")):
+        return 0.8
+    if any(token in text for token in ("jump", "plyo", "reactive")):
+        return 0.75
+    if any(token in text for token in ("swim", "pool", "rowing", "row", "bike", "cycle", "run")):
+        return 0.62
+    return 0.6
+
+
+def _power_internal_response(data: dict[str, Any]) -> tuple[float, str, float] | None:
+    power = _to_float(data.get("power_watt", data.get("power", data.get("watts"))))
+    if power <= 0.0:
+        return None
+    ftp = _to_float(
+        data.get("ftp_watt", data.get("ftp", data.get("critical_power_watt")))
+    )
+    if ftp > 0.0:
+        ratio = power / ftp
+        normalized = _clamp((ratio - 0.4) / 0.8, 0.0, 1.0)
+        return normalized, "power_ratio", 0.12
+    normalized = _clamp(power / 420.0, 0.0, 1.0)
+    return normalized, "power_absolute", 0.2
+
+
+def _heart_rate_internal_response(data: dict[str, Any]) -> tuple[float, str, float] | None:
+    hr_avg = _to_float(data.get("heart_rate_avg", data.get("hr_avg", data.get("hr_bpm"))))
+    if hr_avg <= 0.0:
+        return None
+    hr_max = _to_float(data.get("heart_rate_max", data.get("hr_max")))
+    if hr_max > 0.0:
+        ratio = hr_avg / hr_max
+        normalized = _clamp((ratio - 0.45) / 0.5, 0.0, 1.0)
+        return normalized, "hr_ratio", 0.22
+    normalized = _clamp((hr_avg - 90.0) / 100.0, 0.0, 1.0)
+    return normalized, "hr_absolute", 0.3
+
+
+def _pace_internal_response(data: dict[str, Any]) -> tuple[float, str, float] | None:
+    pace = _to_float(data.get("pace_min_per_km", data.get("pace", data.get("min_per_km"))))
+    if pace > 0.0:
+        speed_mps = 16.6666667 / pace
+        normalized = _clamp(speed_mps / 5.5, 0.0, 1.0)
+        return normalized, "pace", 0.28
+
+    duration_seconds = _to_float(data.get("duration_seconds"))
+    distance_meters = _to_float(data.get("distance_meters"))
+    if duration_seconds > 0.0 and distance_meters > 0.0:
+        speed_mps = distance_meters / duration_seconds
+        normalized = _clamp(speed_mps / 5.5, 0.0, 1.0)
+        return normalized, "pace_estimated", 0.34
+    return None
+
+
+def _rpe_internal_response(data: dict[str, Any]) -> tuple[float, str, float] | None:
+    rpe = _to_float(
+        data.get(
+            "session_rpe",
+            data.get(
+                "rpe",
+                data.get("intensity_rpe", data.get("rpe_borg")),
+            ),
+        )
+    )
+    if rpe > 0.0:
+        normalized = _clamp(rpe / 10.0, 0.0, 1.0)
+        return normalized, "rpe", 0.34
+
+    rir = _to_float(data.get("rir"))
+    if rir > 0.0:
+        normalized = _clamp(1.0 - (rir / 10.0), 0.0, 1.0)
+        return normalized, "rir_inverse", 0.38
+    return None
+
+
+def _resolve_internal_response(data: dict[str, Any]) -> tuple[float, str, float]:
+    for resolver in (
+        _power_internal_response,
+        _heart_rate_internal_response,
+        _pace_internal_response,
+        _rpe_internal_response,
+    ):
+        resolved = resolver(data)
+        if resolved is not None:
+            return resolved
+    return _resolve_modality_prior(data), "modality_prior", 0.52
+
+
+def compute_row_load_components_v2(
     *,
     data: dict[str, Any],
     profile: dict[str, Any],
-) -> dict[str, float]:
+) -> dict[str, float | str]:
     weight_kg = _to_float(data.get("weight_kg", data.get("weight")))
     reps = _to_float(data.get("reps"))
     duration_seconds = _to_float(data.get("duration_seconds"))
@@ -164,20 +262,37 @@ def compute_row_load_components_v1(
     load_weights = profile["load_weights"]
 
     volume_kg = weight_kg * reps
-    load_score = (
+    external_dose = (
         (volume_kg / float(load_weights["volume_divisor"]))
         + (duration_seconds / float(load_weights["duration_divisor"]))
         + (distance_meters / float(load_weights["distance_divisor"]))
         + (contacts / float(load_weights["contacts_divisor"]))
     )
+    internal_response, internal_source, uncertainty = _resolve_internal_response(data)
+    intensity_multiplier = 0.7 + (0.8 * internal_response)
+    load_score = external_dose * intensity_multiplier
+
     return {
         "volume_kg": volume_kg,
         "reps": reps,
         "duration_seconds": duration_seconds,
         "distance_meters": distance_meters,
         "contacts": contacts,
+        "external_dose": external_dose,
+        "internal_response": internal_response,
+        "internal_response_source": internal_source,
+        "intensity_multiplier": intensity_multiplier,
+        "uncertainty": uncertainty,
         "load_score": load_score,
     }
+
+
+def compute_row_load_components_v1(
+    *,
+    data: dict[str, Any],
+    profile: dict[str, Any],
+) -> dict[str, float | str]:
+    return compute_row_load_components_v2(data=data, profile=profile)
 
 
 def compute_row_confidence_v1(

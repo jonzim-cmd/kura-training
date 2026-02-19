@@ -96,10 +96,13 @@ async def handle_inference_nightly_refit(
     missed_runs = int(payload.get("missed_runs") or 0)
     event_types = (
         "set.logged",
+        "session.logged",
+        "set.corrected",
         "exercise.alias_created",
         "sleep.logged",
         "soreness.logged",
         "energy.logged",
+        "external.activity_imported",
     )
 
     async with conn.cursor(row_factory=dict_row) as cur:

@@ -42,6 +42,8 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
 
 @projection_handler(
     "set.logged",
+    "session.logged",
+    "set.corrected",
     "sleep.logged",
     "soreness.logged",
     "energy.logged",
@@ -174,6 +176,8 @@ async def update_readiness_inference(
                 WHERE user_id = %s
                   AND event_type IN (
                       'set.logged',
+                      'session.logged',
+                      'set.corrected',
                       'sleep.logged',
                       'soreness.logged',
                       'energy.logged',

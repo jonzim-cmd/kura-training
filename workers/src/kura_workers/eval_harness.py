@@ -29,6 +29,9 @@ from .inference_engine import (
     weekly_phase_from_date,
 )
 from .readiness_signals import build_readiness_daily_scores
+from .session_block_expansion import expand_session_logged_rows
+from .set_corrections import apply_set_correction_chain
+from .training_legacy_compat import extract_backfilled_set_event_ids
 from .utils import (
     epley_1rm,
     get_alias_map,
@@ -906,8 +909,9 @@ def evaluate_causal_projection(key: str, projection_data: Any) -> dict[str, Any]
 
 
 def build_causal_projection_from_event_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    normalized_rows = _normalized_training_signal_rows(rows)
     alias_map: dict[str, str] = {}
-    for row in rows:
+    for row in normalized_rows:
         if row.get("event_type") != "exercise.alias_created":
             continue
         data = row.get("data") or {}
@@ -918,11 +922,14 @@ def build_causal_projection_from_event_rows(rows: list[dict[str, Any]]) -> dict[
         if alias and target:
             alias_map[alias] = target
 
-    timezone_pref = _timezone_preference_from_rows(rows)
+    timezone_pref = _timezone_preference_from_rows(normalized_rows)
     timezone_context = resolve_timezone_context(timezone_pref)
     timezone_name = str(timezone_context["timezone"])
 
-    readiness_signals = build_readiness_daily_scores(rows, timezone_name=timezone_name)
+    readiness_signals = build_readiness_daily_scores(
+        normalized_rows,
+        timezone_name=timezone_name,
+    )
     readiness_daily = list(readiness_signals.get("daily_scores") or [])
     if not readiness_daily:
         return {
@@ -957,7 +964,7 @@ def build_causal_projection_from_event_rows(rows: list[dict[str, Any]]) -> dict[
             "daily_context": [],
             "timezone_context": timezone_context,
             "data_quality": {
-                "events_processed": len(rows),
+                "events_processed": len(normalized_rows),
                 "observed_days": 0,
                 "treated_windows": {},
                 "outcome_windows": {},
@@ -981,7 +988,7 @@ def build_causal_projection_from_event_rows(rows: list[dict[str, Any]]) -> dict[
     temporal_conflicts: dict[str, int] = dict(readiness_signals.get("temporal_conflicts") or {})
 
     per_day_aux: dict[date, dict[str, Any]] = {}
-    for row in rows:
+    for row in normalized_rows:
         timestamp = row.get("timestamp")
         if not isinstance(timestamp, datetime):
             continue
@@ -1016,7 +1023,7 @@ def build_causal_projection_from_event_rows(rows: list[dict[str, Any]]) -> dict[
         )
 
         event_type = str(row.get("event_type") or "")
-        if event_type == "set.logged":
+        if event_type in {"set.logged", "session.logged"}:
             weight = _as_float(data.get("weight_kg", data.get("weight")))
             reps = _as_float(data.get("reps"))
             if weight is not None and reps is not None and weight > 0.0 and reps > 0.0:
@@ -1422,7 +1429,7 @@ def build_causal_projection_from_event_rows(rows: list[dict[str, Any]]) -> dict[
         "daily_context": daily_context[-60:],
         "timezone_context": timezone_context,
         "data_quality": {
-            "events_processed": len(rows),
+            "events_processed": len(normalized_rows),
             "observed_days": len(observed_days),
             "treated_windows": treated_windows,
             "outcome_windows": outcome_windows,
@@ -1662,6 +1669,55 @@ def filter_retracted_event_rows(rows: list[dict[str, Any]]) -> list[dict[str, An
     return out
 
 
+def _normalized_training_signal_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    set_rows: list[dict[str, Any]] = []
+    session_rows: list[dict[str, Any]] = []
+    correction_rows: list[dict[str, Any]] = []
+    passthrough_rows: list[dict[str, Any]] = []
+
+    for row in rows:
+        event_type = str(row.get("event_type") or "").strip()
+        if event_type == "set.logged":
+            set_rows.append(row)
+        elif event_type == "session.logged":
+            session_rows.append(row)
+        elif event_type == "set.corrected":
+            correction_rows.append(row)
+        else:
+            passthrough_rows.append(row)
+
+    legacy_backfilled_ids = extract_backfilled_set_event_ids(session_rows)
+    if legacy_backfilled_ids:
+        set_rows = [
+            row for row in set_rows if str(row.get("id") or "") not in legacy_backfilled_ids
+        ]
+
+    corrected_rows = apply_set_correction_chain(set_rows, correction_rows)
+    normalized: list[dict[str, Any]] = []
+
+    for row in corrected_rows:
+        normalized.append(
+            {
+                **row,
+                "event_type": "set.logged",
+                "data": row.get("effective_data") or row.get("data") or {},
+            }
+        )
+
+    for row in expand_session_logged_rows(session_rows):
+        normalized.append(
+            {
+                **row,
+                "event_type": "session.logged",
+                "data": row.get("effective_data") or row.get("data") or {},
+            }
+        )
+
+    normalized.extend(passthrough_rows)
+    normalized.sort(key=lambda row: (row.get("timestamp"), str(row.get("id") or "")))
+    return normalized
+
+
 def build_strength_histories_from_event_rows(
     rows: list[dict[str, Any]],
     alias_map: dict[str, str],
@@ -1670,8 +1726,9 @@ def build_strength_histories_from_event_rows(
     session_best: dict[str, dict[str, tuple[datetime, float]]] = {}
     day_best: dict[str, dict[str, float]] = {}
 
-    for row in rows:
-        if row.get("event_type") != "set.logged":
+    normalized_rows = _normalized_training_signal_rows(rows)
+    for row in normalized_rows:
+        if row.get("event_type") not in {"set.logged", "session.logged"}:
             continue
         data = row.get("data") or {}
         raw_key = resolve_exercise_key(data)
@@ -1723,7 +1780,10 @@ def build_strength_histories_from_event_rows(
 
 def build_readiness_daily_scores_from_event_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Reconstruct readiness daily_scores from raw events."""
-    built = build_readiness_daily_scores(rows, timezone_name="UTC")
+    timezone_pref = _timezone_preference_from_rows(rows)
+    timezone_context = resolve_timezone_context(timezone_pref)
+    timezone_name = str(timezone_context["timezone"])
+    built = build_readiness_daily_scores(rows, timezone_name=timezone_name)
     return list(built.get("daily_scores") or [])
 
 
@@ -3458,15 +3518,28 @@ async def _event_store_results(
         event_types.update(("set.logged", "exercise.alias_created", "event.retracted"))
     if "readiness_inference" in projection_types:
         event_types.update(
-            ("set.logged", "sleep.logged", "soreness.logged", "energy.logged", "event.retracted")
+            (
+                "set.logged",
+                "session.logged",
+                "set.corrected",
+                "sleep.logged",
+                "soreness.logged",
+                "energy.logged",
+                "external.activity_imported",
+                "preference.set",
+                "event.retracted",
+            )
         )
     if "causal_inference" in projection_types:
         event_types.update(
             (
                 "set.logged",
+                "session.logged",
+                "set.corrected",
                 "sleep.logged",
                 "soreness.logged",
                 "energy.logged",
+                "external.activity_imported",
                 "meal.logged",
                 "nutrition_target.set",
                 "sleep_target.set",
@@ -3475,6 +3548,7 @@ async def _event_store_results(
                 "training_plan.updated",
                 "training_plan.archived",
                 "exercise.alias_created",
+                "preference.set",
                 "event.retracted",
             )
         )

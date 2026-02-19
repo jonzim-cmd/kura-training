@@ -22,6 +22,9 @@ from ..inference_telemetry import (
 )
 from ..population_priors import resolve_population_prior
 from ..registry import projection_handler
+from ..session_block_expansion import expand_session_logged_row
+from ..set_corrections import apply_set_correction_chain
+from ..training_legacy_compat import extract_backfilled_set_event_ids
 from ..utils import (
     epley_1rm,
     find_all_keys_for_canonical,
@@ -38,7 +41,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     return {"exercises": [r["key"] for r in projection_rows]}
 
 
-@projection_handler("set.logged", "exercise.alias_created", dimension_meta={
+@projection_handler("set.logged", "session.logged", "set.corrected", "exercise.alias_created", dimension_meta={
     "name": "strength_inference",
     "description": "Bayesian strength trend and near-term forecast per exercise",
     "key_structure": "one per exercise (exercise_id as key)",
@@ -145,7 +148,14 @@ async def update_strength_inference(
         alias_map = await get_alias_map(conn, user_id, retracted_ids=retracted_ids)
 
         async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute("SELECT data FROM events WHERE id = %s", (event_id,))
+            await cur.execute(
+                """
+                SELECT id, timestamp, data, metadata
+                FROM events
+                WHERE id = %s
+                """,
+                (event_id,),
+            )
             row = await cur.fetchone()
             if row is None:
                 logger.warning("Strength inference event %s not found", event_id)
@@ -159,8 +169,11 @@ async def update_strength_inference(
                 )
                 return
 
+        event_data = row.get("data") if isinstance(row.get("data"), dict) else {}
+        event_metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+
         if event_type == "exercise.alias_created":
-            canonical = row["data"].get("exercise_id", "").strip().lower()
+            canonical = str(event_data.get("exercise_id") or "").strip().lower()
             if not canonical:
                 await _record(
                     "skipped",
@@ -171,8 +184,70 @@ async def update_strength_inference(
                     },
                 )
                 return
+        elif event_type == "session.logged":
+            expanded = expand_session_logged_row(
+                {
+                    "id": row.get("id"),
+                    "timestamp": row.get("timestamp"),
+                    "data": event_data,
+                    "metadata": event_metadata,
+                }
+            )
+            raw_key = None
+            for expanded_row in expanded:
+                expanded_data = expanded_row.get("data") or {}
+                if not isinstance(expanded_data, dict):
+                    continue
+                candidate = resolve_exercise_key(expanded_data)
+                if candidate:
+                    raw_key = candidate
+                    break
+            if not raw_key:
+                await _record(
+                    "skipped",
+                    {
+                        "skip_reason": "session_without_resolved_exercise",
+                        "event_type": event_type,
+                        "event_id": event_id,
+                    },
+                )
+                return
+            canonical = resolve_through_aliases(raw_key, alias_map)
+        elif event_type == "set.corrected":
+            raw_key = None
+            changed_fields = event_data.get("changed_fields")
+            if isinstance(changed_fields, dict):
+                for field in ("exercise_id", "exercise"):
+                    candidate = changed_fields.get(field)
+                    if isinstance(candidate, dict) and "value" in candidate:
+                        candidate = candidate.get("value")
+                    if isinstance(candidate, str) and candidate.strip():
+                        raw_key = candidate.strip().lower()
+                        break
+            if not raw_key:
+                target_event_id = str(event_data.get("target_event_id") or "").strip()
+                if target_event_id:
+                    async with conn.cursor(row_factory=dict_row) as cur:
+                        await cur.execute(
+                            "SELECT data FROM events WHERE id = %s",
+                            (target_event_id,),
+                        )
+                        target_row = await cur.fetchone()
+                    if target_row and isinstance(target_row.get("data"), dict):
+                        raw_key = resolve_exercise_key(target_row["data"])
+            if not raw_key:
+                await _record(
+                    "skipped",
+                    {
+                        "skip_reason": "set_correction_without_resolved_exercise",
+                        "event_type": event_type,
+                        "event_id": event_id,
+                    },
+                )
+                return
+            canonical = resolve_through_aliases(raw_key, alias_map)
         else:
-            raw_key = resolve_exercise_key(row["data"])
+            raw_key = resolve_exercise_key(event_data)
             if not raw_key:
                 await _record(
                     "skipped",
@@ -191,21 +266,71 @@ async def update_strength_inference(
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                SELECT id, timestamp, data, metadata
+                SELECT id, timestamp, event_type, data, metadata
                 FROM events
                 WHERE user_id = %s
-                  AND event_type = 'set.logged'
-                  AND (
-                      lower(trim(data->>'exercise_id')) = ANY(%s)
-                      OR lower(trim(data->>'exercise')) = ANY(%s)
-                  )
+                  AND event_type IN ('set.logged', 'session.logged', 'set.corrected')
                 ORDER BY timestamp ASC
                 """,
-                (user_id, all_keys, all_keys),
+                (user_id,),
             )
             rows = await cur.fetchall()
 
         rows = [r for r in rows if str(r["id"]) not in retracted_ids]
+        set_rows = [r for r in rows if str(r.get("event_type") or "") == "set.logged"]
+        session_rows = [r for r in rows if str(r.get("event_type") or "") == "session.logged"]
+        correction_rows = [r for r in rows if str(r.get("event_type") or "") == "set.corrected"]
+
+        legacy_backfilled_ids = extract_backfilled_set_event_ids(session_rows)
+        if legacy_backfilled_ids:
+            set_rows = [
+                entry for entry in set_rows if str(entry.get("id") or "") not in legacy_backfilled_ids
+            ]
+
+        corrected_set_rows = apply_set_correction_chain(set_rows, correction_rows)
+        effective_rows: list[dict[str, Any]] = []
+        for corrected in corrected_set_rows:
+            effective_data = corrected.get("effective_data") or corrected.get("data") or {}
+            if not isinstance(effective_data, dict):
+                continue
+            effective_rows.append(
+                {
+                    "id": corrected.get("id"),
+                    "timestamp": corrected.get("timestamp"),
+                    "event_type": "set.logged",
+                    "data": effective_data,
+                    "metadata": corrected.get("metadata") or {},
+                }
+            )
+
+        for session_row in session_rows:
+            for expanded in expand_session_logged_row(session_row):
+                expanded_data = expanded.get("data")
+                if not isinstance(expanded_data, dict):
+                    continue
+                effective_rows.append(
+                    {
+                        "id": expanded.get("id"),
+                        "timestamp": expanded.get("timestamp"),
+                        "event_type": "session.logged",
+                        "data": expanded_data,
+                        "metadata": expanded.get("metadata") or {},
+                    }
+                )
+
+        rows = []
+        for candidate_row in effective_rows:
+            data = candidate_row.get("data")
+            if not isinstance(data, dict):
+                continue
+            raw_key = resolve_exercise_key(data)
+            if not raw_key:
+                continue
+            resolved = resolve_through_aliases(raw_key, alias_map)
+            if resolved in all_keys:
+                rows.append(candidate_row)
+
+        rows.sort(key=lambda entry: (entry.get("timestamp"), str(entry.get("id") or "")))
         if not rows:
             async with conn.cursor() as cur:
                 await cur.execute(

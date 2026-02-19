@@ -98,6 +98,16 @@ def _compute_recent_days(
             "total_sets": entry["total_sets"],
             "total_volume_kg": round(entry["total_volume_kg"], 1),
             "total_reps": entry["total_reps"],
+            "total_load_score": round(float(entry.get("total_load_score", 0.0) or 0.0), 2),
+            "total_load_confidence": round(
+                (
+                    float(entry.get("load_confidence_sum", 0.0) or 0.0)
+                    / float(entry.get("load_confidence_count", 1) or 1)
+                )
+                if float(entry.get("load_confidence_count", 0) or 0) > 0.0
+                else 0.0,
+                2,
+            ),
         }
         if entry.get("top_sets"):
             day_entry["top_sets"] = entry["top_sets"]
@@ -294,6 +304,8 @@ def _disabled_load_v2_overview() -> dict[str, Any]:
             "total_sets": "integer",
             "total_volume_kg": "number",
             "total_reps": "integer",
+            "total_load_score": "number",
+            "total_load_confidence": "number [0,1]",
             "top_sets": {"<exercise_id>": {"weight_kg": "number", "reps": "integer", "estimated_1rm": "number"}},
         }],
         "recent_sessions": [{
@@ -520,7 +532,16 @@ async def update_training_timeline(
 
     # Aggregate by day, week, and session
     day_data: dict[date, dict[str, Any]] = defaultdict(
-        lambda: {"exercises": set(), "total_sets": 0, "total_volume_kg": 0.0, "total_reps": 0, "top_sets": {}}
+        lambda: {
+            "exercises": set(),
+            "total_sets": 0,
+            "total_volume_kg": 0.0,
+            "total_reps": 0,
+            "total_load_score": 0.0,
+            "load_confidence_sum": 0.0,
+            "load_confidence_count": 0,
+            "top_sets": {},
+        }
     )
     week_data: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"training_days": set(), "total_sets": 0, "total_volume_kg": 0.0, "exercises": set()}
@@ -632,6 +653,26 @@ async def update_training_timeline(
             if not isinstance(set_entry, dict):
                 continue
             synthetic_data = dict(set_entry)
+            for key in (
+                "duration_seconds",
+                "distance_meters",
+                "contacts",
+                "heart_rate_avg",
+                "heart_rate_max",
+                "power_watt",
+                "pace_min_per_km",
+                "session_rpe",
+                "rpe",
+            ):
+                if key in synthetic_data:
+                    continue
+                raw_value = workout_payload.get(key)
+                try:
+                    value = float(raw_value)
+                except (TypeError, ValueError):
+                    continue
+                if value > 0.0:
+                    synthetic_data[key] = value
             if "exercise" not in synthetic_data and "exercise_id" not in synthetic_data:
                 workout_type = (
                     str(workout_payload.get("workout_type") or "external_activity")
@@ -777,6 +818,18 @@ async def update_training_timeline(
             load_v2 = session_entry.get("load_v2")
             if isinstance(load_v2, dict):
                 session_entry["load_v2"] = finalize_session_load_v2(load_v2)
+                day_iso = session_entry.get("date")
+                if isinstance(day_iso, str):
+                    try:
+                        day_key = date.fromisoformat(day_iso)
+                    except ValueError:
+                        continue
+                    global_load = load_v2.get("global") or {}
+                    load_score = float(global_load.get("load_score", 0.0) or 0.0)
+                    confidence = float(global_load.get("confidence", 0.0) or 0.0)
+                    day_data[day_key]["total_load_score"] += load_score
+                    day_data[day_key]["load_confidence_sum"] += confidence
+                    day_data[day_key]["load_confidence_count"] += 1
 
     # Finalize week_data: convert training_days sets to counts
     for w_entry in week_data.values():

@@ -41,7 +41,15 @@ def test_external_import_mapping_v2_is_declared() -> None:
     assert contract["schema_version"] == "external_import_mapping.v2"
     assert set(contract["provider_field_matrix"]) == {"garmin", "strava", "trainingpeaks"}
     assert set(contract["format_field_matrix"]) == {"fit", "tcx", "gpx"}
-    assert set(contract["modalities"]) == {"running", "cycling", "strength", "hybrid"}
+    assert {
+        "running",
+        "cycling",
+        "strength",
+        "hybrid",
+        "swimming",
+        "rowing",
+        "team_sport",
+    } <= set(contract["modalities"])
     assert "provider_modality_matrix" in contract
     assert "format_modality_matrix" in contract
 

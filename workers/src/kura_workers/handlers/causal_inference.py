@@ -32,6 +32,9 @@ from ..inference_telemetry import (
 from ..population_priors import build_causal_estimand_target_key, resolve_population_prior
 from ..readiness_signals import build_readiness_daily_scores
 from ..registry import projection_handler
+from ..session_block_expansion import expand_session_logged_rows
+from ..set_corrections import apply_set_correction_chain
+from ..training_legacy_compat import extract_backfilled_set_event_ids
 from ..utils import (
     epley_1rm,
     get_retracted_event_ids,
@@ -356,6 +359,60 @@ def _round_strength_map(values: dict[str, float]) -> dict[str, float]:
     return {key: round(float(val), 2) for key, val in sorted(values.items())}
 
 
+def _normalized_signal_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    set_rows: list[dict[str, Any]] = []
+    session_rows: list[dict[str, Any]] = []
+    correction_rows: list[dict[str, Any]] = []
+    passthrough_rows: list[dict[str, Any]] = []
+
+    for row in rows:
+        event_type = str(row.get("event_type") or "").strip()
+        if event_type == "set.logged":
+            set_rows.append(row)
+        elif event_type == "session.logged":
+            session_rows.append(row)
+        elif event_type == "set.corrected":
+            correction_rows.append(row)
+        else:
+            passthrough_rows.append(row)
+
+    legacy_backfilled_ids = extract_backfilled_set_event_ids(session_rows)
+    if legacy_backfilled_ids:
+        set_rows = [
+            row for row in set_rows if str(row.get("id") or "") not in legacy_backfilled_ids
+        ]
+
+    corrected_set_rows = apply_set_correction_chain(set_rows, correction_rows)
+    normalized: list[dict[str, Any]] = []
+
+    for row in corrected_set_rows:
+        normalized.append(
+            {
+                **row,
+                "event_type": "set.logged",
+                "data": row.get("effective_data") or row.get("data") or {},
+            }
+        )
+
+    for row in expand_session_logged_rows(session_rows):
+        normalized.append(
+            {
+                **row,
+                "event_type": "session.logged",
+                "data": row.get("effective_data") or row.get("data") or {},
+            }
+        )
+
+    normalized.extend(passthrough_rows)
+    normalized.sort(
+        key=lambda row: (
+            row.get("timestamp"),
+            str(row.get("id") or ""),
+        )
+    )
+    return normalized
+
+
 def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not projection_rows:
         return {}
@@ -420,8 +477,11 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     "sleep.logged",
     "sleep_target.set",
     "set.logged",
+    "session.logged",
+    "set.corrected",
     "energy.logged",
     "soreness.logged",
+    "exercise.alias_created",
     "external.activity_imported",
     dimension_meta={
         "name": "causal_inference",
@@ -616,8 +676,11 @@ async def update_causal_inference(
                       'sleep.logged',
                       'sleep_target.set',
                       'set.logged',
+                      'session.logged',
+                      'set.corrected',
                       'energy.logged',
                       'soreness.logged',
+                      'exercise.alias_created',
                       'external.activity_imported'
                   )
                 ORDER BY timestamp ASC
@@ -648,8 +711,10 @@ async def update_causal_inference(
             )
             return
 
+        signal_rows = _normalized_signal_rows(rows)
+
         readiness_signals = build_readiness_daily_scores(
-            rows,
+            signal_rows,
             timezone_name=timezone_name,
         )
         readiness_daily = list(readiness_signals.get("daily_scores") or [])
@@ -670,7 +735,7 @@ async def update_causal_inference(
             if isinstance(entry, dict) and isinstance(entry.get("date"), str)
         }
         alias_map: dict[str, str] = {}
-        for row in rows:
+        for row in signal_rows:
             if row.get("event_type") != "exercise.alias_created":
                 continue
             data = row.get("data") if isinstance(row.get("data"), dict) else {}
@@ -698,7 +763,7 @@ async def update_causal_inference(
             }
         )
 
-        for row in rows:
+        for row in signal_rows:
             timestamp = row.get("timestamp")
             if not isinstance(timestamp, datetime):
                 continue
@@ -716,7 +781,7 @@ async def update_causal_inference(
                 temporal_conflicts[conflict] = temporal_conflicts.get(conflict, 0) + 1
             bucket = per_day_aux[day]
 
-            if row_event_type == "set.logged":
+            if row_event_type in {"set.logged", "session.logged"}:
                 weight = _safe_float(data.get("weight_kg", data.get("weight")), default=0.0)
                 reps = _safe_float(data.get("reps"), default=0.0)
                 if weight > 0.0 and reps > 0.0:
@@ -1255,7 +1320,7 @@ async def update_causal_inference(
             },
             "daily_context": daily_context[-60:],
             "data_quality": {
-                "events_processed": len(rows),
+                "events_processed": len(signal_rows),
                 "observed_days": len(observed_days),
                 "temporal_conflicts": temporal_conflicts,
                 "treated_windows": treated_windows,
@@ -1284,7 +1349,7 @@ async def update_causal_inference(
         telemetry_error_taxonomy: str | None = None
         telemetry_diagnostics = {
             "event_type": event_type,
-            "events_processed": len(rows),
+            "events_processed": len(signal_rows),
             "observed_days": len(observed_days),
             "temporal_conflicts": temporal_conflicts,
             "windows_evaluated": windows_evaluated,

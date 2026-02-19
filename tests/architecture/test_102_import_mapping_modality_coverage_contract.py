@@ -39,8 +39,24 @@ def _canonical_payload(workout_type: str, sport: str) -> dict:
 def test_import_mapping_modality_contract_is_exposed() -> None:
     conventions = _get_conventions()
     contract = conventions["external_import_mapping_v2"]["contract"]
-    assert set(contract["modalities"]) == {"running", "cycling", "strength", "hybrid"}
-    assert set(contract["modality_profiles"]) == {"running", "cycling", "strength", "hybrid"}
+    assert {
+        "running",
+        "cycling",
+        "strength",
+        "hybrid",
+        "swimming",
+        "rowing",
+        "team_sport",
+    } <= set(contract["modalities"])
+    assert {
+        "running",
+        "cycling",
+        "strength",
+        "hybrid",
+        "swimming",
+        "rowing",
+        "team_sport",
+    } <= set(contract["modality_profiles"])
     assert "provider_modality_matrix" in contract
 
 

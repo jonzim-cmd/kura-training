@@ -12,7 +12,15 @@ from .training_session_contract import (
 )
 
 SupportState = Literal["supported", "partial", "not_available"]
-Modality = Literal["running", "cycling", "strength", "hybrid"]
+Modality = Literal[
+    "running",
+    "cycling",
+    "strength",
+    "hybrid",
+    "swimming",
+    "rowing",
+    "team_sport",
+]
 
 _CORE_IMPORT_FIELDS: tuple[str, ...] = (
     "session.started_at",
@@ -92,6 +100,58 @@ _MODALITY_PROFILES_V2: dict[Modality, dict[str, Any]] = {
         ],
         "default_block_types": ["circuit_hybrid", "interval_endurance", "strength_set"],
     },
+    "swimming": {
+        "core_fields": [
+            "session.started_at",
+            "workout.duration_seconds|workout.distance_meters",
+            "dose.work.duration_seconds|dose.work.distance_meters",
+        ],
+        "optional_fields": [
+            "intensity.pace",
+            "metrics.heart_rate_avg",
+            "intensity.rpe_borg",
+        ],
+        "provider_specific_optional": [
+            "garmin.swolf",
+            "trainingpeaks.swim_stroke_metrics",
+        ],
+        "default_block_types": ["continuous_endurance", "interval_endurance"],
+    },
+    "rowing": {
+        "core_fields": [
+            "session.started_at",
+            "workout.duration_seconds|workout.distance_meters",
+            "dose.work.duration_seconds|dose.work.distance_meters",
+        ],
+        "optional_fields": [
+            "metrics.power_watt",
+            "metrics.heart_rate_avg",
+            "intensity.pace",
+            "intensity.rpe_borg",
+        ],
+        "provider_specific_optional": [
+            "garmin.stroke_rate",
+            "trainingpeaks.rowing_power_curve",
+        ],
+        "default_block_types": ["continuous_endurance", "interval_endurance"],
+    },
+    "team_sport": {
+        "core_fields": [
+            "session.started_at",
+            "dose.work.duration_seconds|dose.work.distance_meters|dose.work.contacts",
+        ],
+        "optional_fields": [
+            "dose.work.contacts",
+            "metrics.heart_rate_avg",
+            "intensity.rpe_borg",
+            "intensity.pace",
+        ],
+        "provider_specific_optional": [
+            "catapult.accel_decel",
+            "strava.suffer_score",
+        ],
+        "default_block_types": ["speed_endurance", "sprint_accel_maxv", "interval_endurance"],
+    },
 }
 
 _PROVIDER_FIELD_MATRIX_V2: dict[str, dict[str, SupportState]] = {
@@ -163,18 +223,27 @@ _PROVIDER_MODALITY_MATRIX_V2: dict[str, dict[Modality, SupportState]] = {
         "cycling": "supported",
         "strength": "partial",
         "hybrid": "partial",
+        "swimming": "supported",
+        "rowing": "partial",
+        "team_sport": "partial",
     },
     "strava": {
         "running": "supported",
         "cycling": "supported",
         "strength": "not_available",
         "hybrid": "partial",
+        "swimming": "partial",
+        "rowing": "partial",
+        "team_sport": "partial",
     },
     "trainingpeaks": {
         "running": "supported",
         "cycling": "supported",
         "strength": "partial",
         "hybrid": "supported",
+        "swimming": "supported",
+        "rowing": "supported",
+        "team_sport": "partial",
     },
 }
 
@@ -184,18 +253,27 @@ _FORMAT_MODALITY_MATRIX_V2: dict[str, dict[Modality, SupportState]] = {
         "cycling": "supported",
         "strength": "partial",
         "hybrid": "partial",
+        "swimming": "supported",
+        "rowing": "partial",
+        "team_sport": "partial",
     },
     "tcx": {
         "running": "supported",
         "cycling": "supported",
         "strength": "not_available",
         "hybrid": "partial",
+        "swimming": "partial",
+        "rowing": "partial",
+        "team_sport": "partial",
     },
     "gpx": {
         "running": "supported",
         "cycling": "partial",
         "strength": "not_available",
         "hybrid": "not_available",
+        "swimming": "partial",
+        "rowing": "partial",
+        "team_sport": "not_available",
     },
 }
 
@@ -227,6 +305,15 @@ def _infer_modality(
     sets_data: list[dict[str, Any]],
 ) -> Modality:
     text = f"{workout_type} {sport or ''}".strip().lower()
+    if any(
+        token in text
+        for token in ("soccer", "football", "basketball", "handball", "hockey", "team")
+    ):
+        return "team_sport"
+    if any(token in text for token in ("swim", "pool", "openwater")):
+        return "swimming"
+    if any(token in text for token in ("row", "rowing", "erg")):
+        return "rowing"
     if any(token in text for token in ("brick", "multisport", "triathlon", "hybrid")):
         return "hybrid"
     if any(token in text for token in ("bike", "ride", "cycling")):
@@ -256,6 +343,8 @@ def _infer_modality(
 
 def _block_type_for_workout(modality: Modality, workout_type: str) -> str:
     normalized = workout_type.strip().lower()
+    if any(token in normalized for token in ("match", "game", "scrimmage")):
+        return "speed_endurance"
     if any(token in normalized for token in ("sprint", "maxv", "accel")):
         return "sprint_accel_maxv"
     if any(token in normalized for token in ("tempo", "threshold")):
@@ -299,6 +388,62 @@ def _pace_anchor(
         "unit": "min_per_km",
         "value": round(min_per_km, 3),
     }
+
+
+def _metric_entry(*, value: float, unit: str) -> dict[str, Any]:
+    return {
+        "measurement_state": "measured",
+        "unit": unit,
+        "value": round(float(value), 3),
+    }
+
+
+def _ensure_workout_intensity_enrichment(
+    block: dict[str, Any],
+    *,
+    heart_rate_avg: float | None,
+    heart_rate_max: float | None,
+    power_watt: float | None,
+    pace_min_per_km: float | None,
+    session_rpe: float | None,
+) -> None:
+    metrics = block.get("metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+        block["metrics"] = metrics
+
+    if heart_rate_avg is not None and heart_rate_avg > 0:
+        metrics["heart_rate_avg"] = _metric_entry(value=heart_rate_avg, unit="bpm")
+    if heart_rate_max is not None and heart_rate_max > 0:
+        metrics["heart_rate_max"] = _metric_entry(value=heart_rate_max, unit="bpm")
+    if power_watt is not None and power_watt > 0:
+        metrics["power_watt"] = _metric_entry(value=power_watt, unit="watt")
+
+    anchors = block.get("intensity_anchors")
+    has_anchor = isinstance(anchors, list) and len(anchors) > 0
+    if has_anchor:
+        return
+
+    if session_rpe is not None and session_rpe > 0:
+        block["intensity_anchors"] = [
+            {
+                "measurement_state": "measured",
+                "unit": "rpe",
+                "value": round(session_rpe, 2),
+            }
+        ]
+        block.pop("intensity_anchors_status", None)
+        return
+
+    if pace_min_per_km is not None and pace_min_per_km > 0:
+        block["intensity_anchors"] = [
+            {
+                "measurement_state": "measured",
+                "unit": "min_per_km",
+                "value": round(pace_min_per_km, 3),
+            }
+        ]
+        block.pop("intensity_anchors_status", None)
 
 
 def _set_slice_to_block(
@@ -389,6 +534,19 @@ def map_external_activity_to_session_logged_v2(
     workout_type = canonical.workout.workout_type or "workout"
     duration_seconds = _to_float(canonical.workout.duration_seconds)
     distance_meters = _to_float(canonical.workout.distance_meters)
+    heart_rate_avg = _to_float(canonical.workout.heart_rate_avg)
+    heart_rate_max = _to_float(canonical.workout.heart_rate_max)
+    power_watt = _to_float(canonical.workout.power_watt)
+    pace_min_per_km = _to_float(canonical.workout.pace_min_per_km)
+    session_rpe = _to_float(canonical.workout.session_rpe)
+    if (
+        pace_min_per_km is None
+        and duration_seconds is not None
+        and distance_meters is not None
+        and duration_seconds > 0
+        and distance_meters > 0
+    ):
+        pace_min_per_km = (duration_seconds / 60.0) / (distance_meters / 1000.0)
     set_rows = [set_slice.model_dump(mode="python") for set_slice in canonical.sets]
     modality = _infer_modality(
         workout_type=workout_type,
@@ -424,6 +582,16 @@ def map_external_activity_to_session_logged_v2(
         else:
             block["intensity_anchors_status"] = "not_applicable"
         blocks.append(block)
+
+    for block in blocks:
+        _ensure_workout_intensity_enrichment(
+            block,
+            heart_rate_avg=heart_rate_avg,
+            heart_rate_max=heart_rate_max,
+            power_watt=power_watt,
+            pace_min_per_km=pace_min_per_km,
+            session_rpe=session_rpe,
+        )
 
     payload = {
         "contract_version": CONTRACT_VERSION_V1,
@@ -468,6 +636,6 @@ def import_mapping_contract_v2() -> dict[str, Any]:
             "Provider-specific fields must remain optional and may not become global core requirements.",
             "Mapped imports must produce session.logged-compatible block payloads.",
             "Missing external sensors map to explicit not_measured/not_applicable semantics.",
-            "Running/Cycling/Strength/Hybrid modalities must resolve to supported block types.",
+            "Running/Cycling/Strength/Hybrid/Swimming/Rowing/Team modalities must resolve to supported block types.",
         ],
     }

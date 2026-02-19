@@ -57,6 +57,11 @@ class ParsedImportActivity:
     distance_meters: float | None
     calories_kcal: float | None
     timezone: str | None
+    heart_rate_avg: float | None
+    heart_rate_max: float | None
+    power_watt: float | None
+    pace_min_per_km: float | None
+    session_rpe: float | None
 
 
 @dataclass(frozen=True)
@@ -102,6 +107,15 @@ def _find_child_text(element: ET.Element, child_name: str) -> str | None:
     return None
 
 
+def _safe_float(value: object) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_fit_payload(payload_text: str) -> ParsedImportActivity:
     try:
         payload = json.loads(payload_text)
@@ -142,6 +156,18 @@ def _parse_fit_payload(payload_text: str) -> ParsedImportActivity:
         calories = float(payload["energy_kj"]) * _KJ_TO_KCAL
 
     distance = payload.get("distance_meters", payload.get("distance_m"))
+    heart_rate_avg = _safe_float(payload.get("heart_rate_avg", payload.get("avg_hr")))
+    heart_rate_max = _safe_float(payload.get("heart_rate_max", payload.get("max_hr")))
+    power_watt = _safe_float(payload.get("power_watt", payload.get("power_avg")))
+    session_rpe = _safe_float(payload.get("session_rpe", payload.get("rpe")))
+    pace_min_per_km = _safe_float(payload.get("pace_min_per_km"))
+    if (
+        pace_min_per_km is None
+        and distance is not None
+        and float(distance) > 0
+        and duration_seconds > 0
+    ):
+        pace_min_per_km = (duration_seconds / 60.0) / (float(distance) / 1000.0)
     return ParsedImportActivity(
         workout_type=str(payload.get("sport", "workout")).strip().lower() or "workout",
         started_at=started_at.isoformat(),
@@ -150,6 +176,11 @@ def _parse_fit_payload(payload_text: str) -> ParsedImportActivity:
         distance_meters=float(distance) if distance is not None else None,
         calories_kcal=float(calories) if calories is not None else None,
         timezone=str(payload.get("timezone")).strip() if payload.get("timezone") else None,
+        heart_rate_avg=heart_rate_avg,
+        heart_rate_max=heart_rate_max,
+        power_watt=power_watt,
+        pace_min_per_km=pace_min_per_km,
+        session_rpe=session_rpe,
     )
 
 
@@ -199,6 +230,9 @@ def _parse_tcx_payload(payload_text: str) -> ParsedImportActivity:
     distance_meters = 0.0
     calories_kcal = 0.0
     lap_count = 0
+    avg_hr_samples: list[float] = []
+    max_hr_samples: list[float] = []
+    power_samples: list[float] = []
 
     for elem in activity.iter():
         if _local_name(elem.tag) != "Lap":
@@ -213,6 +247,28 @@ def _parse_tcx_payload(payload_text: str) -> ParsedImportActivity:
             distance_meters += float(dist)
         if cal:
             calories_kcal += float(cal)
+        avg_hr = None
+        max_hr = None
+        for child in elem:
+            child_name = _local_name(child.tag)
+            if child_name == "AverageHeartRateBpm":
+                avg_hr = _find_child_text(child, "Value")
+            elif child_name == "MaximumHeartRateBpm":
+                max_hr = _find_child_text(child, "Value")
+        if avg_hr:
+            parsed = _safe_float(avg_hr)
+            if parsed is not None:
+                avg_hr_samples.append(parsed)
+        if max_hr:
+            parsed = _safe_float(max_hr)
+            if parsed is not None:
+                max_hr_samples.append(parsed)
+        for nested in elem.iter():
+            tag_name = _local_name(nested.tag).lower()
+            if tag_name in {"watts", "avgwatts", "averagewatts", "power"} and nested.text:
+                parsed = _safe_float(nested.text)
+                if parsed is not None:
+                    power_samples.append(parsed)
 
     if lap_count == 0 or total_seconds <= 0:
         raise ImportPipelineError(
@@ -223,6 +279,17 @@ def _parse_tcx_payload(payload_text: str) -> ParsedImportActivity:
         )
 
     ended_at = started_at + timedelta(seconds=total_seconds)
+    pace_min_per_km = None
+    if distance_meters > 0:
+        pace_min_per_km = (total_seconds / 60.0) / (distance_meters / 1000.0)
+
+    heart_rate_avg = (
+        (sum(avg_hr_samples) / len(avg_hr_samples))
+        if avg_hr_samples
+        else None
+    )
+    heart_rate_max = max(max_hr_samples) if max_hr_samples else None
+    power_watt = (sum(power_samples) / len(power_samples)) if power_samples else None
 
     return ParsedImportActivity(
         workout_type=sport,
@@ -232,6 +299,11 @@ def _parse_tcx_payload(payload_text: str) -> ParsedImportActivity:
         distance_meters=distance_meters if distance_meters > 0 else None,
         calories_kcal=calories_kcal if calories_kcal > 0 else None,
         timezone="UTC",
+        heart_rate_avg=heart_rate_avg,
+        heart_rate_max=heart_rate_max,
+        power_watt=power_watt,
+        pace_min_per_km=pace_min_per_km,
+        session_rpe=None,
     )
 
 
@@ -271,6 +343,9 @@ def _parse_gpx_payload(payload_text: str) -> ParsedImportActivity:
     started_at = min(times)
     ended_at = max(times)
     duration_seconds = max((ended_at - started_at).total_seconds(), 0.0)
+    pace_min_per_km = None
+    if max_distance is not None and max_distance > 0 and duration_seconds > 0:
+        pace_min_per_km = (duration_seconds / 60.0) / (max_distance / 1000.0)
 
     return ParsedImportActivity(
         workout_type="run",
@@ -280,6 +355,11 @@ def _parse_gpx_payload(payload_text: str) -> ParsedImportActivity:
         distance_meters=max_distance,
         calories_kcal=None,
         timezone="UTC",
+        heart_rate_avg=None,
+        heart_rate_max=None,
+        power_watt=None,
+        pace_min_per_km=pace_min_per_km,
+        session_rpe=None,
     )
 
 
@@ -317,6 +397,11 @@ def _provider_payload(provider: str, parsed: ParsedImportActivity) -> dict[str, 
                 "duration_s": parsed.duration_seconds,
                 "distance_m": parsed.distance_meters,
                 "energy_kj": energy_kj,
+                "heart_rate_avg": parsed.heart_rate_avg,
+                "heart_rate_max": parsed.heart_rate_max,
+                "power_watt": parsed.power_watt,
+                "pace_min_per_km": parsed.pace_min_per_km,
+                "session_rpe": parsed.session_rpe,
             },
         }
     if provider_name == "strava":
@@ -327,6 +412,11 @@ def _provider_payload(provider: str, parsed: ParsedImportActivity) -> dict[str, 
             "kilojoules": energy_kj,
             "start_date": parsed.started_at,
             "timezone": parsed.timezone or "UTC",
+            "average_heartrate": parsed.heart_rate_avg,
+            "max_heartrate": parsed.heart_rate_max,
+            "average_watts": parsed.power_watt,
+            "pace_min_per_km": parsed.pace_min_per_km,
+            "perceived_exertion": parsed.session_rpe,
         }
     if provider_name == "trainingpeaks":
         return {
@@ -342,6 +432,11 @@ def _provider_payload(provider: str, parsed: ParsedImportActivity) -> dict[str, 
                 "startTime": parsed.started_at,
                 "endTime": parsed.ended_at,
                 "timezone": parsed.timezone or "UTC",
+                "avgHr": parsed.heart_rate_avg,
+                "maxHr": parsed.heart_rate_max,
+                "avgPower": parsed.power_watt,
+                "paceMinPerKm": parsed.pace_min_per_km,
+                "sessionRpe": parsed.session_rpe,
             }
         }
     raise ImportPipelineError(

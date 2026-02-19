@@ -14,7 +14,7 @@ def test_readiness_contract_consumes_external_imported_load_signals() -> None:
 
 def test_readiness_contract_uses_shared_modality_aware_load_builder() -> None:
     signals_src = READINESS_SIGNALS.read_text(encoding="utf-8")
-    assert "compute_row_load_components_v1" in signals_src
+    assert "compute_row_load_components_v2" in signals_src
     assert "_iter_event_load_rows" in signals_src
     assert "duration_seconds" in signals_src
     assert "distance_meters" in signals_src

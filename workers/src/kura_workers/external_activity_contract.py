@@ -47,6 +47,11 @@ OPTIONAL_FIELDS_V1: dict[str, tuple[str, ...]] = {
         "distance_meters",
         "energy_kj",
         "calories_kcal",
+        "heart_rate_avg",
+        "heart_rate_max",
+        "power_watt",
+        "pace_min_per_km",
+        "session_rpe",
     ),
     "session": (
         "ended_at",
@@ -124,6 +129,11 @@ class WorkoutSliceV1(BaseModel):
     distance_meters: float | None = Field(default=None, ge=0)
     energy_kj: float | None = Field(default=None, ge=0)
     calories_kcal: float | None = Field(default=None, ge=0)
+    heart_rate_avg: float | None = Field(default=None, ge=0)
+    heart_rate_max: float | None = Field(default=None, ge=0)
+    power_watt: float | None = Field(default=None, ge=0)
+    pace_min_per_km: float | None = Field(default=None, ge=0)
+    session_rpe: float | None = Field(default=None, ge=0, le=10)
 
     @field_validator("workout_type")
     @classmethod

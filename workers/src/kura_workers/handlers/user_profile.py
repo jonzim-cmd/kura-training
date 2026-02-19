@@ -279,7 +279,7 @@ def _resolve_exercises(
 def _build_user_dimensions(
     dimension_metadata: dict[str, dict[str, Any]],
     projection_rows: list[dict[str, Any]],
-    set_logged_range: tuple[str, str] | None,
+    training_activity_range: tuple[str, str] | None,
 ) -> dict[str, Any]:
     """Build per-user dimension status by merging declarations with observed projections."""
     projections_by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -300,8 +300,11 @@ def _build_user_dimensions(
         entry["freshness"] = freshness.isoformat()
 
         # Coverage: use set.logged date range (all current dimensions react to set.logged)
-        if set_logged_range:
-            entry["coverage"] = {"from": set_logged_range[0], "to": set_logged_range[1]}
+        if training_activity_range:
+            entry["coverage"] = {
+                "from": training_activity_range[0],
+                "to": training_activity_range[1],
+            }
 
         # Call manifest_contribution if declared
         manifest_fn = meta.get("manifest_contribution")
@@ -1069,12 +1072,12 @@ async def update_user_profile(
         )
         projection_rows = await cur.fetchall()
 
-    set_logged_range = None
+    training_activity_range = None
     if first_set_logged_date and last_set_logged_date:
-        set_logged_range = (first_set_logged_date, last_set_logged_date)
+        training_activity_range = (first_set_logged_date, last_set_logged_date)
 
     user_dimensions = _build_user_dimensions(
-        dimension_metadata, projection_rows, set_logged_range
+        dimension_metadata, projection_rows, training_activity_range
     )
 
     # First-seen timestamps for escalation (aok)

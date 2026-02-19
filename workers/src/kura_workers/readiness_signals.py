@@ -10,10 +10,13 @@ from collections import defaultdict
 from datetime import date, datetime
 from typing import Any
 
+from .session_block_expansion import expand_session_logged_rows
+from .set_corrections import apply_set_correction_chain
+from .training_legacy_compat import extract_backfilled_set_event_ids
 from .training_load_calibration_v1 import (
     active_calibration_version,
     calibration_profile_for_version,
-    compute_row_load_components_v1,
+    compute_row_load_components_v2,
 )
 from .utils import normalize_temporal_point
 
@@ -43,7 +46,7 @@ def _clamp(value: float, low: float, high: float) -> float:
 
 
 def _iter_event_load_rows(event_type: str, data: dict[str, Any]) -> list[dict[str, Any]]:
-    if event_type == "set.logged":
+    if event_type in {"set.logged", "session.logged"}:
         return [data]
 
     if event_type != "external.activity_imported":
@@ -51,24 +54,95 @@ def _iter_event_load_rows(event_type: str, data: dict[str, Any]) -> list[dict[st
 
     sets_payload = data.get("sets")
     rows: list[dict[str, Any]] = []
+    workout_payload = data.get("workout")
+    if not isinstance(workout_payload, dict):
+        workout_payload = {}
+
+    workout_fallback: dict[str, Any] = {}
+    for key in (
+        "duration_seconds",
+        "distance_meters",
+        "contacts",
+        "heart_rate_avg",
+        "heart_rate_max",
+        "power_watt",
+        "pace_min_per_km",
+        "session_rpe",
+        "rpe",
+    ):
+        value = _as_float(workout_payload.get(key))
+        if value is not None and value > 0.0:
+            workout_fallback[key] = value
+
     if isinstance(sets_payload, list):
         for entry in sets_payload:
             if isinstance(entry, dict):
-                rows.append(entry)
+                merged = dict(entry)
+                for key, value in workout_fallback.items():
+                    merged.setdefault(key, value)
+                rows.append(merged)
     if rows:
         return rows
 
-    workout_payload = data.get("workout")
-    if not isinstance(workout_payload, dict):
-        return []
-
     fallback: dict[str, Any] = {}
-    for key in ("duration_seconds", "distance_meters", "contacts"):
-        value = _as_float(workout_payload.get(key))
-        if value is not None and value > 0.0:
-            fallback[key] = value
+    for key, value in workout_fallback.items():
+        fallback[key] = value
 
     return [fallback] if fallback else []
+
+
+def _normalized_signal_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    set_rows: list[dict[str, Any]] = []
+    session_rows: list[dict[str, Any]] = []
+    correction_rows: list[dict[str, Any]] = []
+    passthrough_rows: list[dict[str, Any]] = []
+
+    for row in rows:
+        event_type = str(row.get("event_type") or "").strip()
+        if event_type == "set.logged":
+            set_rows.append(row)
+        elif event_type == "session.logged":
+            session_rows.append(row)
+        elif event_type == "set.corrected":
+            correction_rows.append(row)
+        else:
+            passthrough_rows.append(row)
+
+    legacy_backfilled_set_ids = extract_backfilled_set_event_ids(session_rows)
+    if legacy_backfilled_set_ids:
+        set_rows = [
+            row for row in set_rows if str(row.get("id") or "") not in legacy_backfilled_set_ids
+        ]
+
+    corrected_set_rows = apply_set_correction_chain(set_rows, correction_rows)
+    normalized: list[dict[str, Any]] = []
+
+    for row in corrected_set_rows:
+        normalized.append(
+            {
+                **row,
+                "event_type": "set.logged",
+                "data": row.get("effective_data") or row.get("data") or {},
+            }
+        )
+
+    for row in expand_session_logged_rows(session_rows):
+        normalized.append(
+            {
+                **row,
+                "event_type": "session.logged",
+                "data": row.get("effective_data") or row.get("data") or {},
+            }
+        )
+
+    normalized.extend(passthrough_rows)
+    normalized.sort(
+        key=lambda row: (
+            row.get("timestamp"),
+            str(row.get("id") or ""),
+        )
+    )
+    return normalized
 
 
 def build_readiness_daily_scores(
@@ -101,10 +175,12 @@ def build_readiness_daily_scores(
 
     profile = calibration_profile_for_version(active_calibration_version())
 
-    for row in rows:
+    normalized_rows = _normalized_signal_rows(rows)
+    for row in normalized_rows:
         event_type = str(row.get("event_type") or "").strip()
         if event_type not in {
             "set.logged",
+            "session.logged",
             "sleep.logged",
             "soreness.logged",
             "energy.logged",
@@ -152,7 +228,7 @@ def build_readiness_daily_scores(
                 bucket["soreness_entries"] += 1
 
         for load_row in _iter_event_load_rows(event_type, data):
-            components = compute_row_load_components_v1(data=load_row, profile=profile)
+            components = compute_row_load_components_v2(data=load_row, profile=profile)
             load_score = max(0.0, float(components.get("load_score", 0.0) or 0.0))
             if load_score > 0.0:
                 bucket["load_score"] += load_score

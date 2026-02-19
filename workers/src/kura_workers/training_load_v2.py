@@ -11,7 +11,7 @@ from .training_load_calibration_v1 import (
     calibration_profile_for_version,
     calibration_protocol_v1,
     compute_row_confidence_v1,
-    compute_row_load_components_v1,
+    compute_row_load_components_v2,
 )
 
 _ROW_MODALITIES = ("strength", "sprint", "endurance", "plyometric", "mixed")
@@ -161,10 +161,15 @@ def _row_load_components(
     *,
     profile: dict[str, Any],
 ) -> dict[str, float]:
-    return compute_row_load_components_v1(
-        data=data,
-        profile=profile,
-    )
+    components = compute_row_load_components_v2(data=data, profile=profile)
+    return {
+        "volume_kg": float(components.get("volume_kg", 0.0) or 0.0),
+        "reps": float(components.get("reps", 0.0) or 0.0),
+        "duration_seconds": float(components.get("duration_seconds", 0.0) or 0.0),
+        "distance_meters": float(components.get("distance_meters", 0.0) or 0.0),
+        "contacts": float(components.get("contacts", 0.0) or 0.0),
+        "load_score": float(components.get("load_score", 0.0) or 0.0),
+    }
 
 
 def accumulate_row_load_v2(
