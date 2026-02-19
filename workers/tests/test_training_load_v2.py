@@ -17,6 +17,15 @@ def test_infer_row_modality_prefers_block_type_mapping() -> None:
     assert infer_row_modality({"block_type": "plyometric_reactive"}) == "plyometric"
 
 
+def test_infer_row_modality_uses_exercise_metadata_before_distance_fallback() -> None:
+    assert infer_row_modality({"exercise_id": "sprint", "distance_meters": 25}) == "sprint"
+    assert (
+        infer_row_modality({"exercise_id": "broad_jump_triple", "distance_meters": 8.2})
+        == "plyometric"
+    )
+    assert infer_row_modality({"exercise_id": "approach_vertical_jump"}) == "plyometric"
+
+
 def test_manual_strength_row_has_valid_load_and_confidence_without_hr() -> None:
     session = init_session_load_v2()
     accumulate_row_load_v2(
@@ -51,6 +60,25 @@ def test_endurance_row_without_sensor_streams_still_analysis_basic() -> None:
     assert finalized["global"]["load_score"] > 0
     assert finalized["global"]["confidence"] >= 0.6
     assert finalized["global"]["confidence_band"] in {"medium", "high"}
+
+
+def test_distance_rows_route_to_sprint_and_plyometric_buckets_when_exercise_ids_are_known() -> None:
+    session = init_session_load_v2()
+    accumulate_row_load_v2(
+        session,
+        data={"exercise_id": "sprint", "distance_meters": 25, "rpe": 9},
+        source_type="session_logged",
+    )
+    accumulate_row_load_v2(
+        session,
+        data={"exercise_id": "broad_jump_triple", "distance_meters": 8.2, "rpe": 8},
+        source_type="session_logged",
+    )
+    finalized = finalize_session_load_v2(session)
+
+    assert finalized["modalities"]["sprint"]["rows"] == 1
+    assert finalized["modalities"]["plyometric"]["rows"] == 1
+    assert finalized["modalities"]["endurance"]["rows"] == 0
 
 
 def test_timeline_summary_aggregates_modalities_and_global_confidence() -> None:

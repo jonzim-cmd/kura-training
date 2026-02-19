@@ -30,6 +30,23 @@ _BLOCK_MODALITY_MAP: dict[str, str] = {
     "recovery_session": "mixed",
 }
 
+_EXERCISE_MODALITY_OVERRIDES: dict[str, str] = {
+    "sprint": "sprint",
+    "sprint_interval": "sprint",
+    "max_velocity_sprint": "sprint",
+    "broad_jump_triple": "plyometric",
+    "triple_broad_jump": "plyometric",
+    "approach_vertical_jump": "plyometric",
+    "countermovement_jump": "plyometric",
+    "box_jump": "plyometric",
+    "jump_squat": "plyometric",
+}
+
+_EXERCISE_MODALITY_TOKEN_HINTS: dict[str, tuple[str, ...]] = {
+    "sprint": ("sprint", "maxv", "accel", "decel"),
+    "plyometric": ("jump", "plyo", "bound", "hop"),
+}
+
 
 def load_projection_contract_v2() -> dict[str, Any]:
     calibration_contract = calibration_protocol_v1()
@@ -83,10 +100,42 @@ def _analysis_tier(confidence: float) -> str:
     return "log_valid"
 
 
+def _modality_from_exercise_metadata(data: dict[str, Any]) -> str | None:
+    text_fields = (
+        "exercise_id",
+        "exercise",
+        "workout_type",
+        "sport",
+        "capability_target",
+    )
+    normalized_terms = [
+        str(data.get(field) or "").strip().lower()
+        for field in text_fields
+        if str(data.get(field) or "").strip()
+    ]
+    if not normalized_terms:
+        return None
+
+    for term in normalized_terms:
+        mapped = _EXERCISE_MODALITY_OVERRIDES.get(term)
+        if mapped is not None:
+            return mapped
+
+    combined = " ".join(normalized_terms)
+    for modality, hints in _EXERCISE_MODALITY_TOKEN_HINTS.items():
+        if any(hint in combined for hint in hints):
+            return modality
+    return None
+
+
 def infer_row_modality(data: dict[str, Any]) -> str:
     block_type = str(data.get("block_type") or "").strip().lower()
     if block_type in _BLOCK_MODALITY_MAP:
         return _BLOCK_MODALITY_MAP[block_type]
+
+    exercise_modality = _modality_from_exercise_metadata(data)
+    if exercise_modality is not None:
+        return exercise_modality
 
     contacts = _to_float(data.get("contacts"))
     distance_meters = _to_float(data.get("distance_meters"))
