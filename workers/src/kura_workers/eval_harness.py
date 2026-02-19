@@ -28,11 +28,14 @@ from .inference_engine import (
     run_strength_inference,
     weekly_phase_from_date,
 )
+from .readiness_signals import build_readiness_daily_scores
 from .utils import (
     epley_1rm,
     get_alias_map,
     get_retracted_event_ids,
+    normalize_temporal_point,
     resolve_exercise_key,
+    resolve_timezone_context,
     resolve_through_aliases,
 )
 
@@ -389,6 +392,18 @@ def evaluate_readiness_daily_scores(key: str, daily_scores: Any) -> dict[str, An
             },
         }
 
+    variance_by_date: dict[date, float] = {}
+    if isinstance(daily_scores, list):
+        for item in daily_scores:
+            if not isinstance(item, dict):
+                continue
+            d = _parse_date(item.get("date"))
+            variance = _as_float(item.get("observation_variance"))
+            if d is None or variance is None:
+                continue
+            if variance > 0:
+                variance_by_date[d] = max(0.005, float(variance))
+
     observations = [v for _, v in series]
     replay_windows = 0
     labeled_windows = 0
@@ -402,7 +417,22 @@ def evaluate_readiness_daily_scores(key: str, daily_scores: Any) -> dict[str, An
 
     for i in range(4, len(observations)):
         subset = observations[: i + 1]
-        inference = run_readiness_inference(subset)
+        subset_dates = [d for d, _ in series[: i + 1]]
+        base_day = subset_dates[0]
+        subset_offsets = [float((d - base_day).days) for d in subset_dates]
+        subset_variances: list[float] | None = None
+        if variance_by_date:
+            default_var = sum(variance_by_date.values()) / len(variance_by_date)
+            subset_variances = [
+                float(variance_by_date.get(d, default_var))
+                for d in subset_dates
+            ]
+
+        inference = run_readiness_inference(
+            subset,
+            day_offsets=subset_offsets,
+            observation_variances=subset_variances,
+        )
         if inference.get("status") == "insufficient_data":
             continue
         replay_windows += 1
@@ -679,6 +709,28 @@ def _round_strength_snapshot(values: dict[str, float]) -> dict[str, float]:
     return {k: round(float(v), 2) for k, v in sorted(values.items())}
 
 
+def _timezone_preference_from_rows(rows: list[dict[str, Any]]) -> str | None:
+    latest: tuple[datetime, str] | None = None
+    for row in rows:
+        if str(row.get("event_type") or "") != "preference.set":
+            continue
+        ts = row.get("timestamp")
+        if not isinstance(ts, datetime):
+            continue
+        data = row.get("data")
+        if not isinstance(data, dict):
+            continue
+        key = str(data.get("key") or "").strip().lower()
+        if key not in {"timezone", "time_zone"}:
+            continue
+        value = str(data.get("value") or "").strip()
+        if not value:
+            continue
+        if latest is None or ts > latest[0]:
+            latest = (ts, value)
+    return latest[1] if latest else None
+
+
 def evaluate_causal_projection(key: str, projection_data: Any) -> dict[str, Any]:
     data = projection_data if isinstance(projection_data, dict) else {}
     interventions = data.get("interventions")
@@ -866,22 +918,94 @@ def build_causal_projection_from_event_rows(rows: list[dict[str, Any]]) -> dict[
         if alias and target:
             alias_map[alias] = target
 
-    per_day: dict[date, dict[str, Any]] = {}
+    timezone_pref = _timezone_preference_from_rows(rows)
+    timezone_context = resolve_timezone_context(timezone_pref)
+    timezone_name = str(timezone_context["timezone"])
+
+    readiness_signals = build_readiness_daily_scores(rows, timezone_name=timezone_name)
+    readiness_daily = list(readiness_signals.get("daily_scores") or [])
+    if not readiness_daily:
+        return {
+            "status": "insufficient_data",
+            "engine": "propensity_ipw_bootstrap",
+            "assumptions": ASSUMPTIONS,
+            "interventions": {},
+            "machine_caveats": [],
+            "evidence_window": {
+                "days_considered": 0,
+                "windows_evaluated": 0,
+                "history_days_required": 7,
+                "minimum_segment_samples": max(
+                    10,
+                    int(
+                        os.environ.get(
+                            "KURA_CAUSAL_SEGMENT_MIN_SAMPLES",
+                            str(
+                                max(
+                                    10,
+                                    max(
+                                        12,
+                                        int(os.environ.get("KURA_CAUSAL_MIN_SAMPLES", "24")),
+                                    )
+                                    // 2,
+                                )
+                            ),
+                        )
+                    ),
+                ),
+            },
+            "daily_context": [],
+            "timezone_context": timezone_context,
+            "data_quality": {
+                "events_processed": len(rows),
+                "observed_days": 0,
+                "treated_windows": {},
+                "outcome_windows": {},
+                "component_priors": readiness_signals.get("component_priors") or {},
+                "load_baseline": readiness_signals.get("load_baseline"),
+                "missing_signal_counts": readiness_signals.get("missing_signal_counts") or {},
+                "temporal_conflicts": readiness_signals.get("temporal_conflicts") or {},
+            },
+        }
+
+    readiness_by_day = {
+        str(entry["date"]): entry
+        for entry in readiness_daily
+        if isinstance(entry, dict) and isinstance(entry.get("date"), str)
+    }
+
+    component_priors = readiness_signals.get("component_priors") or {}
+    fallback_sleep_hours = _as_float(component_priors.get("sleep_hours")) or 7.0
+    fallback_energy_level = _as_float(component_priors.get("energy_level")) or 6.0
+    fallback_soreness_level = _as_float(component_priors.get("soreness_level")) or 2.0
+    temporal_conflicts: dict[str, int] = dict(readiness_signals.get("temporal_conflicts") or {})
+
+    per_day_aux: dict[date, dict[str, Any]] = {}
     for row in rows:
-        ts = row.get("timestamp")
-        if not isinstance(ts, datetime):
+        timestamp = row.get("timestamp")
+        if not isinstance(timestamp, datetime):
             continue
-        day = ts.date()
-        bucket = per_day.setdefault(
+
+        data = row.get("data")
+        if not isinstance(data, dict):
+            data = {}
+        metadata = row.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        temporal = normalize_temporal_point(
+            timestamp,
+            timezone_name=timezone_name,
+            data=data,
+            metadata=metadata,
+        )
+        day = temporal.local_date
+        for conflict in temporal.conflicts:
+            temporal_conflicts[conflict] = temporal_conflicts.get(conflict, 0) + 1
+
+        bucket = per_day_aux.setdefault(
             day,
             {
-                "sleep_hours_sum": 0.0,
-                "sleep_entries": 0,
-                "energy_sum": 0.0,
-                "energy_entries": 0,
-                "soreness_sum": 0.0,
-                "soreness_entries": 0,
-                "load_volume": 0.0,
                 "protein_g": 0.0,
                 "calories": 0.0,
                 "program_events": 0,
@@ -892,30 +1016,21 @@ def build_causal_projection_from_event_rows(rows: list[dict[str, Any]]) -> dict[
         )
 
         event_type = str(row.get("event_type") or "")
-        data = row.get("data")
-        if not isinstance(data, dict):
-            data = {}
-
-        if event_type == "sleep.logged":
-            duration = _as_float(data.get("duration_hours"))
-            if duration is not None and duration > 0.0:
-                bucket["sleep_hours_sum"] += duration
-                bucket["sleep_entries"] += 1
-        elif event_type == "energy.logged":
-            energy = _as_float(data.get("level"))
-            if energy is not None and energy > 0.0:
-                bucket["energy_sum"] += energy
-                bucket["energy_entries"] += 1
-        elif event_type == "soreness.logged":
-            soreness = _as_float(data.get("severity"))
-            if soreness is not None and soreness > 0.0:
-                bucket["soreness_sum"] += soreness
-                bucket["soreness_entries"] += 1
+        if event_type == "set.logged":
+            weight = _as_float(data.get("weight_kg", data.get("weight")))
+            reps = _as_float(data.get("reps"))
+            if weight is not None and reps is not None and weight > 0.0 and reps > 0.0:
+                raw_key = resolve_exercise_key(data)
+                canonical = resolve_through_aliases(raw_key, alias_map) if raw_key else None
+                if canonical:
+                    e1rm = epley_1rm(weight, int(round(reps)))
+                    if e1rm > 0.0:
+                        previous = _as_float(bucket["strength_by_exercise"].get(canonical)) or 0.0
+                        if e1rm > previous:
+                            bucket["strength_by_exercise"][canonical] = e1rm
         elif event_type == "meal.logged":
-            protein = _as_float(data.get("protein_g"))
-            calories = _as_float(data.get("calories"))
-            bucket["protein_g"] += max(0.0, protein or 0.0)
-            bucket["calories"] += max(0.0, calories or 0.0)
+            bucket["protein_g"] += max(0.0, _as_float(data.get("protein_g")) or 0.0)
+            bucket["calories"] += max(0.0, _as_float(data.get("calories")) or 0.0)
         elif event_type in {
             "program.started",
             "training_plan.created",
@@ -927,73 +1042,35 @@ def build_causal_projection_from_event_rows(rows: list[dict[str, Any]]) -> dict[
             bucket["sleep_target_events"] += 1
         elif event_type == "nutrition_target.set":
             bucket["nutrition_target_events"] += 1
-        elif event_type == "set.logged":
-            weight = _as_float(data.get("weight_kg", data.get("weight")))
-            reps = _as_float(data.get("reps"))
-            if weight is not None and reps is not None and weight > 0.0 and reps > 0.0:
-                bucket["load_volume"] += weight * reps
-                raw_key = resolve_exercise_key(data)
-                if raw_key:
-                    canonical = resolve_through_aliases(raw_key, alias_map)
-                    e1rm = epley_1rm(weight, int(round(reps)))
-                    if canonical and e1rm > 0.0:
-                        previous = _as_float(
-                            bucket["strength_by_exercise"].get(canonical)
-                        ) or 0.0
-                        if e1rm > previous:
-                            bucket["strength_by_exercise"][canonical] = e1rm
 
-    observed_days = sorted(per_day)
-    load_values = [
-        float(per_day[day]["load_volume"])
-        for day in observed_days
-        if float(per_day[day]["load_volume"]) > 0.0
-    ]
-    load_baseline = max(1.0, _median(load_values))
+    observed_days = sorted(date.fromisoformat(day_iso) for day_iso in readiness_by_day)
 
     daily_context: list[dict[str, Any]] = []
     strength_state: dict[str, float] = {}
     for day in observed_days:
-        bucket = per_day[day]
+        signal_row = readiness_by_day.get(day.isoformat()) or {}
+        signal_values = signal_row.get("signals") if isinstance(signal_row.get("signals"), dict) else {}
+        bucket = per_day_aux.get(day) or {
+            "protein_g": 0.0,
+            "calories": 0.0,
+            "program_events": 0,
+            "sleep_target_events": 0,
+            "nutrition_target_events": 0,
+            "strength_by_exercise": {},
+        }
 
-        sleep_hours = (
-            bucket["sleep_hours_sum"] / bucket["sleep_entries"]
-            if bucket["sleep_entries"] > 0
-            else 6.5
-        )
-        energy = (
-            bucket["energy_sum"] / bucket["energy_entries"]
-            if bucket["energy_entries"] > 0
-            else 6.0
-        )
-        soreness_avg = (
-            bucket["soreness_sum"] / bucket["soreness_entries"]
-            if bucket["soreness_entries"] > 0
-            else 0.0
-        )
-        load_volume = float(bucket["load_volume"])
+        sleep_hours = _as_float(signal_values.get("sleep_hours")) or fallback_sleep_hours
+        energy = _as_float(signal_values.get("energy_level")) or fallback_energy_level
+        soreness_avg = _as_float(signal_values.get("soreness_level")) or fallback_soreness_level
+        load_volume = _as_float(signal_values.get("load_score")) or 0.0
+        readiness_score = _as_float(signal_row.get("score")) or 0.0
         protein_g = float(bucket["protein_g"])
 
-        for exercise_id, value in (bucket["strength_by_exercise"] or {}).items():
+        for exercise_id, value in (bucket.get("strength_by_exercise") or {}).items():
             strength_state[str(exercise_id)] = _as_float(value) or 0.0
         strength_snapshot = dict(strength_state)
         strength_aggregate = (
             _safe_mean(strength_snapshot.values()) if strength_snapshot else None
-        )
-
-        sleep_score = _clamp(sleep_hours / 8.0, 0.0, 1.2)
-        energy_score = _clamp(energy / 10.0, 0.0, 1.0)
-        soreness_penalty = _clamp(soreness_avg / 10.0, 0.0, 1.0)
-        load_penalty = _clamp(load_volume / load_baseline, 0.0, 1.4)
-
-        readiness_score = _clamp(
-            (0.45 * sleep_score)
-            + (0.35 * energy_score)
-            - (0.20 * soreness_penalty)
-            - (0.15 * load_penalty)
-            + 0.25,
-            0.0,
-            1.0,
         )
 
         daily_context.append(
@@ -1001,6 +1078,8 @@ def build_causal_projection_from_event_rows(rows: list[dict[str, Any]]) -> dict[
                 "date": day.isoformat(),
                 "readiness_score": round(readiness_score, 3),
                 "sleep_hours": round(sleep_hours, 2),
+                "energy_level": round(energy, 2),
+                "soreness_level": round(soreness_avg, 2),
                 "load_volume": round(load_volume, 2),
                 "protein_g": round(protein_g, 2),
                 "calories": round(float(bucket["calories"]), 2),
@@ -1042,24 +1121,50 @@ def build_causal_projection_from_event_rows(rows: list[dict[str, Any]]) -> dict[
         },
     }
 
-    for idx in range(history_days_required, len(daily_context) - 1):
-        current = daily_context[idx]
-        next_day = daily_context[idx + 1]
-        history = daily_context[idx - history_days_required:idx]
+    context_by_date = {
+        date.fromisoformat(entry["date"]): entry
+        for entry in daily_context
+    }
+    ordered_days = sorted(context_by_date.keys())
+
+    for idx, current_day in enumerate(ordered_days):
+        next_day_key = current_day + timedelta(days=1)
+        if next_day_key not in context_by_date:
+            continue
+        if idx < history_days_required:
+            continue
+
+        current = context_by_date[current_day]
+        next_day = context_by_date[next_day_key]
+        history = [
+            context_by_date[d]
+            for d in ordered_days[idx - history_days_required:idx]
+        ]
         windows_evaluated += 1
 
-        baseline_readiness = _safe_mean(
-            _as_float(day.get("readiness_score")) or 0.0 for day in history
-        ) or 0.5
-        baseline_sleep = _safe_mean(
-            _as_float(day.get("sleep_hours")) or 0.0 for day in history
-        ) or 6.5
-        baseline_load = _safe_mean(
-            _as_float(day.get("load_volume")) or 0.0 for day in history
-        ) or 0.0
-        baseline_protein = _safe_mean(
-            _as_float(day.get("protein_g")) or 0.0 for day in history
-        ) or 0.0
+        baseline_readiness = (
+            _safe_mean((_as_float(day.get("readiness_score")) or 0.0 for day in history))
+            or 0.5
+        )
+        baseline_sleep = (
+            _safe_mean(
+                (
+                    _as_float(day.get("sleep_hours"))
+                    if _as_float(day.get("sleep_hours")) is not None
+                    else fallback_sleep_hours
+                )
+                for day in history
+            )
+            or fallback_sleep_hours
+        )
+        baseline_load = (
+            _safe_mean((_as_float(day.get("load_volume")) or 0.0 for day in history))
+            or 0.0
+        )
+        baseline_protein = (
+            _safe_mean((_as_float(day.get("protein_g")) or 0.0 for day in history))
+            or 0.0
+        )
         baseline_strength_aggregate = _safe_mean(
             (_as_float(day.get("strength_aggregate_e1rm")) or 0.0)
             for day in history
@@ -1319,11 +1424,16 @@ def build_causal_projection_from_event_rows(rows: list[dict[str, Any]]) -> dict[
             "minimum_segment_samples": segment_min_samples,
         },
         "daily_context": daily_context[-60:],
+        "timezone_context": timezone_context,
         "data_quality": {
             "events_processed": len(rows),
             "observed_days": len(observed_days),
             "treated_windows": treated_windows,
             "outcome_windows": outcome_windows,
+            "component_priors": component_priors,
+            "load_baseline": readiness_signals.get("load_baseline"),
+            "missing_signal_counts": readiness_signals.get("missing_signal_counts") or {},
+            "temporal_conflicts": temporal_conflicts,
         },
     }
 
@@ -1617,94 +1727,8 @@ def build_strength_histories_from_event_rows(
 
 def build_readiness_daily_scores_from_event_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Reconstruct readiness daily_scores from raw events."""
-    per_day: dict[str, dict[str, Any]] = {}
-    load_values: list[float] = []
-
-    for row in rows:
-        event_type = row.get("event_type")
-        if event_type not in {"set.logged", "sleep.logged", "soreness.logged", "energy.logged"}:
-            continue
-        ts = row.get("timestamp")
-        if not isinstance(ts, datetime):
-            continue
-        day = ts.date().isoformat()
-        bucket = per_day.setdefault(day, {})
-        data = row.get("data") or {}
-
-        if event_type == "sleep.logged":
-            try:
-                bucket["sleep_hours"] = float(data.get("duration_hours"))
-            except (TypeError, ValueError):
-                pass
-        elif event_type == "energy.logged":
-            try:
-                bucket["energy"] = float(data.get("level"))
-            except (TypeError, ValueError):
-                pass
-        elif event_type == "soreness.logged":
-            try:
-                sev = float(data.get("severity"))
-            except (TypeError, ValueError):
-                continue
-            bucket["soreness_sum"] = bucket.get("soreness_sum", 0.0) + sev
-            bucket["soreness_count"] = bucket.get("soreness_count", 0) + 1
-        elif event_type == "set.logged":
-            try:
-                weight = float(data.get("weight_kg", data.get("weight", 0)))
-                reps = float(data.get("reps", 0))
-            except (TypeError, ValueError):
-                continue
-            volume = max(0.0, weight * reps)
-            bucket["load_volume"] = bucket.get("load_volume", 0.0) + volume
-
-    for values in per_day.values():
-        load = float(values.get("load_volume", 0.0))
-        if load > 0.0:
-            load_values.append(load)
-    load_baseline = max(1.0, _median(load_values))
-
-    daily_scores: list[dict[str, Any]] = []
-    for day in sorted(per_day):
-        values = per_day[day]
-        has_any = any(
-            key in values for key in ("sleep_hours", "energy", "soreness_sum", "load_volume")
-        )
-        if not has_any:
-            continue
-
-        sleep_score = _clamp(float(values.get("sleep_hours", 6.5)) / 8.0, 0.0, 1.2)
-        energy_score = _clamp(float(values.get("energy", 6.0)) / 10.0, 0.0, 1.0)
-        soreness_avg = 0.0
-        if values.get("soreness_count", 0):
-            soreness_avg = float(values.get("soreness_sum", 0.0)) / float(values["soreness_count"])
-        soreness_penalty = _clamp(soreness_avg / 10.0, 0.0, 1.0)
-
-        load = float(values.get("load_volume", 0.0))
-        load_penalty = _clamp(load / load_baseline, 0.0, 1.4)
-
-        score = (
-            0.45 * sleep_score
-            + 0.35 * energy_score
-            - 0.20 * soreness_penalty
-            - 0.15 * load_penalty
-            + 0.25
-        )
-        score = _clamp(score, 0.0, 1.0)
-
-        daily_scores.append(
-            {
-                "date": day,
-                "score": round(score, 3),
-                "components": {
-                    "sleep": round(sleep_score, 3),
-                    "energy": round(energy_score, 3),
-                    "soreness_penalty": round(soreness_penalty, 3),
-                    "load_penalty": round(load_penalty, 3),
-                },
-            }
-        )
-
-    return daily_scores
+    built = build_readiness_daily_scores(rows, timezone_name="UTC")
+    return list(built.get("daily_scores") or [])
 
 
 def evaluate_from_event_store_rows(

@@ -7,8 +7,7 @@ signals (sleep, energy, soreness, and set volume).
 from __future__ import annotations
 
 import json
-from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 import psycopg
@@ -21,28 +20,13 @@ from ..inference_telemetry import (
     safe_record_inference_run,
 )
 from ..population_priors import resolve_population_prior
+from ..readiness_signals import build_readiness_daily_scores
 from ..registry import projection_handler
 from ..utils import (
     get_retracted_event_ids,
     load_timezone_preference,
-    normalize_temporal_point,
     resolve_timezone_context,
 )
-
-
-def _median(values: list[float]) -> float:
-    if not values:
-        return 1.0
-    ordered = sorted(values)
-    n = len(ordered)
-    mid = n // 2
-    if n % 2 == 1:
-        return ordered[mid]
-    return (ordered[mid - 1] + ordered[mid]) / 2.0
-
-
-def _clamp(v: float, low: float, high: float) -> float:
-    return max(low, min(high, v))
 
 
 def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -56,7 +40,13 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     }
 
 
-@projection_handler("set.logged", "sleep.logged", "soreness.logged", "energy.logged", dimension_meta={
+@projection_handler(
+    "set.logged",
+    "sleep.logged",
+    "soreness.logged",
+    "energy.logged",
+    "external.activity_imported",
+    dimension_meta={
     "name": "readiness_inference",
     "description": "Bayesian day-level readiness estimate from recovery + load signals",
     "key_structure": "single overview per user",
@@ -140,7 +130,8 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         },
     },
     "manifest_contribution": _manifest_contribution,
-})
+    },
+)
 async def update_readiness_inference(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
 ) -> None:
@@ -181,7 +172,13 @@ async def update_readiness_inference(
                 SELECT id, timestamp, event_type, data, metadata
                 FROM events
                 WHERE user_id = %s
-                  AND event_type IN ('set.logged', 'sleep.logged', 'soreness.logged', 'energy.logged')
+                  AND event_type IN (
+                      'set.logged',
+                      'sleep.logged',
+                      'soreness.logged',
+                      'energy.logged',
+                      'external.activity_imported'
+                  )
                 ORDER BY timestamp ASC
                 """,
                 (user_id,),
@@ -209,101 +206,14 @@ async def update_readiness_inference(
             )
             return
 
-        per_day: dict[str, dict[str, Any]] = defaultdict(dict)
-        load_values: list[float] = []
-        temporal_conflicts: dict[str, int] = {}
-
-        for row in rows:
-            temporal = normalize_temporal_point(
-                row["timestamp"],
-                timezone_name=timezone_name,
-                data=row.get("data") or {},
-                metadata=row.get("metadata") or {},
-            )
-            d: date = temporal.local_date
-            for conflict in temporal.conflicts:
-                temporal_conflicts[conflict] = temporal_conflicts.get(conflict, 0) + 1
-            key = d.isoformat()
-            data = row["data"] or {}
-            row_event_type = row["event_type"]
-            bucket = per_day[key]
-
-            if row_event_type == "sleep.logged":
-                try:
-                    bucket["sleep_hours"] = float(data.get("duration_hours"))
-                except (TypeError, ValueError):
-                    pass
-            elif row_event_type == "energy.logged":
-                try:
-                    bucket["energy"] = float(data.get("level"))
-                except (TypeError, ValueError):
-                    pass
-            elif row_event_type == "soreness.logged":
-                try:
-                    sev = float(data.get("severity"))
-                except (TypeError, ValueError):
-                    continue
-                prev = bucket.get("soreness_sum", 0.0) + sev
-                cnt = bucket.get("soreness_count", 0) + 1
-                bucket["soreness_sum"] = prev
-                bucket["soreness_count"] = cnt
-            elif row_event_type == "set.logged":
-                try:
-                    weight = float(data.get("weight_kg", data.get("weight", 0)))
-                    reps = float(data.get("reps", 0))
-                except (TypeError, ValueError):
-                    continue
-                volume = max(0.0, weight * reps)
-                bucket["load_volume"] = bucket.get("load_volume", 0.0) + volume
-
-        for values in per_day.values():
-            if values.get("load_volume", 0.0) > 0.0:
-                load_values.append(float(values["load_volume"]))
-        load_baseline = max(1.0, _median(load_values))
-
-        observations: list[float] = []
-        daily_scores: list[dict[str, Any]] = []
-
-        for day in sorted(per_day):
-            values = per_day[day]
-            has_any = any(
-                key in values for key in ("sleep_hours", "energy", "soreness_sum", "load_volume")
-            )
-            if not has_any:
-                continue
-
-            sleep_score = _clamp(float(values.get("sleep_hours", 6.5)) / 8.0, 0.0, 1.2)
-            energy_score = _clamp(float(values.get("energy", 6.0)) / 10.0, 0.0, 1.0)
-            soreness_avg = 0.0
-            if values.get("soreness_count", 0):
-                soreness_avg = float(values.get("soreness_sum", 0.0)) / float(values["soreness_count"])
-            soreness_penalty = _clamp(soreness_avg / 10.0, 0.0, 1.0)
-
-            load = float(values.get("load_volume", 0.0))
-            load_penalty = _clamp(load / load_baseline, 0.0, 1.4)
-
-            score = (
-                0.45 * sleep_score
-                + 0.35 * energy_score
-                - 0.20 * soreness_penalty
-                - 0.15 * load_penalty
-                + 0.25
-            )
-            score = _clamp(score, 0.0, 1.0)
-            observations.append(score)
-
-            daily_scores.append(
-                {
-                    "date": day,
-                    "score": round(score, 3),
-                    "components": {
-                        "sleep": round(sleep_score, 3),
-                        "energy": round(energy_score, 3),
-                        "soreness_penalty": round(soreness_penalty, 3),
-                        "load_penalty": round(load_penalty, 3),
-                    },
-                }
-            )
+        readiness_signals = build_readiness_daily_scores(rows, timezone_name=timezone_name)
+        daily_scores = list(readiness_signals.get("daily_scores") or [])
+        observations = [float(entry.get("score", 0.0)) for entry in daily_scores]
+        day_offsets = [float(entry.get("day_offset", idx)) for idx, entry in enumerate(daily_scores)]
+        observation_variances = [
+            float(entry.get("observation_variance", 0.01))
+            for entry in daily_scores
+        ]
 
         population_prior = await resolve_population_prior(
             conn,
@@ -312,7 +222,12 @@ async def update_readiness_inference(
             target_key="overview",
             retracted_ids=retracted_ids,
         )
-        inference = run_readiness_inference(observations, population_prior=population_prior)
+        inference = run_readiness_inference(
+            observations,
+            day_offsets=day_offsets,
+            observation_variances=observation_variances,
+            population_prior=population_prior,
+        )
         telemetry_engine = str(inference.get("engine", "none") or "none")
         dynamics_snapshot = dict(inference.get("dynamics", {}))
         projection_phase = str(dynamics_snapshot.get("phase") or "unknown")
@@ -332,7 +247,13 @@ async def update_readiness_inference(
             "data_quality": {
                 "days_with_observations": len(observations),
                 "insufficient_data": inference.get("status") == "insufficient_data",
-                "temporal_conflicts": temporal_conflicts,
+                "temporal_conflicts": readiness_signals.get("temporal_conflicts", {}),
+                "component_priors": readiness_signals.get("component_priors", {}),
+                "load_baseline": readiness_signals.get("load_baseline"),
+                "missing_signal_counts": readiness_signals.get("missing_signal_counts", {}),
+                "days_with_missing_signals": sum(
+                    1 for entry in daily_scores if (entry.get("missing_signals") or [])
+                ),
             },
         }
 

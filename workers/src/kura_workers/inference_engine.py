@@ -573,10 +573,19 @@ def run_strength_inference(
 def run_readiness_inference(
     observations: list[float],
     *,
+    day_offsets: list[float] | None = None,
+    observation_variances: list[float] | None = None,
     population_prior: dict[str, Any] | None = None,
 ) -> dict:
     """Normal-Normal Bayesian update for readiness score [0, 1]."""
-    points = [(float(idx), float(value)) for idx, value in enumerate(observations)]
+    points: list[tuple[float, float]] = []
+    if day_offsets and len(day_offsets) == len(observations):
+        points = [
+            (float(day_offsets[idx]), float(observations[idx]))
+            for idx in range(len(observations))
+        ]
+    else:
+        points = [(float(idx), float(value)) for idx, value in enumerate(observations)]
     dynamics = summarize_signal_dynamics(
         points,
         velocity_epsilon=float(os.environ.get("KURA_READINESS_DERIVATIVE_VELOCITY_EPS", "0.015")),
@@ -603,13 +612,52 @@ def run_readiness_inference(
         default_var=default_prior_var,
     )
 
-    obs_mean = sum(observations) / len(observations)
-    obs_var = sum((x - obs_mean) ** 2 for x in observations) / max(1, len(observations) - 1)
-    obs_var = max(0.005, obs_var)
+    weighted = False
+    observation_var_values: list[float] = []
+    if observation_variances and len(observation_variances) == len(observations):
+        for item in observation_variances:
+            parsed = _as_float(item)
+            if parsed is None:
+                continue
+            observation_var_values.append(max(0.005, float(parsed)))
+        weighted = len(observation_var_values) == len(observations)
 
-    post_precision = (1.0 / prior_var) + (len(observations) / obs_var)
-    post_var = 1.0 / post_precision
-    post_mean = post_var * ((prior_mean / prior_var) + (len(observations) * obs_mean / obs_var))
+    if weighted:
+        precisions = [1.0 / var for var in observation_var_values]
+        precision_sum = sum(precisions)
+        obs_mean = sum(
+            observations[idx] * precisions[idx] for idx in range(len(observations))
+        ) / max(precision_sum, 1e-9)
+        obs_var = sum(
+            precisions[idx] * ((observations[idx] - obs_mean) ** 2)
+            for idx in range(len(observations))
+        ) / max(precision_sum, 1e-9)
+        obs_var = max(0.005, obs_var)
+
+        post_precision = (1.0 / prior_var) + precision_sum
+        post_var = 1.0 / max(post_precision, 1e-9)
+        post_mean = post_var * (
+            (prior_mean / prior_var)
+            + sum(
+                observations[idx] / observation_var_values[idx]
+                for idx in range(len(observations))
+            )
+        )
+        effective_observations = (precision_sum**2) / max(
+            sum(precision * precision for precision in precisions),
+            1e-9,
+        )
+    else:
+        obs_mean = sum(observations) / len(observations)
+        obs_var = sum((x - obs_mean) ** 2 for x in observations) / max(1, len(observations) - 1)
+        obs_var = max(0.005, obs_var)
+
+        post_precision = (1.0 / prior_var) + (len(observations) / obs_var)
+        post_var = 1.0 / post_precision
+        post_mean = post_var * (
+            (prior_mean / prior_var) + (len(observations) * obs_mean / obs_var)
+        )
+        effective_observations = float(len(observations))
     post_sd = math.sqrt(post_var)
 
     latest = observations[-1]
@@ -638,6 +686,16 @@ def run_readiness_inference(
             "obs_var": round(obs_var, 5),
             "prior_mean": prior_mean,
             "prior_var": prior_var,
+            "effective_observations": round(effective_observations, 4),
+            "weighted_observations": weighted,
+            "mean_observation_variance": (
+                round(sum(observation_var_values) / len(observation_var_values), 6)
+                if observation_var_values
+                else None
+            ),
+            "day_span_days": (
+                round(points[-1][0] - points[0][0], 3) if len(points) >= 2 else 0.0
+            ),
         },
     }
 

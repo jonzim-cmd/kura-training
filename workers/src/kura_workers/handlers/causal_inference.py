@@ -16,7 +16,7 @@ import logging
 import math
 import os
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import psycopg
@@ -30,8 +30,17 @@ from ..inference_telemetry import (
     safe_record_inference_run,
 )
 from ..population_priors import build_causal_estimand_target_key, resolve_population_prior
+from ..readiness_signals import build_readiness_daily_scores
 from ..registry import projection_handler
-from ..utils import epley_1rm, get_retracted_event_ids, resolve_exercise_key
+from ..utils import (
+    epley_1rm,
+    get_retracted_event_ids,
+    load_timezone_preference,
+    normalize_temporal_point,
+    resolve_exercise_key,
+    resolve_timezone_context,
+    resolve_through_aliases,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -413,6 +422,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     "set.logged",
     "energy.logged",
     "soreness.logged",
+    "external.activity_imported",
     dimension_meta={
         "name": "causal_inference",
         "description": (
@@ -439,6 +449,12 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "status": "string — ok|insufficient_data",
             "engine": "string — propensity_ipw_bootstrap",
             "generated_at": "ISO 8601 datetime",
+            "timezone_context": {
+                "timezone": "IANA timezone used for day/week grouping (e.g. Europe/Berlin)",
+                "source": "preference|assumed_default",
+                "assumed": "boolean",
+                "assumption_disclosure": "string|null",
+            },
             "outcome_definition": {
                 "metric": "string",
                 "horizon": "string",
@@ -519,7 +535,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                 "readiness_score": "number [0,1]",
                 "sleep_hours": "number",
                 "protein_g": "number",
-                "load_volume": "number",
+                "load_volume": "number (modality-aware daily load score)",
                 "strength_aggregate_e1rm": "number|null",
                 "strength_by_exercise": {"<exercise_id>": "number"},
                 "program_change_event": "boolean",
@@ -529,6 +545,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "data_quality": {
                 "events_processed": "integer",
                 "observed_days": "integer",
+                "temporal_conflicts": {"<conflict_type>": "integer"},
                 "treated_windows": {
                     "program_change": "integer",
                     "nutrition_shift": "integer",
@@ -579,11 +596,14 @@ async def update_causal_inference(
 
     try:
         retracted_ids = await get_retracted_event_ids(conn, user_id)
+        timezone_pref = await load_timezone_preference(conn, user_id, retracted_ids)
+        timezone_context = resolve_timezone_context(timezone_pref)
+        timezone_name = timezone_context["timezone"]
 
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                SELECT id, timestamp, event_type, data
+                SELECT id, timestamp, event_type, data, metadata
                 FROM events
                 WHERE user_id = %s
                   AND event_type IN (
@@ -597,7 +617,8 @@ async def update_causal_inference(
                       'sleep_target.set',
                       'set.logged',
                       'energy.logged',
-                      'soreness.logged'
+                      'soreness.logged',
+                      'external.activity_imported'
                   )
                 ORDER BY timestamp ASC
                 """,
@@ -627,15 +648,47 @@ async def update_causal_inference(
             )
             return
 
-        per_day: dict[date, dict[str, Any]] = defaultdict(
+        readiness_signals = build_readiness_daily_scores(
+            rows,
+            timezone_name=timezone_name,
+        )
+        readiness_daily = list(readiness_signals.get("daily_scores") or [])
+        if not readiness_daily:
+            await _record(
+                "skipped",
+                {
+                    "skip_reason": "no_readiness_observations",
+                    "event_type": event_type,
+                },
+                error_taxonomy=INFERENCE_ERROR_INSUFFICIENT_DATA,
+            )
+            return
+
+        readiness_by_day = {
+            str(entry["date"]): entry
+            for entry in readiness_daily
+            if isinstance(entry, dict) and isinstance(entry.get("date"), str)
+        }
+        alias_map: dict[str, str] = {}
+        for row in rows:
+            if row.get("event_type") != "exercise.alias_created":
+                continue
+            data = row.get("data") if isinstance(row.get("data"), dict) else {}
+            alias = str(data.get("alias") or "").strip().lower()
+            target = str(data.get("exercise_id") or "").strip().lower()
+            if alias and target:
+                alias_map[alias] = target
+
+        component_priors = readiness_signals.get("component_priors") or {}
+        fallback_sleep_hours = _safe_float(component_priors.get("sleep_hours"), default=7.0)
+        fallback_energy_level = _safe_float(component_priors.get("energy_level"), default=6.0)
+        fallback_soreness_level = _safe_float(component_priors.get("soreness_level"), default=2.0)
+        temporal_conflicts: dict[str, int] = dict(
+            readiness_signals.get("temporal_conflicts") or {}
+        )
+
+        per_day_aux: dict[date, dict[str, Any]] = defaultdict(
             lambda: {
-                "sleep_hours_sum": 0.0,
-                "sleep_entries": 0,
-                "energy_sum": 0.0,
-                "energy_entries": 0,
-                "soreness_sum": 0.0,
-                "soreness_entries": 0,
-                "load_volume": 0.0,
                 "protein_g": 0.0,
                 "calories": 0.0,
                 "program_events": 0,
@@ -646,32 +699,33 @@ async def update_causal_inference(
         )
 
         for row in rows:
-            day = row["timestamp"].date()
+            timestamp = row.get("timestamp")
+            if not isinstance(timestamp, datetime):
+                continue
             row_event_type = row["event_type"]
-            data = row["data"] or {}
-            bucket = per_day[day]
+            data = row["data"] if isinstance(row.get("data"), dict) else {}
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            temporal = normalize_temporal_point(
+                timestamp,
+                timezone_name=timezone_name,
+                data=data,
+                metadata=metadata,
+            )
+            day = temporal.local_date
+            for conflict in temporal.conflicts:
+                temporal_conflicts[conflict] = temporal_conflicts.get(conflict, 0) + 1
+            bucket = per_day_aux[day]
 
-            if row_event_type == "sleep.logged":
-                duration = _safe_float(data.get("duration_hours"), default=0.0)
-                if duration > 0.0:
-                    bucket["sleep_hours_sum"] += duration
-                    bucket["sleep_entries"] += 1
-            elif row_event_type == "energy.logged":
-                energy = _safe_float(data.get("level"), default=0.0)
-                if energy > 0.0:
-                    bucket["energy_sum"] += energy
-                    bucket["energy_entries"] += 1
-            elif row_event_type == "soreness.logged":
-                soreness = _safe_float(data.get("severity"), default=0.0)
-                if soreness > 0.0:
-                    bucket["soreness_sum"] += soreness
-                    bucket["soreness_entries"] += 1
-            elif row_event_type == "set.logged":
+            if row_event_type == "set.logged":
                 weight = _safe_float(data.get("weight_kg", data.get("weight")), default=0.0)
                 reps = _safe_float(data.get("reps"), default=0.0)
                 if weight > 0.0 and reps > 0.0:
-                    bucket["load_volume"] += weight * reps
-                    exercise_key = resolve_exercise_key(data)
+                    raw_key = resolve_exercise_key(data)
+                    exercise_key = (
+                        resolve_through_aliases(raw_key, alias_map)
+                        if raw_key
+                        else None
+                    )
                     if exercise_key:
                         e1rm = epley_1rm(weight, int(round(reps)))
                         if e1rm > 0.0:
@@ -697,34 +751,19 @@ async def update_causal_inference(
             elif row_event_type == "nutrition_target.set":
                 bucket["nutrition_target_events"] += 1
 
-        observed_days = sorted(per_day.keys())
-        load_values = [
-            float(per_day[day]["load_volume"])
-            for day in observed_days
-            if float(per_day[day]["load_volume"]) > 0.0
-        ]
-        load_baseline = max(1.0, _median(load_values))
-
+        observed_days = sorted(date.fromisoformat(day_iso) for day_iso in readiness_by_day)
         daily_context: list[dict[str, Any]] = []
         strength_state: dict[str, float] = {}
         for day in observed_days:
-            bucket = per_day[day]
-            sleep_hours = (
-                bucket["sleep_hours_sum"] / bucket["sleep_entries"]
-                if bucket["sleep_entries"] > 0
-                else 6.5
-            )
-            energy = (
-                bucket["energy_sum"] / bucket["energy_entries"]
-                if bucket["energy_entries"] > 0
-                else 6.0
-            )
-            soreness_avg = (
-                bucket["soreness_sum"] / bucket["soreness_entries"]
-                if bucket["soreness_entries"] > 0
-                else 0.0
-            )
-            load_volume = float(bucket["load_volume"])
+            signal_row = readiness_by_day.get(day.isoformat()) or {}
+            signal_values = signal_row.get("signals") if isinstance(signal_row.get("signals"), dict) else {}
+            bucket = per_day_aux[day]
+
+            sleep_hours = _safe_float(signal_values.get("sleep_hours"), default=fallback_sleep_hours)
+            energy = _safe_float(signal_values.get("energy_level"), default=fallback_energy_level)
+            soreness_avg = _safe_float(signal_values.get("soreness_level"), default=fallback_soreness_level)
+            load_volume = _safe_float(signal_values.get("load_score"), default=0.0)
+            readiness_score = _safe_float(signal_row.get("score"), default=0.0)
             protein_g = float(bucket["protein_g"])
 
             for exercise_id, value in (bucket["strength_by_exercise"] or {}).items():
@@ -734,21 +773,6 @@ async def update_causal_inference(
                 _mean(list(strength_snapshot.values()))
                 if strength_snapshot
                 else None
-            )
-
-            sleep_score = _clamp(sleep_hours / 8.0, 0.0, 1.2)
-            energy_score = _clamp(energy / 10.0, 0.0, 1.0)
-            soreness_penalty = _clamp(soreness_avg / 10.0, 0.0, 1.0)
-            load_penalty = _clamp(load_volume / load_baseline, 0.0, 1.4)
-
-            readiness_score = _clamp(
-                (0.45 * sleep_score)
-                + (0.35 * energy_score)
-                - (0.20 * soreness_penalty)
-                - (0.15 * load_penalty)
-                + 0.25,
-                0.0,
-                1.0,
             )
 
             daily_context.append(
@@ -799,10 +823,25 @@ async def update_causal_inference(
             },
         }
 
-        for idx in range(history_days_required, len(daily_context) - 1):
-            current = daily_context[idx]
-            next_day = daily_context[idx + 1]
-            history = daily_context[idx - history_days_required:idx]
+        context_by_date = {
+            date.fromisoformat(entry["date"]): entry
+            for entry in daily_context
+        }
+        ordered_days = sorted(context_by_date.keys())
+
+        for idx, current_day in enumerate(ordered_days):
+            next_day_key = current_day + timedelta(days=1)
+            if next_day_key not in context_by_date:
+                continue
+            if idx < history_days_required:
+                continue
+
+            current = context_by_date[current_day]
+            next_day = context_by_date[next_day_key]
+            history = [
+                context_by_date[d]
+                for d in ordered_days[idx - history_days_required:idx]
+            ]
             windows_evaluated += 1
 
             baseline_readiness = _mean(
@@ -811,7 +850,7 @@ async def update_causal_inference(
             )
             baseline_sleep = _mean(
                 [_safe_float(day.get("sleep_hours")) for day in history],
-                fallback=6.5,
+                fallback=fallback_sleep_hours,
             )
             baseline_load = _mean(
                 [_safe_float(day.get("load_volume")) for day in history],
@@ -1181,6 +1220,7 @@ async def update_causal_inference(
             "status": "ok" if has_ok else "insufficient_data",
             "engine": telemetry_engine,
             "generated_at": datetime.now(timezone.utc).isoformat(),
+            "timezone_context": timezone_context,
             "outcome_definition": {
                 "metric": "next_day_readiness_score",
                 "horizon": "t+1 day",
@@ -1217,6 +1257,7 @@ async def update_causal_inference(
             "data_quality": {
                 "events_processed": len(rows),
                 "observed_days": len(observed_days),
+                "temporal_conflicts": temporal_conflicts,
                 "treated_windows": treated_windows,
                 "outcome_windows": outcome_windows,
             },
@@ -1245,6 +1286,7 @@ async def update_causal_inference(
             "event_type": event_type,
             "events_processed": len(rows),
             "observed_days": len(observed_days),
+            "temporal_conflicts": temporal_conflicts,
             "windows_evaluated": windows_evaluated,
             "treated_windows": treated_windows,
             "outcome_windows": outcome_windows,
@@ -1280,11 +1322,16 @@ async def update_causal_inference(
         )
 
         logger.info(
-            "Updated causal_inference for user=%s (days=%d, windows=%d, ok=%s)",
+            (
+                "Updated causal_inference for user=%s "
+                "(days=%d, windows=%d, ok=%s, timezone=%s, assumed=%s)"
+            ),
             user_id,
             len(daily_context),
             windows_evaluated,
             has_ok,
+            timezone_name,
+            timezone_context["assumed"],
         )
     except Exception as exc:
         await _record(
