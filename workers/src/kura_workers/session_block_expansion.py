@@ -72,22 +72,76 @@ def _extract_rpe_anchor(block: dict[str, Any]) -> float | None:
 
 def _extract_relative_intensity(block: dict[str, Any]) -> dict[str, Any] | None:
     raw = block.get("relative_intensity")
-    if not isinstance(raw, dict):
-        return None
-    value = _to_float(raw.get("value_pct"))
+    source_path: str | None = None
+    if isinstance(raw, dict):
+        value = _to_float(raw.get("value_pct"))
+    else:
+        legacy_paths = (
+            "intensity_percent_max",
+            "intensity_percent_max_speed",
+            "intensity_pct",
+            "percent_of_max",
+        )
+        value = None
+        for path in legacy_paths:
+            candidate = _to_float(block.get(path))
+            if candidate is not None and candidate > 0:
+                value = candidate
+                source_path = path
+                break
+        if value is None:
+            return None
+        raw = {}
+
     if value is None or value <= 0:
         return None
     result: dict[str, Any] = {"value_pct": value}
     reference_type = str(raw.get("reference_type") or "").strip().lower()
+    if not reference_type:
+        reference_type = str(
+            block.get("relative_intensity_reference_type")
+            or block.get("reference_type")
+            or ""
+        ).strip().lower()
+    if not reference_type and source_path in {
+        "intensity_percent_max",
+        "intensity_percent_max_speed",
+        "percent_of_max",
+    }:
+        reference_type = "custom"
     if reference_type:
         result["reference_type"] = reference_type
-    reference_value = _to_float(raw.get("reference_value"))
+    reference_value = _to_float(
+        raw.get("reference_value")
+        if isinstance(raw, dict)
+        else None
+    )
+    if reference_value is None:
+        reference_value = _to_float(
+            block.get("relative_intensity_reference_value")
+            or block.get("reference_value")
+        )
     if reference_value is not None and reference_value > 0:
         result["reference_value"] = reference_value
-    reference_measured_at = str(raw.get("reference_measured_at") or "").strip()
+    reference_measured_at = str(
+        raw.get("reference_measured_at")
+        if isinstance(raw, dict)
+        else (
+            block.get("relative_intensity_reference_measured_at")
+            or block.get("reference_measured_at")
+            or ""
+        )
+    ).strip()
     if reference_measured_at:
         result["reference_measured_at"] = reference_measured_at
-    reference_confidence = _to_float(raw.get("reference_confidence"))
+    reference_confidence = _to_float(
+        raw.get("reference_confidence")
+        if isinstance(raw, dict)
+        else (
+            block.get("relative_intensity_reference_confidence")
+            or block.get("reference_confidence")
+        )
+    )
     if reference_confidence is not None:
         result["reference_confidence"] = reference_confidence
     return result

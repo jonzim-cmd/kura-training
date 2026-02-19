@@ -771,8 +771,9 @@ def _resolve_internal_response(
 ) -> tuple[float, str, float, dict[str, Any]]:
     model = _intensity_model(profile)
     relative_resolution = _relative_intensity_resolution(data, model=model)
+    relative_status = str(relative_resolution.get("status") or "")
     if (
-        relative_resolution.get("status") == "used"
+        relative_status.startswith("used")
         and isinstance(relative_resolution.get("normalized_response"), (float, int))
         and isinstance(relative_resolution.get("uncertainty"), (float, int))
     ):

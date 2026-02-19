@@ -215,3 +215,29 @@ def test_relative_intensity_can_be_disabled_by_feature_flag(monkeypatch) -> None
     )
     assert components["relative_intensity_status"] == "disabled"
     assert not str(components["internal_response_source"]).startswith("relative_intensity")
+
+
+def test_legacy_intensity_percent_max_alias_is_consumed_as_relative_intensity() -> None:
+    profile = calibration_profile_for_version(CALIBRATED_PARAMETER_VERSION)
+    components = compute_row_load_components_v2(
+        data={
+            "duration_seconds": 600,
+            "distance_meters": 1800,
+            "rpe": 7,
+            "intensity_percent_max": 0.8,
+        },
+        profile=profile,
+    )
+    fallback = compute_row_load_components_v2(
+        data={
+            "duration_seconds": 600,
+            "distance_meters": 1800,
+            "rpe": 7,
+        },
+        profile=profile,
+    )
+    assert components["relative_intensity_status"] == "used_missing_reference_timestamp"
+    assert str(components["internal_response_source"]).startswith(
+        "relative_intensity:custom:unstamped"
+    )
+    assert float(components["load_score"]) > float(fallback["load_score"])

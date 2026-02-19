@@ -117,3 +117,32 @@ def test_expand_session_logged_row_handles_missing_blocks() -> None:
         "metadata": {},
     }
     assert expand_session_logged_row(row) == []
+
+
+def test_expand_session_logged_row_supports_legacy_intensity_percent_max_field() -> None:
+    row = {
+        "id": "evt-legacy-intensity",
+        "timestamp": datetime.fromisoformat("2026-02-14T10:00:00+00:00"),
+        "metadata": {},
+        "data": {
+            "contract_version": "session.logged.v1",
+            "session_meta": {"sport": "sprint"},
+            "blocks": [
+                {
+                    "block_type": "sprint_accel_maxv",
+                    "dose": {
+                        "work": {"distance_meters": 30, "repeats": 4},
+                        "recovery": {"duration_seconds": 90},
+                    },
+                    "intensity_percent_max": 0.8,
+                }
+            ],
+        },
+    }
+
+    expanded = expand_session_logged_row(row)
+    assert expanded
+    relative = expanded[0]["data"].get("relative_intensity")
+    assert isinstance(relative, dict)
+    assert relative["value_pct"] == 0.8
+    assert relative["reference_type"] == "custom"
