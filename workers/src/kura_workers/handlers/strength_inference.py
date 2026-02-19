@@ -23,8 +23,7 @@ from ..inference_telemetry import (
 from ..population_priors import resolve_population_prior
 from ..registry import projection_handler
 from ..session_block_expansion import expand_session_logged_row
-from ..set_corrections import apply_set_correction_chain
-from ..training_legacy_compat import extract_backfilled_set_event_ids
+from ..training_signal_normalization import normalize_training_signal_rows
 from ..utils import (
     epley_1rm,
     find_all_keys_for_canonical,
@@ -277,49 +276,10 @@ async def update_strength_inference(
             rows = await cur.fetchall()
 
         rows = [r for r in rows if str(r["id"]) not in retracted_ids]
-        set_rows = [r for r in rows if str(r.get("event_type") or "") == "set.logged"]
-        session_rows = [r for r in rows if str(r.get("event_type") or "") == "session.logged"]
-        correction_rows = [r for r in rows if str(r.get("event_type") or "") == "set.corrected"]
-
-        legacy_backfilled_ids = extract_backfilled_set_event_ids(session_rows)
-        if legacy_backfilled_ids:
-            set_rows = [
-                entry for entry in set_rows if str(entry.get("id") or "") not in legacy_backfilled_ids
-            ]
-
-        corrected_set_rows = apply_set_correction_chain(set_rows, correction_rows)
-        effective_rows: list[dict[str, Any]] = []
-        for corrected in corrected_set_rows:
-            effective_data = corrected.get("effective_data") or corrected.get("data") or {}
-            if not isinstance(effective_data, dict):
-                continue
-            effective_rows.append(
-                {
-                    "id": corrected.get("id"),
-                    "timestamp": corrected.get("timestamp"),
-                    "event_type": "set.logged",
-                    "data": effective_data,
-                    "metadata": corrected.get("metadata") or {},
-                }
-            )
-
-        for session_row in session_rows:
-            for expanded in expand_session_logged_row(session_row):
-                expanded_data = expanded.get("data")
-                if not isinstance(expanded_data, dict):
-                    continue
-                effective_rows.append(
-                    {
-                        "id": expanded.get("id"),
-                        "timestamp": expanded.get("timestamp"),
-                        "event_type": "session.logged",
-                        "data": expanded_data,
-                        "metadata": expanded.get("metadata") or {},
-                    }
-                )
+        normalized_rows = normalize_training_signal_rows(rows, include_passthrough=False)
 
         rows = []
-        for candidate_row in effective_rows:
+        for candidate_row in normalized_rows:
             data = candidate_row.get("data")
             if not isinstance(data, dict):
                 continue

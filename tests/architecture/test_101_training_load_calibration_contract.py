@@ -39,6 +39,7 @@ def test_training_load_calibration_contract_is_declared() -> None:
         "calibration_error",
         "ranking_consistency",
     } <= set(contract["metrics"])
+    assert "intensity_model" in contract["parameter_registry"]["profiled_parameters"]
 
 
 def test_training_load_calibration_shadow_report_is_structured_and_guarded() -> None:

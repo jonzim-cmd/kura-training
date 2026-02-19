@@ -10,14 +10,12 @@ from collections import defaultdict
 from datetime import date, datetime
 from typing import Any
 
-from .session_block_expansion import expand_session_logged_rows
-from .set_corrections import apply_set_correction_chain
-from .training_legacy_compat import extract_backfilled_set_event_ids
 from .training_load_calibration_v1 import (
     active_calibration_version,
     calibration_profile_for_version,
     compute_row_load_components_v2,
 )
+from .training_signal_normalization import normalize_training_signal_rows
 from .utils import normalize_temporal_point
 
 
@@ -91,60 +89,6 @@ def _iter_event_load_rows(event_type: str, data: dict[str, Any]) -> list[dict[st
     return [fallback] if fallback else []
 
 
-def _normalized_signal_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    set_rows: list[dict[str, Any]] = []
-    session_rows: list[dict[str, Any]] = []
-    correction_rows: list[dict[str, Any]] = []
-    passthrough_rows: list[dict[str, Any]] = []
-
-    for row in rows:
-        event_type = str(row.get("event_type") or "").strip()
-        if event_type == "set.logged":
-            set_rows.append(row)
-        elif event_type == "session.logged":
-            session_rows.append(row)
-        elif event_type == "set.corrected":
-            correction_rows.append(row)
-        else:
-            passthrough_rows.append(row)
-
-    legacy_backfilled_set_ids = extract_backfilled_set_event_ids(session_rows)
-    if legacy_backfilled_set_ids:
-        set_rows = [
-            row for row in set_rows if str(row.get("id") or "") not in legacy_backfilled_set_ids
-        ]
-
-    corrected_set_rows = apply_set_correction_chain(set_rows, correction_rows)
-    normalized: list[dict[str, Any]] = []
-
-    for row in corrected_set_rows:
-        normalized.append(
-            {
-                **row,
-                "event_type": "set.logged",
-                "data": row.get("effective_data") or row.get("data") or {},
-            }
-        )
-
-    for row in expand_session_logged_rows(session_rows):
-        normalized.append(
-            {
-                **row,
-                "event_type": "session.logged",
-                "data": row.get("effective_data") or row.get("data") or {},
-            }
-        )
-
-    normalized.extend(passthrough_rows)
-    normalized.sort(
-        key=lambda row: (
-            row.get("timestamp"),
-            str(row.get("id") or ""),
-        )
-    )
-    return normalized
-
-
 def build_readiness_daily_scores(
     rows: list[dict[str, Any]],
     *,
@@ -175,7 +119,7 @@ def build_readiness_daily_scores(
 
     profile = calibration_profile_for_version(active_calibration_version())
 
-    normalized_rows = _normalized_signal_rows(rows)
+    normalized_rows = normalize_training_signal_rows(rows)
     for row in normalized_rows:
         event_type = str(row.get("event_type") or "").strip()
         if event_type not in {

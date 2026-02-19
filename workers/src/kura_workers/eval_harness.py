@@ -28,10 +28,12 @@ from .inference_engine import (
     run_strength_inference,
     weekly_phase_from_date,
 )
+from .inference_event_registry import (
+    EVAL_CAUSAL_EVENT_TYPES,
+    EVAL_READINESS_EVENT_TYPES,
+)
 from .readiness_signals import build_readiness_daily_scores
-from .session_block_expansion import expand_session_logged_rows
-from .set_corrections import apply_set_correction_chain
-from .training_legacy_compat import extract_backfilled_set_event_ids
+from .training_signal_normalization import normalize_training_signal_rows
 from .utils import (
     epley_1rm,
     get_alias_map,
@@ -1670,52 +1672,7 @@ def filter_retracted_event_rows(rows: list[dict[str, Any]]) -> list[dict[str, An
 
 
 def _normalized_training_signal_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    set_rows: list[dict[str, Any]] = []
-    session_rows: list[dict[str, Any]] = []
-    correction_rows: list[dict[str, Any]] = []
-    passthrough_rows: list[dict[str, Any]] = []
-
-    for row in rows:
-        event_type = str(row.get("event_type") or "").strip()
-        if event_type == "set.logged":
-            set_rows.append(row)
-        elif event_type == "session.logged":
-            session_rows.append(row)
-        elif event_type == "set.corrected":
-            correction_rows.append(row)
-        else:
-            passthrough_rows.append(row)
-
-    legacy_backfilled_ids = extract_backfilled_set_event_ids(session_rows)
-    if legacy_backfilled_ids:
-        set_rows = [
-            row for row in set_rows if str(row.get("id") or "") not in legacy_backfilled_ids
-        ]
-
-    corrected_rows = apply_set_correction_chain(set_rows, correction_rows)
-    normalized: list[dict[str, Any]] = []
-
-    for row in corrected_rows:
-        normalized.append(
-            {
-                **row,
-                "event_type": "set.logged",
-                "data": row.get("effective_data") or row.get("data") or {},
-            }
-        )
-
-    for row in expand_session_logged_rows(session_rows):
-        normalized.append(
-            {
-                **row,
-                "event_type": "session.logged",
-                "data": row.get("effective_data") or row.get("data") or {},
-            }
-        )
-
-    normalized.extend(passthrough_rows)
-    normalized.sort(key=lambda row: (row.get("timestamp"), str(row.get("id") or "")))
-    return normalized
+    return normalize_training_signal_rows(rows)
 
 
 def build_strength_histories_from_event_rows(
@@ -3517,41 +3474,9 @@ async def _event_store_results(
     if "strength_inference" in projection_types:
         event_types.update(("set.logged", "exercise.alias_created", "event.retracted"))
     if "readiness_inference" in projection_types:
-        event_types.update(
-            (
-                "set.logged",
-                "session.logged",
-                "set.corrected",
-                "sleep.logged",
-                "soreness.logged",
-                "energy.logged",
-                "external.activity_imported",
-                "preference.set",
-                "event.retracted",
-            )
-        )
+        event_types.update(EVAL_READINESS_EVENT_TYPES)
     if "causal_inference" in projection_types:
-        event_types.update(
-            (
-                "set.logged",
-                "session.logged",
-                "set.corrected",
-                "sleep.logged",
-                "soreness.logged",
-                "energy.logged",
-                "external.activity_imported",
-                "meal.logged",
-                "nutrition_target.set",
-                "sleep_target.set",
-                "program.started",
-                "training_plan.created",
-                "training_plan.updated",
-                "training_plan.archived",
-                "exercise.alias_created",
-                "preference.set",
-                "event.retracted",
-            )
-        )
+        event_types.update(EVAL_CAUSAL_EVENT_TYPES)
     if not event_types:
         return []
 

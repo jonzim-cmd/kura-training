@@ -11,6 +11,7 @@ from psycopg.types.json import Json
 
 from ..consistency_inbox import refresh_all_consistency_inboxes
 from ..extraction_calibration import refresh_extraction_calibration
+from ..inference_event_registry import NIGHTLY_REFIT_TRIGGER_EVENT_TYPES
 from ..issue_clustering import refresh_issue_clusters
 from ..learning_backlog_bridge import refresh_learning_backlog_candidates
 from ..population_priors import refresh_population_prior_profiles
@@ -94,16 +95,7 @@ async def handle_inference_nightly_refit(
     interval_h = int(payload.get("interval_hours", nightly_interval_hours()))
     scheduler_key = str(payload.get("scheduler_key") or "").strip()
     missed_runs = int(payload.get("missed_runs") or 0)
-    event_types = (
-        "set.logged",
-        "session.logged",
-        "set.corrected",
-        "exercise.alias_created",
-        "sleep.logged",
-        "soreness.logged",
-        "energy.logged",
-        "external.activity_imported",
-    )
+    event_types = NIGHTLY_REFIT_TRIGGER_EVENT_TYPES
 
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT DISTINCT user_id FROM events ORDER BY user_id")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 from kura_workers.training_load_calibration_v1 import (
     CALIBRATED_PARAMETER_VERSION,
     calibration_profile_for_version,
@@ -83,3 +85,40 @@ def test_load_contract_has_explicit_intensity_fallback_and_uncertainty_gradient(
     assert heart_rate["uncertainty"] < rpe["uncertainty"]
     assert rpe["uncertainty"] < prior["uncertainty"]
 
+
+def test_load_contract_reads_intensity_hyperparameters_from_profile() -> None:
+    base_profile = _profile()
+    tuned_profile = deepcopy(base_profile)
+    tuned_profile["intensity_model"]["multiplier"] = {
+        "base": 0.2,
+        "response_scale": 0.2,
+    }
+    tuned_profile["intensity_model"]["power"]["ratio"] = {
+        "source": "power_ratio",
+        "floor": 0.0,
+        "window": 1.2,
+        "uncertainty": 0.12,
+    }
+
+    reference = compute_row_load_components_v2(
+        data={
+            "duration_seconds": 1800,
+            "distance_meters": 5000,
+            "power_watt": 240,
+            "ftp_watt": 300,
+        },
+        profile=base_profile,
+    )
+    tuned = compute_row_load_components_v2(
+        data={
+            "duration_seconds": 1800,
+            "distance_meters": 5000,
+            "power_watt": 240,
+            "ftp_watt": 300,
+        },
+        profile=tuned_profile,
+    )
+
+    assert round(reference["external_dose"], 6) == round(tuned["external_dose"], 6)
+    assert tuned["internal_response"] != reference["internal_response"]
+    assert tuned["load_score"] != reference["load_score"]

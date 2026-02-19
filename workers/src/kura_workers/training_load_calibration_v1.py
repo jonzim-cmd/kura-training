@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from copy import deepcopy
 from typing import Any, Iterable
 
 FEATURE_FLAG_TRAINING_LOAD_CALIBRATED = "KURA_FEATURE_TRAINING_LOAD_CALIBRATED"
@@ -15,6 +16,87 @@ CALIBRATION_SHADOW_VERSION = "training_load_calibration_shadow.v1"
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off"}
+
+_DEFAULT_INTENSITY_MODEL: dict[str, Any] = {
+    "resolver_order": ["power", "heart_rate", "pace", "rpe"],
+    "multiplier": {
+        "base": 0.7,
+        "response_scale": 0.8,
+    },
+    "modality_prior": {
+        "default": 0.6,
+        "uncertainty": 0.52,
+        "rules": [
+            {
+                "tokens": ["strength", "squat", "bench", "deadlift", "lift"],
+                "value": 0.68,
+            },
+            {
+                "tokens": ["sprint", "accel", "speed", "maxv"],
+                "value": 0.8,
+            },
+            {
+                "tokens": ["jump", "plyo", "reactive"],
+                "value": 0.75,
+            },
+            {
+                "tokens": ["swim", "pool", "rowing", "row", "bike", "cycle", "run"],
+                "value": 0.62,
+            },
+        ],
+    },
+    "power": {
+        "ratio": {
+            "source": "power_ratio",
+            "floor": 0.4,
+            "window": 0.8,
+            "uncertainty": 0.12,
+        },
+        "absolute": {
+            "source": "power_absolute",
+            "divisor": 420.0,
+            "uncertainty": 0.2,
+        },
+    },
+    "heart_rate": {
+        "ratio": {
+            "source": "hr_ratio",
+            "floor": 0.45,
+            "window": 0.5,
+            "uncertainty": 0.22,
+        },
+        "absolute": {
+            "source": "hr_absolute",
+            "floor": 90.0,
+            "window": 100.0,
+            "uncertainty": 0.3,
+        },
+    },
+    "pace": {
+        "direct": {
+            "source": "pace",
+            "speed_divisor_mps": 5.5,
+            "uncertainty": 0.28,
+        },
+        "estimated": {
+            "source": "pace_estimated",
+            "speed_divisor_mps": 5.5,
+            "uncertainty": 0.34,
+        },
+    },
+    "rpe": {
+        "rpe": {
+            "source": "rpe",
+            "scale": 10.0,
+            "uncertainty": 0.34,
+        },
+        "rir_inverse": {
+            "source": "rir_inverse",
+            "scale": 10.0,
+            "uncertainty": 0.38,
+        },
+    },
+}
 
 _PARAMETER_REGISTRY_V1: dict[str, dict[str, Any]] = {
     BASELINE_PARAMETER_VERSION: {
@@ -44,6 +126,7 @@ _PARAMETER_REGISTRY_V1: dict[str, dict[str, Any]] = {
             "distance_divisor": 1000.0,
             "contacts_divisor": 20.0,
         },
+        "intensity_model": deepcopy(_DEFAULT_INTENSITY_MODEL),
     },
     CALIBRATED_PARAMETER_VERSION: {
         "base_confidence_by_source": {
@@ -72,6 +155,7 @@ _PARAMETER_REGISTRY_V1: dict[str, dict[str, Any]] = {
             "distance_divisor": 980.0,
             "contacts_divisor": 18.0,
         },
+        "intensity_model": deepcopy(_DEFAULT_INTENSITY_MODEL),
     },
 }
 
@@ -89,17 +173,7 @@ def _read_flag(name: str, *, default: bool) -> bool:
 
 
 def calibration_parameter_registry_v1() -> dict[str, dict[str, Any]]:
-    return {
-        version: {
-            **profile,
-            "base_confidence_by_source": dict(profile["base_confidence_by_source"]),
-            "sensor_bonus": dict(profile["sensor_bonus"]),
-            "session_hint_weights": dict(profile["session_hint_weights"]),
-            "confidence_bounds": dict(profile["confidence_bounds"]),
-            "load_weights": dict(profile["load_weights"]),
-        }
-        for version, profile in _PARAMETER_REGISTRY_V1.items()
-    }
+    return {version: deepcopy(profile) for version, profile in _PARAMETER_REGISTRY_V1.items()}
 
 
 def calibration_profile_for_version(version: str) -> dict[str, Any]:
@@ -142,6 +216,34 @@ def _to_float(value: Any) -> float:
     return parsed
 
 
+def _profile_number(
+    value: Any,
+    *,
+    default: float,
+    minimum: float | None = None,
+) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if minimum is not None and parsed < minimum:
+        return default
+    return parsed
+
+
+def _intensity_model(profile: dict[str, Any]) -> dict[str, Any]:
+    model = profile.get("intensity_model")
+    if not isinstance(model, dict):
+        return deepcopy(_DEFAULT_INTENSITY_MODEL)
+    merged = deepcopy(_DEFAULT_INTENSITY_MODEL)
+    for key, value in model.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key].update(value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def _sensor_presence(data: dict[str, Any]) -> dict[str, bool]:
     keys = {str(key).strip().lower() for key in data.keys()}
     return {
@@ -155,67 +257,152 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-def _resolve_modality_prior(data: dict[str, Any]) -> float:
+def _resolve_modality_prior(
+    data: dict[str, Any],
+    *,
+    model: dict[str, Any],
+) -> tuple[float, str, float]:
     text = " ".join(
         str(data.get(key) or "").strip().lower()
         for key in ("block_type", "workout_type", "sport", "exercise", "exercise_id")
     )
-    if any(token in text for token in ("strength", "squat", "bench", "deadlift", "lift")):
-        return 0.68
-    if any(token in text for token in ("sprint", "accel", "speed", "maxv")):
-        return 0.8
-    if any(token in text for token in ("jump", "plyo", "reactive")):
-        return 0.75
-    if any(token in text for token in ("swim", "pool", "rowing", "row", "bike", "cycle", "run")):
-        return 0.62
-    return 0.6
+    prior = model.get("modality_prior") if isinstance(model.get("modality_prior"), dict) else {}
+    rules = prior.get("rules") if isinstance(prior.get("rules"), list) else []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        tokens = [str(token).strip().lower() for token in rule.get("tokens") or []]
+        if tokens and any(token in text for token in tokens):
+            return (
+                _clamp(_profile_number(rule.get("value"), default=0.6), 0.0, 1.0),
+                "modality_prior",
+                _clamp(
+                    _profile_number(prior.get("uncertainty"), default=0.52, minimum=0.0),
+                    0.0,
+                    1.0,
+                ),
+            )
+    return (
+        _clamp(_profile_number(prior.get("default"), default=0.6), 0.0, 1.0),
+        "modality_prior",
+        _clamp(
+            _profile_number(prior.get("uncertainty"), default=0.52, minimum=0.0),
+            0.0,
+            1.0,
+        ),
+    )
 
 
-def _power_internal_response(data: dict[str, Any]) -> tuple[float, str, float] | None:
+def _power_internal_response(
+    data: dict[str, Any],
+    *,
+    model: dict[str, Any],
+) -> tuple[float, str, float] | None:
     power = _to_float(data.get("power_watt", data.get("power", data.get("watts"))))
     if power <= 0.0:
         return None
+    power_cfg = model.get("power") if isinstance(model.get("power"), dict) else {}
+    ratio_cfg = power_cfg.get("ratio") if isinstance(power_cfg.get("ratio"), dict) else {}
+    absolute_cfg = power_cfg.get("absolute") if isinstance(power_cfg.get("absolute"), dict) else {}
     ftp = _to_float(
         data.get("ftp_watt", data.get("ftp", data.get("critical_power_watt")))
     )
     if ftp > 0.0:
         ratio = power / ftp
-        normalized = _clamp((ratio - 0.4) / 0.8, 0.0, 1.0)
-        return normalized, "power_ratio", 0.12
-    normalized = _clamp(power / 420.0, 0.0, 1.0)
-    return normalized, "power_absolute", 0.2
+        ratio_floor = _profile_number(ratio_cfg.get("floor"), default=0.4)
+        ratio_window = _profile_number(ratio_cfg.get("window"), default=0.8, minimum=0.001)
+        normalized = _clamp((ratio - ratio_floor) / ratio_window, 0.0, 1.0)
+        return (
+            normalized,
+            str(ratio_cfg.get("source") or "power_ratio"),
+            _profile_number(ratio_cfg.get("uncertainty"), default=0.12, minimum=0.0),
+        )
+    absolute_divisor = _profile_number(absolute_cfg.get("divisor"), default=420.0, minimum=0.001)
+    normalized = _clamp(power / absolute_divisor, 0.0, 1.0)
+    return (
+        normalized,
+        str(absolute_cfg.get("source") or "power_absolute"),
+        _profile_number(absolute_cfg.get("uncertainty"), default=0.2, minimum=0.0),
+    )
 
 
-def _heart_rate_internal_response(data: dict[str, Any]) -> tuple[float, str, float] | None:
+def _heart_rate_internal_response(
+    data: dict[str, Any],
+    *,
+    model: dict[str, Any],
+) -> tuple[float, str, float] | None:
     hr_avg = _to_float(data.get("heart_rate_avg", data.get("hr_avg", data.get("hr_bpm"))))
     if hr_avg <= 0.0:
         return None
+    hr_cfg = model.get("heart_rate") if isinstance(model.get("heart_rate"), dict) else {}
+    ratio_cfg = hr_cfg.get("ratio") if isinstance(hr_cfg.get("ratio"), dict) else {}
+    absolute_cfg = hr_cfg.get("absolute") if isinstance(hr_cfg.get("absolute"), dict) else {}
     hr_max = _to_float(data.get("heart_rate_max", data.get("hr_max")))
     if hr_max > 0.0:
         ratio = hr_avg / hr_max
-        normalized = _clamp((ratio - 0.45) / 0.5, 0.0, 1.0)
-        return normalized, "hr_ratio", 0.22
-    normalized = _clamp((hr_avg - 90.0) / 100.0, 0.0, 1.0)
-    return normalized, "hr_absolute", 0.3
+        ratio_floor = _profile_number(ratio_cfg.get("floor"), default=0.45)
+        ratio_window = _profile_number(ratio_cfg.get("window"), default=0.5, minimum=0.001)
+        normalized = _clamp((ratio - ratio_floor) / ratio_window, 0.0, 1.0)
+        return (
+            normalized,
+            str(ratio_cfg.get("source") or "hr_ratio"),
+            _profile_number(ratio_cfg.get("uncertainty"), default=0.22, minimum=0.0),
+        )
+    absolute_floor = _profile_number(absolute_cfg.get("floor"), default=90.0)
+    absolute_window = _profile_number(absolute_cfg.get("window"), default=100.0, minimum=0.001)
+    normalized = _clamp((hr_avg - absolute_floor) / absolute_window, 0.0, 1.0)
+    return (
+        normalized,
+        str(absolute_cfg.get("source") or "hr_absolute"),
+        _profile_number(absolute_cfg.get("uncertainty"), default=0.3, minimum=0.0),
+    )
 
 
-def _pace_internal_response(data: dict[str, Any]) -> tuple[float, str, float] | None:
+def _pace_internal_response(
+    data: dict[str, Any],
+    *,
+    model: dict[str, Any],
+) -> tuple[float, str, float] | None:
+    pace_cfg = model.get("pace") if isinstance(model.get("pace"), dict) else {}
+    direct_cfg = pace_cfg.get("direct") if isinstance(pace_cfg.get("direct"), dict) else {}
+    estimated_cfg = pace_cfg.get("estimated") if isinstance(pace_cfg.get("estimated"), dict) else {}
     pace = _to_float(data.get("pace_min_per_km", data.get("pace", data.get("min_per_km"))))
     if pace > 0.0:
         speed_mps = 16.6666667 / pace
-        normalized = _clamp(speed_mps / 5.5, 0.0, 1.0)
-        return normalized, "pace", 0.28
+        divisor = _profile_number(direct_cfg.get("speed_divisor_mps"), default=5.5, minimum=0.001)
+        normalized = _clamp(speed_mps / divisor, 0.0, 1.0)
+        return (
+            normalized,
+            str(direct_cfg.get("source") or "pace"),
+            _profile_number(direct_cfg.get("uncertainty"), default=0.28, minimum=0.0),
+        )
 
     duration_seconds = _to_float(data.get("duration_seconds"))
     distance_meters = _to_float(data.get("distance_meters"))
     if duration_seconds > 0.0 and distance_meters > 0.0:
         speed_mps = distance_meters / duration_seconds
-        normalized = _clamp(speed_mps / 5.5, 0.0, 1.0)
-        return normalized, "pace_estimated", 0.34
+        divisor = _profile_number(
+            estimated_cfg.get("speed_divisor_mps"),
+            default=5.5,
+            minimum=0.001,
+        )
+        normalized = _clamp(speed_mps / divisor, 0.0, 1.0)
+        return (
+            normalized,
+            str(estimated_cfg.get("source") or "pace_estimated"),
+            _profile_number(estimated_cfg.get("uncertainty"), default=0.34, minimum=0.0),
+        )
     return None
 
 
-def _rpe_internal_response(data: dict[str, Any]) -> tuple[float, str, float] | None:
+def _rpe_internal_response(
+    data: dict[str, Any],
+    *,
+    model: dict[str, Any],
+) -> tuple[float, str, float] | None:
+    rpe_cfg = model.get("rpe") if isinstance(model.get("rpe"), dict) else {}
+    direct_cfg = rpe_cfg.get("rpe") if isinstance(rpe_cfg.get("rpe"), dict) else {}
+    rir_cfg = rpe_cfg.get("rir_inverse") if isinstance(rpe_cfg.get("rir_inverse"), dict) else {}
     rpe = _to_float(
         data.get(
             "session_rpe",
@@ -226,27 +413,51 @@ def _rpe_internal_response(data: dict[str, Any]) -> tuple[float, str, float] | N
         )
     )
     if rpe > 0.0:
-        normalized = _clamp(rpe / 10.0, 0.0, 1.0)
-        return normalized, "rpe", 0.34
+        scale = _profile_number(direct_cfg.get("scale"), default=10.0, minimum=0.001)
+        normalized = _clamp(rpe / scale, 0.0, 1.0)
+        return (
+            normalized,
+            str(direct_cfg.get("source") or "rpe"),
+            _profile_number(direct_cfg.get("uncertainty"), default=0.34, minimum=0.0),
+        )
 
     rir = _to_float(data.get("rir"))
     if rir > 0.0:
-        normalized = _clamp(1.0 - (rir / 10.0), 0.0, 1.0)
-        return normalized, "rir_inverse", 0.38
+        scale = _profile_number(rir_cfg.get("scale"), default=10.0, minimum=0.001)
+        normalized = _clamp(1.0 - (rir / scale), 0.0, 1.0)
+        return (
+            normalized,
+            str(rir_cfg.get("source") or "rir_inverse"),
+            _profile_number(rir_cfg.get("uncertainty"), default=0.38, minimum=0.0),
+        )
     return None
 
 
-def _resolve_internal_response(data: dict[str, Any]) -> tuple[float, str, float]:
-    for resolver in (
-        _power_internal_response,
-        _heart_rate_internal_response,
-        _pace_internal_response,
-        _rpe_internal_response,
-    ):
-        resolved = resolver(data)
+def _resolve_internal_response(
+    data: dict[str, Any],
+    *,
+    profile: dict[str, Any],
+) -> tuple[float, str, float]:
+    model = _intensity_model(profile)
+    resolver_map = {
+        "power": _power_internal_response,
+        "heart_rate": _heart_rate_internal_response,
+        "pace": _pace_internal_response,
+        "rpe": _rpe_internal_response,
+    }
+    resolver_order_raw = model.get("resolver_order")
+    if isinstance(resolver_order_raw, list):
+        resolver_order = [str(name).strip().lower() for name in resolver_order_raw]
+    else:
+        resolver_order = ["power", "heart_rate", "pace", "rpe"]
+    for resolver_name in resolver_order:
+        resolver = resolver_map.get(resolver_name)
+        if resolver is None:
+            continue
+        resolved = resolver(data, model=model)
         if resolved is not None:
             return resolved
-    return _resolve_modality_prior(data), "modality_prior", 0.52
+    return _resolve_modality_prior(data, model=model)
 
 
 def compute_row_load_components_v2(
@@ -268,8 +479,17 @@ def compute_row_load_components_v2(
         + (distance_meters / float(load_weights["distance_divisor"]))
         + (contacts / float(load_weights["contacts_divisor"]))
     )
-    internal_response, internal_source, uncertainty = _resolve_internal_response(data)
-    intensity_multiplier = 0.7 + (0.8 * internal_response)
+    internal_response, internal_source, uncertainty = _resolve_internal_response(
+        data,
+        profile=profile,
+    )
+    model = _intensity_model(profile)
+    multiplier_cfg = (
+        model.get("multiplier") if isinstance(model.get("multiplier"), dict) else {}
+    )
+    multiplier_base = _profile_number(multiplier_cfg.get("base"), default=0.7)
+    response_scale = _profile_number(multiplier_cfg.get("response_scale"), default=0.8)
+    intensity_multiplier = multiplier_base + (response_scale * internal_response)
     load_score = external_dose * intensity_multiplier
 
     return {
@@ -467,6 +687,14 @@ def calibration_protocol_v1() -> dict[str, Any]:
             "baseline_version": BASELINE_PARAMETER_VERSION,
             "default_candidate_version": CALIBRATED_PARAMETER_VERSION,
             "available_versions": calibration_parameter_versions(),
+            "profiled_parameters": [
+                "base_confidence_by_source",
+                "sensor_bonus",
+                "session_hint_weights",
+                "confidence_bounds",
+                "load_weights",
+                "intensity_model",
+            ],
         },
     }
 

@@ -46,6 +46,7 @@ def test_calibration_protocol_declares_metrics_guardrails_and_registry() -> None
     assert protocol["shadow_guardrails"]["min_samples"] >= 1
     assert BASELINE_PARAMETER_VERSION in protocol["parameter_registry"]["available_versions"]
     assert CALIBRATED_PARAMETER_VERSION in protocol["parameter_registry"]["available_versions"]
+    assert "intensity_model" in protocol["parameter_registry"]["profiled_parameters"]
 
 
 def test_active_calibration_version_falls_back_to_baseline_when_flag_disabled(
@@ -97,3 +98,5 @@ def test_select_best_calibration_version_prefers_lowest_composite_score() -> Non
 def test_calibration_profile_for_unknown_version_uses_baseline() -> None:
     profile = calibration_profile_for_version("unknown_version")
     assert profile["version"] == BASELINE_PARAMETER_VERSION
+    assert "intensity_model" in profile
+    assert "multiplier" in profile["intensity_model"]

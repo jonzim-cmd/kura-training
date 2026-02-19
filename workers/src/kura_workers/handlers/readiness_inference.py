@@ -14,6 +14,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..inference_engine import run_readiness_inference, weekly_phase_from_date
+from ..inference_event_registry import READINESS_SIGNAL_EVENT_TYPES
 from ..inference_telemetry import (
     INFERENCE_ERROR_INSUFFICIENT_DATA,
     classify_inference_error,
@@ -41,13 +42,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
 
 
 @projection_handler(
-    "set.logged",
-    "session.logged",
-    "set.corrected",
-    "sleep.logged",
-    "soreness.logged",
-    "energy.logged",
-    "external.activity_imported",
+    *READINESS_SIGNAL_EVENT_TYPES,
     dimension_meta={
     "name": "readiness_inference",
     "description": "Bayesian day-level readiness estimate from recovery + load signals",
@@ -174,18 +169,10 @@ async def update_readiness_inference(
                 SELECT id, timestamp, event_type, data, metadata
                 FROM events
                 WHERE user_id = %s
-                  AND event_type IN (
-                      'set.logged',
-                      'session.logged',
-                      'set.corrected',
-                      'sleep.logged',
-                      'soreness.logged',
-                      'energy.logged',
-                      'external.activity_imported'
-                  )
+                  AND event_type = ANY(%s)
                 ORDER BY timestamp ASC
                 """,
-                (user_id,),
+                (user_id, list(READINESS_SIGNAL_EVENT_TYPES)),
             )
             rows = await cur.fetchall()
 

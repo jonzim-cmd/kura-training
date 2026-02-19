@@ -24,6 +24,7 @@ from psycopg.rows import dict_row
 
 from ..causal_inference import ASSUMPTIONS, estimate_intervention_effect
 from ..inference_engine import weekly_phase_from_date
+from ..inference_event_registry import CAUSAL_SIGNAL_EVENT_TYPES
 from ..inference_telemetry import (
     INFERENCE_ERROR_INSUFFICIENT_DATA,
     classify_inference_error,
@@ -32,9 +33,7 @@ from ..inference_telemetry import (
 from ..population_priors import build_causal_estimand_target_key, resolve_population_prior
 from ..readiness_signals import build_readiness_daily_scores
 from ..registry import projection_handler
-from ..session_block_expansion import expand_session_logged_rows
-from ..set_corrections import apply_set_correction_chain
-from ..training_legacy_compat import extract_backfilled_set_event_ids
+from ..training_signal_normalization import normalize_training_signal_rows
 from ..utils import (
     epley_1rm,
     get_retracted_event_ids,
@@ -359,60 +358,6 @@ def _round_strength_map(values: dict[str, float]) -> dict[str, float]:
     return {key: round(float(val), 2) for key, val in sorted(values.items())}
 
 
-def _normalized_signal_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    set_rows: list[dict[str, Any]] = []
-    session_rows: list[dict[str, Any]] = []
-    correction_rows: list[dict[str, Any]] = []
-    passthrough_rows: list[dict[str, Any]] = []
-
-    for row in rows:
-        event_type = str(row.get("event_type") or "").strip()
-        if event_type == "set.logged":
-            set_rows.append(row)
-        elif event_type == "session.logged":
-            session_rows.append(row)
-        elif event_type == "set.corrected":
-            correction_rows.append(row)
-        else:
-            passthrough_rows.append(row)
-
-    legacy_backfilled_ids = extract_backfilled_set_event_ids(session_rows)
-    if legacy_backfilled_ids:
-        set_rows = [
-            row for row in set_rows if str(row.get("id") or "") not in legacy_backfilled_ids
-        ]
-
-    corrected_set_rows = apply_set_correction_chain(set_rows, correction_rows)
-    normalized: list[dict[str, Any]] = []
-
-    for row in corrected_set_rows:
-        normalized.append(
-            {
-                **row,
-                "event_type": "set.logged",
-                "data": row.get("effective_data") or row.get("data") or {},
-            }
-        )
-
-    for row in expand_session_logged_rows(session_rows):
-        normalized.append(
-            {
-                **row,
-                "event_type": "session.logged",
-                "data": row.get("effective_data") or row.get("data") or {},
-            }
-        )
-
-    normalized.extend(passthrough_rows)
-    normalized.sort(
-        key=lambda row: (
-            row.get("timestamp"),
-            str(row.get("id") or ""),
-        )
-    )
-    return normalized
-
-
 def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not projection_rows:
         return {}
@@ -468,21 +413,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
 
 
 @projection_handler(
-    "program.started",
-    "training_plan.created",
-    "training_plan.updated",
-    "training_plan.archived",
-    "meal.logged",
-    "nutrition_target.set",
-    "sleep.logged",
-    "sleep_target.set",
-    "set.logged",
-    "session.logged",
-    "set.corrected",
-    "energy.logged",
-    "soreness.logged",
-    "exercise.alias_created",
-    "external.activity_imported",
+    *CAUSAL_SIGNAL_EVENT_TYPES,
     dimension_meta={
         "name": "causal_inference",
         "description": (
@@ -666,26 +597,10 @@ async def update_causal_inference(
                 SELECT id, timestamp, event_type, data, metadata
                 FROM events
                 WHERE user_id = %s
-                  AND event_type IN (
-                      'program.started',
-                      'training_plan.created',
-                      'training_plan.updated',
-                      'training_plan.archived',
-                      'meal.logged',
-                      'nutrition_target.set',
-                      'sleep.logged',
-                      'sleep_target.set',
-                      'set.logged',
-                      'session.logged',
-                      'set.corrected',
-                      'energy.logged',
-                      'soreness.logged',
-                      'exercise.alias_created',
-                      'external.activity_imported'
-                  )
+                  AND event_type = ANY(%s)
                 ORDER BY timestamp ASC
                 """,
-                (user_id,),
+                (user_id, list(CAUSAL_SIGNAL_EVENT_TYPES)),
             )
             rows = await cur.fetchall()
 
@@ -711,7 +626,7 @@ async def update_causal_inference(
             )
             return
 
-        signal_rows = _normalized_signal_rows(rows)
+        signal_rows = normalize_training_signal_rows(rows)
 
         readiness_signals = build_readiness_daily_scores(
             signal_rows,
