@@ -1,12 +1,19 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/routing';
 import { TurnstileWidget } from '@/components/TurnstileWidget';
 import styles from './request-access.module.css';
 
 const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim() ?? '';
+const GOOGLE_ADS_CONVERSION_SEND_TO = 'AW-17957929836/B--4CMban_sbEOyGgfNC';
+
+declare global {
+  interface Window {
+    gtag?: (...args: unknown[]) => void;
+  }
+}
 
 export default function RequestAccessPage() {
   const t = useTranslations('requestAccess');
@@ -17,6 +24,22 @@ export default function RequestAccessPage() {
   const [error, setError] = useState<string | null>(null);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [turnstileResetNonce, setTurnstileResetNonce] = useState(0);
+  const conversionTrackedRef = useRef(false);
+
+  useEffect(() => {
+    if (!submitted || conversionTrackedRef.current) {
+      return;
+    }
+
+    if (typeof window.gtag === 'function') {
+      window.gtag('event', 'conversion', {
+        send_to: GOOGLE_ADS_CONVERSION_SEND_TO,
+        value: 1.0,
+        currency: 'EUR',
+      });
+      conversionTrackedRef.current = true;
+    }
+  }, [submitted]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
