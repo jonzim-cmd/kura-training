@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from kura_workers.training_load_calibration_v1 import (
     BASELINE_PARAMETER_VERSION,
     CALIBRATED_PARAMETER_VERSION,
     FEATURE_FLAG_TRAINING_LOAD_CALIBRATED,
+    FEATURE_FLAG_TRAINING_LOAD_RELATIVE_INTENSITY,
     active_calibration_version,
     build_calibration_runner_report,
+    compute_row_load_components_v2,
     calibration_profile_for_version,
     calibration_protocol_v1,
     compare_versions_shadow,
@@ -100,3 +104,114 @@ def test_calibration_profile_for_unknown_version_uses_baseline() -> None:
     assert profile["version"] == BASELINE_PARAMETER_VERSION
     assert "intensity_model" in profile
     assert "multiplier" in profile["intensity_model"]
+
+
+def test_relative_intensity_signal_is_used_when_reference_is_fresh() -> None:
+    profile = calibration_profile_for_version(CALIBRATED_PARAMETER_VERSION)
+    now_iso = datetime.now(tz=UTC).isoformat()
+    with_relative = compute_row_load_components_v2(
+        data={
+            "duration_seconds": 600,
+            "distance_meters": 2000,
+            "rpe": 5,
+            "relative_intensity": {
+                "value_pct": 85.0,
+                "reference_type": "e1rm",
+                "reference_value": 120.0,
+                "reference_measured_at": now_iso,
+                "reference_confidence": 0.8,
+            },
+        },
+        profile=profile,
+    )
+    fallback = compute_row_load_components_v2(
+        data={
+            "duration_seconds": 600,
+            "distance_meters": 2000,
+            "rpe": 5,
+        },
+        profile=profile,
+    )
+    assert str(with_relative["internal_response_source"]).startswith("relative_intensity:e1rm")
+    assert with_relative["relative_intensity_status"] == "used"
+    assert float(with_relative["load_score"]) > float(fallback["load_score"])
+
+
+def test_stale_relative_intensity_references_fallback_with_uncertainty_uplift() -> None:
+    profile = calibration_profile_for_version(CALIBRATED_PARAMETER_VERSION)
+    stale = compute_row_load_components_v2(
+        data={
+            "duration_seconds": 900,
+            "distance_meters": 3000,
+            "rpe": 8,
+            "relative_intensity": {
+                "value_pct": 90.0,
+                "reference_type": "critical_speed",
+                "reference_value": 4.4,
+                "reference_measured_at": "2020-01-01T00:00:00+00:00",
+                "reference_confidence": 0.9,
+            },
+        },
+        profile=profile,
+    )
+    baseline = compute_row_load_components_v2(
+        data={
+            "duration_seconds": 900,
+            "distance_meters": 3000,
+            "rpe": 8,
+        },
+        profile=profile,
+    )
+    assert stale["relative_intensity_status"] == "fallback_stale_reference"
+    assert "relative_fallback:stale_reference" in str(stale["internal_response_source"])
+    assert float(stale["uncertainty"]) > float(baseline["uncertainty"])
+
+
+def test_missing_relative_reference_metadata_falls_back_deterministically() -> None:
+    profile = calibration_profile_for_version(CALIBRATED_PARAMETER_VERSION)
+    missing_reference = compute_row_load_components_v2(
+        data={
+            "duration_seconds": 900,
+            "distance_meters": 3000,
+            "rpe": 7,
+            "relative_intensity": {
+                "value_pct": 88.0,
+            },
+        },
+        profile=profile,
+    )
+    baseline = compute_row_load_components_v2(
+        data={
+            "duration_seconds": 900,
+            "distance_meters": 3000,
+            "rpe": 7,
+        },
+        profile=profile,
+    )
+    assert missing_reference["relative_intensity_status"] == "fallback_missing_reference"
+    assert "relative_fallback:missing_reference" in str(
+        missing_reference["internal_response_source"]
+    )
+    assert float(missing_reference["uncertainty"]) > float(baseline["uncertainty"])
+
+
+def test_relative_intensity_can_be_disabled_by_feature_flag(monkeypatch) -> None:
+    monkeypatch.setenv(FEATURE_FLAG_TRAINING_LOAD_RELATIVE_INTENSITY, "false")
+    profile = calibration_profile_for_version(CALIBRATED_PARAMETER_VERSION)
+    components = compute_row_load_components_v2(
+        data={
+            "duration_seconds": 900,
+            "distance_meters": 3000,
+            "rpe": 7,
+            "relative_intensity": {
+                "value_pct": 95.0,
+                "reference_type": "critical_speed",
+                "reference_value": 4.4,
+                "reference_measured_at": datetime.now(tz=UTC).isoformat(),
+                "reference_confidence": 0.9,
+            },
+        },
+        profile=profile,
+    )
+    assert components["relative_intensity_status"] == "disabled"
+    assert not str(components["internal_response_source"]).startswith("relative_intensity")

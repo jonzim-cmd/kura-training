@@ -81,6 +81,46 @@ def test_import_mapping_contract_v2_required_fields_are_provider_agnostic() -> N
     assert {"session.started_at", "workout.workout_type", "dose.work"} <= required
 
 
+def test_external_contract_accepts_relative_intensity_on_workout_and_set() -> None:
+    canonical = validate_external_activity_contract_v1(
+        _canonical_payload(
+            workout_type="run",
+            sets=[
+                {
+                    "sequence": 1,
+                    "exercise": "Sprint",
+                    "distance_meters": 100,
+                    "rpe": 9,
+                    "relative_intensity": {
+                        "value_pct": 96.0,
+                        "reference_type": "mss",
+                        "reference_value": 9.2,
+                        "reference_measured_at": "2026-02-10T08:00:00+00:00",
+                        "reference_confidence": 0.8,
+                    },
+                }
+            ],
+        )
+        | {
+            "workout": {
+                "workout_type": "run",
+                "duration_seconds": 1800,
+                "distance_meters": 5000,
+                "relative_intensity": {
+                    "value_pct": 88.0,
+                    "reference_type": "critical_speed",
+                    "reference_value": 4.3,
+                    "reference_measured_at": "2026-02-01T08:00:00+00:00",
+                    "reference_confidence": 0.7,
+                },
+            }
+        }
+    )
+    session_payload = map_external_activity_to_session_logged_v2(canonical)
+    block = session_payload["blocks"][0]
+    assert block["relative_intensity"]["reference_type"] in {"mss", "critical_speed"}
+
+
 def test_endurance_import_maps_to_session_logged_block_model() -> None:
     canonical = validate_external_activity_contract_v1(_canonical_payload(workout_type="run"))
     session_payload = map_external_activity_to_session_logged_v2(canonical)
@@ -115,6 +155,31 @@ def test_strength_sets_map_to_strength_blocks() -> None:
     anchor = validated.blocks[0].intensity_anchors[0]
     assert anchor.unit == "rpe"
     assert float(anchor.value) == 8.0
+
+
+def test_workout_relative_intensity_enriches_block_when_set_specific_value_missing() -> None:
+    canonical = validate_external_activity_contract_v1(
+        _canonical_payload(workout_type="run")
+        | {
+            "workout": {
+                "workout_type": "run",
+                "duration_seconds": 1200,
+                "distance_meters": 3500,
+                "relative_intensity": {
+                    "value_pct": 87.0,
+                    "reference_type": "critical_speed",
+                    "reference_value": 4.2,
+                    "reference_measured_at": "2026-02-10T08:00:00+00:00",
+                    "reference_confidence": 0.74,
+                },
+            }
+        }
+    )
+    session_payload = map_external_activity_to_session_logged_v2(canonical)
+    validated = validate_session_logged_payload(session_payload)
+    block = validated.blocks[0]
+    assert block.relative_intensity is not None
+    assert block.relative_intensity.reference_type == "critical_speed"
 
 
 def test_golden_fixtures_cover_running_cycling_strength_and_hybrid() -> None:

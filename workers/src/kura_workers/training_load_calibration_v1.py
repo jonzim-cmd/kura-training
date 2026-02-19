@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import os
 from copy import deepcopy
 from typing import Any, Iterable
 
 FEATURE_FLAG_TRAINING_LOAD_CALIBRATED = "KURA_FEATURE_TRAINING_LOAD_CALIBRATED"
+FEATURE_FLAG_TRAINING_LOAD_RELATIVE_INTENSITY = (
+    "KURA_FEATURE_TRAINING_LOAD_RELATIVE_INTENSITY"
+)
 CALIBRATION_VERSION_ENV = "KURA_TRAINING_LOAD_CALIBRATION_VERSION"
 
 BASELINE_PARAMETER_VERSION = "baseline_v1"
@@ -18,10 +22,34 @@ _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off"}
 
 _DEFAULT_INTENSITY_MODEL: dict[str, Any] = {
-    "resolver_order": ["power", "heart_rate", "pace", "rpe"],
+    "resolver_order": ["relative_intensity", "power", "heart_rate", "pace", "rpe"],
     "multiplier": {
         "base": 0.7,
         "response_scale": 0.8,
+    },
+    "relative_intensity": {
+        "source": "relative_intensity",
+        "minimum_pct": 10.0,
+        "maximum_pct": 130.0,
+        "stale_days_soft": 42,
+        "stale_days_hard": 120,
+        "reference_confidence_default": 0.72,
+        "minimum_reference_confidence": 0.35,
+        "uncertainty_fresh": 0.1,
+        "uncertainty_low_confidence": 0.2,
+        "fallback_uncertainty_boost": {
+            "stale_reference": 0.16,
+            "missing_reference": 0.12,
+            "invalid_value": 0.14,
+        },
+        "endurance_rpe_band_guidance": {
+            "threshold": [6.0, 7.0],
+            "vo2max": [8.0, 9.0],
+            "anaerobic_capacity": [9.0, 10.0],
+            "note": (
+                "Guidance only; do not treat RPE band labels as strict physiological truth."
+            ),
+        },
     },
     "modality_prior": {
         "default": 0.6,
@@ -257,6 +285,260 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def _to_datetime_utc(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+    return None
+
+
+def _nested_lookup(data: dict[str, Any], dotted_path: str) -> Any:
+    current: Any = data
+    for key in dotted_path.split("."):
+        if not isinstance(current, dict):
+            return None
+        if key not in current:
+            return None
+        current = current.get(key)
+    return current
+
+
+def _pick_first(data: dict[str, Any], paths: Iterable[str]) -> Any:
+    for path in paths:
+        if "." in path:
+            value = _nested_lookup(data, path)
+            if value is not None:
+                return value
+            continue
+        if path in data and data.get(path) is not None:
+            return data.get(path)
+    return None
+
+
+def _relative_intensity_payload(data: dict[str, Any]) -> dict[str, Any] | None:
+    payload = data.get("relative_intensity")
+    if isinstance(payload, dict):
+        return payload
+
+    value_pct = _pick_first(
+        data,
+        (
+            "relative_intensity_value_pct",
+            "relative_intensity_pct",
+            "intensity_pct",
+            "pct_of_reference",
+            "percent_of_max",
+            "relative_intensity.value_pct",
+        ),
+    )
+    if value_pct is None:
+        return None
+
+    return {
+        "value_pct": value_pct,
+        "reference_type": _pick_first(
+            data,
+            (
+                "relative_intensity_reference_type",
+                "reference_type",
+                "relative_intensity.reference_type",
+            ),
+        ),
+        "reference_value": _pick_first(
+            data,
+            (
+                "relative_intensity_reference_value",
+                "reference_value",
+                "relative_intensity.reference_value",
+            ),
+        ),
+        "reference_measured_at": _pick_first(
+            data,
+            (
+                "relative_intensity_reference_measured_at",
+                "reference_measured_at",
+                "relative_intensity.reference_measured_at",
+            ),
+        ),
+        "reference_confidence": _pick_first(
+            data,
+            (
+                "relative_intensity_reference_confidence",
+                "reference_confidence",
+                "relative_intensity.reference_confidence",
+            ),
+        ),
+    }
+
+
+def _relative_intensity_resolution(
+    data: dict[str, Any],
+    *,
+    model: dict[str, Any],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "status": "not_present",
+        "source": None,
+        "value_pct": None,
+        "reference_type": None,
+        "reference_value": None,
+        "reference_measured_at": None,
+        "reference_confidence": None,
+        "reference_age_days": None,
+        "normalized_response": None,
+        "uncertainty": None,
+        "fallback_reason": None,
+        "fallback_uncertainty_boost": 0.0,
+    }
+    if not _read_flag(FEATURE_FLAG_TRAINING_LOAD_RELATIVE_INTENSITY, default=True):
+        result["status"] = "disabled"
+        return result
+
+    cfg = model.get("relative_intensity") if isinstance(model.get("relative_intensity"), dict) else {}
+    payload = _relative_intensity_payload(data)
+    if not isinstance(payload, dict):
+        return result
+
+    value_pct = _to_float(payload.get("value_pct"))
+    reference_type = str(payload.get("reference_type") or "").strip().lower() or None
+    reference_value = _to_float(payload.get("reference_value"))
+    reference_measured_at = _to_datetime_utc(payload.get("reference_measured_at"))
+    confidence_default = _profile_number(
+        cfg.get("reference_confidence_default"),
+        default=0.72,
+        minimum=0.0,
+    )
+    reference_confidence = _profile_number(
+        payload.get("reference_confidence"),
+        default=confidence_default,
+        minimum=0.0,
+    )
+    reference_age_days = None
+    if reference_measured_at is not None:
+        reference_age_days = max(
+            0.0,
+            (datetime.now(tz=UTC) - reference_measured_at).total_seconds() / 86400.0,
+        )
+
+    result.update(
+        {
+            "source": str(cfg.get("source") or "relative_intensity"),
+            "value_pct": value_pct,
+            "reference_type": reference_type,
+            "reference_value": reference_value,
+            "reference_measured_at": (
+                reference_measured_at.isoformat() if reference_measured_at is not None else None
+            ),
+            "reference_confidence": reference_confidence,
+            "reference_age_days": round(reference_age_days, 3)
+            if isinstance(reference_age_days, (int, float))
+            else None,
+        }
+    )
+
+    fallback_cfg = (
+        cfg.get("fallback_uncertainty_boost")
+        if isinstance(cfg.get("fallback_uncertainty_boost"), dict)
+        else {}
+    )
+
+    if value_pct <= 0.0:
+        result["status"] = "fallback_invalid_value"
+        result["fallback_reason"] = "invalid_value"
+        result["fallback_uncertainty_boost"] = _profile_number(
+            fallback_cfg.get("invalid_value"),
+            default=0.14,
+            minimum=0.0,
+        )
+        return result
+
+    minimum_pct = _profile_number(cfg.get("minimum_pct"), default=10.0, minimum=0.0)
+    maximum_pct = _profile_number(cfg.get("maximum_pct"), default=130.0, minimum=0.0)
+    if maximum_pct <= minimum_pct:
+        maximum_pct = minimum_pct + 0.1
+    if value_pct <= 1.3:
+        normalized = value_pct
+    else:
+        normalized = value_pct / 100.0
+    value_pct_normalized = normalized * 100.0
+    if value_pct_normalized < minimum_pct or value_pct_normalized > maximum_pct:
+        result["status"] = "fallback_invalid_value"
+        result["fallback_reason"] = "invalid_value"
+        result["fallback_uncertainty_boost"] = _profile_number(
+            fallback_cfg.get("invalid_value"),
+            default=0.14,
+            minimum=0.0,
+        )
+        return result
+
+    if reference_type is None or reference_measured_at is None:
+        result["status"] = "fallback_missing_reference"
+        result["fallback_reason"] = "missing_reference"
+        result["fallback_uncertainty_boost"] = _profile_number(
+            fallback_cfg.get("missing_reference"),
+            default=0.12,
+            minimum=0.0,
+        )
+        return result
+
+    stale_days_soft = _profile_number(cfg.get("stale_days_soft"), default=42.0, minimum=0.0)
+    stale_days_hard = _profile_number(cfg.get("stale_days_hard"), default=120.0, minimum=stale_days_soft)
+    if reference_age_days is not None and reference_age_days > stale_days_hard:
+        result["status"] = "fallback_stale_reference"
+        result["fallback_reason"] = "stale_reference"
+        result["fallback_uncertainty_boost"] = _profile_number(
+            fallback_cfg.get("stale_reference"),
+            default=0.16,
+            minimum=0.0,
+        )
+        return result
+    if reference_age_days is not None and reference_age_days > stale_days_soft:
+        result["status"] = "fallback_stale_reference"
+        result["fallback_reason"] = "stale_reference"
+        result["fallback_uncertainty_boost"] = _profile_number(
+            fallback_cfg.get("stale_reference"),
+            default=0.16,
+            minimum=0.0,
+        )
+        return result
+
+    uncertainty_fresh = _profile_number(cfg.get("uncertainty_fresh"), default=0.1, minimum=0.0)
+    uncertainty_low_conf = _profile_number(
+        cfg.get("uncertainty_low_confidence"),
+        default=0.2,
+        minimum=0.0,
+    )
+    min_reference_conf = _profile_number(
+        cfg.get("minimum_reference_confidence"),
+        default=0.35,
+        minimum=0.0,
+    )
+    confidence_term = max(0.0, 1.0 - _clamp(reference_confidence, 0.0, 1.0))
+    uncertainty = uncertainty_fresh + (confidence_term * 0.12)
+    if reference_confidence < min_reference_conf:
+        uncertainty = max(uncertainty, uncertainty_low_conf)
+
+    result["status"] = "used"
+    result["normalized_response"] = _clamp(normalized, 0.0, 1.0)
+    result["uncertainty"] = _clamp(uncertainty, 0.0, 1.0)
+    result["source"] = f"{result['source']}:{reference_type}"
+    return result
+
+
 def _resolve_modality_prior(
     data: dict[str, Any],
     *,
@@ -437,8 +719,21 @@ def _resolve_internal_response(
     data: dict[str, Any],
     *,
     profile: dict[str, Any],
-) -> tuple[float, str, float]:
+) -> tuple[float, str, float, dict[str, Any]]:
     model = _intensity_model(profile)
+    relative_resolution = _relative_intensity_resolution(data, model=model)
+    if (
+        relative_resolution.get("status") == "used"
+        and isinstance(relative_resolution.get("normalized_response"), (float, int))
+        and isinstance(relative_resolution.get("uncertainty"), (float, int))
+    ):
+        return (
+            float(relative_resolution["normalized_response"]),
+            str(relative_resolution.get("source") or "relative_intensity"),
+            float(relative_resolution["uncertainty"]),
+            relative_resolution,
+        )
+
     resolver_map = {
         "power": _power_internal_response,
         "heart_rate": _heart_rate_internal_response,
@@ -450,21 +745,38 @@ def _resolve_internal_response(
         resolver_order = [str(name).strip().lower() for name in resolver_order_raw]
     else:
         resolver_order = ["power", "heart_rate", "pace", "rpe"]
+    fallback_uncertainty_boost = _profile_number(
+        relative_resolution.get("fallback_uncertainty_boost"),
+        default=0.0,
+        minimum=0.0,
+    )
     for resolver_name in resolver_order:
+        if resolver_name == "relative_intensity":
+            continue
         resolver = resolver_map.get(resolver_name)
         if resolver is None:
             continue
         resolved = resolver(data, model=model)
         if resolved is not None:
-            return resolved
-    return _resolve_modality_prior(data, model=model)
+            normalized, source, uncertainty = resolved
+            uncertainty = _clamp(uncertainty + fallback_uncertainty_boost, 0.0, 1.0)
+            if relative_resolution.get("fallback_reason"):
+                source = (
+                    f"{source}|relative_fallback:{relative_resolution['fallback_reason']}"
+                )
+            return normalized, source, uncertainty, relative_resolution
+    normalized, source, uncertainty = _resolve_modality_prior(data, model=model)
+    uncertainty = _clamp(uncertainty + fallback_uncertainty_boost, 0.0, 1.0)
+    if relative_resolution.get("fallback_reason"):
+        source = f"{source}|relative_fallback:{relative_resolution['fallback_reason']}"
+    return normalized, source, uncertainty, relative_resolution
 
 
 def compute_row_load_components_v2(
     *,
     data: dict[str, Any],
     profile: dict[str, Any],
-) -> dict[str, float | str]:
+) -> dict[str, Any]:
     weight_kg = _to_float(data.get("weight_kg", data.get("weight")))
     reps = _to_float(data.get("reps"))
     duration_seconds = _to_float(data.get("duration_seconds"))
@@ -479,7 +791,7 @@ def compute_row_load_components_v2(
         + (distance_meters / float(load_weights["distance_divisor"]))
         + (contacts / float(load_weights["contacts_divisor"]))
     )
-    internal_response, internal_source, uncertainty = _resolve_internal_response(
+    internal_response, internal_source, uncertainty, relative_resolution = _resolve_internal_response(
         data,
         profile=profile,
     )
@@ -504,6 +816,21 @@ def compute_row_load_components_v2(
         "intensity_multiplier": intensity_multiplier,
         "uncertainty": uncertainty,
         "load_score": load_score,
+        "relative_intensity_status": str(relative_resolution.get("status") or "not_present"),
+        "relative_intensity_source": relative_resolution.get("source"),
+        "relative_intensity_value_pct": relative_resolution.get("value_pct"),
+        "relative_intensity_reference_type": relative_resolution.get("reference_type"),
+        "relative_intensity_reference_value": relative_resolution.get("reference_value"),
+        "relative_intensity_reference_measured_at": relative_resolution.get(
+            "reference_measured_at"
+        ),
+        "relative_intensity_reference_confidence": relative_resolution.get(
+            "reference_confidence"
+        ),
+        "relative_intensity_reference_age_days": relative_resolution.get(
+            "reference_age_days"
+        ),
+        "relative_intensity_fallback_reason": relative_resolution.get("fallback_reason"),
     }
 
 
@@ -511,7 +838,7 @@ def compute_row_load_components_v1(
     *,
     data: dict[str, Any],
     profile: dict[str, Any],
-) -> dict[str, float | str]:
+) -> dict[str, Any]:
     return compute_row_load_components_v2(data=data, profile=profile)
 
 
@@ -684,6 +1011,7 @@ def calibration_protocol_v1() -> dict[str, Any]:
         "parameter_registry": {
             "env_version_var": CALIBRATION_VERSION_ENV,
             "feature_flag": FEATURE_FLAG_TRAINING_LOAD_CALIBRATED,
+            "relative_intensity_feature_flag": FEATURE_FLAG_TRAINING_LOAD_RELATIVE_INTENSITY,
             "baseline_version": BASELINE_PARAMETER_VERSION,
             "default_candidate_version": CALIBRATED_PARAMETER_VERSION,
             "available_versions": calibration_parameter_versions(),
@@ -695,6 +1023,15 @@ def calibration_protocol_v1() -> dict[str, Any]:
                 "load_weights",
                 "intensity_model",
             ],
+            "dual_load_policy": {
+                "external_dose": "volume_kg|duration_seconds|distance_meters|contacts",
+                "internal_response": (
+                    "relative_intensity->power->heart_rate->pace->rpe with deterministic fallback"
+                ),
+                "missing_or_stale_reference_policy": (
+                    "fallback to sensor/subjective signals and increase uncertainty"
+                ),
+            },
         },
     }
 

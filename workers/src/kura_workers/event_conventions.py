@@ -254,6 +254,15 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                                 "reference": "string (optional, anchor reference context)",
                             }
                         ],
+                        "relative_intensity": {
+                            "value_pct": "number (required when provided, 0..130)",
+                            "reference_type": (
+                                "string (required: e1rm|one_rm|mss|critical_speed|critical_power|mas|vvo2max|asr|jump_height|custom)"
+                            ),
+                            "reference_value": "number (optional, >0)",
+                            "reference_measured_at": "string (optional, ISO timestamp)",
+                            "reference_confidence": "number (optional, 0..1)",
+                        },
                         "metrics": (
                             "object (optional map). Each metric entry requires measurement_state and "
                             "can carry value/unit/reference."
@@ -305,6 +314,13 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                                 "value": 7,
                             },
                         ],
+                        "relative_intensity": {
+                            "value_pct": 92.0,
+                            "reference_type": "critical_speed",
+                            "reference_value": 4.3,
+                            "reference_measured_at": "2026-02-01T08:00:00+00:00",
+                            "reference_confidence": 0.78,
+                        },
                         "metrics": {
                             "heart_rate_avg": {
                                 "measurement_state": "not_measured",

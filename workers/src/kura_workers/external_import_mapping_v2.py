@@ -141,6 +141,37 @@ def _metric_entry(*, value: float, unit: str) -> dict[str, Any]:
     }
 
 
+def _relative_intensity_payload(raw: Any) -> dict[str, Any] | None:
+    if hasattr(raw, "model_dump"):
+        payload = raw.model_dump(mode="python")
+    elif isinstance(raw, dict):
+        payload = dict(raw)
+    else:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value_pct = _to_float(payload.get("value_pct"))
+    reference_type = str(payload.get("reference_type") or "").strip().lower()
+    if value_pct is None or value_pct <= 0 or not reference_type:
+        return None
+    result: dict[str, Any] = {
+        "value_pct": round(value_pct, 3),
+        "reference_type": reference_type,
+    }
+    reference_value = _to_float(payload.get("reference_value"))
+    if reference_value is not None and reference_value > 0:
+        result["reference_value"] = round(reference_value, 3)
+    reference_measured_at = payload.get("reference_measured_at")
+    if hasattr(reference_measured_at, "isoformat"):
+        result["reference_measured_at"] = reference_measured_at.isoformat()
+    elif isinstance(reference_measured_at, str) and reference_measured_at.strip():
+        result["reference_measured_at"] = reference_measured_at.strip()
+    reference_confidence = _to_float(payload.get("reference_confidence"))
+    if reference_confidence is not None:
+        result["reference_confidence"] = round(reference_confidence, 3)
+    return result
+
+
 def _ensure_workout_intensity_enrichment(
     block: dict[str, Any],
     *,
@@ -149,6 +180,7 @@ def _ensure_workout_intensity_enrichment(
     power_watt: float | None,
     pace_min_per_km: float | None,
     session_rpe: float | None,
+    relative_intensity: dict[str, Any] | None = None,
 ) -> None:
     metrics = block.get("metrics")
     if not isinstance(metrics, dict):
@@ -164,6 +196,12 @@ def _ensure_workout_intensity_enrichment(
 
     anchors = block.get("intensity_anchors")
     has_anchor = isinstance(anchors, list) and len(anchors) > 0
+    if (
+        isinstance(relative_intensity, dict)
+        and relative_intensity.get("value_pct")
+        and not isinstance(block.get("relative_intensity"), dict)
+    ):
+        block["relative_intensity"] = dict(relative_intensity)
     if has_anchor:
         return
 
@@ -203,6 +241,7 @@ def _set_slice_to_block(
     distance_meters = set_data.get("distance_meters")
     rest_seconds = set_data.get("rest_seconds")
     rpe = set_data.get("rpe")
+    relative_intensity = _relative_intensity_payload(set_data.get("relative_intensity"))
 
     has_strength = reps is not None or weight_kg is not None
     has_endurance = duration_seconds is not None or distance_meters is not None
@@ -268,6 +307,8 @@ def _set_slice_to_block(
             block["intensity_anchors"] = [pace_anchor]
         else:
             block["intensity_anchors_status"] = "not_applicable"
+    if relative_intensity is not None:
+        block["relative_intensity"] = relative_intensity
     return block
 
 
@@ -282,6 +323,9 @@ def map_external_activity_to_session_logged_v2(
     power_watt = _to_float(canonical.workout.power_watt)
     pace_min_per_km = _to_float(canonical.workout.pace_min_per_km)
     session_rpe = _to_float(canonical.workout.session_rpe)
+    workout_relative_intensity = _relative_intensity_payload(
+        canonical.workout.relative_intensity
+    )
     if (
         pace_min_per_km is None
         and duration_seconds is not None
@@ -334,6 +378,7 @@ def map_external_activity_to_session_logged_v2(
             power_watt=power_watt,
             pace_min_per_km=pace_min_per_km,
             session_rpe=session_rpe,
+            relative_intensity=workout_relative_intensity,
         )
 
     payload = {
@@ -379,6 +424,7 @@ def import_mapping_contract_v2() -> dict[str, Any]:
             "Provider-specific fields must remain optional and may not become global core requirements.",
             "Mapped imports must produce session.logged-compatible block payloads.",
             "Missing external sensors map to explicit not_measured/not_applicable semantics.",
+            "Relative-intensity references are optional and must carry reference metadata when present.",
             "Running/Cycling/Strength/Hybrid/Swimming/Rowing/Team modalities must resolve to supported block types.",
         ],
     }

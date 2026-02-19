@@ -79,6 +79,52 @@ def test_distance_rows_route_to_sprint_and_plyometric_buckets_when_exercise_ids_
     assert finalized["modalities"]["sprint"]["rows"] == 1
     assert finalized["modalities"]["plyometric"]["rows"] == 1
     assert finalized["modalities"]["endurance"]["rows"] == 0
+    assert finalized["global"]["unknown_distance_exercise"]["rows"] == 0
+
+
+def test_unknown_distance_exercise_ids_are_exposed_in_diagnostics() -> None:
+    session = init_session_load_v2()
+    accumulate_row_load_v2(
+        session,
+        data={"exercise_id": "school_track_drill_unknown", "distance_meters": 60, "rpe": 7},
+        source_type="session_logged",
+    )
+    finalized = finalize_session_load_v2(session)
+
+    assert finalized["modalities"]["endurance"]["rows"] == 1
+    assert finalized["global"]["unknown_distance_exercise"]["rows"] == 1
+    assert (
+        finalized["global"]["unknown_distance_exercise"]["exercise_ids"][
+            "school_track_drill_unknown"
+        ]
+        == 1
+    )
+    assert finalized["global"]["modality_assignment"]["heuristic_distance_endurance"] == 1
+
+
+def test_relative_intensity_signal_density_and_confidence_are_persisted() -> None:
+    session = init_session_load_v2()
+    accumulate_row_load_v2(
+        session,
+        data={
+            "exercise_id": "sprint",
+            "distance_meters": 100,
+            "relative_intensity": {
+                "value_pct": 95.0,
+                "reference_type": "mss",
+                "reference_value": 9.1,
+                "reference_measured_at": "2026-02-10T08:00:00+00:00",
+                "reference_confidence": 0.81,
+            },
+        },
+        source_type="session_logged",
+    )
+    finalized = finalize_session_load_v2(session)
+
+    assert finalized["global"]["signal_density"]["rows_with_relative_intensity"] == 1
+    assert finalized["global"]["relative_intensity"]["rows_used"] == 1
+    assert finalized["global"]["relative_intensity"]["reference_types"]["mss"] == 1
+    assert finalized["global"]["relative_intensity"]["reference_confidence_avg"] == 0.81
 
 
 def test_timeline_summary_aggregates_modalities_and_global_confidence() -> None:
@@ -119,5 +165,6 @@ def test_load_projection_contract_declares_sparse_data_policy() -> None:
     assert {"strength", "sprint", "endurance", "plyometric", "mixed"} <= set(
         contract["modalities"]
     )
+    assert contract["dual_load_policy"]["internal_response_resolver_order"][0] == "relative_intensity"
     rules_text = " ".join(contract["rules"]).lower()
     assert "no global hr requirement" in rules_text

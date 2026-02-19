@@ -129,6 +129,8 @@ def _get_conventions() -> dict[str, Any]:
                 "Projection v2 aggregates modality-specific load and global load in one contract.",
                 "Manual-only logging remains valid for analytics; confidence degrades when sparse.",
                 "Sensor enrichment improves confidence and analysis tier without schema migrations.",
+                "Dual-load invariant: combine external dose with internal response (relative_intensity -> sensors -> RPE/RIR fallback).",
+                "Missing/stale relative-intensity references must increase uncertainty instead of simulating precision.",
                 "Feature-flag rollback must keep legacy timeline summaries available.",
             ],
             "projection_type": "training_timeline",

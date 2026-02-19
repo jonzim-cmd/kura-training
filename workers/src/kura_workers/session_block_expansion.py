@@ -70,6 +70,29 @@ def _extract_rpe_anchor(block: dict[str, Any]) -> float | None:
     return None
 
 
+def _extract_relative_intensity(block: dict[str, Any]) -> dict[str, Any] | None:
+    raw = block.get("relative_intensity")
+    if not isinstance(raw, dict):
+        return None
+    value = _to_float(raw.get("value_pct"))
+    if value is None or value <= 0:
+        return None
+    result: dict[str, Any] = {"value_pct": value}
+    reference_type = str(raw.get("reference_type") or "").strip().lower()
+    if reference_type:
+        result["reference_type"] = reference_type
+    reference_value = _to_float(raw.get("reference_value"))
+    if reference_value is not None and reference_value > 0:
+        result["reference_value"] = reference_value
+    reference_measured_at = str(raw.get("reference_measured_at") or "").strip()
+    if reference_measured_at:
+        result["reference_measured_at"] = reference_measured_at
+    reference_confidence = _to_float(raw.get("reference_confidence"))
+    if reference_confidence is not None:
+        result["reference_confidence"] = reference_confidence
+    return result
+
+
 def expand_session_logged_row(row: dict[str, Any]) -> list[dict[str, Any]]:
     """Expand one session.logged row into repeat-level synthetic rows.
 
@@ -122,6 +145,7 @@ def expand_session_logged_row(row: dict[str, Any]) -> list[dict[str, Any]]:
         rest_seconds = _to_float(recovery.get("duration_seconds"))
         weight_kg = _extract_weight_kg(block)
         rpe = _extract_rpe_anchor(block)
+        relative_intensity = _extract_relative_intensity(block)
 
         capability_target = str(block.get("capability_target") or "").strip().lower()
         if not capability_target:
@@ -148,6 +172,8 @@ def expand_session_logged_row(row: dict[str, Any]) -> list[dict[str, Any]]:
                 synthetic_data["weight_kg"] = weight_kg
             if rpe is not None:
                 synthetic_data["rpe"] = rpe
+            if relative_intensity is not None:
+                synthetic_data["relative_intensity"] = dict(relative_intensity)
             if capability_target is not None:
                 synthetic_data["capability_target"] = capability_target
 

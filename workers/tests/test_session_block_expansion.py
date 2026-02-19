@@ -37,6 +37,13 @@ def _session_row(*, session_id_in_meta: bool = False) -> dict:
                             "value": 7,
                         }
                     ],
+                    "relative_intensity": {
+                        "value_pct": 92.0,
+                        "reference_type": "critical_speed",
+                        "reference_value": 4.3,
+                        "reference_measured_at": "2026-02-10T08:00:00+00:00",
+                        "reference_confidence": 0.78,
+                    },
                 },
                 {
                     "block_type": "strength_set",
@@ -76,6 +83,8 @@ def test_expand_session_logged_row_expands_repeats_to_rows() -> None:
     assert first["data"]["distance_meters"] == 500.0
     assert first["data"]["rest_seconds"] == 60.0
     assert first["data"]["rpe"] == 7.0
+    assert first["data"]["relative_intensity"]["value_pct"] == 92.0
+    assert first["data"]["relative_intensity"]["reference_type"] == "critical_speed"
     assert first["metadata"]["session_id"] == "session-from-meta"
 
 

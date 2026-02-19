@@ -120,3 +120,27 @@ def test_contract_field_inventory_includes_required_and_optional_sections():
     assert "optional" in inventory
     assert inventory["required"]["root"] == REQUIRED_FIELDS_V1["root"]
     assert "external_event_version" in inventory["optional"]["source"]
+
+
+def test_contract_v1_accepts_relative_intensity_payloads() -> None:
+    payload = _valid_contract_payload()
+    payload["workout"]["relative_intensity"] = {
+        "value_pct": 88.0,
+        "reference_type": "critical_speed",
+        "reference_value": 4.3,
+        "reference_measured_at": "2026-02-01T08:00:00+00:00",
+        "reference_confidence": 0.76,
+    }
+    payload["sets"][0]["relative_intensity"] = {
+        "value_pct": 95.0,
+        "reference_type": "mss",
+        "reference_value": 9.1,
+        "reference_measured_at": "2026-02-10T08:00:00+00:00",
+        "reference_confidence": 0.82,
+    }
+
+    model = validate_external_activity_contract_v1(payload)
+    assert model.workout.relative_intensity is not None
+    assert model.workout.relative_intensity.reference_type == "critical_speed"
+    assert model.sets[0].relative_intensity is not None
+    assert model.sets[0].relative_intensity.reference_type == "mss"

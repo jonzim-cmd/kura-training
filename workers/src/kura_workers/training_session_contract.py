@@ -47,6 +47,19 @@ PERFORMANCE_BLOCK_TYPES: tuple[str, ...] = tuple(
     block_type for block_type in BLOCK_TYPES if block_type != "recovery_session"
 )
 
+RELATIVE_INTENSITY_REFERENCE_TYPES: tuple[str, ...] = (
+    "e1rm",
+    "one_rm",
+    "mss",
+    "critical_speed",
+    "critical_power",
+    "mas",
+    "vvo2max",
+    "asr",
+    "jump_height",
+    "custom",
+)
+
 ERROR_TYPE_INVALID_MEASUREMENT_STATE = "session_logged_invalid_measurement_state"
 ERROR_TYPE_MEASUREMENT_VALUE_OR_REFERENCE_REQUIRED = (
     "session_logged_measurement_value_or_reference_required"
@@ -165,6 +178,23 @@ class SessionProvenanceV1(BaseModel):
         return _normalize_optional_text(value)
 
 
+class RelativeIntensityV1(BaseModel):
+    value_pct: float = Field(gt=0, le=130)
+    reference_type: str
+    reference_value: float | None = Field(default=None, gt=0)
+    reference_measured_at: datetime | None = None
+    reference_confidence: float | None = Field(default=None, ge=0, le=1)
+
+    @field_validator("reference_type")
+    @classmethod
+    def validate_reference_type(cls, value: str) -> str:
+        normalized = _normalize_non_empty(value, field_name="reference_type").lower()
+        if normalized not in RELATIVE_INTENSITY_REFERENCE_TYPES:
+            allowed = ", ".join(RELATIVE_INTENSITY_REFERENCE_TYPES)
+            raise ValueError(f"reference_type must be one of: {allowed}")
+        return normalized
+
+
 class SessionBlockV1(BaseModel):
     block_type: str
     capability_target: str | None = None
@@ -172,6 +202,7 @@ class SessionBlockV1(BaseModel):
     recovery_mode: str | None = None
     intensity_anchors_status: Literal["provided", "not_applicable"] | None = None
     intensity_anchors: list[MeasurementValueV1] = Field(default_factory=list)
+    relative_intensity: RelativeIntensityV1 | None = None
     metrics: dict[str, MeasurementValueV1] = Field(default_factory=dict)
     subjective_response: dict[str, MeasurementValueV1] = Field(default_factory=dict)
     provenance: SessionProvenanceV1 | None = None
@@ -263,11 +294,16 @@ def block_catalog_v1() -> dict[str, Any]:
         "performance_block_types": list(PERFORMANCE_BLOCK_TYPES),
         "measurement_state_values": list(MEASUREMENT_STATES),
         "provenance_source_types": list(PROVENANCE_SOURCE_TYPES),
+        "relative_intensity_reference_types": list(RELATIVE_INTENSITY_REFERENCE_TYPES),
         "intensity_policy": {
             "performance_default": "requires_anchor",
             "explicit_not_applicable_key": "intensity_anchors_status",
             "explicit_not_applicable_value": "not_applicable",
             "global_hr_requirement": False,
+            "relative_intensity": (
+                "optional, used as objective % of reference signal "
+                "(e.g. e1rm, mss, critical_speed); when stale/missing, fallback uncertainty increases"
+            ),
         },
         "validation_error_types": [
             ERROR_TYPE_INVALID_MEASUREMENT_STATE,

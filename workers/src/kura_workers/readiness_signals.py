@@ -71,6 +71,11 @@ def _iter_event_load_rows(event_type: str, data: dict[str, Any]) -> list[dict[st
         value = _as_float(workout_payload.get(key))
         if value is not None and value > 0.0:
             workout_fallback[key] = value
+    relative_intensity = workout_payload.get("relative_intensity")
+    if isinstance(relative_intensity, dict):
+        value_pct = _as_float(relative_intensity.get("value_pct"))
+        if value_pct is not None and value_pct > 0.0:
+            workout_fallback["relative_intensity"] = dict(relative_intensity)
 
     if isinstance(sets_payload, list):
         for entry in sets_payload:

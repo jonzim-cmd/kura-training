@@ -52,6 +52,7 @@ OPTIONAL_FIELDS_V1: dict[str, tuple[str, ...]] = {
         "power_watt",
         "pace_min_per_km",
         "session_rpe",
+        "relative_intensity",
     ),
     "session": (
         "ended_at",
@@ -70,6 +71,7 @@ OPTIONAL_FIELDS_V1: dict[str, tuple[str, ...]] = {
         "rest_seconds",
         "rpe",
         "rir",
+        "relative_intensity",
     ),
     "provenance": (
         "source_confidence",
@@ -134,6 +136,7 @@ class WorkoutSliceV1(BaseModel):
     power_watt: float | None = Field(default=None, ge=0)
     pace_min_per_km: float | None = Field(default=None, ge=0)
     session_rpe: float | None = Field(default=None, ge=0, le=10)
+    relative_intensity: RelativeIntensityV1 | None = None
 
     @field_validator("workout_type")
     @classmethod
@@ -184,6 +187,7 @@ class SetSliceV1(BaseModel):
     rest_seconds: float | None = Field(default=None, ge=0)
     rpe: float | None = Field(default=None, ge=0, le=10)
     rir: float | None = Field(default=None, ge=0, le=10)
+    relative_intensity: RelativeIntensityV1 | None = None
 
     @field_validator("exercise")
     @classmethod
@@ -244,6 +248,19 @@ class ProvenanceLayerV1(BaseModel):
             if cleaned:
                 normalized.append(cleaned)
         return normalized
+
+
+class RelativeIntensityV1(BaseModel):
+    value_pct: float = Field(gt=0, le=130)
+    reference_type: str
+    reference_value: float | None = Field(default=None, gt=0)
+    reference_measured_at: datetime | None = None
+    reference_confidence: float | None = Field(default=None, ge=0, le=1)
+
+    @field_validator("reference_type")
+    @classmethod
+    def validate_reference_type(cls, value: str) -> str:
+        return _normalized_non_empty(value, field_name="relative_intensity.reference_type").lower()
 
 
 class CanonicalExternalActivityV1(BaseModel):

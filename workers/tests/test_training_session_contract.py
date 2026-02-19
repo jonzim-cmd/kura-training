@@ -41,6 +41,7 @@ def test_block_catalog_exposes_machine_readable_contract() -> None:
     assert set(BLOCK_TYPES).issubset(set(catalog["block_types"]))
     assert set(MEASUREMENT_STATES) == set(catalog["measurement_state_values"])
     assert catalog["intensity_policy"]["global_hr_requirement"] is False
+    assert "critical_speed" in set(catalog["relative_intensity_reference_types"])
 
 
 def test_strength_block_is_valid_without_hr_when_anchor_present() -> None:
@@ -149,3 +150,47 @@ def test_hybrid_session_with_multiple_block_types_is_valid() -> None:
 
     model = validate_session_logged_payload(payload)
     assert len(model.blocks) == 3
+
+
+def test_relative_intensity_payload_is_valid_when_reference_is_specified() -> None:
+    payload = _base_payload(
+        [
+            {
+                "block_type": "strength_set",
+                "dose": {"work": {"reps": 5}},
+                "intensity_anchors": [
+                    {"measurement_state": "measured", "unit": "rpe", "value": 8}
+                ],
+                "relative_intensity": {
+                    "value_pct": 88.0,
+                    "reference_type": "e1rm",
+                    "reference_value": 120.0,
+                    "reference_measured_at": "2026-02-10T08:00:00+00:00",
+                    "reference_confidence": 0.82,
+                },
+            }
+        ]
+    )
+    model = validate_session_logged_payload(payload)
+    assert model.blocks[0].relative_intensity is not None
+    assert model.blocks[0].relative_intensity.reference_type == "e1rm"
+
+
+def test_relative_intensity_rejects_unknown_reference_type() -> None:
+    payload = _base_payload(
+        [
+            {
+                "block_type": "strength_set",
+                "dose": {"work": {"reps": 5}},
+                "intensity_anchors": [
+                    {"measurement_state": "measured", "unit": "rpe", "value": 8}
+                ],
+                "relative_intensity": {
+                    "value_pct": 88.0,
+                    "reference_type": "unknown_metric",
+                },
+            }
+        ]
+    )
+    with pytest.raises(ValidationError):
+        validate_session_logged_payload(payload)

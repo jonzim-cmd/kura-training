@@ -267,6 +267,27 @@ def _disabled_load_v2_overview() -> dict[str, Any]:
             "confidence": 0.0,
             "confidence_band": "low",
             "analysis_tier": "log_valid",
+            "signal_density": {
+                "rows_total": 0,
+                "objective_rows": 0,
+                "rows_with_hr": 0,
+                "rows_with_power": 0,
+                "rows_with_pace": 0,
+                "rows_with_relative_intensity": 0,
+                "rows_with_relative_intensity_fallback": 0,
+            },
+            "modality_assignment": {},
+            "unknown_distance_exercise": {
+                "rows": 0,
+                "exercise_ids": {},
+            },
+            "relative_intensity": {
+                "rows_used": 0,
+                "rows_fallback": 0,
+                "reference_types": {},
+                "sources": {},
+                "reference_confidence_avg": None,
+            },
         },
     }
 
@@ -382,6 +403,18 @@ def _disabled_load_v2_overview() -> dict[str, Any]:
                 "training_load_v2": "boolean",
             },
             "legacy_backfill_deduped_set_rows": "integer",
+            "load_v2_modality_assignment": {
+                "<assignment_source>": "integer — block_type/exercise/heuristic routing counts",
+            },
+            "load_v2_unknown_distance_exercise": {
+                "rows": "integer",
+                "exercise_ids": {"<exercise_id>": "integer"},
+            },
+            "load_v2_relative_intensity": {
+                "rows_used": "integer",
+                "rows_fallback": "integer",
+                "reference_confidence_avg": "number|null",
+            },
         },
     },
     "manifest_contribution": _manifest_contribution,
@@ -673,6 +706,16 @@ async def update_training_timeline(
                     continue
                 if value > 0.0:
                     synthetic_data[key] = value
+            if "relative_intensity" not in synthetic_data:
+                relative_intensity = workout_payload.get("relative_intensity")
+                if isinstance(relative_intensity, dict):
+                    value_pct = relative_intensity.get("value_pct")
+                    try:
+                        parsed_pct = float(value_pct)
+                    except (TypeError, ValueError):
+                        parsed_pct = 0.0
+                    if parsed_pct > 0.0:
+                        synthetic_data["relative_intensity"] = dict(relative_intensity)
             if "exercise" not in synthetic_data and "exercise_id" not in synthetic_data:
                 workout_type = (
                     str(workout_payload.get("workout_type") or "external_activity")
@@ -837,19 +880,23 @@ async def update_training_timeline(
 
     training_dates = set(day_data.keys())
     reference_date = max(training_dates)
+    load_v2_overview = (
+        {
+            **summarize_timeline_load_v2(session_data),
+            "enabled": True,
+        }
+        if load_v2_enabled
+        else _disabled_load_v2_overview()
+    )
+    load_v2_global = load_v2_overview.get("global") if isinstance(load_v2_overview, dict) else {}
+    if not isinstance(load_v2_global, dict):
+        load_v2_global = {}
 
     projection_data = {
         "timezone_context": timezone_context,
         "recent_days": _compute_recent_days(day_data),
         "recent_sessions": _compute_recent_sessions(session_data),
-        "load_v2_overview": (
-            {
-                **summarize_timeline_load_v2(session_data),
-                "enabled": True,
-            }
-            if load_v2_enabled
-            else _disabled_load_v2_overview()
-        ),
+        "load_v2_overview": load_v2_overview,
         "weekly_summary": _compute_weekly_summary(week_data),
         "current_frequency": _compute_frequency(training_dates, reference_date),
         "last_training": reference_date.isoformat(),
@@ -871,6 +918,15 @@ async def update_training_timeline(
                 "training_load_v2": load_v2_enabled,
             },
             "legacy_backfill_deduped_set_rows": len(legacy_backfill_source_ids),
+            "load_v2_modality_assignment": load_v2_global.get("modality_assignment", {}),
+            "load_v2_unknown_distance_exercise": load_v2_global.get(
+                "unknown_distance_exercise",
+                {"rows": 0, "exercise_ids": {}},
+            ),
+            "load_v2_relative_intensity": load_v2_global.get(
+                "relative_intensity",
+                {"rows_used": 0, "rows_fallback": 0},
+            ),
         },
     }
 
