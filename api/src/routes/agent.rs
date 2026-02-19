@@ -13753,6 +13753,8 @@ mod tests {
             "dimensions": {"training_timeline": {"description": "ok"}},
             "event_conventions": [{"event_type": "set.logged"}],
             "projection_schemas": {"user_profile": {"required_fields": ["user"]}},
+            "operational_model": {"paradigm": "Event Sourcing", "mutations": "POST /v1/events"},
+            "time_conventions": {"week": "ISO 8601 (2026-W06)"},
             "conventions": {
                 "first_contact_opening_v1": {"schema_version": "first_contact_opening.v1"},
                 "exercise_normalization": {"rules": ["rule"]},
@@ -13795,6 +13797,8 @@ mod tests {
         assert!(root.contains_key("event_conventions"));
         assert!(root.contains_key("projection_schemas"));
         assert!(root.contains_key("conventions"));
+        assert!(root.contains_key("operational_model"));
+        assert!(root.contains_key("time_conventions"));
         assert!(!root.contains_key("interview_guide"));
         assert!(!root.contains_key("agent_behavior"));
         assert!(!root.contains_key("unexpected_root"));

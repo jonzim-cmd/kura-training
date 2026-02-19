@@ -434,7 +434,9 @@ async fn paradigm_hint_fallback(
     );
     let has_action_suffix = rest_action_verbs.iter().any(|v| path.contains(v));
 
-    let needs_hint = path.starts_with("/v1/events/") && (is_crud_verb || has_action_suffix);
+    // CRUD verbs on any /v1/ path are always a paradigm error (no endpoint uses them)
+    let needs_hint = path.starts_with("/v1/")
+        && (is_crud_verb || (path.starts_with("/v1/events/") && has_action_suffix));
 
     if needs_hint {
         let body = serde_json::json!({
