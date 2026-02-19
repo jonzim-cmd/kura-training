@@ -343,6 +343,25 @@ class TestExerciseProgressionIntegration:
         assert data["estimated_1rm"] > 0
         assert data["total_volume_kg"] > 0
 
+    async def test_event_lookup_is_user_scoped(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        other_user_id = str(uuid.uuid4())
+        await create_test_user(db, other_user_id)
+        foreign_event_id = await insert_event(db, other_user_id, "set.logged", {
+            "exercise": "Bench Press", "exercise_id": "bench_press",
+            "weight_kg": 85, "reps": 5,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_exercise_progression(db, {
+            "user_id": test_user_id,
+            "event_type": "set.logged",
+            "event_id": foreign_event_id,
+        })
+        await db.execute("RESET ROLE")
+
+        assert await get_projection(db, test_user_id, "exercise_progression", "bench_press") is None
+
     async def test_alias_consolidation(self, db, test_user_id):
         """Alias events should merge projections under the canonical name."""
         await create_test_user(db, test_user_id)

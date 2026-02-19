@@ -275,7 +275,10 @@ async def update_exercise_progression(
     timezone_name = timezone_context["timezone"]
 
     async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute("SELECT data FROM events WHERE id = %s", (event_id,))
+        await cur.execute(
+            "SELECT data FROM events WHERE id = %s AND user_id = %s",
+            (event_id, user_id),
+        )
         trigger_row = await cur.fetchone()
         if trigger_row is None:
             logger.warning("Event %s not found, skipping", event_id)
