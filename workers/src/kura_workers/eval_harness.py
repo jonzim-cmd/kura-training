@@ -1146,17 +1146,13 @@ def build_causal_projection_from_event_rows(rows: list[dict[str, Any]]) -> dict[
             _safe_mean((_as_float(day.get("readiness_score")) or 0.0 for day in history))
             or 0.5
         )
-        baseline_sleep = (
-            _safe_mean(
-                (
-                    _as_float(day.get("sleep_hours"))
-                    if _as_float(day.get("sleep_hours")) is not None
-                    else fallback_sleep_hours
-                )
-                for day in history
+        baseline_sleep_values: list[float] = []
+        for day in history:
+            sleep_value = _as_float(day.get("sleep_hours"))
+            baseline_sleep_values.append(
+                sleep_value if sleep_value is not None else fallback_sleep_hours
             )
-            or fallback_sleep_hours
-        )
+        baseline_sleep = _safe_mean(baseline_sleep_values) or fallback_sleep_hours
         baseline_load = (
             _safe_mean((_as_float(day.get("load_volume")) or 0.0 for day in history))
             or 0.0
