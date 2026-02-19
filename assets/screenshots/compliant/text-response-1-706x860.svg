@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="706" height="860" viewBox="0 0 706 860">
+  <rect x="1" y="1" width="704" height="858" rx="42" fill="#c2d8e2"/>
+  <rect x="108" y="28" width="562" height="92" rx="34" fill="#eeeeee"/>
+  <rect x="170" y="58" width="366" height="10" rx="5" fill="#cecece"/>
+  <rect x="210" y="80" width="286" height="10" rx="5" fill="#cecece"/>
+
+  <rect x="36" y="142" width="46" height="46" rx="12" fill="#f7c600"/>
+  <path d="M50 152 H56 V178 H50 Z M56 165 L68 152 H74 L62 165 L74 178 H68 Z" fill="#000"/>
+
+  <rect x="28" y="224" width="650" height="634" rx="36" fill="#eeeeee"/>
+
+  <rect x="68" y="276" width="488" height="12" rx="6" fill="#cecece"/>
+  <rect x="68" y="310" width="430" height="12" rx="6" fill="#cecece"/>
+  <rect x="68" y="344" width="456" height="12" rx="6" fill="#cecece"/>
+  <rect x="68" y="378" width="398" height="12" rx="6" fill="#cecece"/>
+  <rect x="68" y="412" width="474" height="12" rx="6" fill="#cecece"/>
+  <rect x="68" y="446" width="424" height="12" rx="6" fill="#cecece"/>
+  <rect x="68" y="480" width="450" height="12" rx="6" fill="#cecece"/>
+  <rect x="68" y="514" width="392" height="12" rx="6" fill="#cecece"/>
+  <rect x="68" y="548" width="498" height="12" rx="6" fill="#cecece"/>
+  <rect x="68" y="582" width="418" height="12" rx="6" fill="#cecece"/>
+  <rect x="68" y="616" width="460" height="12" rx="6" fill="#cecece"/>
+  <rect x="68" y="650" width="370" height="12" rx="6" fill="#cecece"/>
+
+  <rect x="68" y="694" width="332" height="12" rx="6" fill="#cecece"/>
+  <rect x="68" y="728" width="310" height="12" rx="6" fill="#cecece"/>
+  <rect x="68" y="762" width="360" height="12" rx="6" fill="#cecece"/>
+</svg>
