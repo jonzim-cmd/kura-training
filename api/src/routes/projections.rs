@@ -4,6 +4,7 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use kura_core::error::ApiError;
@@ -18,10 +19,32 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/projections", get(snapshot))
         .route(
+            "/v1/projections/{projection_type}/paged",
+            get(list_projections_paged),
+        )
+        .route(
             "/v1/projections/{projection_type}/{key}",
             get(get_projection),
         )
         .route("/v1/projections/{projection_type}", get(list_projections))
+}
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct ListProjectionPageParams {
+    /// Maximum number of projections to return (default 50, max 200)
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// Cursor for pagination (opaque string from previous response's next_cursor)
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct PaginatedProjectionResponse {
+    pub data: Vec<ProjectionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
 }
 
 /// Internal row type for sqlx mapping
@@ -281,4 +304,151 @@ pub async fn list_projections(
             .map_err(|e| AppError::Internal(e.to_string()))?,
     );
     Ok((headers, Json(responses)))
+}
+
+/// List projections of a given type with cursor-based pagination.
+///
+/// Returns projections ordered by key ascending for deterministic iteration.
+/// Use cursor-based pagination to reload large projection sets without
+/// oversized payloads.
+#[utoipa::path(
+    get,
+    path = "/v1/projections/{projection_type}/paged",
+    params(
+        ("projection_type" = String, Path, description = "Projection type (e.g. 'exercise_progression')"),
+        ListProjectionPageParams
+    ),
+    responses(
+        (status = 200, description = "Paginated projection list", body = PaginatedProjectionResponse),
+        (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "projections"
+)]
+pub async fn list_projections_paged(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Path(projection_type): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<ListProjectionPageParams>,
+) -> Result<impl IntoResponse, AppError> {
+    let user_id = auth.user_id;
+    let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    let fetch_limit = limit + 1;
+    let cursor_key = match params.cursor.as_deref() {
+        Some(raw) => Some(decode_projection_cursor(raw)?),
+        None => None,
+    };
+
+    let mut tx = state.db.begin().await?;
+
+    // Set RLS context
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+    let rows = sqlx::query_as::<_, ProjectionRow>(
+        r#"
+        SELECT id, user_id, projection_type, key, data, version, last_event_id, updated_at
+        FROM projections
+        WHERE user_id = $1
+          AND projection_type = $2
+          AND ($3::text IS NULL OR key > $3)
+        ORDER BY key ASC
+        LIMIT $4
+        "#,
+    )
+    .bind(user_id)
+    .bind(&projection_type)
+    .bind(cursor_key.as_deref())
+    .bind(fetch_limit)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    let has_more = rows.len() as i64 > limit;
+    let now = Utc::now();
+    let responses: Vec<ProjectionResponse> = rows
+        .into_iter()
+        .take(limit as usize)
+        .map(|r| r.into_response(now))
+        .collect();
+    let next_cursor = if has_more {
+        responses
+            .last()
+            .map(|item| encode_projection_cursor(&item.projection.key))
+    } else {
+        None
+    };
+
+    let analysis_subject_id = get_or_create_analysis_subject_id(&state.db, user_id)
+        .await
+        .map_err(AppError::Database)?;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HeaderName::from_static("x-kura-analysis-subject"),
+        HeaderValue::from_str(&analysis_subject_id)
+            .map_err(|e| AppError::Internal(e.to_string()))?,
+    );
+    Ok((
+        headers,
+        Json(PaginatedProjectionResponse {
+            data: responses,
+            next_cursor,
+            has_more,
+        }),
+    ))
+}
+
+fn encode_projection_cursor(key: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.as_bytes())
+}
+
+fn decode_projection_cursor(cursor: &str) -> Result<String, AppError> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| AppError::Validation {
+            message: "Invalid cursor format".to_string(),
+            field: Some("cursor".to_string()),
+            received: Some(serde_json::Value::String(cursor.to_string())),
+            docs_hint: Some("Use the next_cursor value from a previous response".to_string()),
+        })?;
+    let key = String::from_utf8(bytes).map_err(|_| AppError::Validation {
+        message: "Invalid cursor encoding".to_string(),
+        field: Some("cursor".to_string()),
+        received: None,
+        docs_hint: None,
+    })?;
+    if key.trim().is_empty() {
+        return Err(AppError::Validation {
+            message: "Invalid cursor payload".to_string(),
+            field: Some("cursor".to_string()),
+            received: None,
+            docs_hint: Some("Use the next_cursor value from a previous response".to_string()),
+        });
+    }
+    Ok(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_projection_cursor, encode_projection_cursor};
+
+    #[test]
+    fn projection_cursor_roundtrip_preserves_key() {
+        let key = "barbell_back_squat";
+        let encoded = encode_projection_cursor(key);
+        let decoded = decode_projection_cursor(&encoded).expect("cursor should decode");
+        assert_eq!(decoded, key);
+    }
+
+    #[test]
+    fn projection_cursor_rejects_invalid_payload() {
+        let result = decode_projection_cursor("%%%");
+        assert!(result.is_err());
+    }
 }

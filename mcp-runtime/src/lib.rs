@@ -1213,18 +1213,44 @@ impl McpServer {
     }
 
     async fn tool_projection_list(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
-        let path = if let Some(projection_type) = arg_optional_string(args, "projection_type")? {
-            format!("/v1/projections/{projection_type}")
+        let projection_type = arg_optional_string(args, "projection_type")?;
+        let limit = arg_optional_u64(args, "limit")?;
+        let cursor = arg_optional_string(args, "cursor")?;
+        let mut query = Vec::new();
+
+        let path = if let Some(projection_type) = projection_type {
+            if let Some(limit) = limit {
+                query.push(("limit".to_string(), limit.to_string()));
+            }
+            if let Some(cursor) = cursor {
+                query.push(("cursor".to_string(), cursor));
+            }
+            format!("/v1/projections/{projection_type}/paged")
         } else {
+            if limit.is_some() || cursor.is_some() {
+                return Err(
+                    ToolError::new(
+                        "validation_failed",
+                        "projection_type is required when limit/cursor is provided",
+                    )
+                    .with_field("projection_type")
+                    .with_docs_hint(
+                        "Provide projection_type for paged reloads, or omit limit/cursor for full snapshot.",
+                    ),
+                );
+            }
             "/v1/projections".to_string()
         };
 
         let response = self
-            .send_api_request(Method::GET, &path, &[], None, true, false)
+            .send_api_request(Method::GET, &path, &query, None, true, false)
             .await?;
 
         Ok(json!({
-            "request": { "path": path },
+            "request": {
+                "path": path,
+                "query": pairs_to_json_object(&query)
+            },
             "response": response.to_value()
         }))
     }
@@ -1272,6 +1298,9 @@ impl McpServer {
         }
         if let Some(task_intent) = arg_optional_string(args, "task_intent")? {
             query.push(("task_intent".to_string(), task_intent));
+        }
+        if let Some(budget_tokens) = arg_optional_u64(args, "budget_tokens")? {
+            query.push(("budget_tokens".to_string(), budget_tokens.to_string()));
         }
         if let Some(include_system) = arg_optional_bool(args, "include_system")? {
             query.push(("include_system".to_string(), include_system.to_string()));
@@ -2405,7 +2434,17 @@ fn tool_definitions() -> Vec<ToolDefinition> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "projection_type": { "type": "string" }
+                    "projection_type": { "type": "string" },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 200,
+                        "description": "Only with projection_type. Uses paged projection contract."
+                    },
+                    "cursor": {
+                        "type": "string",
+                        "description": "Only with projection_type. Opaque cursor from previous paged response."
+                    }
                 },
                 "additionalProperties": false
             }),
@@ -2441,6 +2480,7 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                     "strength_limit": { "type": "integer", "minimum": 1, "maximum": 100 },
                     "custom_limit": { "type": "integer", "minimum": 1, "maximum": 100 },
                     "task_intent": { "type": "string" },
+                    "budget_tokens": { "type": "integer", "minimum": 400, "maximum": 12000 },
                     "include_system": { "type": "boolean", "default": false }
                 },
                 "additionalProperties": false
@@ -3064,9 +3104,15 @@ fn agent_context_section_reload_hint(section: &str) -> &'static str {
         "system" => {
             "Use kura_system_manifest to list sections, then kura_system_section_get(section=...) for targeted reload."
         }
-        "exercise_progression" => "Use kura_projection_list(projection_type=exercise_progression).",
-        "strength_inference" => "Use kura_projection_list(projection_type=strength_inference).",
-        "custom" => "Use kura_projection_list(projection_type=custom).",
+        "exercise_progression" => {
+            "Use kura_projection_list(projection_type=exercise_progression, limit=50) and follow response.next_cursor."
+        }
+        "strength_inference" => {
+            "Use kura_projection_list(projection_type=strength_inference, limit=50) and follow response.next_cursor."
+        }
+        "custom" => {
+            "Use kura_projection_list(projection_type=custom, limit=50) and follow response.next_cursor."
+        }
         "quality_health" => {
             "Use kura_projection_get(projection_type=quality_health, key=overview)."
         }
@@ -3199,7 +3245,7 @@ fn payload_reload_hint(tool: &str) -> &'static str {
     if tool == "kura_discover" || tool == "kura_discover_debug" {
         "For full details, use targeted reads (preferred): kura://openapi, kura://system/config/manifest, kura_system_section_get(section=...), and kura://agent/capabilities. Use kura_discover_debug only for deep troubleshooting."
     } else if tool == "kura_agent_context" {
-        "Context overflow is section-based: follow overflow.omitted_sections[*].reload_hint and re-fetch only the missing sections."
+        "Context overflow is section-based: follow overflow.omitted_sections[*].reload_hint, re-fetch only missing sections, and lower budget_tokens when iterative planning needs tighter payloads."
     } else {
         "Retry with narrower scope or pagination, then request follow-up chunks for full detail."
     }
@@ -4346,6 +4392,24 @@ mod tests {
             .and_then(Value::as_object)
             .expect("tool schema properties must exist");
         assert_eq!(props["include_system"]["default"], false);
+        assert_eq!(props["budget_tokens"]["minimum"], 400);
+        assert_eq!(props["budget_tokens"]["maximum"], 12000);
+    }
+
+    #[test]
+    fn projection_list_schema_exposes_cursor_inputs() {
+        let tool = tool_definitions()
+            .into_iter()
+            .find(|tool| tool.name == "kura_projection_list")
+            .expect("kura_projection_list tool must exist");
+        let props = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("tool schema properties must exist");
+        assert!(props.contains_key("projection_type"));
+        assert!(props.contains_key("limit"));
+        assert!(props.contains_key("cursor"));
     }
 
     #[test]

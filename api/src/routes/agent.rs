@@ -78,6 +78,9 @@ pub struct AgentContextParams {
     /// Include deployment-static system config in the response payload (default true).
     #[serde(default)]
     pub include_system: Option<bool>,
+    /// Optional token budget hint for response shaping (min 400, max 12000).
+    #[serde(default)]
+    pub budget_tokens: Option<i64>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -177,6 +180,11 @@ pub struct AgentContextMeta {
     pub strength_limit: i64,
     pub custom_limit: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_tokens: Option<i64>,
+    pub included_tokens_estimate: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overflow: Option<AgentContextOverflow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub task_intent: Option<String>,
     pub ranking_strategy: String,
     pub context_contract_version: String,
@@ -187,6 +195,21 @@ pub struct AgentContextMeta {
     pub challenge_mode: AgentChallengeMode,
     pub memory_tier_contract: AgentMemoryTierContract,
     pub consent_write_gate: AgentConsentWriteGate,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentContextOverflowSection {
+    pub section: String,
+    pub approx_tokens: usize,
+    pub reload_hint: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentContextOverflow {
+    pub schema_version: String,
+    pub reason: String,
+    pub omitted_sections: Vec<AgentContextOverflowSection>,
+    pub reload_strategy: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -1980,6 +2003,174 @@ fn clamp_limit(value: Option<i64>, default: i64, max: i64) -> i64 {
     value.unwrap_or(default).max(1).min(max)
 }
 
+fn clamp_budget_tokens(value: Option<i64>) -> Result<Option<i64>, AppError> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    if raw <= 0 {
+        return Err(AppError::Validation {
+            message: "budget_tokens must be a positive integer".to_string(),
+            field: Some("budget_tokens".to_string()),
+            received: Some(json!(raw)),
+            docs_hint: Some(
+                "Use budget_tokens between 400 and 12000 to keep context payloads bounded."
+                    .to_string(),
+            ),
+        });
+    }
+    Ok(Some(raw.clamp(400, 12000)))
+}
+
+fn estimate_json_tokens(value: &Value) -> usize {
+    serde_json::to_vec(value)
+        .map(|bytes| bytes.len().div_ceil(4))
+        .unwrap_or(0)
+}
+
+fn estimate_agent_context_tokens(response: &AgentContextResponse) -> usize {
+    let mut payload = serde_json::to_value(response).unwrap_or(Value::Null);
+    if let Some(meta) = payload.get_mut("meta").and_then(Value::as_object_mut) {
+        meta.remove("included_tokens_estimate");
+        meta.remove("budget_tokens");
+        meta.remove("overflow");
+    }
+    estimate_json_tokens(&payload)
+}
+
+fn agent_context_reload_hint(section: &str) -> &'static str {
+    match section {
+        "system" => {
+            "Reload system sections via GET /v1/system/config/manifest and GET /v1/system/config/section?section=..."
+        }
+        "exercise_progression" => {
+            "Reload with GET /v1/projections/exercise_progression/paged?limit=50."
+        }
+        "strength_inference" => {
+            "Reload with GET /v1/projections/strength_inference/paged?limit=50."
+        }
+        "custom" => "Reload with GET /v1/projections/custom/paged?limit=50.",
+        "quality_health" => "Reload with GET /v1/projections/quality_health/overview.",
+        "consistency_inbox" => "Reload with GET /v1/projections/consistency_inbox/overview.",
+        "semantic_memory" => "Reload with GET /v1/projections/semantic_memory/overview.",
+        "training_plan" => "Reload with GET /v1/projections/training_plan/overview.",
+        "recovery" => "Reload with GET /v1/projections/recovery/overview.",
+        "nutrition" => "Reload with GET /v1/projections/nutrition/overview.",
+        "body_composition" => "Reload with GET /v1/projections/body_composition/overview.",
+        "session_feedback" => "Reload with GET /v1/projections/session_feedback/overview.",
+        "causal_inference" => "Reload with GET /v1/projections/causal_inference/overview.",
+        "readiness_inference" => "Reload with GET /v1/projections/readiness_inference/overview.",
+        "training_timeline" => "Reload with GET /v1/projections/training_timeline/overview.",
+        _ => "Reload with GET /v1/projections/{projection_type}/{key}.",
+    }
+}
+
+fn serialize_to_value<T: Serialize>(value: T) -> Value {
+    serde_json::to_value(value).unwrap_or(Value::Null)
+}
+
+fn take_optional_context_section(
+    response: &mut AgentContextResponse,
+    section: &str,
+) -> Option<Value> {
+    match section {
+        "system" => response.system.take().map(serialize_to_value),
+        "exercise_progression" => {
+            if response.exercise_progression.is_empty() {
+                None
+            } else {
+                Some(serialize_to_value(std::mem::take(
+                    &mut response.exercise_progression,
+                )))
+            }
+        }
+        "strength_inference" => {
+            if response.strength_inference.is_empty() {
+                None
+            } else {
+                Some(serialize_to_value(std::mem::take(
+                    &mut response.strength_inference,
+                )))
+            }
+        }
+        "custom" => {
+            if response.custom.is_empty() {
+                None
+            } else {
+                Some(serialize_to_value(std::mem::take(&mut response.custom)))
+            }
+        }
+        "training_timeline" => response.training_timeline.take().map(serialize_to_value),
+        "session_feedback" => response.session_feedback.take().map(serialize_to_value),
+        "body_composition" => response.body_composition.take().map(serialize_to_value),
+        "recovery" => response.recovery.take().map(serialize_to_value),
+        "nutrition" => response.nutrition.take().map(serialize_to_value),
+        "training_plan" => response.training_plan.take().map(serialize_to_value),
+        "semantic_memory" => response.semantic_memory.take().map(serialize_to_value),
+        "readiness_inference" => response.readiness_inference.take().map(serialize_to_value),
+        "causal_inference" => response.causal_inference.take().map(serialize_to_value),
+        "quality_health" => response.quality_health.take().map(serialize_to_value),
+        "consistency_inbox" => response.consistency_inbox.take().map(serialize_to_value),
+        _ => None,
+    }
+}
+
+fn apply_agent_context_budget(response: &mut AgentContextResponse) {
+    response.meta.overflow = None;
+    let Some(budget_tokens) = response.meta.budget_tokens else {
+        response.meta.included_tokens_estimate = estimate_agent_context_tokens(response);
+        return;
+    };
+    let budget = budget_tokens as usize;
+    let mut current_estimate = estimate_agent_context_tokens(response);
+    let mut omitted_sections: Vec<AgentContextOverflowSection> = Vec::new();
+
+    for section in [
+        "system",
+        "exercise_progression",
+        "strength_inference",
+        "custom",
+        "consistency_inbox",
+        "quality_health",
+        "causal_inference",
+        "semantic_memory",
+        "training_plan",
+        "nutrition",
+        "recovery",
+        "body_composition",
+        "session_feedback",
+        "readiness_inference",
+        "training_timeline",
+    ] {
+        if current_estimate <= budget {
+            break;
+        }
+        let Some(removed_value) = take_optional_context_section(response, section) else {
+            continue;
+        };
+        omitted_sections.push(AgentContextOverflowSection {
+            section: section.to_string(),
+            approx_tokens: estimate_json_tokens(&removed_value),
+            reload_hint: agent_context_reload_hint(section).to_string(),
+        });
+        current_estimate = estimate_agent_context_tokens(response);
+    }
+
+    response.meta.included_tokens_estimate = current_estimate;
+    if !omitted_sections.is_empty() || current_estimate > budget {
+        response.meta.overflow = Some(AgentContextOverflow {
+            schema_version: AGENT_CONTEXT_OVERFLOW_SCHEMA_VERSION.to_string(),
+            reason: if current_estimate <= budget {
+                "budget_exceeded_optional_sections_omitted".to_string()
+            } else {
+                "budget_exceeded_critical_sections_only".to_string()
+            },
+            omitted_sections,
+            reload_strategy: "Reload only omitted sections with targeted GET reads and pagination."
+                .to_string(),
+        });
+    }
+}
+
 /// Inspect user_profile agenda for high-priority actions that must be surfaced
 /// as a top-level `action_required` field so agents cannot overlook them.
 fn extract_action_required(user_profile: &ProjectionResponse) -> Option<AgentActionRequired> {
@@ -3259,6 +3450,7 @@ const DECISION_BRIEF_MIN_ITEMS_PER_BLOCK: usize = 3;
 const DECISION_BRIEF_BALANCED_ITEMS_PER_BLOCK: usize = 4;
 const DECISION_BRIEF_DETAILED_ITEMS_PER_BLOCK: usize = 5;
 const DECISION_BRIEF_MAX_ITEMS_PER_BLOCK: usize = 6;
+const AGENT_CONTEXT_OVERFLOW_SCHEMA_VERSION: &str = "agent_context_overflow.v1";
 const DECISION_BRIEF_CHAT_TEMPLATE_ID: &str = "decision_brief.chat.context.v1";
 const OBSERVATION_DRAFT_CONTEXT_SCHEMA_VERSION: &str = "observation_draft_context.v1";
 const OBSERVATION_DRAFT_LIST_SCHEMA_VERSION: &str = "observation_draft_list.v1";
@@ -7104,6 +7296,7 @@ pub async fn get_agent_context(
     let exercise_limit = clamp_limit(params.exercise_limit, 5, 100);
     let strength_limit = clamp_limit(params.strength_limit, 5, 100);
     let custom_limit = clamp_limit(params.custom_limit, 10, 100);
+    let budget_tokens = clamp_budget_tokens(params.budget_tokens)?;
     let include_system = params.include_system.unwrap_or(true);
     let task_intent = params.task_intent.and_then(|raw| {
         let trimmed = raw.trim();
@@ -7236,8 +7429,7 @@ pub async fn get_agent_context(
     );
     let system_response = if include_system { system.clone() } else { None };
     let consent_write_gate = build_agent_consent_write_gate(health_data_processing_consent);
-
-    Ok(Json(AgentContextResponse {
+    let mut response = AgentContextResponse {
         action_required,
         agent_brief,
         system: system_response,
@@ -7264,6 +7456,9 @@ pub async fn get_agent_context(
             exercise_limit,
             strength_limit,
             custom_limit,
+            budget_tokens,
+            included_tokens_estimate: 0,
+            overflow: None,
             task_intent: ranking_context.intent.clone(),
             ranking_strategy: "composite(recency,confidence,semantic_relevance,task_intent)"
                 .to_string(),
@@ -7275,7 +7470,10 @@ pub async fn get_agent_context(
             memory_tier_contract,
             consent_write_gate,
         },
-    }))
+    };
+    apply_agent_context_budget(&mut response);
+
+    Ok(Json(response))
 }
 
 #[cfg(test)]
@@ -7678,6 +7876,29 @@ mod tests {
         assert_eq!(clamp_limit(Some(0), 5, 100), 1);
         assert_eq!(clamp_limit(Some(101), 5, 100), 100);
         assert_eq!(clamp_limit(Some(7), 5, 100), 7);
+    }
+
+    #[test]
+    fn clamp_budget_tokens_validates_and_clamps() {
+        assert_eq!(
+            super::clamp_budget_tokens(None).expect("none should pass"),
+            None
+        );
+        assert_eq!(
+            super::clamp_budget_tokens(Some(200)).expect("small value clamps"),
+            Some(400)
+        );
+        assert_eq!(
+            super::clamp_budget_tokens(Some(999_999)).expect("large value clamps"),
+            Some(12000)
+        );
+        let err = super::clamp_budget_tokens(Some(0)).expect_err("zero must fail");
+        match err {
+            AppError::Validation { field, .. } => {
+                assert_eq!(field.as_deref(), Some("budget_tokens"));
+            }
+            _ => panic!("expected validation error for budget_tokens"),
+        }
     }
 
     #[test]
