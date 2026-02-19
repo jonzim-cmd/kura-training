@@ -84,6 +84,8 @@ fn is_tool_call_dedupe_eligible(name: &str) -> bool {
             | "kura_events_list"
             | "kura_projection_get"
             | "kura_projection_list"
+            | "kura_system_manifest"
+            | "kura_system_section_get"
             | "kura_agent_context"
             | "kura_semantic_resolve"
             | "kura_account_api_keys_list"
@@ -647,7 +649,12 @@ impl McpServer {
                     }
                 }),
             );
-            return Ok(build_tool_call_response(name, envelope, true, context_warning));
+            return Ok(build_tool_call_response(
+                name,
+                envelope,
+                true,
+                context_warning,
+            ));
         }
 
         if let Some((mut envelope, age_ms)) =
@@ -716,6 +723,8 @@ impl McpServer {
             "kura_events_list" => self.tool_events_list(args).await,
             "kura_projection_get" => self.tool_projection_get(args).await,
             "kura_projection_list" => self.tool_projection_list(args).await,
+            "kura_system_manifest" => self.tool_system_manifest(args).await,
+            "kura_system_section_get" => self.tool_system_section_get(args).await,
             "kura_agent_context" => self.tool_agent_context(args).await,
             "kura_semantic_resolve" => self.tool_semantic_resolve(args).await,
             "kura_access_request" => self.tool_access_request(args).await,
@@ -1219,6 +1228,36 @@ impl McpServer {
         }))
     }
 
+    async fn tool_system_manifest(&self, _args: &Map<String, Value>) -> Result<Value, ToolError> {
+        let path = "/v1/system/config/manifest";
+        let response = self
+            .send_api_request(Method::GET, path, &[], None, true, false)
+            .await?;
+
+        Ok(json!({
+            "request": { "path": path },
+            "response": response.to_value()
+        }))
+    }
+
+    async fn tool_system_section_get(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
+        let section = required_string(args, "section")?;
+        let query = vec![("section".to_string(), section.clone())];
+        let path = "/v1/system/config/section";
+
+        let response = self
+            .send_api_request(Method::GET, path, &query, None, true, false)
+            .await?;
+
+        Ok(json!({
+            "request": {
+                "path": path,
+                "query": pairs_to_json_object(&query)
+            },
+            "response": response.to_value()
+        }))
+    }
+
     async fn tool_agent_context(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
         let mut query = Vec::new();
         if let Some(limit) = arg_optional_u64(args, "exercise_limit")? {
@@ -1232,6 +1271,11 @@ impl McpServer {
         }
         if let Some(task_intent) = arg_optional_string(args, "task_intent")? {
             query.push(("task_intent".to_string(), task_intent));
+        }
+        if let Some(include_system) = arg_optional_bool(args, "include_system")? {
+            query.push(("include_system".to_string(), include_system.to_string()));
+        } else {
+            query.push(("include_system".to_string(), "false".to_string()));
         }
         let mut compatibility_notes = Vec::<String>::new();
         let preferred_path = self
@@ -1897,6 +1941,18 @@ impl McpServer {
                 .await
                 .map(|r| r.to_value())
                 .map_err(|e| RpcError::internal(e.message))?,
+            "kura://system/config/manifest" => self
+                .send_api_request(
+                    Method::GET,
+                    "/v1/system/config/manifest",
+                    &[],
+                    None,
+                    true,
+                    false,
+                )
+                .await
+                .map(|r| r.to_value())
+                .map_err(|e| RpcError::internal(e.message))?,
             "kura://discovery/summary" => self
                 .tool_discover(&json_to_map(json!({
                     "include_openapi": false,
@@ -2354,6 +2410,27 @@ fn tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "kura_system_manifest",
+            description: "Read machine-readable system section manifest.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "kura_system_section_get",
+            description: "Read one system config section by manifest section id.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "section": { "type": "string" }
+                },
+                "required": ["section"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
             name: "kura_agent_context",
             description: "Fetch ranked context bundle for agent planning/writing.",
             input_schema: json!({
@@ -2362,7 +2439,8 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                     "exercise_limit": { "type": "integer", "minimum": 1, "maximum": 100 },
                     "strength_limit": { "type": "integer", "minimum": 1, "maximum": 100 },
                     "custom_limit": { "type": "integer", "minimum": 1, "maximum": 100 },
-                    "task_intent": { "type": "string" }
+                    "task_intent": { "type": "string" },
+                    "include_system": { "type": "boolean", "default": false }
                 },
                 "additionalProperties": false
             }),
@@ -2617,6 +2695,11 @@ fn resource_definitions() -> Vec<ResourceDefinition> {
             uri: "kura://system/config",
             name: "System Config",
             description: "Global dimensions, conventions, and static agent config",
+        },
+        ResourceDefinition {
+            uri: "kura://system/config/manifest",
+            name: "System Config Manifest",
+            description: "Machine-readable section index with fetch contracts and size hints",
         },
         ResourceDefinition {
             uri: "kura://discovery/summary",
@@ -2877,7 +2960,7 @@ fn enforce_agent_context_payload_limit(envelope: Value) -> Value {
                         "omitted_sections": [
                             {
                                 "section": "multiple",
-                                "reload_hint": "Reload sections via kura_projection_get/list and kura_discover_debug(include_system_config=true)."
+                                "reload_hint": "Reload projections via kura_projection_get/list and system contract via kura_system_manifest + kura_system_section_get."
                             }
                         ],
                         "integrity_status": "critical_sections_missing",
@@ -2986,7 +3069,7 @@ fn missing_agent_context_critical_sections(body: Option<&Value>) -> Vec<&'static
 fn agent_context_section_reload_hint(section: &str) -> &'static str {
     match section {
         "system" => {
-            "Use kura_discover_debug(include_system_config=true) or read resource kura://system/config."
+            "Use kura_system_manifest to list sections, then kura_system_section_get(section=...) for targeted reload."
         }
         "exercise_progression" => "Use kura_projection_list(projection_type=exercise_progression).",
         "strength_inference" => "Use kura_projection_list(projection_type=strength_inference).",
@@ -3121,7 +3204,7 @@ fn serialized_json_size_bytes(value: &Value) -> usize {
 
 fn payload_reload_hint(tool: &str) -> &'static str {
     if tool == "kura_discover" || tool == "kura_discover_debug" {
-        "For full details, use kura_discover_debug with explicit include_* flags and fetch one large section at a time, or read kura://openapi, kura://system/config, and kura://agent/capabilities."
+        "For full details, use targeted reads (preferred): kura://openapi, kura://system/config/manifest, kura_system_section_get(section=...), and kura://agent/capabilities. Use kura_discover_debug only for deep troubleshooting."
     } else if tool == "kura_agent_context" {
         "Context overflow is section-based: follow overflow.omitted_sections[*].reload_hint and re-fetch only the missing sections."
     } else {
@@ -3376,6 +3459,17 @@ fn arg_optional_string(args: &Map<String, Value>, key: &str) -> Result<Option<St
         Some(Value::String(v)) => Ok(Some(v.clone())),
         Some(_) => Err(
             ToolError::new("validation_failed", format!("'{key}' must be a string"))
+                .with_field(key),
+        ),
+    }
+}
+
+fn arg_optional_bool(args: &Map<String, Value>, key: &str) -> Result<Option<bool>, ToolError> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(v)) => Ok(Some(*v)),
+        Some(_) => Err(
+            ToolError::new("validation_failed", format!("'{key}' must be a boolean"))
                 .with_field(key),
         ),
     }
@@ -4248,6 +4342,35 @@ mod tests {
     }
 
     #[test]
+    fn agent_context_tool_schema_defaults_to_lean_system_payload() {
+        let tool = tool_definitions()
+            .into_iter()
+            .find(|tool| tool.name == "kura_agent_context")
+            .expect("kura_agent_context tool must exist");
+        let props = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("tool schema properties must exist");
+        assert_eq!(props["include_system"]["default"], false);
+    }
+
+    #[test]
+    fn tool_definitions_include_system_manifest_tools() {
+        let tools = tool_definitions();
+        assert!(
+            tools.iter().any(|tool| tool.name == "kura_system_manifest"),
+            "system manifest tool must be exposed"
+        );
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.name == "kura_system_section_get"),
+            "system section fetch tool must be exposed"
+        );
+    }
+
+    #[test]
     fn tool_definitions_include_analysis_job_tools() {
         let tools = tool_definitions();
         assert!(
@@ -4601,8 +4724,7 @@ mod tests {
             json!("simulate")
         );
         assert_eq!(
-            write_tool.input_schema["properties"]["allow_legacy_write_with_proof_fallback"]
-                ["default"],
+            write_tool.input_schema["properties"]["allow_legacy_write_with_proof_fallback"]["default"],
             json!(false)
         );
     }
@@ -4650,7 +4772,9 @@ mod tests {
     #[test]
     fn context_gate_blocks_high_risk_write_tools_until_context_is_loaded() {
         assert!(is_context_write_blocked_tool("kura_events_write"));
-        assert!(is_context_write_blocked_tool("kura_observation_draft_dismiss"));
+        assert!(is_context_write_blocked_tool(
+            "kura_observation_draft_dismiss"
+        ));
         assert!(!is_context_write_blocked_tool("kura_projection_get"));
         assert!(!is_context_write_blocked_tool("kura_discover"));
     }

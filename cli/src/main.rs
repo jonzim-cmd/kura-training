@@ -105,6 +105,9 @@ enum Commands {
         /// Optional task intent used for context ranking
         #[arg(long)]
         task_intent: Option<String>,
+        /// Include deployment-static system config in response payload
+        #[arg(long)]
+        include_system: Option<bool>,
     },
 
     /// Legacy alias for `kura agent write-with-proof`
@@ -210,6 +213,7 @@ async fn main() {
             strength_limit,
             custom_limit,
             task_intent,
+            include_system,
         } => {
             let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
             commands::agent::context(
@@ -219,6 +223,7 @@ async fn main() {
                 strength_limit,
                 custom_limit,
                 task_intent,
+                include_system,
             )
             .await
         }

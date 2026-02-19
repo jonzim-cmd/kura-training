@@ -23,6 +23,9 @@ pub enum AgentCommands {
         /// Optional task intent used for context ranking (e.g. "dunk progression")
         #[arg(long)]
         task_intent: Option<String>,
+        /// Include deployment-static system config in response payload (default: API default=true)
+        #[arg(long)]
+        include_system: Option<bool>,
     },
     /// Write events with receipts + read-after-write verification
     WriteWithProof(WriteWithProofArgs),
@@ -169,6 +172,7 @@ pub async fn run(api_url: &str, token: Option<&str>, command: AgentCommands) -> 
             strength_limit,
             custom_limit,
             task_intent,
+            include_system,
         } => {
             context(
                 api_url,
@@ -177,6 +181,7 @@ pub async fn run(api_url: &str, token: Option<&str>, command: AgentCommands) -> 
                 strength_limit,
                 custom_limit,
                 task_intent,
+                include_system,
             )
             .await
         }
@@ -218,6 +223,7 @@ pub async fn context(
     strength_limit: Option<u32>,
     custom_limit: Option<u32>,
     task_intent: Option<String>,
+    include_system: Option<bool>,
 ) -> i32 {
     let mut query = Vec::new();
     if let Some(v) = exercise_limit {
@@ -231,6 +237,9 @@ pub async fn context(
     }
     if let Some(v) = task_intent {
         query.push(("task_intent".to_string(), v));
+    }
+    if let Some(v) = include_system {
+        query.push(("include_system".to_string(), v.to_string()));
     }
 
     api_request(

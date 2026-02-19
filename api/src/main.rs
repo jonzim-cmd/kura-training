@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
-use axum::response::IntoResponse;
 use axum::Router;
+use axum::response::IntoResponse;
 use serde::Serialize;
 use sqlx::postgres::PgPoolOptions;
 use tower::ServiceBuilder;
@@ -74,6 +74,8 @@ mod turnstile;
         routes::projection_rules::apply_projection_rule,
         routes::projection_rules::archive_projection_rule,
         routes::system::get_system_config,
+        routes::system::get_system_config_manifest,
+        routes::system::get_system_config_section,
         routes::account::delete_own_account,
         routes::account::update_login_email,
         routes::account::update_health_data_consent,
@@ -207,6 +209,10 @@ mod turnstile;
         routes::projection_rules::ProjectionRuleApplyResponse,
         routes::projection_rules::ProjectionRuleArchiveResponse,
         routes::system::SystemConfigResponse,
+        routes::system::SystemConfigSectionFetchContract,
+        routes::system::SystemConfigSectionManifestItem,
+        routes::system::SystemConfigManifestResponse,
+        routes::system::SystemConfigSectionResponse,
         routes::security::KillSwitchStatusResponse,
         routes::security::ActivateKillSwitchRequest,
         routes::security::DeactivateKillSwitchRequest,
@@ -427,7 +433,9 @@ async fn paradigm_hint_fallback(
     let path = uri.path();
 
     // Detect REST-style mutation attempts on event resources
-    let rest_action_verbs = ["/retract", "/delete", "/update", "/void", "/cancel", "/undo"];
+    let rest_action_verbs = [
+        "/retract", "/delete", "/update", "/void", "/cancel", "/undo",
+    ];
     let is_crud_verb = matches!(
         method,
         axum::http::Method::DELETE | axum::http::Method::PUT | axum::http::Method::PATCH

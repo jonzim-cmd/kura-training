@@ -1,9 +1,9 @@
+use crate::extract::AppJson;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use crate::extract::AppJson;
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use chrono_tz::Tz;
 use hmac::{Hmac, Mac};
@@ -24,7 +24,9 @@ use kura_core::projections::{Projection, ProjectionFreshness, ProjectionMeta, Pr
 use crate::auth::{AuthMethod, AuthenticatedUser, require_scopes};
 use crate::error::AppError;
 use crate::routes::events::{create_events_batch_internal, enforce_legacy_domain_invariants};
-use crate::routes::system::SystemConfigResponse;
+use crate::routes::system::{
+    SystemConfigResponse, build_system_config_handle, build_system_config_manifest_sections,
+};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -73,6 +75,9 @@ pub struct AgentContextParams {
     /// Optional task intent string used for context ranking (e.g. "bench plateau")
     #[serde(default)]
     pub task_intent: Option<String>,
+    /// Include deployment-static system config in the response payload (default true).
+    #[serde(default)]
+    pub include_system: Option<bool>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -256,6 +261,16 @@ pub struct AgentBriefWorkflowState {
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentBriefSectionFetch {
+    pub method: String,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_uri: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AgentBriefSectionRef {
     /// Stable section key for follow-up retrieval.
     pub section: String,
@@ -263,6 +278,11 @@ pub struct AgentBriefSectionRef {
     pub purpose: String,
     /// Canonical way to load this section.
     pub load_via: String,
+    pub fetch: AgentBriefSectionFetch,
+    /// core | extended
+    pub criticality: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approx_tokens: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -2112,68 +2132,86 @@ fn agent_brief_workflow_state(user_profile: &ProjectionResponse) -> AgentBriefWo
     }
 }
 
-fn agent_brief_available_sections() -> Vec<AgentBriefSectionRef> {
+fn agent_brief_projection_section(
+    section: &str,
+    purpose: &str,
+    path: &str,
+    query: Option<&str>,
+) -> AgentBriefSectionRef {
+    let query_string = query.map(str::to_string);
+    let load_via = match &query_string {
+        Some(value) => format!("GET {path}?{value}"),
+        None => format!("GET {path}"),
+    };
+    AgentBriefSectionRef {
+        section: section.to_string(),
+        purpose: purpose.to_string(),
+        load_via,
+        fetch: AgentBriefSectionFetch {
+            method: "GET".to_string(),
+            path: path.to_string(),
+            query: query_string,
+            resource_uri: None,
+        },
+        criticality: "extended".to_string(),
+        approx_tokens: None,
+    }
+}
+
+fn agent_brief_projection_sections() -> Vec<AgentBriefSectionRef> {
     vec![
-        AgentBriefSectionRef {
-            section: "system_config.conventions.first_contact_opening_v1".to_string(),
-            purpose: "Erstkontakt: Kura kurz erklaeren und Onboarding sauber anbieten.".to_string(),
-            load_via:
-                "kura_discover_debug(include_system_config=true) oder resource kura://system/config"
-                    .to_string(),
-        },
-        AgentBriefSectionRef {
-            section: "system_config.conventions.exercise_normalization".to_string(),
-            purpose: "Logging-Qualitaet/Normalisierung fuer Exercise-Aliase.".to_string(),
-            load_via:
-                "kura_discover_debug(include_system_config=true) oder resource kura://system/config"
-                    .to_string(),
-        },
-        AgentBriefSectionRef {
-            section: "system_config.conventions.load_context_v1".to_string(),
-            purpose: "Vergleichbarkeit von Lasten (implements/equipment/comparability_group)."
-                .to_string(),
-            load_via:
-                "kura_discover_debug(include_system_config=true) oder resource kura://system/config"
-                    .to_string(),
-        },
-        AgentBriefSectionRef {
-            section: "projections.exercise_progression".to_string(),
-            purpose: "Detail-Progression fuer einzelne Uebungen.".to_string(),
-            load_via: "kura_projection_list(projection_type=exercise_progression)".to_string(),
-        },
-        AgentBriefSectionRef {
-            section: "projections.strength_inference".to_string(),
-            purpose: "Inference/Trends fuer Kraftsignale.".to_string(),
-            load_via: "kura_projection_list(projection_type=strength_inference)".to_string(),
-        },
-        AgentBriefSectionRef {
-            section: "projections.custom".to_string(),
-            purpose: "User-spezifische Regeln/Custom-Projections.".to_string(),
-            load_via: "kura_projection_list(projection_type=custom)".to_string(),
-        },
-        AgentBriefSectionRef {
-            section: "system_config.conventions.observation_draft_review_loop_v1".to_string(),
-            purpose: "Persist-Intent-Drafts mit kurzem Review gezielt schliessen.".to_string(),
-            load_via:
-                "kura_discover_debug(include_system_config=true) oder resource kura://system/config"
-                    .to_string(),
-        },
-        AgentBriefSectionRef {
-            section: "system_config.conventions.observation_draft_dismissal_v1".to_string(),
-            purpose: "Duplikate/Test-Drafts ohne Datenverschmutzung sauber verwerfen.".to_string(),
-            load_via:
-                "kura_discover_debug(include_system_config=true) oder resource kura://system/config"
-                    .to_string(),
-        },
-        AgentBriefSectionRef {
-            section: "system_config.operational_model".to_string(),
-            purpose: concat!(
-                "Event Sourcing Paradigma: Alle Mutationen sind neue Events via POST /v1/events. ",
-                "Kein UPDATE/DELETE. Korrekturen sind kompensierende Events (event.retracted, set.corrected)."
-            ).to_string(),
-            load_via: "Inline in system-Feld der /v1/agent/context Response".to_string(),
-        },
+        agent_brief_projection_section(
+            "projections.exercise_progression",
+            "Detailed progression signal per exercise key.",
+            "/v1/projections/exercise_progression",
+            None,
+        ),
+        agent_brief_projection_section(
+            "projections.strength_inference",
+            "Strength inference trend signals per key.",
+            "/v1/projections/strength_inference",
+            None,
+        ),
+        agent_brief_projection_section(
+            "projections.custom",
+            "User-defined custom projection rules and outputs.",
+            "/v1/projections/custom",
+            None,
+        ),
     ]
+}
+
+fn agent_brief_available_sections(
+    system: Option<&SystemConfigResponse>,
+) -> Vec<AgentBriefSectionRef> {
+    let mut sections: Vec<AgentBriefSectionRef> = Vec::new();
+    if let Some(system) = system {
+        sections.extend(
+            build_system_config_manifest_sections(&system.data)
+                .into_iter()
+                .map(|entry| {
+                    let query = entry.fetch.query.clone();
+                    let load_via = format!("GET {}?{}", entry.fetch.path, query);
+                    AgentBriefSectionRef {
+                        section: entry.section,
+                        purpose: entry.purpose,
+                        load_via,
+                        fetch: AgentBriefSectionFetch {
+                            method: entry.fetch.method,
+                            path: entry.fetch.path,
+                            query: Some(query),
+                            resource_uri: Some(entry.fetch.resource_uri),
+                        },
+                        criticality: entry.criticality,
+                        approx_tokens: Some(entry.approx_tokens),
+                    }
+                }),
+        );
+    }
+    sections.extend(agent_brief_projection_sections());
+    sections.sort_by(|a, b| a.section.cmp(&b.section));
+    sections.dedup_by(|a, b| a.section == b.section);
+    sections
 }
 
 fn build_agent_brief(
@@ -2214,7 +2252,7 @@ fn build_agent_brief(
     must_cover_intents.dedup();
 
     let system_config_ref = system.map(|value| AgentBriefSystemConfigRef {
-        handle: format!("system_config/global@v{}", value.version),
+        handle: build_system_config_handle(value.version),
         version: value.version,
         updated_at: value.updated_at,
     });
@@ -2225,7 +2263,7 @@ fn build_agent_brief(
         must_cover_intents,
         coverage_gaps,
         workflow_state,
-        available_sections: agent_brief_available_sections(),
+        available_sections: agent_brief_available_sections(system),
         system_config_ref,
     }
 }
@@ -2615,7 +2653,8 @@ fn draft_context_from_rows(
     now: DateTime<Utc>,
 ) -> AgentObservationsDraftContext {
     let oldest_draft_age_hours = oldest_timestamp.map(|ts| draft_age_hours(ts, now));
-    let review_status = derive_draft_hygiene_status_from_context(open_count, oldest_draft_age_hours);
+    let review_status =
+        derive_draft_hygiene_status_from_context(open_count, oldest_draft_age_hours);
     let review_loop_required = open_count > 0;
     let next_action_hint = draft_review_next_action_hint(&review_status, review_loop_required);
     let recent_drafts = rows
@@ -6461,8 +6500,7 @@ pub async fn write_with_proof(
         }
         None => {
             if temporal_basis_required {
-                let temporal_basis_template =
-                    build_temporal_basis_from_context(&temporal_context);
+                let temporal_basis_template = build_temporal_basis_from_context(&temporal_context);
                 push_preflight_blocker(
                     &mut preflight_blockers,
                     WritePreflightBlockerCode::IntentHandshakeRequired,
@@ -6578,8 +6616,7 @@ pub async fn write_with_proof(
         && action_class == "high_impact_write"
         && intent_handshake_confirmation.is_none()
     {
-        let temporal_basis_template =
-            build_temporal_basis_from_context(&temporal_context);
+        let temporal_basis_template = build_temporal_basis_from_context(&temporal_context);
         push_preflight_blocker(
             &mut preflight_blockers,
             WritePreflightBlockerCode::IntentHandshakeRequiredStrictTier,
@@ -7067,6 +7104,7 @@ pub async fn get_agent_context(
     let exercise_limit = clamp_limit(params.exercise_limit, 5, 100);
     let strength_limit = clamp_limit(params.strength_limit, 5, 100);
     let custom_limit = clamp_limit(params.custom_limit, 10, 100);
+    let include_system = params.include_system.unwrap_or(true);
     let task_intent = params.task_intent.and_then(|raw| {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -7196,12 +7234,13 @@ pub async fn get_agent_context(
         system.as_ref(),
         Some(&observations_draft),
     );
+    let system_response = if include_system { system.clone() } else { None };
     let consent_write_gate = build_agent_consent_write_gate(health_data_processing_consent);
 
     Ok(Json(AgentContextResponse {
         action_required,
         agent_brief,
-        system,
+        system: system_response,
         self_model,
         user_profile,
         training_timeline,
@@ -7766,7 +7805,13 @@ mod tests {
         let profile = bootstrap_user_profile(Uuid::now_v7());
         let action = extract_action_required(&profile);
         let system = super::SystemConfigResponse {
-            data: json!({}),
+            data: json!({
+                "conventions": {
+                    "first_contact_opening_v1": {"schema_version": "first_contact_opening.v1"},
+                    "observation_draft_dismissal_v1": {"schema_version": "observation_draft_dismiss.v1"}
+                },
+                "operational_model": {"paradigm": "Event Sourcing"}
+            }),
             version: 7,
             updated_at: Utc::now(),
         };
@@ -7788,11 +7833,21 @@ mod tests {
         );
         assert!(!brief.coverage_gaps.is_empty());
         assert!(brief.available_sections.iter().any(|section| {
-            section.section == "system_config.conventions.first_contact_opening_v1"
+            section.section == "system_config.conventions::first_contact_opening_v1"
         }));
         assert!(brief.available_sections.iter().any(|section| {
-            section.section == "system_config.conventions.observation_draft_dismissal_v1"
+            section.section == "system_config.conventions::observation_draft_dismissal_v1"
         }));
+        let section = brief
+            .available_sections
+            .iter()
+            .find(|section| section.section == "system_config.operational_model")
+            .expect("operational model section should exist");
+        assert_eq!(section.fetch.path, "/v1/system/config/section");
+        assert_eq!(
+            section.fetch.query.as_deref(),
+            Some("section=system_config.operational_model")
+        );
         let system_ref = brief
             .system_config_ref
             .as_ref()
@@ -15108,11 +15163,9 @@ mod tests {
     fn formal_event_type_policy_contract_accepts_registered_event_type() {
         let mut known_event_types = std::collections::HashSet::new();
         known_event_types.insert("set.logged".to_string());
-        let event_type = super::validate_observation_draft_promote_event_type(
-            "set.logged",
-            &known_event_types,
-        )
-        .expect("registered event type should pass");
+        let event_type =
+            super::validate_observation_draft_promote_event_type("set.logged", &known_event_types)
+                .expect("registered event type should pass");
         assert_eq!(event_type, "set.logged");
     }
 
@@ -15247,9 +15300,19 @@ mod tests {
     fn agent_brief_includes_operational_model_from_system_config() {
         let profile = bootstrap_user_profile(Uuid::now_v7());
         let action = extract_action_required(&profile);
-        let brief = super::build_agent_brief(action.as_ref(), &profile, None, None);
+        let system = super::SystemConfigResponse {
+            data: json!({
+                "operational_model": {
+                    "paradigm": "Event Sourcing",
+                    "corrections": "event.retracted, set.corrected"
+                }
+            }),
+            version: 1,
+            updated_at: Utc::now(),
+        };
+        let brief = super::build_agent_brief(action.as_ref(), &profile, Some(&system), None);
 
-        // operational_model is referenced via available_sections, not inlined
+        // operational_model is indexed via available_sections, not inlined.
         let op_section = brief
             .available_sections
             .iter()

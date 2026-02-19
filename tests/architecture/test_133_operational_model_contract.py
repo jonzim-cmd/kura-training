@@ -20,6 +20,7 @@ from pathlib import Path
 from tests.architecture.conftest import assert_kura_api_test_passes
 
 AGENT_ROUTE = Path("api/src/routes/agent.rs")
+SYSTEM_ROUTE = Path("api/src/routes/system.rs")
 
 ALLOWED_CATEGORIES = frozenset({
     "tracking",
@@ -135,15 +136,19 @@ def test_agent_brief_references_operational_model_in_available_sections() -> Non
 
     The brief is a compact index — it references system_config.operational_model
     via available_sections with a purpose hint, NOT by inlining the full struct.
-    The full operational_model lives in system_config (always delivered inline
-    with /v1/agent/context).
+    The full operational_model lives in system_config and may be loaded lazily
+    by section fetch contract.
     """
-    src = AGENT_ROUTE.read_text(encoding="utf-8")
-    assert "system_config.operational_model" in src, (
-        "available_sections must reference system_config.operational_model"
+    agent_src = AGENT_ROUTE.read_text(encoding="utf-8")
+    system_src = SYSTEM_ROUTE.read_text(encoding="utf-8")
+    assert "build_system_config_manifest_sections" in agent_src, (
+        "available_sections must be generated from the system section manifest source"
     )
-    assert "Event Sourcing" in src, (
-        "The section purpose must establish the ES paradigm"
+    assert "system_config.operational_model" in system_src, (
+        "system manifest must include system_config.operational_model section id"
+    )
+    assert "Event Sourcing" in system_src, (
+        "The operational_model section purpose must establish the ES paradigm"
     )
 
 
