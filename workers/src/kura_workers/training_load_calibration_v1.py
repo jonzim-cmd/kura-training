@@ -329,17 +329,31 @@ def _pick_first(data: dict[str, Any], paths: Iterable[str]) -> Any:
     return None
 
 
+def _pick_first_with_path(data: dict[str, Any], paths: Iterable[str]) -> tuple[Any, str | None]:
+    for path in paths:
+        if "." in path:
+            value = _nested_lookup(data, path)
+            if value is not None:
+                return value, path
+            continue
+        if path in data and data.get(path) is not None:
+            return data.get(path), path
+    return None, None
+
+
 def _relative_intensity_payload(data: dict[str, Any]) -> dict[str, Any] | None:
     payload = data.get("relative_intensity")
     if isinstance(payload, dict):
         return payload
 
-    value_pct = _pick_first(
+    value_pct, value_pct_path = _pick_first_with_path(
         data,
         (
             "relative_intensity_value_pct",
             "relative_intensity_pct",
             "intensity_pct",
+            "intensity_percent_max",
+            "intensity_percent_max_speed",
             "pct_of_reference",
             "percent_of_max",
             "relative_intensity.value_pct",
@@ -347,17 +361,27 @@ def _relative_intensity_payload(data: dict[str, Any]) -> dict[str, Any] | None:
     )
     if value_pct is None:
         return None
-
-    return {
-        "value_pct": value_pct,
-        "reference_type": _pick_first(
-            data,
-            (
-                "relative_intensity_reference_type",
-                "reference_type",
-                "relative_intensity.reference_type",
-            ),
+    reference_type = _pick_first(
+        data,
+        (
+            "relative_intensity_reference_type",
+            "reference_type",
+            "relative_intensity.reference_type",
         ),
+    )
+    # Legacy compatibility: historically "intensity_percent_max" was used as
+    # implicit percent-of-personal-max signal without a nested payload.
+    # Keep it analyzable by treating it as a custom reference.
+    if reference_type is None and value_pct_path in {
+        "intensity_percent_max",
+        "intensity_percent_max_speed",
+        "percent_of_max",
+    }:
+        reference_type = "custom"
+
+    payload_out = {
+        "value_pct": value_pct,
+        "reference_type": reference_type,
         "reference_value": _pick_first(
             data,
             (
@@ -383,6 +407,9 @@ def _relative_intensity_payload(data: dict[str, Any]) -> dict[str, Any] | None:
             ),
         ),
     }
+    if value_pct_path:
+        payload_out["_source_path"] = value_pct_path
+    return payload_out
 
 
 def _relative_intensity_resolution(
@@ -417,6 +444,7 @@ def _relative_intensity_resolution(
     reference_type = str(payload.get("reference_type") or "").strip().lower() or None
     reference_value = _to_float(payload.get("reference_value"))
     reference_measured_at = _to_datetime_utc(payload.get("reference_measured_at"))
+    source_path = str(payload.get("_source_path") or "").strip().lower()
     confidence_default = _profile_number(
         cfg.get("reference_confidence_default"),
         default=0.72,
@@ -485,7 +513,14 @@ def _relative_intensity_resolution(
         )
         return result
 
-    if reference_type is None or reference_measured_at is None:
+    allow_missing_reference_timestamp = reference_type == "custom" and source_path in {
+        "intensity_percent_max",
+        "intensity_percent_max_speed",
+        "percent_of_max",
+    }
+    if reference_type is None or (
+        reference_measured_at is None and not allow_missing_reference_timestamp
+    ):
         result["status"] = "fallback_missing_reference"
         result["fallback_reason"] = "missing_reference"
         result["fallback_uncertainty_boost"] = _profile_number(
@@ -532,10 +567,24 @@ def _relative_intensity_resolution(
     if reference_confidence < min_reference_conf:
         uncertainty = max(uncertainty, uncertainty_low_conf)
 
-    result["status"] = "used"
+    if reference_measured_at is None and allow_missing_reference_timestamp:
+        uncertainty = max(
+            uncertainty,
+            _profile_number(
+                cfg.get("uncertainty_missing_reference_timestamp"),
+                default=0.28,
+                minimum=0.0,
+            ),
+            uncertainty_low_conf,
+        )
+        result["status"] = "used_missing_reference_timestamp"
+        result["source"] = f"{result['source']}:{reference_type}:unstamped"
+    else:
+        result["status"] = "used"
+        result["source"] = f"{result['source']}:{reference_type}"
+
     result["normalized_response"] = _clamp(normalized, 0.0, 1.0)
     result["uncertainty"] = _clamp(uncertainty, 0.0, 1.0)
-    result["source"] = f"{result['source']}:{reference_type}"
     return result
 
 
