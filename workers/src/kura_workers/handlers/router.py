@@ -40,7 +40,7 @@ def _inference_target_for_handler(handler_name: str) -> tuple[str, str] | None:
 
 
 async def _resolve_retraction(
-    conn: psycopg.AsyncConnection[Any], event_id: str
+    conn: psycopg.AsyncConnection[Any], event_id: str, user_id: str
 ) -> dict[str, str] | None:
     """Resolve an event.retracted event to the retracted event's info.
 
@@ -51,7 +51,10 @@ async def _resolve_retraction(
     falls back to looking up the original event if not.
     """
     async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute("SELECT data FROM events WHERE id = %s", (event_id,))
+        await cur.execute(
+            "SELECT data FROM events WHERE id = %s AND user_id = %s",
+            (event_id, user_id),
+        )
         row = await cur.fetchone()
 
     if not row:
@@ -70,8 +73,8 @@ async def _resolve_retraction(
     if not retracted_event_type:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT event_type FROM events WHERE id = %s",
-                (retracted_event_id,),
+                "SELECT event_type FROM events WHERE id = %s AND user_id = %s",
+                (retracted_event_id, user_id),
             )
             orig = await cur.fetchone()
         if not orig:
@@ -128,7 +131,7 @@ async def handle_projection_update(
 
     # Resolve retraction: re-route to the retracted event's handlers
     if event_type == "event.retracted":
-        resolved = await _resolve_retraction(conn, payload["event_id"])
+        resolved = await _resolve_retraction(conn, payload["event_id"], user_id)
         if not resolved:
             return
         logger.info(

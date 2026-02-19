@@ -416,8 +416,8 @@ async def update_custom_projections(
         # Get the rule name from the event data
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT data FROM events WHERE id = %s",
-                (event_id,),
+                "SELECT data FROM events WHERE id = %s AND user_id = %s",
+                (event_id, user_id),
             )
             row = await cur.fetchone()
         if not row:
@@ -436,8 +436,8 @@ async def update_custom_projections(
     # Find the rule that was just created (from the event)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "SELECT data FROM events WHERE id = %s",
-            (event_id,),
+            "SELECT data FROM events WHERE id = %s AND user_id = %s",
+            (event_id, user_id),
         )
         row = await cur.fetchone()
 

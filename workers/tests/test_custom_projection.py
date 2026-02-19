@@ -14,6 +14,7 @@ from kura_workers.handlers.custom_projection import (
     _compute_rule,
     _load_active_rules,
     has_matching_custom_rules,
+    update_custom_projections,
 )
 from kura_workers.rule_models import CategorizedTrackingRule, FieldTrackingRule
 
@@ -322,6 +323,78 @@ class TestComputeRule:
         )
         assert result is not None
         assert result["rule"]["type"] == "categorized_tracking"
+
+
+# ---------------------------------------------------------------------------
+# Test: update_custom_projections event lookup scoping
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateCustomProjections:
+    async def test_archived_event_lookup_is_user_scoped(self):
+        conn = AsyncMock()
+        cursor = _make_mock_cursor([{"data": {"name": "hrv_tracking"}}])
+        conn.cursor = MagicMock(return_value=_MockCursorContext(cursor))
+
+        with patch(
+            "kura_workers.handlers.custom_projection._delete_custom_projection",
+            new_callable=AsyncMock,
+        ) as delete_projection:
+            await update_custom_projections(
+                conn,
+                {
+                    "user_id": "user-1",
+                    "event_type": "projection_rule.archived",
+                    "event_id": "evt-1",
+                },
+            )
+
+        execute_sql, execute_params = cursor.execute.await_args.args
+        assert "AND user_id = %s" in execute_sql
+        assert execute_params == ("evt-1", "user-1")
+        delete_projection.assert_awaited_once_with(conn, "user-1", "hrv_tracking")
+
+    async def test_created_event_lookup_is_user_scoped(self):
+        conn = AsyncMock()
+        cursor = _make_mock_cursor([{"data": {"name": "hrv_tracking"}}])
+        conn.cursor = MagicMock(return_value=_MockCursorContext(cursor))
+
+        active_rule = {
+            "name": "hrv_tracking",
+            "type": "field_tracking",
+            "source_events": ["sleep.logged"],
+            "fields": ["hrv_rmssd"],
+        }
+
+        with patch(
+            "kura_workers.handlers.custom_projection.get_retracted_event_ids",
+            new_callable=AsyncMock,
+            return_value=set(),
+        ), patch(
+            "kura_workers.handlers.custom_projection._load_active_rules",
+            new_callable=AsyncMock,
+            return_value={"hrv_tracking": active_rule},
+        ), patch(
+            "kura_workers.handlers.custom_projection._compute_rule",
+            new_callable=AsyncMock,
+            return_value={"data_quality": {"total_events_processed": 0}},
+        ), patch(
+            "kura_workers.handlers.custom_projection._upsert_custom_projection",
+            new_callable=AsyncMock,
+        ) as upsert_projection:
+            await update_custom_projections(
+                conn,
+                {
+                    "user_id": "user-1",
+                    "event_type": "projection_rule.created",
+                    "event_id": "evt-1",
+                },
+            )
+
+        execute_sql, execute_params = cursor.execute.await_args.args
+        assert "AND user_id = %s" in execute_sql
+        assert execute_params == ("evt-1", "user-1")
+        upsert_projection.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

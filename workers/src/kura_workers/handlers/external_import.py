@@ -47,6 +47,7 @@ async def _update_import_job_status(
     conn: psycopg.AsyncConnection[Any],
     *,
     import_job_id: str,
+    user_id: str,
     status: str,
     receipt: dict[str, Any],
     error_code: str | None = None,
@@ -69,6 +70,7 @@ async def _update_import_job_status(
                 idempotency_key = COALESCE(%s, idempotency_key),
                 completed_at = {completed_at}
             WHERE id = %s
+              AND user_id = %s
             """,
             (
                 status,
@@ -79,6 +81,7 @@ async def _update_import_job_status(
                 payload_fingerprint,
                 idempotency_key,
                 import_job_id,
+                user_id,
             ),
         )
 
@@ -87,6 +90,7 @@ async def _mark_processing(
     conn: psycopg.AsyncConnection[Any],
     *,
     import_job_id: str,
+    user_id: str,
 ) -> None:
     async with conn.cursor() as cur:
         await cur.execute(
@@ -95,8 +99,9 @@ async def _mark_processing(
             SET status = 'processing',
                 started_at = COALESCE(started_at, NOW())
             WHERE id = %s
+              AND user_id = %s
             """,
-            (import_job_id,),
+            (import_job_id, user_id),
         )
 
 
@@ -245,7 +250,7 @@ async def handle_external_import_process(
     if job is None:
         raise ValueError(f"external_import job not found: {import_job_id}")
 
-    await _mark_processing(conn, import_job_id=import_job_id)
+    await _mark_processing(conn, import_job_id=import_job_id, user_id=user_id)
 
     provider = str(job["provider"])
     provider_user_id = str(job["provider_user_id"])
@@ -290,6 +295,7 @@ async def handle_external_import_process(
         await _update_import_job_status(
             conn,
             import_job_id=import_job_id,
+            user_id=user_id,
             status="failed",
             receipt=receipt,
             error_code=exc.code,
@@ -321,6 +327,7 @@ async def handle_external_import_process(
         await _update_import_job_status(
             conn,
             import_job_id=import_job_id,
+            user_id=user_id,
             status="failed",
             receipt={**base_receipt, "status": "failed"},
             error_code=plan.dedup_result.outcome,
@@ -340,6 +347,7 @@ async def handle_external_import_process(
         await _update_import_job_status(
             conn,
             import_job_id=import_job_id,
+            user_id=user_id,
             status="completed",
             receipt={**base_receipt, "write": {"result": "duplicate_skipped"}},
             source_identity_key=plan.source_identity_key,
@@ -362,6 +370,7 @@ async def handle_external_import_process(
         await _update_import_job_status(
             conn,
             import_job_id=import_job_id,
+            user_id=user_id,
             status="completed",
             receipt={
                 **base_receipt,
@@ -393,6 +402,7 @@ async def handle_external_import_process(
     await _update_import_job_status(
         conn,
         import_job_id=import_job_id,
+        user_id=user_id,
         status="completed",
         receipt={
             **base_receipt,

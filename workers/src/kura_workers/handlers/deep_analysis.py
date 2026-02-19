@@ -43,6 +43,7 @@ async def _mark_processing(
     conn: psycopg.AsyncConnection[Any],
     *,
     analysis_job_id: str,
+    user_id: str,
 ) -> None:
     async with conn.cursor() as cur:
         await cur.execute(
@@ -53,8 +54,9 @@ async def _mark_processing(
                 error_code = NULL,
                 error_message = NULL
             WHERE id = %s
+              AND user_id = %s
             """,
-            (analysis_job_id,),
+            (analysis_job_id, user_id),
         )
 
 
@@ -193,6 +195,7 @@ async def _mark_completed(
     conn: psycopg.AsyncConnection[Any],
     *,
     analysis_job_id: str,
+    user_id: str,
     result_payload: dict[str, Any],
 ) -> None:
     async with conn.cursor() as cur:
@@ -205,8 +208,9 @@ async def _mark_completed(
                 error_message = NULL,
                 completed_at = NOW()
             WHERE id = %s
+              AND user_id = %s
             """,
-            (Json(result_payload), analysis_job_id),
+            (Json(result_payload), analysis_job_id, user_id),
         )
 
 
@@ -214,6 +218,7 @@ async def _mark_failed(
     conn: psycopg.AsyncConnection[Any],
     *,
     analysis_job_id: str,
+    user_id: str,
     error_code: str,
     error_message: str,
 ) -> None:
@@ -226,8 +231,9 @@ async def _mark_failed(
                 error_message = %s,
                 completed_at = NOW()
             WHERE id = %s
+              AND user_id = %s
             """,
-            (error_code, error_message[:2000], analysis_job_id),
+            (error_code, error_message[:2000], analysis_job_id, user_id),
         )
 
 
@@ -242,7 +248,7 @@ async def handle_deep_analysis(conn: psycopg.AsyncConnection[Any], payload: dict
     if job is None:
         raise ValueError(f"analysis job not found: {analysis_job_id}")
 
-    await _mark_processing(conn, analysis_job_id=analysis_job_id)
+    await _mark_processing(conn, analysis_job_id=analysis_job_id, user_id=user_id)
 
     objective = str(job.get("objective") or "").strip() or "general insight"
     horizon_days = int(job.get("horizon_days") or 90)
@@ -267,6 +273,7 @@ async def handle_deep_analysis(conn: psycopg.AsyncConnection[Any], payload: dict
         await _mark_failed(
             conn,
             analysis_job_id=analysis_job_id,
+            user_id=user_id,
             error_code="analysis_processing_failed",
             error_message=str(exc),
         )
@@ -275,5 +282,6 @@ async def handle_deep_analysis(conn: psycopg.AsyncConnection[Any], payload: dict
     await _mark_completed(
         conn,
         analysis_job_id=analysis_job_id,
+        user_id=user_id,
         result_payload=result_payload,
     )

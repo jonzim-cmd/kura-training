@@ -7,6 +7,7 @@ import pytest
 
 from kura_workers.handlers.router import (
     _acquire_user_lock,
+    _resolve_retraction,
     handle_projection_retry,
     handle_projection_update,
 )
@@ -274,6 +275,49 @@ class TestHandleProjectionUpdate:
 
         # handler_b should still have been called despite retry INSERT failure
         handler_b.assert_awaited_once()
+
+
+class TestResolveRetraction:
+    @pytest.mark.asyncio
+    async def test_retraction_event_lookup_is_user_scoped(self):
+        conn = AsyncMock()
+        cursor = _FakeCursor()
+        cursor.fetchone = AsyncMock(
+            return_value={
+                "data": {
+                    "retracted_event_id": "evt-original",
+                    "retracted_event_type": "set.logged",
+                }
+            }
+        )
+        conn.cursor = MagicMock(return_value=cursor)
+
+        resolved = await _resolve_retraction(conn, "evt-retraction", "user-1")
+
+        assert resolved == {"event_id": "evt-original", "event_type": "set.logged"}
+        query_sql, query_params = cursor.execute.await_args.args
+        assert "AND user_id = %s" in query_sql
+        assert query_params == ("evt-retraction", "user-1")
+
+    @pytest.mark.asyncio
+    async def test_fallback_original_event_lookup_is_user_scoped(self):
+        conn = AsyncMock()
+        cursor = _FakeCursor()
+        cursor.fetchone = AsyncMock(
+            side_effect=[
+                {"data": {"retracted_event_id": "evt-original"}},
+                {"event_type": "set.logged"},
+            ]
+        )
+        conn.cursor = MagicMock(return_value=cursor)
+
+        resolved = await _resolve_retraction(conn, "evt-retraction", "user-1")
+
+        assert resolved == {"event_id": "evt-original", "event_type": "set.logged"}
+        assert len(cursor.execute.call_args_list) == 2
+        fallback_sql, fallback_params = cursor.execute.call_args_list[1].args
+        assert "AND user_id = %s" in fallback_sql
+        assert fallback_params == ("evt-original", "user-1")
 
 
 class TestHandleProjectionRetry:
