@@ -31,6 +31,8 @@ from .inference_engine import (
 from .inference_event_registry import (
     EVAL_CAUSAL_EVENT_TYPES,
     EVAL_READINESS_EVENT_TYPES,
+    EVAL_SEMANTIC_EVENT_TYPES,
+    EVAL_STRENGTH_EVENT_TYPES,
 )
 from .readiness_signals import build_readiness_daily_scores
 from .training_signal_normalization import normalize_training_signal_rows
@@ -3393,7 +3395,6 @@ async def _fetch_active_semantic_label_rows(
     *,
     user_id: str,
 ) -> list[dict[str, Any]]:
-    event_types = ["set.logged", "exercise.alias_created", "event.retracted"]
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
@@ -3403,7 +3404,7 @@ async def _fetch_active_semantic_label_rows(
               AND event_type = ANY(%s)
             ORDER BY timestamp ASC, id ASC
             """,
-            (user_id, event_types),
+            (user_id, list(EVAL_SEMANTIC_EVENT_TYPES)),
         )
         rows = await cur.fetchall()
 
@@ -3470,9 +3471,9 @@ async def _event_store_results(
 ) -> list[dict[str, Any]]:
     event_types: set[str] = set()
     if "semantic_memory" in projection_types:
-        event_types.update(("set.logged", "exercise.alias_created", "event.retracted"))
+        event_types.update(EVAL_SEMANTIC_EVENT_TYPES)
     if "strength_inference" in projection_types:
-        event_types.update(("set.logged", "exercise.alias_created", "event.retracted"))
+        event_types.update(EVAL_STRENGTH_EVENT_TYPES)
     if "readiness_inference" in projection_types:
         event_types.update(EVAL_READINESS_EVENT_TYPES)
     if "causal_inference" in projection_types:

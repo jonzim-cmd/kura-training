@@ -53,3 +53,12 @@ EVAL_CAUSAL_EVENT_TYPES: tuple[str, ...] = (
     "event.retracted",
 )
 
+EVAL_SEMANTIC_EVENT_TYPES: tuple[str, ...] = (
+    "set.logged",
+    "exercise.alias_created",
+    "event.retracted",
+)
+
+EVAL_STRENGTH_EVENT_TYPES: tuple[str, ...] = (
+    *EVAL_SEMANTIC_EVENT_TYPES,
+)

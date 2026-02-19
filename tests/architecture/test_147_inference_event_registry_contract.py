@@ -6,6 +6,8 @@ from kura_workers.inference_event_registry import (
     CAUSAL_SIGNAL_EVENT_TYPES,
     EVAL_CAUSAL_EVENT_TYPES,
     EVAL_READINESS_EVENT_TYPES,
+    EVAL_SEMANTIC_EVENT_TYPES,
+    EVAL_STRENGTH_EVENT_TYPES,
     NIGHTLY_REFIT_TRIGGER_EVENT_TYPES,
     READINESS_SIGNAL_EVENT_TYPES,
 )
@@ -22,6 +24,12 @@ def test_inference_event_registry_declares_required_canonical_coverage() -> None
     assert {"session.logged", "set.corrected", "external.activity_imported"} <= nightly
     assert set(READINESS_SIGNAL_EVENT_TYPES) <= set(EVAL_READINESS_EVENT_TYPES)
     assert set(CAUSAL_SIGNAL_EVENT_TYPES) <= set(EVAL_CAUSAL_EVENT_TYPES)
+    assert set(EVAL_SEMANTIC_EVENT_TYPES) == {
+        "set.logged",
+        "exercise.alias_created",
+        "event.retracted",
+    }
+    assert set(EVAL_SEMANTIC_EVENT_TYPES) <= set(EVAL_STRENGTH_EVENT_TYPES)
 
 
 def test_inference_paths_reference_registry_objects_directly() -> None:
@@ -29,6 +37,8 @@ def test_inference_paths_reference_registry_objects_directly() -> None:
     assert causal_inference.CAUSAL_SIGNAL_EVENT_TYPES is CAUSAL_SIGNAL_EVENT_TYPES
     assert eval_harness.EVAL_READINESS_EVENT_TYPES is EVAL_READINESS_EVENT_TYPES
     assert eval_harness.EVAL_CAUSAL_EVENT_TYPES is EVAL_CAUSAL_EVENT_TYPES
+    assert eval_harness.EVAL_SEMANTIC_EVENT_TYPES is EVAL_SEMANTIC_EVENT_TYPES
+    assert eval_harness.EVAL_STRENGTH_EVENT_TYPES is EVAL_STRENGTH_EVENT_TYPES
     assert (
         inference_nightly.NIGHTLY_REFIT_TRIGGER_EVENT_TYPES
         is NIGHTLY_REFIT_TRIGGER_EVENT_TYPES
