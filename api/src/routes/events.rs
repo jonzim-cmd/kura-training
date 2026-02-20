@@ -1650,7 +1650,9 @@ fn check_event_plausibility(event_type: &str, data: &serde_json::Value) -> Vec<E
             {
                 warnings.push(EventWarning {
                     field: "name".to_string(),
-                    message: "training plan name missing; a deterministic fallback name will be used".to_string(),
+                    message:
+                        "training plan name missing; a deterministic fallback name will be used"
+                            .to_string(),
                     severity: "warning".to_string(),
                 });
             }
@@ -3741,11 +3743,7 @@ mod tests {
     fn test_training_plan_created_requires_sessions() {
         let req = make_request("training_plan.created", json!({"name": "Strength Block"}));
         let err = validate_event(&req).expect_err("expected policy violation");
-        assert_policy_violation(
-            err,
-            "inv_training_plan_sessions_required",
-            "data.sessions",
-        );
+        assert_policy_violation(err, "inv_training_plan_sessions_required", "data.sessions");
     }
 
     #[test]

@@ -7,12 +7,10 @@ use crate::HealthResponse;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/health", get(health_check))
-        .route(
-            "/.well-known/openai-apps-challenge",
-            get(|| async { "jkcsIVJmGCenL340S5SPfBGg3arpdUE6XYHGRBhbiKo" }),
-        )
+    Router::new().route("/health", get(health_check)).route(
+        "/.well-known/openai-apps-challenge",
+        get(|| async { "jkcsIVJmGCenL340S5SPfBGg3arpdUE6XYHGRBhbiKo" }),
+    )
 }
 
 /// Health check endpoint — verifies both API and database are operational

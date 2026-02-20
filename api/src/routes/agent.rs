@@ -3579,7 +3579,10 @@ fn extract_actual_frequency_per_week(
 
     for (candidate, source) in candidates {
         if let Some(value) = read_value_f64(candidate) {
-            return (Some((value * 100.0).round() / 100.0), Some(source.to_string()));
+            return (
+                Some((value * 100.0).round() / 100.0),
+                Some(source.to_string()),
+            );
         }
     }
 
@@ -3614,8 +3617,10 @@ fn extract_readiness_snapshot(
 
     if let Some(readiness_today) = data.get("readiness_today") {
         let readiness_mean = read_value_f64(readiness_today.get("mean"));
-        let readiness_state =
-            normalize_readiness_state(read_value_string(readiness_today.get("state")), readiness_mean);
+        let readiness_state = normalize_readiness_state(
+            read_value_string(readiness_today.get("state")),
+            readiness_mean,
+        );
         if readiness_mean.is_some() || readiness_state.is_some() {
             return (readiness_mean, readiness_state);
         }
@@ -3644,7 +3649,8 @@ fn build_agent_context_metric_snapshot(
     let user_data = user_profile.projection.data.get("user");
     let profile = user_data.and_then(|value| value.get("profile"));
     let user_profile_present = profile.is_some_and(|value| value.is_object());
-    let experience_level = read_value_string(profile.and_then(|value| value.get("experience_level")));
+    let experience_level =
+        read_value_string(profile.and_then(|value| value.get("experience_level")));
     let goals_count = user_data
         .and_then(|value| value.get("goals"))
         .and_then(Value::as_array)
@@ -12547,8 +12553,7 @@ mod tests {
                 "user": null
             }),
         );
-        let snapshot =
-            super::build_agent_context_metric_snapshot(&user_profile, None, None, None);
+        let snapshot = super::build_agent_context_metric_snapshot(&user_profile, None, None, None);
 
         assert!(!snapshot.user_profile_present);
         assert_eq!(snapshot.experience_level, None);
