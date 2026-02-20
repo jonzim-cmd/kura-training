@@ -20,6 +20,7 @@ from .external_import_error_taxonomy import external_import_error_taxonomy_v1
 from .external_import_mapping_v2 import import_mapping_contract_v2
 from .interview_guide import get_interview_guide
 from .registry import get_dimension_metadata
+from .capability_estimation_v1 import capability_estimation_contract_v1
 from .training_hardening_gate_v1 import hardening_gate_contract_v1
 from .training_legacy_compat import legacy_compat_contract_v1
 from .training_load_calibration_v1 import calibration_protocol_v1
@@ -1199,6 +1200,16 @@ def _get_conventions() -> dict[str, Any]:
                     "storage": "aggregated cohorts only, no per-user artifacts",
                 },
             },
+        },
+        "capability_estimation_v1": {
+            "rules": [
+                "Use a shared capability-estimation architecture for strength, sprint, jump, and endurance.",
+                "Keep observation model, latent state model, and output contract explicitly separated.",
+                "Expose machine-readable uncertainty and insufficiency diagnostics for agent-only consumers.",
+                "Track protocol/equipment comparability boundaries explicitly across all capabilities.",
+                "Roll out in deterministic migration phases with dependency order.",
+            ],
+            "contract": capability_estimation_contract_v1(),
         },
         "causal_inference": {
             "rules": [
