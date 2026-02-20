@@ -16,7 +16,7 @@ export default function SetupPage() {
   const tc = useTranslations('common');
   const [selectedAI, setSelectedAI] = useState<AI | null>(null);
   const [expertOpen, setExpertOpen] = useState(false);
-  const [ocMethod, setOcMethod] = useState<'mcp' | 'cli'>('mcp');
+  const [ocMethod, setOcMethod] = useState<'mcp' | 'cli'>('cli');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isFirstVisit, setIsFirstVisit] = useState(false);
   const { user, loading } = useAuth();
@@ -105,16 +105,16 @@ export default function SetupPage() {
 
                 <div className={styles.methodTabs}>
                   <button
-                    className={`${styles.methodTab} ${ocMethod === 'mcp' ? styles.methodTabActive : ''}`}
-                    onClick={() => setOcMethod('mcp')}
-                  >
-                    {t('openclaw.methodMcp')}
-                  </button>
-                  <button
                     className={`${styles.methodTab} ${ocMethod === 'cli' ? styles.methodTabActive : ''}`}
                     onClick={() => setOcMethod('cli')}
                   >
                     {t('openclaw.methodCli')}
+                  </button>
+                  <button
+                    className={`${styles.methodTab} ${ocMethod === 'mcp' ? styles.methodTabActive : ''}`}
+                    onClick={() => setOcMethod('mcp')}
+                  >
+                    {t('openclaw.methodMcp')}
                   </button>
                 </div>
 
