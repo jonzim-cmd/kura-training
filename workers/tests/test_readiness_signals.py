@@ -123,3 +123,26 @@ def test_readiness_load_uses_relative_intensity_and_stale_reference_fallback() -
     daily = result["daily_scores"]
     assert len(daily) == 2
     assert daily[0]["signals"]["load_score"] > daily[1]["signals"]["load_score"]
+
+
+def test_recovery_daily_checkin_contributes_to_readiness_signals() -> None:
+    rows = [
+        _row(
+            "recovery.daily_checkin",
+            {
+                "compact_input": "sleep=7.2 soreness=3 motivation=8 hrv=62",
+                "training_yesterday": "hard",
+            },
+            timestamp="2026-02-20T07:00:00+00:00",
+        ),
+    ]
+
+    result = build_readiness_daily_scores(rows, timezone_name="UTC")
+    daily = result["daily_scores"]
+    assert len(daily) == 1
+    entry = daily[0]
+    assert entry["signals"]["sleep_hours"] == 7.2
+    assert entry["signals"]["energy_level"] == 8.0
+    assert entry["signals"]["soreness_level"] == 3.0
+    assert entry["signals"]["load_score"] > 0.0
+    assert entry["missing_signals"] == []

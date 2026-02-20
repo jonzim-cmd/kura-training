@@ -311,6 +311,27 @@ class TestBodyCompositionIntegration:
         assert data["weight_trend"]["all_time"]["first_date"] == "2026-02-07"
         assert data["weight_trend"]["all_time"]["latest_date"] == "2026-02-08"
 
+    async def test_daily_checkin_bodyweight_updates_body_composition(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "recovery.daily_checkin", {
+            "compact_input": "78.4,7.2,3,8,62,no,no,0",
+        }, "TIMESTAMP '2026-02-09 07:30:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_body_composition(db, {
+            "user_id": test_user_id, "event_type": "recovery.daily_checkin",
+        })
+        await db.execute("RESET ROLE")
+
+        projection = await get_projection(db, test_user_id, "body_composition")
+        assert projection is not None
+        data = projection["data"]
+        assert data["current_weight_kg"] == 78.4
+        assert data["total_weigh_ins"] == 1
+        entry = data["weight_trend"]["recent_entries"][0]
+        assert entry["weight_kg"] == 78.4
+        assert entry["source"] == "recovery.daily_checkin"
+
 
 # ---------------------------------------------------------------------------
 # Exercise Progression (needs event_id in payload)
@@ -691,6 +712,30 @@ class TestRecoveryIntegration:
             "2026-02-07", "2026-02-08",
         ]
 
+    async def test_daily_checkin_populates_recovery_sections(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "recovery.daily_checkin", {
+            "compact_input": "78.4,7.2,3,8,62,no,no,0",
+            "physical_condition": 7,
+        }, "TIMESTAMP '2026-02-10 07:15:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_recovery(db, {
+            "user_id": test_user_id, "event_type": "recovery.daily_checkin",
+        })
+        await db.execute("RESET ROLE")
+
+        projection = await get_projection(db, test_user_id, "recovery")
+        assert projection is not None
+        data = projection["data"]
+        assert data["daily_checkins"]["recent_entries"][0]["bodyweight_kg"] == 78.4
+        assert data["daily_checkins"]["recent_entries"][0]["sleep_hours"] == 7.2
+        assert data["daily_checkins"]["recent_entries"][0]["soreness"] == 3.0
+        assert data["daily_checkins"]["recent_entries"][0]["motivation"] == 8.0
+        assert data["sleep"]["overall"]["total_entries"] == 1
+        assert data["soreness"]["total_entries"] == 1
+        assert data["energy"]["overall"]["total_entries"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Nutrition
@@ -1029,6 +1074,46 @@ class TestInferenceIntegration:
         dates = [entry["date"] for entry in data["daily_scores"]]
         assert "2026-02-01" in dates
         assert "2026-02-02" in dates
+
+    async def test_readiness_inference_uses_recovery_daily_checkin_signals(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "recovery.daily_checkin", {
+            "compact_input": "sleep=7.4 soreness=2 motivation=8 hrv=60",
+            "training_yesterday": "hard",
+        }, "TIMESTAMP '2026-02-10 07:00:00+01'")
+        await insert_event(db, test_user_id, "recovery.daily_checkin", {
+            "compact_input": "sleep=7.1 soreness=3 motivation=7 hrv=58",
+            "training_yesterday": "average",
+        }, "TIMESTAMP '2026-02-11 07:00:00+01'")
+        await insert_event(db, test_user_id, "recovery.daily_checkin", {
+            "compact_input": "sleep=6.9 soreness=4 motivation=6 hrv=55",
+            "training_yesterday": "easy",
+        }, "TIMESTAMP '2026-02-12 07:00:00+01'")
+        await insert_event(db, test_user_id, "recovery.daily_checkin", {
+            "compact_input": "sleep=7.6 soreness=2 motivation=8 hrv=64",
+            "training_yesterday": "hard",
+        }, "TIMESTAMP '2026-02-13 07:00:00+01'")
+        await insert_event(db, test_user_id, "recovery.daily_checkin", {
+            "compact_input": "sleep=7.3 soreness=2 motivation=9 hrv=66",
+            "training_yesterday": "rest",
+        }, "TIMESTAMP '2026-02-14 07:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_readiness_inference(db, {
+            "user_id": test_user_id,
+            "event_type": "recovery.daily_checkin",
+        })
+        await db.execute("RESET ROLE")
+
+        readiness = await get_projection(db, test_user_id, "readiness_inference")
+        assert readiness is not None
+        daily_scores = readiness["data"]["daily_scores"]
+        assert len(daily_scores) >= 5
+        latest = daily_scores[-1]
+        assert latest["signals"]["sleep_hours"] > 0
+        assert latest["signals"]["energy_level"] > 0
+        assert latest["signals"]["soreness_level"] >= 0
+        assert latest["signals"]["load_score"] >= 0
 
     async def test_inference_runs_mark_insufficient_data_as_skipped(self, db, test_user_id):
         await create_test_user(db, test_user_id)
@@ -2891,6 +2976,32 @@ class TestSessionCompletedNotOrphan:
         orphans = data_quality.get("orphaned_event_types", [])
         orphan_types = [o["event_type"] for o in orphans]
         assert "session.completed" not in orphan_types
+
+    async def test_user_profile_agenda_flags_missing_session_rpe_follow_up(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "bench_press",
+            "exercise": "Bench Press",
+            "weight_kg": 85,
+            "reps": 5,
+        }, "TIMESTAMP '2026-02-20 10:00:00+01'")
+        await insert_event(db, test_user_id, "profile.updated", {
+            "age": 31,
+            "bodyweight_kg": 78.4,
+        }, "TIMESTAMP '2026-02-20 11:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_user_profile(db, {
+            "user_id": test_user_id, "event_type": "set.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        projection = await get_projection(db, test_user_id, "user_profile", "me")
+        assert projection is not None
+        agenda = projection["data"]["agenda"]
+        item = next((entry for entry in agenda if entry["type"] == "session_rpe_follow_up"), None)
+        assert item is not None
+        assert item["evidence"]["type"] == "missing_session_completed"
 
 
 # ---------------------------------------------------------------------------

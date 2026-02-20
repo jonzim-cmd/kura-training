@@ -19,6 +19,7 @@ pub(super) const DEFAULT_AGENT_FORMAL_EVENT_TYPES: &[&str] = &[
     "sleep.logged",
     "soreness.logged",
     "energy.logged",
+    "recovery.daily_checkin",
     "preference.set",
     "observation.logged",
     "event.retracted",

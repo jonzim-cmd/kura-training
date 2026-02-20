@@ -9,6 +9,7 @@ READINESS_SIGNAL_EVENT_TYPES: tuple[str, ...] = (
     "sleep.logged",
     "soreness.logged",
     "energy.logged",
+    "recovery.daily_checkin",
     "external.activity_imported",
 )
 
@@ -26,6 +27,7 @@ CAUSAL_SIGNAL_EVENT_TYPES: tuple[str, ...] = (
     "set.corrected",
     "energy.logged",
     "soreness.logged",
+    "recovery.daily_checkin",
     "exercise.alias_created",
     "external.activity_imported",
 )
@@ -38,6 +40,7 @@ NIGHTLY_REFIT_TRIGGER_EVENT_TYPES: tuple[str, ...] = (
     "sleep.logged",
     "soreness.logged",
     "energy.logged",
+    "recovery.daily_checkin",
     "external.activity_imported",
 )
 

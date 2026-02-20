@@ -10,6 +10,7 @@ from collections import defaultdict
 from datetime import date, datetime
 from typing import Any
 
+from .recovery_daily_checkin import normalize_daily_checkin_payload
 from .training_load_calibration_v1 import (
     active_calibration_version,
     calibration_profile_for_version,
@@ -17,6 +18,13 @@ from .training_load_calibration_v1 import (
 )
 from .training_signal_normalization import normalize_training_signal_rows
 from .utils import normalize_temporal_point
+
+_CHECKIN_TRAINING_LOAD_SCORE: dict[str, float] = {
+    "rest": 0.0,
+    "easy": 0.45,
+    "average": 0.9,
+    "hard": 1.35,
+}
 
 
 def _as_float(value: Any) -> float | None:
@@ -133,6 +141,7 @@ def build_readiness_daily_scores(
             "sleep.logged",
             "soreness.logged",
             "energy.logged",
+            "recovery.daily_checkin",
             "external.activity_imported",
         }:
             continue
@@ -175,6 +184,30 @@ def build_readiness_daily_scores(
             if severity is not None and severity >= 0.0:
                 bucket["soreness_sum"] += severity
                 bucket["soreness_entries"] += 1
+        elif event_type == "recovery.daily_checkin":
+            normalized = normalize_daily_checkin_payload(data if isinstance(data, dict) else {})
+
+            sleep_hours = _as_float(normalized.get("sleep_hours"))
+            if sleep_hours is not None and sleep_hours > 0.0:
+                bucket["sleep_sum"] += sleep_hours
+                bucket["sleep_entries"] += 1
+
+            motivation = _as_float(normalized.get("motivation"))
+            if motivation is not None and motivation > 0.0:
+                bucket["energy_sum"] += motivation
+                bucket["energy_entries"] += 1
+
+            soreness = _as_float(normalized.get("soreness"))
+            if soreness is not None and soreness >= 0.0:
+                bucket["soreness_sum"] += soreness
+                bucket["soreness_entries"] += 1
+
+            training_tag = normalized.get("training_yesterday")
+            if isinstance(training_tag, str):
+                mapped_load = _CHECKIN_TRAINING_LOAD_SCORE.get(training_tag.strip().lower())
+                if mapped_load is not None and mapped_load > 0.0:
+                    bucket["load_score"] += mapped_load
+                    bucket["load_entries"] += 1
 
         for load_row in _iter_event_load_rows(event_type, data):
             components = compute_row_load_components_v2(data=load_row, profile=profile)

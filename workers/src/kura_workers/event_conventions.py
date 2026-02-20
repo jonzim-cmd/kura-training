@@ -628,6 +628,71 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
             },
             "example": {"level": 7, "time_of_day": "pre-workout"},
         },
+        "recovery.daily_checkin": {
+            "category": "tracking",
+            "description": (
+                "Morning check-in for recovery/readiness. Core fields stay fast; "
+                "additional context is optional."
+            ),
+            "fields": {
+                "bodyweight_kg": "number (optional, 20..300)",
+                "sleep_hours": "number (optional, 0..20)",
+                "soreness": "number (optional, 0..10)",
+                "motivation": "number (optional, 1..10)",
+                "hrv_rmssd": "number (optional, >0)",
+                "sleep_quality": "number (optional, 1..10)",
+                "physical_condition": "number (optional, 1..10)",
+                "lifestyle_stability": (
+                    "number (optional, 1..10; low=unstable/high=routine)"
+                ),
+                "traveling_yesterday": "boolean (optional)",
+                "sick_today": "boolean (optional)",
+                "alcohol_last_night": "string (optional: none, little, too_much)",
+                "training_yesterday": "string (optional: rest, easy, average, hard)",
+                "supplements": "list[string] (optional)",
+                "notes": "string (optional)",
+                "compact_input": (
+                    "string (optional fast input). "
+                    "Positional order: bodyweight,sleep,soreness,motivation"
+                    "[,hrv,sick,travel,alcohol]. "
+                    "Also supports key-value tokens like sleep=7.2,soreness=3."
+                ),
+            },
+            "example": {
+                "bodyweight_kg": 78.4,
+                "sleep_hours": 7.2,
+                "soreness": 3,
+                "motivation": 8,
+                "hrv_rmssd": 62,
+                "traveling_yesterday": False,
+                "sick_today": False,
+                "alcohol_last_night": "none",
+            },
+            "ux_contract": {
+                "core_required_for_prompting": [
+                    "bodyweight_kg",
+                    "sleep_hours",
+                    "soreness",
+                    "motivation",
+                ],
+                "optional_context": [
+                    "hrv_rmssd",
+                    "sleep_quality",
+                    "physical_condition",
+                    "lifestyle_stability",
+                    "traveling_yesterday",
+                    "sick_today",
+                    "alcohol_last_night",
+                    "training_yesterday",
+                    "supplements",
+                    "notes",
+                ],
+                "agent_rule": (
+                    "Do not force optional fields; collect them only when user provides "
+                    "or when uncertainty/context requires follow-up."
+                ),
+            },
+        },
         # --- Nutrition ---
         "meal.logged": {
             "category": "tracking",

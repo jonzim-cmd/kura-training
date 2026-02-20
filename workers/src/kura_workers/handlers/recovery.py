@@ -15,6 +15,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
+from ..recovery_daily_checkin import normalize_daily_checkin_payload
 from ..registry import projection_handler
 from ..utils import (
     get_retracted_event_ids,
@@ -27,9 +28,34 @@ from ..utils import (
 
 logger = logging.getLogger(__name__)
 
-_KNOWN_FIELDS_SLEEP: set[str] = {"duration_hours", "quality", "bed_time", "bedtime", "wake_time"}
+_KNOWN_FIELDS_SLEEP: set[str] = {
+    "duration_hours",
+    "quality",
+    "bed_time",
+    "bedtime",
+    "wake_time",
+    "hrv_rmssd",
+    "sleep_quality",
+}
 _KNOWN_FIELDS_SORENESS: set[str] = {"area", "severity", "notes"}
 _KNOWN_FIELDS_ENERGY: set[str] = {"level", "time_of_day"}
+_KNOWN_FIELDS_DAILY_CHECKIN: set[str] = {
+    "bodyweight_kg",
+    "sleep_hours",
+    "soreness",
+    "motivation",
+    "hrv_rmssd",
+    "sleep_quality",
+    "physical_condition",
+    "lifestyle_stability",
+    "traveling_yesterday",
+    "sick_today",
+    "alcohol_last_night",
+    "training_yesterday",
+    "supplements",
+    "notes",
+    "compact_input",
+}
 
 
 def _iso_week(d: date) -> str:
@@ -59,7 +85,13 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     return result
 
 
-@projection_handler("sleep.logged", "soreness.logged", "energy.logged", "sleep_target.set", dimension_meta={
+@projection_handler(
+    "sleep.logged",
+    "soreness.logged",
+    "energy.logged",
+    "recovery.daily_checkin",
+    "sleep_target.set",
+    dimension_meta={
     "name": "recovery",
     "description": "Recovery signals: sleep, soreness, energy levels",
     "key_structure": "single overview per user",
@@ -82,7 +114,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "assumption_disclosure": "string|null",
         },
         "sleep": {
-            "recent_entries": [{"date": "ISO 8601 date", "duration_hours": "number", "quality": "string (optional)", "bed_time": "string (optional)", "wake_time": "string (optional)"}],
+            "recent_entries": [{"date": "ISO 8601 date", "duration_hours": "number", "quality": "string (optional)", "quality_score": "number (optional, 1-10)", "hrv_rmssd": "number (optional)", "bed_time": "string (optional)", "wake_time": "string (optional)"}],
             "weekly_average": [{"week": "ISO 8601 week", "avg_duration_hours": "number", "entries": "integer"}],
             "overall": {"avg_duration_hours": "number", "total_entries": "integer"},
         },
@@ -96,6 +128,24 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "weekly_average": [{"week": "ISO 8601 week", "avg_level": "number", "entries": "integer"}],
             "overall": {"avg_level": "number", "total_entries": "integer"},
         },
+        "daily_checkins": {
+            "recent_entries": [{
+                "date": "ISO 8601 date",
+                "bodyweight_kg": "number (optional)",
+                "sleep_hours": "number (optional)",
+                "soreness": "number (optional)",
+                "motivation": "number (optional)",
+                "hrv_rmssd": "number (optional)",
+                "sleep_quality": "number (optional)",
+                "physical_condition": "number (optional)",
+                "lifestyle_stability": "number (optional)",
+                "traveling_yesterday": "boolean (optional)",
+                "sick_today": "boolean (optional)",
+                "alcohol_last_night": "string (optional)",
+                "training_yesterday": "string (optional)",
+                "quality_flags": ["string"],
+            }],
+        },
         "targets": {"sleep": "object — from sleep_target.set event data (optional)"},
         "data_quality": {
             "anomalies": [{"event_id": "string", "field": "string", "value": "any", "expected_range": "[min, max]", "message": "string"}],
@@ -104,7 +154,8 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
         },
     },
     "manifest_contribution": _manifest_contribution,
-})
+    },
+)
 async def update_recovery(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
 ) -> None:
@@ -121,7 +172,7 @@ async def update_recovery(
             SELECT id, timestamp, event_type, data, metadata
             FROM events
             WHERE user_id = %s
-              AND event_type IN ('sleep.logged', 'soreness.logged', 'energy.logged')
+              AND event_type IN ('sleep.logged', 'soreness.logged', 'energy.logged', 'recovery.daily_checkin')
             ORDER BY timestamp ASC
             """,
             (user_id,),
@@ -176,6 +227,7 @@ async def update_recovery(
     # Energy data
     energy_entries: list[dict[str, Any]] = []
     energy_by_week: dict[str, list[float]] = defaultdict(list)
+    daily_checkin_entries: list[dict[str, Any]] = []
 
     anomalies: list[dict[str, Any]] = []
     observed_attr_counts: dict[str, dict[str, int]] = {}
@@ -287,6 +339,120 @@ async def update_recovery(
             energy_entries.append(eentry)
             energy_by_week[_iso_week(d)].append(level)
 
+        elif event_type == "recovery.daily_checkin":
+            _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS_DAILY_CHECKIN)
+            merge_observed_attributes(observed_attr_counts, event_type, unknown)
+            normalized = normalize_daily_checkin_payload(data if isinstance(data, dict) else {})
+
+            checkin_entry: dict[str, Any] = {"date": d.isoformat()}
+            for key in (
+                "bodyweight_kg",
+                "sleep_hours",
+                "soreness",
+                "motivation",
+                "hrv_rmssd",
+                "sleep_quality",
+                "physical_condition",
+                "lifestyle_stability",
+                "traveling_yesterday",
+                "sick_today",
+                "alcohol_last_night",
+                "training_yesterday",
+                "supplements",
+            ):
+                value = normalized.get(key)
+                if value is not None:
+                    checkin_entry[key] = value
+
+            quality_flags = list(normalized.get("quality_flags") or [])
+            if quality_flags:
+                checkin_entry["quality_flags"] = quality_flags
+            if normalized.get("parsed_from_compact"):
+                checkin_entry["parsed_from_compact"] = True
+                checkin_entry["compact_input_mode"] = normalized.get("compact_input_mode")
+
+            notes = normalized.get("notes")
+            if isinstance(notes, str) and notes.strip():
+                checkin_entry["notes"] = notes.strip()
+
+            daily_checkin_entries.append(checkin_entry)
+
+            sleep_hours = normalized.get("sleep_hours")
+            if isinstance(sleep_hours, (int, float)):
+                duration = float(sleep_hours)
+                if duration < 0 or duration > 20:
+                    anomalies.append({
+                        "event_id": str(row["id"]),
+                        "field": "sleep_hours",
+                        "value": duration,
+                        "expected_range": [0, 20],
+                        "message": (
+                            f"Daily check-in sleep_hours {duration} outside plausible range "
+                            f"on {d.isoformat()}"
+                        ),
+                    })
+                else:
+                    sleep_entry: dict[str, Any] = {
+                        "date": d.isoformat(),
+                        "duration_hours": round(duration, 2),
+                    }
+                    sleep_quality = normalized.get("sleep_quality")
+                    if isinstance(sleep_quality, (int, float)):
+                        sleep_entry["quality_score"] = float(sleep_quality)
+                    hrv_rmssd = normalized.get("hrv_rmssd")
+                    if isinstance(hrv_rmssd, (int, float)):
+                        sleep_entry["hrv_rmssd"] = float(hrv_rmssd)
+                    sleep_entries.append(sleep_entry)
+                    sleep_by_week[_iso_week(d)].append(duration)
+
+            soreness = normalized.get("soreness")
+            if isinstance(soreness, (int, float)):
+                severity_float = float(soreness)
+                if severity_float < 0 or severity_float > 10:
+                    anomalies.append({
+                        "event_id": str(row["id"]),
+                        "field": "soreness",
+                        "value": severity_float,
+                        "expected_range": [0, 10],
+                        "message": (
+                            f"Daily check-in soreness {severity_float} outside plausible range "
+                            f"on {d.isoformat()}"
+                        ),
+                    })
+                else:
+                    soreness_entry: dict[str, Any] = {
+                        "date": d.isoformat(),
+                        "area": "overall",
+                        "severity": int(round(severity_float)),
+                    }
+                    if isinstance(notes, str) and notes.strip():
+                        soreness_entry["notes"] = notes.strip()
+                    soreness_entries.append(soreness_entry)
+
+            motivation = normalized.get("motivation")
+            if isinstance(motivation, (int, float)):
+                level = float(motivation)
+                if level < 1 or level > 10:
+                    anomalies.append({
+                        "event_id": str(row["id"]),
+                        "field": "motivation",
+                        "value": level,
+                        "expected_range": [1, 10],
+                        "message": (
+                            f"Daily check-in motivation {level} outside plausible range "
+                            f"on {d.isoformat()}"
+                        ),
+                    })
+                else:
+                    energy_entries.append(
+                        {
+                            "date": d.isoformat(),
+                            "level": round(level, 2),
+                            "time_of_day": "morning",
+                        }
+                    )
+                    energy_by_week[_iso_week(d)].append(level)
+
     # Build sleep section
     sleep_data: dict[str, Any] = {}
     if sleep_entries:
@@ -341,11 +507,16 @@ async def update_recovery(
             "total_entries": len(energy_entries),
         }
 
+    daily_checkins_data: dict[str, Any] = {}
+    if daily_checkin_entries:
+        daily_checkins_data["recent_entries"] = daily_checkin_entries[-30:]
+
     projection_data: dict[str, Any] = {
         "timezone_context": timezone_context,
         "sleep": sleep_data,
         "soreness": soreness_data,
         "energy": energy_data,
+        "daily_checkins": daily_checkins_data,
         "data_quality": {
             "anomalies": anomalies,
             "observed_attributes": observed_attr_counts,
@@ -373,12 +544,13 @@ async def update_recovery(
     logger.info(
         (
             "Updated recovery for user=%s "
-            "(sleep=%d, soreness=%d, energy=%d, timezone=%s, assumed=%s)"
+            "(sleep=%d, soreness=%d, energy=%d, daily_checkins=%d, timezone=%s, assumed=%s)"
         ),
         user_id,
         len(sleep_entries),
         len(soreness_entries),
         len(energy_entries),
+        len(daily_checkin_entries),
         timezone_name,
         timezone_context["assumed"],
     )

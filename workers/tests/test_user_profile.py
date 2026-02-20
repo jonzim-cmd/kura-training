@@ -4,21 +4,24 @@ System layer tests are in test_system_config.py — user_profile only produces
 user + agenda (dynamic per-user data).
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from kura_workers.handlers.user_profile import (
     _build_agenda,
     _build_data_quality,
     _build_observed_patterns,
+    _build_session_rpe_follow_up_signal,
     _build_user_dimensions,
     _compute_baseline_profile_summary,
     _compute_interview_coverage,
+    _derive_yesterday_training_summary,
     _escalate_priority,
     _find_orphaned_event_types,
     _find_unconfirmed_aliases,
     _resolve_exercises,
     _should_suggest_onboarding,
     _should_suggest_refresh,
+    _training_tag_from_session_rpe,
 )
 
 
@@ -263,6 +266,88 @@ class TestBuildAgenda:
         assert types[0] == "resolve_exercises"
         assert types[1] == "confirm_alias"
         assert types[2] == "confirm_alias"
+
+    def test_session_rpe_follow_up_item_is_added(self):
+        result = _build_agenda(
+            unresolved_exercises=[],
+            unconfirmed_aliases=[],
+            session_rpe_follow_up={
+                "date": "2026-02-20",
+                "type": "missing_session_completed",
+                "training_events": 1,
+                "session_feedback_events": 0,
+            },
+        )
+        assert len(result) == 1
+        item = result[0]
+        assert item["type"] == "session_rpe_follow_up"
+        assert item["priority"] == "medium"
+        assert "session RPE" in item["detail"]
+        assert item["evidence"]["date"] == "2026-02-20"
+
+
+class TestSessionRpeFollowUpSignal:
+    def test_detects_missing_session_completed_after_training(self):
+        signal = _build_session_rpe_follow_up_signal(
+            latest_timestamp=datetime(2026, 2, 20, 10, 0, tzinfo=timezone.utc),
+            timezone_name="UTC",
+            training_activity_by_day={date(2026, 2, 20): 1},
+            session_feedback_by_day={},
+            session_rpe_by_day={},
+        )
+        assert signal is not None
+        assert signal["type"] == "missing_session_completed"
+        assert signal["date"] == "2026-02-20"
+
+    def test_detects_missing_rpe_when_feedback_exists(self):
+        signal = _build_session_rpe_follow_up_signal(
+            latest_timestamp=datetime(2026, 2, 20, 10, 0, tzinfo=timezone.utc),
+            timezone_name="UTC",
+            training_activity_by_day={date(2026, 2, 20): 1},
+            session_feedback_by_day={date(2026, 2, 20): 1},
+            session_rpe_by_day={},
+        )
+        assert signal is not None
+        assert signal["type"] == "missing_session_rpe"
+
+    def test_no_follow_up_when_rpe_available(self):
+        signal = _build_session_rpe_follow_up_signal(
+            latest_timestamp=datetime(2026, 2, 20, 10, 0, tzinfo=timezone.utc),
+            timezone_name="UTC",
+            training_activity_by_day={date(2026, 2, 20): 1},
+            session_feedback_by_day={date(2026, 2, 20): 1},
+            session_rpe_by_day={date(2026, 2, 20): [8.0]},
+        )
+        assert signal is None
+
+
+class TestYesterdayTrainingSummary:
+    def test_training_tag_from_session_rpe_thresholds(self):
+        assert _training_tag_from_session_rpe(3.5) == "easy"
+        assert _training_tag_from_session_rpe(6.0) == "average"
+        assert _training_tag_from_session_rpe(8.0) == "hard"
+
+    def test_derive_yesterday_training_summary_no_training(self):
+        summary = _derive_yesterday_training_summary(
+            reference_timestamp=datetime(2026, 2, 20, 10, 0, tzinfo=timezone.utc),
+            timezone_name="UTC",
+            training_activity_by_day={},
+            session_rpe_by_day={},
+        )
+        assert summary["date"] == "2026-02-19"
+        assert summary["tag"] == "rest"
+        assert summary["source"] == "auto:no_training_logged"
+
+    def test_derive_yesterday_training_summary_uses_session_rpe_when_available(self):
+        summary = _derive_yesterday_training_summary(
+            reference_timestamp=datetime(2026, 2, 20, 10, 0, tzinfo=timezone.utc),
+            timezone_name="UTC",
+            training_activity_by_day={date(2026, 2, 19): 1},
+            session_rpe_by_day={date(2026, 2, 19): [8.0]},
+        )
+        assert summary["tag"] == "hard"
+        assert summary["source"] == "auto:session_rpe"
+        assert summary["session_rpe_avg"] == 8.0
 
 
 # --- TestThreeLayerOutput ---

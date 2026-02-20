@@ -170,6 +170,7 @@ class TestEventConventions:
             "session.logged",
             "bodyweight.logged", "measurement.logged",
             "sleep.logged", "soreness.logged", "energy.logged",
+            "recovery.daily_checkin",
             "meal.logged",
             "training_plan.created", "training_plan.updated", "training_plan.archived",
             "program.started",

@@ -1,6 +1,6 @@
 """Body Composition dimension handler.
 
-Reacts to bodyweight.logged and measurement.logged events.
+Reacts to bodyweight.logged, measurement.logged, and recovery.daily_checkin events.
 Computes weight trends, measurement history, and all-time stats.
 
 Full recompute on every event — idempotent by design.
@@ -15,6 +15,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
+from ..recovery_daily_checkin import normalize_daily_checkin_payload
 from ..registry import projection_handler
 from ..utils import (
     get_retracted_event_ids,
@@ -29,6 +30,23 @@ logger = logging.getLogger(__name__)
 
 _KNOWN_FIELDS_BODYWEIGHT: set[str] = {"weight_kg", "time_of_day", "conditions"}
 _KNOWN_FIELDS_MEASUREMENT: set[str] = {"type", "value_cm", "side"}
+_KNOWN_FIELDS_DAILY_CHECKIN: set[str] = {
+    "bodyweight_kg",
+    "sleep_hours",
+    "soreness",
+    "motivation",
+    "hrv_rmssd",
+    "sleep_quality",
+    "physical_condition",
+    "lifestyle_stability",
+    "traveling_yesterday",
+    "sick_today",
+    "alcohol_last_night",
+    "training_yesterday",
+    "supplements",
+    "notes",
+    "compact_input",
+}
 
 
 def _iso_week(d: date) -> str:
@@ -55,7 +73,12 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     return result
 
 
-@projection_handler("bodyweight.logged", "measurement.logged", "weight_target.set", dimension_meta={
+@projection_handler(
+    "bodyweight.logged",
+    "measurement.logged",
+    "recovery.daily_checkin",
+    "weight_target.set",
+    dimension_meta={
     "name": "body_composition",
     "description": "Body weight and measurements over time",
     "key_structure": "single overview per user",
@@ -80,7 +103,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "assumption_disclosure": "string|null",
         },
         "weight_trend": {
-            "recent_entries": [{"date": "ISO 8601 date", "weight_kg": "number", "time_of_day": "string (optional)", "conditions": "string (optional)"}],
+            "recent_entries": [{"date": "ISO 8601 date", "weight_kg": "number", "time_of_day": "string (optional)", "conditions": "string (optional)", "source": "string (optional)"}],
             "weekly_average": [{"week": "ISO 8601 week", "avg_weight_kg": "number", "measurements": "integer"}],
             "all_time": {"min_kg": "number", "max_kg": "number", "first_date": "ISO 8601 date", "latest_date": "ISO 8601 date", "total_entries": "integer"},
         },
@@ -118,7 +141,7 @@ async def update_body_composition(
             SELECT id, timestamp, event_type, data, metadata
             FROM events
             WHERE user_id = %s
-              AND event_type IN ('bodyweight.logged', 'measurement.logged')
+              AND event_type IN ('bodyweight.logged', 'measurement.logged', 'recovery.daily_checkin')
             ORDER BY timestamp ASC
             """,
             (user_id,),
@@ -190,13 +213,25 @@ async def update_body_composition(
             temporal_conflicts[conflict] = temporal_conflicts.get(conflict, 0) + 1
         event_type = row["event_type"]
 
-        if event_type == "bodyweight.logged":
-            _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS_BODYWEIGHT)
-            merge_observed_attributes(observed_attr_counts, event_type, unknown)
+        if event_type in {"bodyweight.logged", "recovery.daily_checkin"}:
+            source = "bodyweight.logged"
+            if event_type == "bodyweight.logged":
+                _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS_BODYWEIGHT)
+                merge_observed_attributes(observed_attr_counts, event_type, unknown)
+                raw_weight = data.get("weight_kg")
+            else:
+                _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS_DAILY_CHECKIN)
+                merge_observed_attributes(observed_attr_counts, event_type, unknown)
+                normalized = normalize_daily_checkin_payload(data if isinstance(data, dict) else {})
+                raw_weight = normalized.get("bodyweight_kg")
+                source = "recovery.daily_checkin"
+
             try:
-                weight = float(data["weight_kg"])
-            except (KeyError, ValueError, TypeError):
-                logger.warning("Skipping bodyweight event %s: invalid weight_kg", row["id"])
+                if raw_weight is None:
+                    continue
+                weight = float(raw_weight)
+            except (ValueError, TypeError):
+                logger.warning("Skipping %s event %s: invalid bodyweight value", event_type, row["id"])
                 continue
 
             # Anomaly detection: absolute bounds
@@ -231,10 +266,12 @@ async def update_body_composition(
                 "date": d.isoformat(),
                 "weight_kg": weight,
             }
-            if "time_of_day" in data:
+            if event_type == "bodyweight.logged" and "time_of_day" in data:
                 entry["time_of_day"] = data["time_of_day"]
-            if "conditions" in data:
+            if event_type == "bodyweight.logged" and "conditions" in data:
                 entry["conditions"] = data["conditions"]
+            if source != "bodyweight.logged":
+                entry["source"] = source
             all_weights.append(entry)
 
         elif event_type == "measurement.logged":

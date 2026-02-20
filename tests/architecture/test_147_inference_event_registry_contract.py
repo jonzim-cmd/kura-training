@@ -20,6 +20,9 @@ def test_inference_event_registry_declares_required_canonical_coverage() -> None
     nightly = set(NIGHTLY_REFIT_TRIGGER_EVENT_TYPES)
 
     assert {"set.logged", "session.logged", "set.corrected", "external.activity_imported"} <= readiness
+    assert "recovery.daily_checkin" in readiness
+    assert "recovery.daily_checkin" in causal
+    assert "recovery.daily_checkin" in nightly
     assert {"session.logged", "set.corrected", "exercise.alias_created"} <= causal
     assert {"session.logged", "set.corrected", "external.activity_imported"} <= nightly
     assert set(READINESS_SIGNAL_EVENT_TYPES) <= set(EVAL_READINESS_EVENT_TYPES)

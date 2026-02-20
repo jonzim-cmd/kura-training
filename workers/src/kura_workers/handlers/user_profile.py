@@ -13,12 +13,14 @@ Reacts to all relevant event types. Full recompute on every event — idempotent
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import psycopg
 from psycopg.rows import dict_row
 
+from ..recovery_daily_checkin import normalize_daily_checkin_payload
 from ..registry import get_dimension_metadata, projection_handler, registered_event_types
 from ..utils import get_retracted_event_ids
 
@@ -99,6 +101,120 @@ def _infer_modality_from_session_blocks(blocks: list[dict[str, Any]]) -> str | N
         return "strength"
     if has_endurance:
         return "endurance"
+    return None
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_session_rpe(data: dict[str, Any]) -> float | None:
+    for key in ("perceived_exertion", "session_rpe", "exertion", "rpe_summary"):
+        parsed = _as_float(data.get(key))
+        if parsed is None:
+            continue
+        if 1.0 <= parsed <= 10.0:
+            return parsed
+    return None
+
+
+def _resolve_timezone_name(preferences: dict[str, Any]) -> str:
+    for key in ("timezone", "time_zone"):
+        value = preferences.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "UTC"
+
+
+def _local_date_for_timestamp(ts: datetime, timezone_name: str) -> date:
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    try:
+        tz = ZoneInfo(timezone_name)
+    except Exception:
+        tz = timezone.utc
+    return ts.astimezone(tz).date()
+
+
+def _training_tag_from_session_rpe(session_rpe: float) -> str:
+    if session_rpe <= 4.0:
+        return "easy"
+    if session_rpe <= 7.0:
+        return "average"
+    return "hard"
+
+
+def _derive_yesterday_training_summary(
+    *,
+    reference_timestamp: datetime,
+    timezone_name: str,
+    training_activity_by_day: dict[date, int],
+    session_rpe_by_day: dict[date, list[float]],
+) -> dict[str, Any]:
+    reference_day = _local_date_for_timestamp(reference_timestamp, timezone_name)
+    yesterday = reference_day - timedelta(days=1)
+    activity_count = int(training_activity_by_day.get(yesterday, 0))
+    day_rpe_values = list(session_rpe_by_day.get(yesterday) or [])
+
+    if activity_count <= 0:
+        return {
+            "date": yesterday.isoformat(),
+            "tag": "rest",
+            "source": "auto:no_training_logged",
+            "training_events": 0,
+        }
+
+    if day_rpe_values:
+        avg_rpe = round(sum(day_rpe_values) / len(day_rpe_values), 2)
+        return {
+            "date": yesterday.isoformat(),
+            "tag": _training_tag_from_session_rpe(avg_rpe),
+            "source": "auto:session_rpe",
+            "training_events": activity_count,
+            "session_rpe_avg": avg_rpe,
+        }
+
+    return {
+        "date": yesterday.isoformat(),
+        "tag": "average",
+        "source": "auto:training_logged_without_rpe",
+        "training_events": activity_count,
+    }
+
+
+def _build_session_rpe_follow_up_signal(
+    *,
+    latest_timestamp: datetime,
+    timezone_name: str,
+    training_activity_by_day: dict[date, int],
+    session_feedback_by_day: dict[date, int],
+    session_rpe_by_day: dict[date, list[float]],
+    lookback_days: int = 3,
+) -> dict[str, Any] | None:
+    reference_day = _local_date_for_timestamp(latest_timestamp, timezone_name)
+    for offset in range(0, lookback_days + 1):
+        day = reference_day - timedelta(days=offset)
+        activity_count = int(training_activity_by_day.get(day, 0))
+        if activity_count <= 0:
+            continue
+        rpe_values = list(session_rpe_by_day.get(day) or [])
+        if rpe_values:
+            continue
+        feedback_count = int(session_feedback_by_day.get(day, 0))
+        missing_type = (
+            "missing_session_completed" if feedback_count == 0 else "missing_session_rpe"
+        )
+        return {
+            "date": day.isoformat(),
+            "type": missing_type,
+            "training_events": activity_count,
+            "session_feedback_events": feedback_count,
+        }
     return None
 
 
@@ -683,6 +799,7 @@ def _build_agenda(
     has_preferences: bool = False,
     observed_patterns: dict[str, Any] | None = None,
     baseline_summary: dict[str, Any] | None = None,
+    session_rpe_follow_up: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Build proactive agenda items for the agent.
 
@@ -728,6 +845,27 @@ def _build_agenda(
                 ),
                 "dimensions": ["user_profile"],
             })
+
+    if session_rpe_follow_up:
+        missing_type = str(session_rpe_follow_up.get("type") or "")
+        day = str(session_rpe_follow_up.get("date") or "unknown_day")
+        if missing_type == "missing_session_completed":
+            detail = (
+                f"Training logged on {day}, but no session.completed feedback found. "
+                "Ask for quick post-session feedback with session RPE (1-10)."
+            )
+        else:
+            detail = (
+                f"Session feedback exists for {day}, but perceived_exertion/session_rpe is missing. "
+                "Ask one follow-up for session RPE (1-10)."
+            )
+        agenda.append({
+            "priority": "medium",
+            "type": "session_rpe_follow_up",
+            "detail": detail,
+            "dimensions": ["session_feedback", "user_profile"],
+            "evidence": session_rpe_follow_up,
+        })
 
     # Data quality items
     if unresolved_exercises:
@@ -819,6 +957,7 @@ def _build_agenda(
     "sleep.logged",
     "soreness.logged",
     "energy.logged",
+    "recovery.daily_checkin",
     "meal.logged",
     "training_plan.created",
     "training_plan.updated",
@@ -847,7 +986,7 @@ async def update_user_profile(
               AND event_type IN (
                   'set.logged', 'session.logged', 'set.corrected', 'exercise.alias_created', 'preference.set',
                   'goal.set', 'profile.updated', 'program.started', 'injury.reported',
-                  'bodyweight.logged', 'session.completed',
+                  'bodyweight.logged', 'session.completed', 'recovery.daily_checkin',
                   'workflow.onboarding.closed', 'workflow.onboarding.override_granted'
               )
             ORDER BY timestamp ASC
@@ -887,6 +1026,10 @@ async def update_user_profile(
     workflow_onboarding_closed = False
     workflow_override_count = 0
     workflow_last_transition_at: str | None = None
+    training_activity_timestamps: list[datetime] = []
+    session_feedback_timestamps: list[datetime] = []
+    session_feedback_rpe_points: list[tuple[datetime, float]] = []
+    latest_daily_checkin_summary: dict[str, Any] | None = None
 
     first_event = rows[0]["timestamp"]
     last_event = rows[-1]["timestamp"]
@@ -900,6 +1043,7 @@ async def update_user_profile(
         if event_type == "set.logged":
             total_set_logged += 1
             ts_date = row["timestamp"].date().isoformat()
+            training_activity_timestamps.append(row["timestamp"])
             if first_set_logged_date is None:
                 first_set_logged_date = ts_date
             last_set_logged_date = ts_date
@@ -925,6 +1069,7 @@ async def update_user_profile(
 
             total_set_logged += len(blocks) if blocks else 1
             ts_date = row["timestamp"].date().isoformat()
+            training_activity_timestamps.append(row["timestamp"])
             if first_set_logged_date is None:
                 first_set_logged_date = ts_date
             last_set_logged_date = ts_date
@@ -984,6 +1129,22 @@ async def update_user_profile(
                 bodyweight_event_count += 1
                 latest_bodyweight_kg = bodyweight
 
+        elif event_type == "session.completed":
+            session_feedback_timestamps.append(row["timestamp"])
+            parsed_rpe = _extract_session_rpe(data if isinstance(data, dict) else {})
+            if parsed_rpe is not None:
+                session_feedback_rpe_points.append((row["timestamp"], parsed_rpe))
+
+        elif event_type == "recovery.daily_checkin":
+            normalized = normalize_daily_checkin_payload(data if isinstance(data, dict) else {})
+            latest_daily_checkin_summary = {
+                "timestamp": row["timestamp"],
+                "provided_training_yesterday": normalized.get("training_yesterday"),
+                "parsed_from_compact": bool(normalized.get("parsed_from_compact")),
+                "compact_input_mode": normalized.get("compact_input_mode"),
+                "quality_flags": list(normalized.get("quality_flags") or []),
+            }
+
         elif event_type == "workflow.onboarding.closed":
             workflow_onboarding_closed = True
             workflow_last_transition_at = row["timestamp"].isoformat()
@@ -1006,6 +1167,64 @@ async def update_user_profile(
         "override_count": workflow_override_count,
         "last_transition_at": workflow_last_transition_at,
     }
+    timezone_name = _resolve_timezone_name(preferences)
+
+    training_activity_by_day: dict[date, int] = defaultdict(int)
+    for timestamp in training_activity_timestamps:
+        training_activity_by_day[_local_date_for_timestamp(timestamp, timezone_name)] += 1
+
+    session_feedback_by_day: dict[date, int] = defaultdict(int)
+    for timestamp in session_feedback_timestamps:
+        session_feedback_by_day[_local_date_for_timestamp(timestamp, timezone_name)] += 1
+
+    session_rpe_by_day: dict[date, list[float]] = defaultdict(list)
+    for timestamp, session_rpe in session_feedback_rpe_points:
+        session_rpe_by_day[_local_date_for_timestamp(timestamp, timezone_name)].append(
+            float(session_rpe)
+        )
+
+    reference_for_yesterday = last_event
+    provided_training_yesterday: str | None = None
+    if latest_daily_checkin_summary is not None:
+        summary_ts = latest_daily_checkin_summary.get("timestamp")
+        if isinstance(summary_ts, datetime):
+            reference_for_yesterday = summary_ts
+        provided = latest_daily_checkin_summary.get("provided_training_yesterday")
+        if isinstance(provided, str) and provided.strip():
+            provided_training_yesterday = provided.strip().lower()
+
+    yesterday_training_auto = _derive_yesterday_training_summary(
+        reference_timestamp=reference_for_yesterday,
+        timezone_name=timezone_name,
+        training_activity_by_day=training_activity_by_day,
+        session_rpe_by_day=session_rpe_by_day,
+    )
+    training_yesterday_resolved = provided_training_yesterday or yesterday_training_auto.get("tag")
+    training_yesterday_source = (
+        "user_provided:recovery.daily_checkin"
+        if provided_training_yesterday
+        else yesterday_training_auto.get("source")
+    )
+    daily_checkin_defaults: dict[str, Any] = {
+        "timezone": timezone_name,
+        "training_yesterday": training_yesterday_resolved,
+        "training_yesterday_source": training_yesterday_source,
+        "training_yesterday_auto": yesterday_training_auto,
+    }
+    if latest_daily_checkin_summary is not None:
+        daily_checkin_defaults["latest_checkin"] = {
+            "parsed_from_compact": latest_daily_checkin_summary.get("parsed_from_compact"),
+            "compact_input_mode": latest_daily_checkin_summary.get("compact_input_mode"),
+            "quality_flags": latest_daily_checkin_summary.get("quality_flags") or [],
+        }
+
+    session_rpe_follow_up = _build_session_rpe_follow_up_signal(
+        latest_timestamp=last_event,
+        timezone_name=timezone_name,
+        training_activity_by_day=training_activity_by_day,
+        session_feedback_by_day=session_feedback_by_day,
+        session_rpe_by_day=session_rpe_by_day,
+    )
 
     # Compute data quality
     alias_lookup = {a.strip().lower(): info["target"] for a, info in aliases.items()}
@@ -1156,6 +1375,7 @@ async def update_user_profile(
         has_preferences=bool(preferences),
         observed_patterns=observed_patterns,
         baseline_summary=baseline_profile,
+        session_rpe_follow_up=session_rpe_follow_up,
     )
 
     projection_data = {
@@ -1167,6 +1387,7 @@ async def update_user_profile(
             "injuries": injuries if injuries else None,
             "baseline_profile": baseline_profile,
             "workflow_state": workflow_state,
+            "daily_checkin_defaults": daily_checkin_defaults,
             "exercises_logged": sorted(resolved_exercises),
             "total_events": total_events,
             "first_event": first_event.isoformat(),

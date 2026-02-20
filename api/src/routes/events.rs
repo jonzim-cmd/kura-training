@@ -1084,7 +1084,7 @@ const LEGACY_PLAN_EVENT_TYPES: [&str; 3] = [
     "training_plan.updated",
     "training_plan.archived",
 ];
-const LEGACY_TIMEZONE_REQUIRED_EVENT_TYPES: [&str; 11] = [
+const LEGACY_TIMEZONE_REQUIRED_EVENT_TYPES: [&str; 12] = [
     "set.logged",
     "session.logged",
     "session.completed",
@@ -1093,6 +1093,7 @@ const LEGACY_TIMEZONE_REQUIRED_EVENT_TYPES: [&str; 11] = [
     "sleep.logged",
     "energy.logged",
     "soreness.logged",
+    "recovery.daily_checkin",
     "meal.logged",
     "observation.logged",
     "external.activity_imported",
@@ -1440,6 +1441,85 @@ fn check_event_plausibility(event_type: &str, data: &serde_json::Value) -> Vec<E
                 }
             }
         }
+        "recovery.daily_checkin" => {
+            if let Some(w) = data.get("bodyweight_kg").and_then(parse_flexible_float) {
+                if w < 20.0 || w > 300.0 {
+                    warnings.push(EventWarning {
+                        field: "bodyweight_kg".to_string(),
+                        message: format!("bodyweight_kg={w} outside plausible range [20, 300]"),
+                        severity: "warning".to_string(),
+                    });
+                }
+            }
+            if let Some(sleep) = data.get("sleep_hours").and_then(parse_flexible_float) {
+                if !(0.0..=20.0).contains(&sleep) {
+                    warnings.push(EventWarning {
+                        field: "sleep_hours".to_string(),
+                        message: format!("sleep_hours={sleep} outside plausible range [0, 20]"),
+                        severity: "warning".to_string(),
+                    });
+                }
+            }
+            for (field, min, max) in [
+                ("soreness", 0.0_f64, 10.0_f64),
+                ("motivation", 1.0_f64, 10.0_f64),
+                ("sleep_quality", 1.0_f64, 10.0_f64),
+                ("physical_condition", 1.0_f64, 10.0_f64),
+                ("lifestyle_stability", 1.0_f64, 10.0_f64),
+            ] {
+                if let Some(value) = data.get(field).and_then(parse_flexible_float) {
+                    if value < min || value > max {
+                        warnings.push(EventWarning {
+                            field: field.to_string(),
+                            message: format!(
+                                "{}={} outside plausible range [{}, {}]",
+                                field, value, min, max
+                            ),
+                            severity: "warning".to_string(),
+                        });
+                    }
+                }
+            }
+            if let Some(hrv) = data.get("hrv_rmssd").and_then(parse_flexible_float) {
+                if hrv <= 0.0 || hrv > 400.0 {
+                    warnings.push(EventWarning {
+                        field: "hrv_rmssd".to_string(),
+                        message: format!("hrv_rmssd={hrv} outside plausible range (0, 400]"),
+                        severity: "warning".to_string(),
+                    });
+                }
+            }
+            if let Some(raw) = data.get("alcohol_last_night").and_then(Value::as_str) {
+                let normalized = raw.trim().to_lowercase();
+                if !normalized.is_empty()
+                    && !matches!(normalized.as_str(), "none" | "little" | "too_much")
+                {
+                    warnings.push(EventWarning {
+                        field: "alcohol_last_night".to_string(),
+                        message: format!(
+                            "alcohol_last_night='{}' is non-standard, expected none|little|too_much",
+                            normalized
+                        ),
+                        severity: "warning".to_string(),
+                    });
+                }
+            }
+            if let Some(raw) = data.get("training_yesterday").and_then(Value::as_str) {
+                let normalized = raw.trim().to_lowercase();
+                if !normalized.is_empty()
+                    && !matches!(normalized.as_str(), "rest" | "easy" | "average" | "hard")
+                {
+                    warnings.push(EventWarning {
+                        field: "training_yesterday".to_string(),
+                        message: format!(
+                            "training_yesterday='{}' is non-standard, expected rest|easy|average|hard",
+                            normalized
+                        ),
+                        severity: "warning".to_string(),
+                    });
+                }
+            }
+        }
         "measurement.logged" => {
             if let Some(v) = data.get("value_cm").and_then(|v| v.as_f64()) {
                 if v < 1.0 || v > 300.0 {
@@ -1714,6 +1794,7 @@ fn user_profile_handles_event(event_type: &str) -> bool {
             | "sleep.logged"
             | "soreness.logged"
             | "energy.logged"
+            | "recovery.daily_checkin"
             | "meal.logged"
             | "training_plan.created"
             | "training_plan.updated"
@@ -1945,6 +2026,41 @@ fn add_standard_projection_targets(
                 "session_feedback",
                 "overview",
                 "session.completed updates subjective session feedback trends".to_string(),
+                false,
+                false,
+            );
+        }
+        "recovery.daily_checkin" => {
+            mapped = true;
+            add_projection_target(
+                candidates,
+                "recovery",
+                "overview",
+                "recovery.daily_checkin updates recovery overview".to_string(),
+                false,
+                false,
+            );
+            add_projection_target(
+                candidates,
+                "body_composition",
+                "overview",
+                "recovery.daily_checkin can contribute bodyweight snapshot".to_string(),
+                false,
+                false,
+            );
+            add_projection_target(
+                candidates,
+                "readiness_inference",
+                "overview",
+                "recovery.daily_checkin contributes readiness inference signals".to_string(),
+                false,
+                false,
+            );
+            add_projection_target(
+                candidates,
+                "causal_inference",
+                "overview",
+                "recovery.daily_checkin contributes causal inference signals".to_string(),
                 false,
                 false,
             );
@@ -3702,6 +3818,33 @@ mod tests {
     }
 
     #[test]
+    fn test_recovery_daily_checkin_normal() {
+        let w = check_event_plausibility(
+            "recovery.daily_checkin",
+            &json!({
+                "bodyweight_kg": 78.4,
+                "sleep_hours": 7.2,
+                "soreness": 3,
+                "motivation": 8,
+                "hrv_rmssd": 62,
+                "alcohol_last_night": "none",
+                "training_yesterday": "hard"
+            }),
+        );
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_recovery_daily_checkin_non_standard_training_tag_warns() {
+        let w = check_event_plausibility(
+            "recovery.daily_checkin",
+            &json!({"training_yesterday": "very_hard"}),
+        );
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].field, "training_yesterday");
+    }
+
+    #[test]
     fn test_measurement_normal() {
         let w = check_event_plausibility("measurement.logged", &json!({"value_cm": 85.0}));
         assert!(w.is_empty());
@@ -3802,6 +3945,18 @@ mod tests {
         )];
         let profile = make_user_profile(true, false, None);
         assert!(evaluate_legacy_domain_invariants(&events, Some(&profile)).is_ok());
+    }
+
+    #[test]
+    fn test_legacy_domain_invariants_require_timezone_for_daily_checkin_writes() {
+        let events = vec![make_request(
+            "recovery.daily_checkin",
+            json!({"sleep_hours": 7.2, "soreness": 3, "motivation": 8}),
+        )];
+        let profile = make_user_profile(true, false, None);
+        let err = evaluate_legacy_domain_invariants(&events, Some(&profile))
+            .expect_err("expected policy violation");
+        assert_policy_violation(err, "inv_timezone_required_for_temporal_write", "events");
     }
 
     // --- Exercise-ID similarity tests ---
@@ -4036,6 +4191,39 @@ mod tests {
         assert!(mapped);
         assert!(candidates.contains_key(&ProjectionTargetKey {
             projection_type: "session_feedback".to_string(),
+            key: "overview".to_string(),
+        }));
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "user_profile".to_string(),
+            key: "me".to_string(),
+        }));
+    }
+
+    #[test]
+    fn test_add_standard_projection_targets_for_recovery_daily_checkin() {
+        let mut candidates: HashMap<ProjectionTargetKey, ProjectionTargetCandidate> =
+            HashMap::new();
+        let mapped = add_standard_projection_targets(
+            &mut candidates,
+            "recovery.daily_checkin",
+            &json!({"sleep_hours": 7.2}),
+        );
+
+        assert!(mapped);
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "recovery".to_string(),
+            key: "overview".to_string(),
+        }));
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "body_composition".to_string(),
+            key: "overview".to_string(),
+        }));
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "readiness_inference".to_string(),
+            key: "overview".to_string(),
+        }));
+        assert!(candidates.contains_key(&ProjectionTargetKey {
+            projection_type: "causal_inference".to_string(),
             key: "overview".to_string(),
         }));
         assert!(candidates.contains_key(&ProjectionTargetKey {
