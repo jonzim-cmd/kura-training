@@ -63,7 +63,9 @@ fn validate_turnstile_response(
         let actual = verification.hostname.as_deref().unwrap_or("");
         // Accept both "example.com" and "www.example.com" when expected is "example.com"
         let matches = actual == expected
-            || actual.strip_prefix("www.").is_some_and(|rest| rest == expected);
+            || actual
+                .strip_prefix("www.")
+                .is_some_and(|rest| rest == expected);
         if !matches {
             tracing::warn!(
                 expected_hostname = expected,
@@ -184,8 +186,7 @@ mod tests {
 
     #[test]
     fn validate_turnstile_response_accepts_www_prefix() {
-        let verification =
-            sample_verification(true, Some("signup"), Some("www.withkura.com"), &[]);
+        let verification = sample_verification(true, Some("signup"), Some("www.withkura.com"), &[]);
         validate_turnstile_response(verification, "signup", Some("withkura.com"))
             .expect("www prefix should be accepted");
     }

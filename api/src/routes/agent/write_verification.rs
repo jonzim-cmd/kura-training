@@ -593,9 +593,7 @@ pub(super) fn validate_intent_handshake(
             ),
             field: Some("intent_handshake".to_string()),
             received: Some(json!({ "field_errors": field_errors })),
-            docs_hint: Some(
-                "Resolve all listed field_errors in a single retry.".to_string(),
-            ),
+            docs_hint: Some("Resolve all listed field_errors in a single retry.".to_string()),
         })
     }
 }

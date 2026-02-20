@@ -35,11 +35,14 @@ const RETRIEVAL_FSM_MAX_RELOADS_ENV: &str = "KURA_MCP_RETRIEVAL_FSM_MAX_RELOADS"
 const RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK_ENV: &str =
     "KURA_MCP_RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK";
 const RETRIEVAL_OBSERVABILITY_SCHEMA_VERSION: &str = "mcp_retrieval_observability.v1";
+const IMPORT_DEVICE_TOOLS_ENABLED_ENV: &str = "KURA_MCP_ENABLE_IMPORT_PROVIDER_TOOLS";
 
 /// Tracks which sessions have loaded agent context. Shared across HTTP requests
 /// (where each request creates a new McpServer) and stdio (single long-lived server).
 /// Keyed by session_id, value is last-seen timestamp for TTL cleanup.
 static CONTEXT_SESSIONS: LazyLock<Mutex<HashMap<String, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static BRIEF_SESSIONS: LazyLock<Mutex<HashMap<String, Instant>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static TOOL_CALL_DEDUPE_CACHE: LazyLock<Mutex<HashMap<String, ToolCallDedupeEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -47,6 +50,8 @@ static RETRIEVAL_CONTROL_STATE: LazyLock<Mutex<HashMap<String, RetrievalControlS
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static RETRIEVAL_FSM_POLICY: LazyLock<RetrievalFsmPolicy> =
     LazyLock::new(load_retrieval_fsm_policy_from_env);
+static IMPORT_DEVICE_TOOLS_ENABLED: LazyLock<bool> =
+    LazyLock::new(load_import_device_tools_enabled_from_env);
 
 #[derive(Clone, Debug)]
 struct RetrievalFsmPolicy {
@@ -134,6 +139,36 @@ fn is_context_loaded(session_id: &str) -> bool {
     let cutoff = Instant::now() - std::time::Duration::from_secs(CONTEXT_SESSION_TTL_SECS);
     map.retain(|_, seen| *seen > cutoff);
     map.contains_key(session_id)
+}
+
+fn mark_brief_loaded(session_id: &str) {
+    let mut map = BRIEF_SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
+    map.insert(session_id.to_string(), Instant::now());
+}
+
+fn is_brief_loaded(session_id: &str) -> bool {
+    let mut map = BRIEF_SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
+    let cutoff = Instant::now() - std::time::Duration::from_secs(CONTEXT_SESSION_TTL_SECS);
+    map.retain(|_, seen| *seen > cutoff);
+    map.contains_key(session_id)
+}
+
+fn parse_env_bool_flag(raw: Option<String>, default: bool) -> bool {
+    match raw {
+        Some(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        None => default,
+    }
+}
+
+fn load_import_device_tools_enabled_from_env() -> bool {
+    parse_env_bool_flag(std::env::var(IMPORT_DEVICE_TOOLS_ENABLED_ENV).ok(), false)
+}
+
+fn import_device_tools_enabled() -> bool {
+    *IMPORT_DEVICE_TOOLS_ENABLED
 }
 
 fn parse_env_u64_with_bounds(raw: Option<String>, min: u64, max: u64, default: u64) -> (u64, bool) {
@@ -455,6 +490,12 @@ fn stable_dedupe_args_signature(args: &Map<String, Value>) -> String {
 }
 
 fn is_tool_call_dedupe_eligible(name: &str) -> bool {
+    if matches!(
+        name,
+        "kura_import_job_get" | "kura_provider_connections_list"
+    ) {
+        return import_device_tools_enabled();
+    }
     matches!(
         name,
         "kura_discover"
@@ -465,11 +506,10 @@ fn is_tool_call_dedupe_eligible(name: &str) -> bool {
             | "kura_projection_list"
             | "kura_system_manifest"
             | "kura_system_section_get"
+            | "kura_agent_brief"
             | "kura_agent_context"
             | "kura_semantic_resolve"
             | "kura_account_api_keys_list"
-            | "kura_import_job_get"
-            | "kura_provider_connections_list"
             | "kura_analysis_job_get"
     )
 }
@@ -552,7 +592,18 @@ fn build_tool_call_response(
 }
 
 fn should_emit_context_warning(name: &str, context_loaded: bool) -> bool {
-    name != "kura_agent_context" && !context_loaded
+    !matches!(name, "kura_agent_context" | "kura_agent_brief") && !context_loaded
+}
+
+fn is_startup_brief_exempt_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "kura_agent_brief" | "kura_mcp_status" | "kura_access_request"
+    )
+}
+
+fn should_block_for_startup_brief(name: &str, brief_loaded: bool) -> bool {
+    !brief_loaded && !is_startup_brief_exempt_tool(name)
 }
 
 fn is_context_write_blocked_tool(name: &str) -> bool {
@@ -560,12 +611,16 @@ fn is_context_write_blocked_tool(name: &str) -> bool {
 }
 
 /// Tools that don't operate on user data. Used in tests to document the semantic
-/// distinction — the context gate itself only exempts `kura_agent_context`.
+/// distinction — the context warning gate exempts startup brief + full context tools.
 #[cfg(test)]
 fn is_context_exempt_tool(name: &str) -> bool {
     matches!(
         name,
-        "kura_agent_context" | "kura_discover" | "kura_discover_debug" | "kura_mcp_status"
+        "kura_agent_brief"
+            | "kura_agent_context"
+            | "kura_discover"
+            | "kura_discover_debug"
+            | "kura_mcp_status"
     )
 }
 
@@ -939,7 +994,7 @@ impl McpServer {
 
     fn initialize_payload(&self) -> Value {
         let instructions = format!(
-            "Start with kura_agent_context (context-first). If user_profile agenda includes onboarding_needed, reply first with: (1) what Kura is (use first_contact_opening_v1 mandatory sentence), (2) how to use it briefly, (3) propose a short onboarding interview before feature menus or logging steps. Use kura_discover for lean capability snapshots; use kura_discover_debug only for deep schema/capability troubleshooting. Prefer kura_events_write with mode=simulate before commit for higher confidence. Capability mode: {}.",
+            "Start with kura_agent_brief (startup gate). If action_required indicates onboarding, reply first with: (1) what Kura is (use first_contact_opening_v1 mandatory sentence), (2) how to use it briefly, (3) propose a short onboarding interview before feature menus or logging steps, and allow skip/log-now. After that, call kura_agent_context before personalized planning or write operations. Use kura_discover for lean capability snapshots only after startup brief is loaded; use kura_discover_debug only for deep schema/capability troubleshooting. Prefer kura_events_write with mode=simulate before commit for higher confidence. Capability mode: {}.",
             self.capability_profile.mode.as_str()
         );
         json!({
@@ -999,18 +1054,45 @@ impl McpServer {
         };
 
         let context_loaded = is_context_loaded(&self.session_id);
+        let brief_loaded = is_brief_loaded(&self.session_id);
         observe_tool_call_start(&self.session_id, name, context_loaded);
-        // Context gate: remind on EVERY tool until agent has loaded context.
-        // Only kura_agent_context itself is exempt (it's what loads context — warning would be circular).
+        let retrieval_policy = retrieval_fsm_policy();
+
+        if should_block_for_startup_brief(name, brief_loaded) {
+            record_abort_reason_for_session(&self.session_id, "startup_brief_required");
+            let mut envelope = enforce_tool_payload_limit(
+                name,
+                json!({
+                    "status": "error",
+                    "phase": "blocked_precondition",
+                    "tool": name,
+                    "error": {
+                        "error": "startup_brief_required",
+                        "message": "Call kura_agent_brief before other tools in a fresh session.",
+                        "field": "tool",
+                        "docs_hint": "Load the minimal startup brief first so onboarding/action_required contracts are deterministic.",
+                        "details": {
+                            "required_first_tool": "kura_agent_brief",
+                            "blocked_tool": name,
+                            "brief_loaded": brief_loaded,
+                            "context_loaded": context_loaded
+                        }
+                    }
+                }),
+            );
+            attach_runtime_observability(&self.session_id, &mut envelope, retrieval_policy);
+            return Ok(build_tool_call_response(name, envelope, true, None));
+        }
+
+        // Context gate: remind until full context is loaded.
+        // `kura_agent_brief` is also exempt so startup brief calls stay clean.
         let context_warning = if should_emit_context_warning(name, context_loaded) {
             Some(
-                "⚠ You MUST call kura_agent_context before responding to the user. Without it you have no knowledge of this user's training history, goals, or current state. Any response without this context will be incorrect.\n\n",
+                "⚠ Call kura_agent_context before personalized guidance or writes. You may use kura_agent_brief first for deterministic first-contact onboarding.\n\n",
             )
         } else {
             None
         };
-
-        let retrieval_policy = retrieval_fsm_policy();
 
         if let Some(guard_block) =
             maybe_block_retrieval_loop(&self.session_id, name, &args, retrieval_policy)
@@ -1095,7 +1177,14 @@ impl McpServer {
         let result = self.execute_tool(name, &args).await;
         Ok(match result {
             Ok(payload) => {
-                if name == "kura_agent_context" {
+                if name == "kura_agent_brief"
+                    && tool_payload_response_ok(&payload)
+                    && payload.pointer("/response/body/agent_brief").is_some()
+                {
+                    mark_brief_loaded(&self.session_id);
+                }
+                if name == "kura_agent_context" && tool_payload_response_ok(&payload) {
+                    mark_brief_loaded(&self.session_id);
                     mark_context_loaded(&self.session_id);
                 }
                 let status = tool_completion_status(&payload);
@@ -1147,19 +1236,80 @@ impl McpServer {
             "kura_projection_list" => self.tool_projection_list(args).await,
             "kura_system_manifest" => self.tool_system_manifest(args).await,
             "kura_system_section_get" => self.tool_system_section_get(args).await,
+            "kura_agent_brief" => self.tool_agent_brief(args).await,
             "kura_agent_context" => self.tool_agent_context(args).await,
             "kura_semantic_resolve" => self.tool_semantic_resolve(args).await,
             "kura_access_request" => self.tool_access_request(args).await,
             "kura_account_api_keys_list" => self.tool_account_api_keys_list(args).await,
             "kura_account_api_keys_create" => self.tool_account_api_keys_create(args).await,
             "kura_account_api_keys_revoke" => self.tool_account_api_keys_revoke(args).await,
-            "kura_import_job_create" => self.tool_import_job_create(args).await,
-            "kura_import_job_get" => self.tool_import_job_get(args).await,
+            "kura_import_job_create" => {
+                if import_device_tools_enabled() {
+                    self.tool_import_job_create(args).await
+                } else {
+                    Err(ToolError::new(
+                        "capability_not_available",
+                        "Import tooling is disabled in this runtime profile.",
+                    )
+                    .with_docs_hint(
+                        "Set KURA_MCP_ENABLE_IMPORT_PROVIDER_TOOLS=true to re-enable import/provider tools.",
+                    ))
+                }
+            }
+            "kura_import_job_get" => {
+                if import_device_tools_enabled() {
+                    self.tool_import_job_get(args).await
+                } else {
+                    Err(ToolError::new(
+                        "capability_not_available",
+                        "Import tooling is disabled in this runtime profile.",
+                    )
+                    .with_docs_hint(
+                        "Set KURA_MCP_ENABLE_IMPORT_PROVIDER_TOOLS=true to re-enable import/provider tools.",
+                    ))
+                }
+            }
             "kura_analysis_job_create" => self.tool_analysis_job_create(args).await,
             "kura_analysis_job_get" => self.tool_analysis_job_get(args).await,
-            "kura_provider_connections_list" => self.tool_provider_connections_list(args).await,
-            "kura_provider_connections_upsert" => self.tool_provider_connections_upsert(args).await,
-            "kura_provider_connection_revoke" => self.tool_provider_connection_revoke(args).await,
+            "kura_provider_connections_list" => {
+                if import_device_tools_enabled() {
+                    self.tool_provider_connections_list(args).await
+                } else {
+                    Err(ToolError::new(
+                        "capability_not_available",
+                        "Provider connection tooling is disabled in this runtime profile.",
+                    )
+                    .with_docs_hint(
+                        "Set KURA_MCP_ENABLE_IMPORT_PROVIDER_TOOLS=true to re-enable import/provider tools.",
+                    ))
+                }
+            }
+            "kura_provider_connections_upsert" => {
+                if import_device_tools_enabled() {
+                    self.tool_provider_connections_upsert(args).await
+                } else {
+                    Err(ToolError::new(
+                        "capability_not_available",
+                        "Provider connection tooling is disabled in this runtime profile.",
+                    )
+                    .with_docs_hint(
+                        "Set KURA_MCP_ENABLE_IMPORT_PROVIDER_TOOLS=true to re-enable import/provider tools.",
+                    ))
+                }
+            }
+            "kura_provider_connection_revoke" => {
+                if import_device_tools_enabled() {
+                    self.tool_provider_connection_revoke(args).await
+                } else {
+                    Err(ToolError::new(
+                        "capability_not_available",
+                        "Provider connection tooling is disabled in this runtime profile.",
+                    )
+                    .with_docs_hint(
+                        "Set KURA_MCP_ENABLE_IMPORT_PROVIDER_TOOLS=true to re-enable import/provider tools.",
+                    ))
+                }
+            }
             "kura_agent_visualization_resolve" => self.tool_agent_visualization_resolve(args).await,
             "kura_observation_draft_dismiss" => self.tool_observation_draft_dismiss(args).await,
             _ => Err(ToolError::new(
@@ -1274,16 +1424,24 @@ impl McpServer {
             payload["warnings"] = Value::Array(warnings.into_iter().map(Value::String).collect());
         }
         payload["mcp_capability_status"] = self.capability_profile.to_value();
+        payload["feature_flags"] = json!({
+            "import_provider_tools_exposed": import_device_tools_enabled()
+        });
 
-        // Session hint: tell the agent whether context is loaded and what to do next.
+        // Session hint: first enforce startup brief, then load full context.
+        let brief_loaded = is_brief_loaded(&self.session_id);
         let context_loaded = is_context_loaded(&self.session_id);
         payload["session"] = json!({
             "session_id": self.session_id.clone(),
+            "brief_loaded": brief_loaded,
             "context_loaded": context_loaded,
-            "next": if context_loaded {
-                "Context is loaded. You can respond to the user."
+            "required_first_tool": "kura_agent_brief",
+            "next": if !brief_loaded {
+                "Call kura_agent_brief now before using other tools."
+            } else if !context_loaded {
+                "Startup brief loaded. Call kura_agent_context before personalized guidance or writes."
             } else {
-                "Call kura_agent_context now to load this user's training data before responding."
+                "Brief and context are loaded. You can respond to the user."
             },
             "retrieval_observability": retrieval_observability_snapshot(&self.session_id, retrieval_fsm_policy())
         });
@@ -1301,8 +1459,13 @@ impl McpServer {
             "capability_negotiation": self.capability_profile.to_value(),
             "session": {
                 "session_id": self.session_id.clone(),
+                "brief_loaded": is_brief_loaded(&self.session_id),
                 "context_loaded": is_context_loaded(&self.session_id),
+                "required_first_tool": "kura_agent_brief",
                 "retrieval_observability": retrieval_observability_snapshot(&self.session_id, retrieval_fsm_policy())
+            },
+            "feature_flags": {
+                "import_provider_tools_exposed": import_device_tools_enabled()
             }
         }))
     }
@@ -1746,6 +1909,173 @@ impl McpServer {
         }))
     }
 
+    async fn tool_agent_brief(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
+        let exercise_limit = arg_optional_u64(args, "exercise_limit")?
+            .unwrap_or(1)
+            .clamp(1, 100);
+        let strength_limit = arg_optional_u64(args, "strength_limit")?
+            .unwrap_or(1)
+            .clamp(1, 100);
+        let custom_limit = arg_optional_u64(args, "custom_limit")?
+            .unwrap_or(1)
+            .clamp(1, 100);
+        let budget_tokens = arg_optional_u64(args, "budget_tokens")?
+            .unwrap_or(600)
+            .clamp(400, 12_000);
+        let include_system = arg_optional_bool(args, "include_system")?.unwrap_or(false);
+
+        let mut query = vec![
+            ("exercise_limit".to_string(), exercise_limit.to_string()),
+            ("strength_limit".to_string(), strength_limit.to_string()),
+            ("custom_limit".to_string(), custom_limit.to_string()),
+            ("budget_tokens".to_string(), budget_tokens.to_string()),
+            ("include_system".to_string(), include_system.to_string()),
+        ];
+        if let Some(task_intent) = arg_optional_string(args, "task_intent")? {
+            query.push(("task_intent".to_string(), task_intent));
+        }
+
+        let mut compatibility_notes = Vec::<String>::new();
+        let preferred_path = self
+            .capability_profile
+            .effective_read_endpoint()
+            .to_string();
+        let mut effective_path = preferred_path.clone();
+        let mut effective_query = if self.capability_profile.mode
+            == CapabilityMode::PreferredContract
+        {
+            query.clone()
+        } else {
+            compatibility_notes.push(
+                "Agent context contract unavailable; startup brief requires preferred /v1/agent/context shape."
+                    .to_string(),
+            );
+            Vec::new()
+        };
+        let mut response = self
+            .send_api_request(
+                Method::GET,
+                &preferred_path,
+                &effective_query,
+                None,
+                true,
+                false,
+            )
+            .await?;
+        let mut fallback_applied = false;
+
+        if self.capability_profile.mode == CapabilityMode::PreferredContract
+            && should_apply_contract_fallback(response.status)
+        {
+            fallback_applied = true;
+            let unsupported_status = response.status;
+            effective_path = self.capability_profile.legacy_read_endpoint.clone();
+            effective_query.clear();
+            compatibility_notes.push(format!(
+                "Preferred startup brief path returned unsupported status {}; retried {}.",
+                unsupported_status, effective_path
+            ));
+            response = self
+                .send_api_request(
+                    Method::GET,
+                    &effective_path,
+                    &effective_query,
+                    None,
+                    true,
+                    false,
+                )
+                .await?;
+        }
+
+        if response.status >= 400 {
+            return Err(
+                ToolError::new(
+                    "agent_brief_fetch_failed",
+                    format!(
+                        "Failed to fetch startup brief from {} (HTTP {}).",
+                        effective_path, response.status
+                    ),
+                )
+                .with_docs_hint(
+                    "Authenticate and retry kura_agent_brief. Startup gate remains locked until brief loads successfully.",
+                ),
+            );
+        }
+
+        let action_required = extract_action_required_from_context_body(&response.body);
+        let agent_brief = response.body.get("agent_brief").cloned().ok_or_else(|| {
+            ToolError::new(
+                "agent_brief_missing",
+                "Agent context response missing required body.agent_brief field.",
+            )
+            .with_docs_hint(
+                "Ensure API route /v1/agent/context returns the agent_brief contract and retry.",
+            )
+        })?;
+        let metric_snapshot = response
+            .body
+            .get("meta")
+            .and_then(|meta| meta.get("metric_snapshot"))
+            .cloned()
+            .unwrap_or_else(|| derive_agent_context_metric_snapshot(Some(&response.body)));
+        let meta = json!({
+            "context_contract_version": response
+                .body
+                .pointer("/meta/context_contract_version")
+                .cloned()
+                .unwrap_or(Value::Null),
+            "metric_snapshot": metric_snapshot,
+            "temporal_basis": response
+                .body
+                .pointer("/meta/temporal_basis")
+                .cloned()
+                .unwrap_or(Value::Null),
+            "challenge_mode": response
+                .body
+                .pointer("/meta/challenge_mode")
+                .cloned()
+                .unwrap_or(Value::Null)
+        });
+        let onboarding_required = action_required
+            .as_ref()
+            .and_then(|value| value.get("action"))
+            .and_then(Value::as_str)
+            .map(|value| value == "onboarding")
+            .unwrap_or(false);
+
+        Ok(json!({
+            "request": {
+                "path": effective_path,
+                "query": pairs_to_json_object(&effective_query)
+            },
+            "response": {
+                "ok": true,
+                "status": response.status,
+                "body": {
+                    "action_required": action_required,
+                    "agent_brief": agent_brief,
+                    "meta": meta
+                }
+            },
+            "startup_gate": {
+                "required_first_tool": "kura_agent_brief",
+                "brief_loaded": true,
+                "context_loaded": is_context_loaded(&self.session_id),
+                "onboarding_required": onboarding_required,
+                "next": if onboarding_required {
+                    "Respond with first-contact opening sequence and offer onboarding interview (allow skip/log-now)."
+                } else {
+                    "Call kura_agent_context before personalized planning or write operations."
+                }
+            },
+            "compatibility": {
+                "capability_mode": self.capability_profile.mode.as_str(),
+                "fallback_applied": fallback_applied,
+                "notes": compatibility_notes
+            }
+        }))
+    }
+
     async fn tool_agent_context(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
         let mut query = Vec::new();
         if let Some(limit) = arg_optional_u64(args, "exercise_limit")? {
@@ -1821,9 +2151,7 @@ impl McpServer {
         }
 
         let response_value = response.to_value();
-        let metric_snapshot = derive_agent_context_metric_snapshot(
-            response_value.get("body"),
-        );
+        let metric_snapshot = derive_agent_context_metric_snapshot(response_value.get("body"));
 
         Ok(json!({
             "request": {
@@ -2433,6 +2761,10 @@ impl McpServer {
                 .await
                 .map(|r| r.to_value())
                 .map_err(|e| RpcError::internal(e.message))?,
+            "kura://agent/brief" => self
+                .tool_agent_brief(&Map::new())
+                .await
+                .map_err(|e| RpcError::internal(e.message))?,
             "kura://system/config" => self
                 .send_api_request(Method::GET, "/v1/system/config", &[], None, true, false)
                 .await
@@ -2730,7 +3062,7 @@ struct ResourceDefinition {
 }
 
 fn tool_definitions() -> Vec<ToolDefinition> {
-    vec![
+    let mut tools = vec![
         ToolDefinition {
             name: "kura_discover",
             description: "Lean discovery: capability snapshot and MCP status with optional add-ons.",
@@ -2939,6 +3271,22 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                     "section": { "type": "string" }
                 },
                 "required": ["section"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "kura_agent_brief",
+            description: "Fetch minimal startup brief (action_required + onboarding intents) before other tools.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "exercise_limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 1 },
+                    "strength_limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 1 },
+                    "custom_limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 1 },
+                    "task_intent": { "type": "string" },
+                    "budget_tokens": { "type": "integer", "minimum": 400, "maximum": 12000, "default": 600 },
+                    "include_system": { "type": "boolean", "default": false }
+                },
                 "additionalProperties": false
             }),
         },
@@ -3189,7 +3537,20 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                 "additionalProperties": false
             }),
         },
-    ]
+    ];
+    if !import_device_tools_enabled() {
+        tools.retain(|tool| {
+            !matches!(
+                tool.name,
+                "kura_import_job_create"
+                    | "kura_import_job_get"
+                    | "kura_provider_connections_list"
+                    | "kura_provider_connections_upsert"
+                    | "kura_provider_connection_revoke"
+            )
+        });
+    }
+    tools
 }
 
 fn resource_definitions() -> Vec<ResourceDefinition> {
@@ -3203,6 +3564,11 @@ fn resource_definitions() -> Vec<ResourceDefinition> {
             uri: "kura://agent/capabilities",
             name: "Agent Capabilities Contract",
             description: "Current write/read protocol expectations for agents",
+        },
+        ResourceDefinition {
+            uri: "kura://agent/brief",
+            name: "Agent Startup Brief",
+            description: "Minimal startup brief with action_required + onboarding intents",
         },
         ResourceDefinition {
             uri: "kura://system/config",
@@ -3240,6 +3606,14 @@ fn tool_completion_status(payload: &Value) -> &'static str {
     }
 }
 
+fn tool_payload_response_ok(payload: &Value) -> bool {
+    payload
+        .pointer("/response/status")
+        .and_then(Value::as_u64)
+        .map(|status| status < 400)
+        .unwrap_or(true)
+}
+
 fn read_json_f64(value: Option<&Value>) -> Option<f64> {
     let raw = value?;
     if let Some(number) = raw.as_f64() {
@@ -3259,7 +3633,10 @@ fn read_json_string(value: Option<&Value>) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn normalize_readiness_state_compat(raw: Option<String>, readiness_mean: Option<f64>) -> Option<String> {
+fn normalize_readiness_state_compat(
+    raw: Option<String>,
+    readiness_mean: Option<f64>,
+) -> Option<String> {
     if let Some(value) = raw {
         let normalized = value.trim().to_lowercase();
         if matches!(normalized.as_str(), "high" | "moderate" | "low") {
@@ -3365,7 +3742,8 @@ fn derive_metric_snapshot_from_projection_payloads(
     let user_data = user_profile_data.and_then(|profile| profile.get("user"));
     let profile = user_data.and_then(|user| user.get("profile"));
     let user_profile_present = profile.is_some_and(Value::is_object);
-    let experience_level = read_json_string(profile.and_then(|profile| profile.get("experience_level")));
+    let experience_level =
+        read_json_string(profile.and_then(|profile| profile.get("experience_level")));
     let goals_count = user_data
         .and_then(|user| user.get("goals"))
         .and_then(Value::as_array)
@@ -3454,6 +3832,34 @@ fn derive_agent_context_metric_snapshot(body: Option<&Value>) -> Value {
         "user_profile_present": false,
         "goals_count": 0
     })
+}
+
+fn extract_action_required_from_context_body(body: &Value) -> Option<Value> {
+    if let Some(action_required) = body
+        .get("action_required")
+        .filter(|value| value.is_object())
+    {
+        return Some(action_required.clone());
+    }
+
+    let agenda = body
+        .pointer("/user_profile/projection/data/agenda")
+        .and_then(Value::as_array)?;
+    for item in agenda {
+        if item.get("type").and_then(Value::as_str) == Some("onboarding_needed") {
+            let detail = item
+                .get("detail")
+                .and_then(Value::as_str)
+                .unwrap_or(
+                    "First contact. Briefly explain Kura and how to use it, then offer a short onboarding interview.",
+                );
+            return Some(json!({
+                "action": "onboarding",
+                "detail": detail
+            }));
+        }
+    }
+    None
 }
 
 fn tool_text_content(_tool: &str, envelope: &Value) -> String {
@@ -3932,6 +4338,8 @@ fn serialized_json_size_bytes(value: &Value) -> usize {
 fn payload_reload_hint(tool: &str) -> &'static str {
     if tool == "kura_discover" || tool == "kura_discover_debug" {
         "For full details, use targeted reads (preferred): kura://openapi, kura://system/config/manifest, kura_system_section_get(section=...), and kura://agent/capabilities. Use kura_discover_debug only for deep troubleshooting."
+    } else if tool == "kura_agent_brief" {
+        "Retry kura_agent_brief until action_required and agent_brief are present; then continue with kura_agent_context for personalized planning."
     } else if tool == "kura_agent_context" {
         "Context overflow is section-based: follow overflow.omitted_sections[*].reload_hint, re-fetch only missing sections, and lower budget_tokens when iterative planning needs tighter payloads."
     } else {
@@ -5159,7 +5567,7 @@ mod tests {
     }
 
     #[test]
-    fn initialize_instructions_prioritize_context_and_first_contact_onboarding() {
+    fn initialize_instructions_prioritize_startup_brief_and_first_contact_onboarding() {
         let server = McpServer::new(McpRuntimeConfig {
             api_url: "http://127.0.0.1:9".to_string(),
             no_auth: true,
@@ -5175,9 +5583,10 @@ mod tests {
             .and_then(Value::as_str)
             .expect("initialize payload should include instructions");
 
-        assert!(instructions.contains("kura_agent_context"));
-        assert!(instructions.contains("onboarding_needed"));
+        assert!(instructions.contains("kura_agent_brief"));
         assert!(instructions.contains("first_contact_opening_v1"));
+        assert!(instructions.contains("allow skip/log-now"));
+        assert!(instructions.contains("kura_agent_context"));
         assert!(instructions.contains("kura_discover for lean capability snapshots"));
         assert!(
             instructions
@@ -5351,6 +5760,24 @@ mod tests {
     }
 
     #[test]
+    fn agent_brief_tool_schema_defaults_to_startup_minimal_bundle() {
+        let tool = tool_definitions()
+            .into_iter()
+            .find(|tool| tool.name == "kura_agent_brief")
+            .expect("kura_agent_brief tool must exist");
+        let props = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("tool schema properties must exist");
+        assert_eq!(props["include_system"]["default"], false);
+        assert_eq!(props["budget_tokens"]["default"], 600);
+        assert_eq!(props["exercise_limit"]["default"], 1);
+        assert_eq!(props["strength_limit"]["default"], 1);
+        assert_eq!(props["custom_limit"]["default"], 1);
+    }
+
+    #[test]
     fn agent_context_tool_schema_defaults_to_lean_system_payload() {
         let tool = tool_definitions()
             .into_iter()
@@ -5411,6 +5838,26 @@ mod tests {
                 .iter()
                 .any(|tool| tool.name == "kura_analysis_job_get"),
             "analysis get tool must be exposed"
+        );
+    }
+
+    #[test]
+    fn import_and_provider_tools_hidden_by_default_runtime_profile() {
+        if import_device_tools_enabled() {
+            return;
+        }
+        let tools = tool_definitions();
+        assert!(
+            !tools
+                .iter()
+                .any(|tool| tool.name == "kura_import_job_create"),
+            "import create tool should be hidden when profile flag is disabled"
+        );
+        assert!(
+            !tools
+                .iter()
+                .any(|tool| tool.name == "kura_provider_connections_list"),
+            "provider connection tool should be hidden when profile flag is disabled"
         );
     }
 
@@ -5620,7 +6067,10 @@ mod tests {
     fn metric_snapshot_returns_default_shape_when_body_missing() {
         let snapshot = derive_agent_context_metric_snapshot(None);
         assert_eq!(snapshot["source"], "missing_body");
-        assert_eq!(snapshot["schema_version"], "agent_context.metric_snapshot.v1");
+        assert_eq!(
+            snapshot["schema_version"],
+            "agent_context.metric_snapshot.v1"
+        );
         assert_eq!(snapshot["user_profile_present"], json!(false));
         assert_eq!(snapshot["goals_count"], json!(0));
     }
@@ -5644,18 +6094,20 @@ mod tests {
         assert!(payload.get("openapi").is_none());
         assert!(payload.get("system_config").is_none());
 
-        // Session hint must be present and indicate context not yet loaded
+        // Session hint must gate startup on brief before context.
         let session = payload
             .get("session")
             .expect("discover must include session field");
+        assert_eq!(session["brief_loaded"], false);
         assert_eq!(session["context_loaded"], false);
         assert!(
             session["next"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("kura_agent_context"),
-            "session.next must guide agent toward loading context"
+                .contains("kura_agent_brief"),
+            "session.next must guide agent toward loading startup brief"
         );
+        assert_eq!(session["required_first_tool"], "kura_agent_brief");
     }
 
     #[test]
@@ -6045,6 +6497,7 @@ mod tests {
     #[test]
     fn context_exempt_tools_are_discovery_and_status_only() {
         // Exempt from the *functional* perspective (they work without user data)
+        assert!(is_context_exempt_tool("kura_agent_brief"));
         assert!(is_context_exempt_tool("kura_agent_context"));
         assert!(is_context_exempt_tool("kura_discover"));
         assert!(is_context_exempt_tool("kura_discover_debug"));
@@ -6059,12 +6512,12 @@ mod tests {
     }
 
     #[test]
-    fn context_gate_fires_on_all_tools_except_agent_context_itself() {
-        // The gate logic: name != "kura_agent_context" && !is_context_loaded
+    fn context_gate_fires_on_all_tools_except_context_and_brief() {
+        // The gate logic: !matches!(name, "kura_agent_context" | "kura_agent_brief") && !is_context_loaded
         // This means discover, discover_debug, mcp_status all get the reminder too.
         let sid = format!("test-gate-scope-{}", Uuid::now_v7());
 
-        // Before context loaded: everything except kura_agent_context should trigger
+        // Before context loaded: everything except context+brief should trigger
         let should_warn =
             |name: &str| -> bool { should_emit_context_warning(name, is_context_loaded(&sid)) };
         assert!(should_warn("kura_discover"));
@@ -6072,12 +6525,42 @@ mod tests {
         assert!(should_warn("kura_mcp_status"));
         assert!(should_warn("kura_read"));
         assert!(should_warn("kura_write"));
+        assert!(!should_warn("kura_agent_brief"));
         assert!(!should_warn("kura_agent_context"));
 
         // After context loaded: nobody triggers
         mark_context_loaded(&sid);
         assert!(!should_warn("kura_discover"));
         assert!(!should_warn("kura_read"));
+    }
+
+    #[test]
+    fn startup_brief_gate_blocks_non_exempt_tools_until_loaded() {
+        assert!(!should_block_for_startup_brief("kura_agent_brief", false));
+        assert!(!should_block_for_startup_brief("kura_mcp_status", false));
+        assert!(!should_block_for_startup_brief(
+            "kura_access_request",
+            false
+        ));
+        assert!(should_block_for_startup_brief("kura_discover", false));
+        assert!(should_block_for_startup_brief("kura_agent_context", false));
+        assert!(should_block_for_startup_brief("kura_events_write", false));
+    }
+
+    #[test]
+    fn startup_brief_gate_unlocks_after_brief_load() {
+        let sid = format!("test-brief-gate-{}", Uuid::now_v7());
+        assert!(!is_brief_loaded(&sid));
+        mark_brief_loaded(&sid);
+        assert!(is_brief_loaded(&sid));
+        assert!(!should_block_for_startup_brief(
+            "kura_discover",
+            is_brief_loaded(&sid)
+        ));
+        assert!(!should_block_for_startup_brief(
+            "kura_agent_context",
+            is_brief_loaded(&sid)
+        ));
     }
 
     #[test]

@@ -5,8 +5,8 @@
 //! instead of axum's default plain-text 422 response.
 
 use axum::{
-    extract::{FromRequest, Request, rejection::JsonRejection},
     Json,
+    extract::{FromRequest, Request, rejection::JsonRejection},
 };
 
 use crate::error::AppError;
