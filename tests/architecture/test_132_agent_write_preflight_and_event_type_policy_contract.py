@@ -51,7 +51,9 @@ def test_system_config_declares_write_preflight_contract() -> None:
 
 def test_mcp_runtime_declares_simulate_first_default_and_blocked_fallback() -> None:
     src = MCP_RUNTIME.read_text(encoding="utf-8")
-    assert '"mode": { "type": "string", "enum": ["commit", "simulate", "write_with_proof"], "default": "simulate" }' in src
+    assert '"mode": {' in src
+    assert '"enum": ["commit", "simulate", "write_with_proof"]' in src
+    assert '"default": "simulate"' in src
     assert "allow_legacy_write_with_proof_fallback" in src
     assert "write_with_proof_fallback_blocked" in src
     assert "context_required_before_write" in src

@@ -1379,6 +1379,14 @@ impl McpServer {
             &self.config.default_agent,
         )?;
         let normalized_events = ensure_event_defaults(events, &defaults, strategy)?;
+        let plan_write_requested = contains_plan_writes(&normalized_events);
+        if plan_write_requested && mode != WriteMode::WriteWithProof {
+            return Err(plan_write_requires_write_with_proof_error(
+                mode,
+                self.capability_profile.mode.as_str(),
+                None,
+            ));
+        }
         let mut compatibility_notes = Vec::<String>::new();
         let mut fallback_applied = false;
         let mut requested_path: Option<String> = None;
@@ -1448,6 +1456,15 @@ impl McpServer {
                         body,
                     )
                 } else {
+                    if plan_write_requested {
+                        return Err(plan_write_requires_write_with_proof_error(
+                            mode,
+                            self.capability_profile.mode.as_str(),
+                            Some(json!({
+                                "reason": "write_with_proof_unavailable_in_legacy_mode"
+                            })),
+                        ));
+                    }
                     if !allow_legacy_write_with_proof_fallback {
                         return Err(ToolError::new(
                             "write_with_proof_fallback_blocked",
@@ -1487,6 +1504,17 @@ impl McpServer {
             && requested_path.is_some()
             && should_apply_contract_fallback(response.status)
         {
+            if plan_write_requested {
+                return Err(plan_write_requires_write_with_proof_error(
+                    mode,
+                    self.capability_profile.mode.as_str(),
+                    Some(json!({
+                        "reason": "preferred_contract_endpoint_unsupported",
+                        "requested_path": requested_path,
+                        "unsupported_status": response.status
+                    })),
+                ));
+            }
             if !allow_legacy_write_with_proof_fallback {
                 return Err(ToolError::new(
                     "write_with_proof_fallback_blocked",
@@ -1534,11 +1562,15 @@ impl McpServer {
 
         let contract = write_contract_surface(&response.body);
         if !response.is_success() {
-            return Err(ToolError::new(
-                "api_error",
-                format!("kura_events_write failed with HTTP {}", response.status),
-            )
-            .with_details(json!({
+            let error_surface = classify_write_api_error(&response);
+            let mut err = ToolError::new(error_surface.code.clone(), error_surface.message.clone());
+            if let Some(field) = &error_surface.field {
+                err = err.with_field(field.clone());
+            }
+            if let Some(docs_hint) = &error_surface.docs_hint {
+                err = err.with_docs_hint(docs_hint.clone());
+            }
+            return Err(err.with_details(json!({
                 "request": {
                     "mode": mode.as_str(),
                     "effective_mode": effective_mode,
@@ -1547,6 +1579,7 @@ impl McpServer {
                 },
                 "response": response.to_value(),
                 "contract": contract,
+                "error_surface": error_surface.to_value(),
                 "compatibility": {
                     "capability_mode": self.capability_profile.mode.as_str(),
                     "fallback_applied": fallback_applied,
@@ -2765,11 +2798,16 @@ fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "kura_events_write",
-            description: "Write or simulate events with metadata/idempotency guardrails.",
+            description: "Write or simulate events with metadata/idempotency guardrails. training_plan.* writes require mode=write_with_proof.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "mode": { "type": "string", "enum": ["commit", "simulate", "write_with_proof"], "default": "simulate" },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["commit", "simulate", "write_with_proof"],
+                        "default": "simulate",
+                        "description": "Use write_with_proof for durable domain writes. training_plan.* events are blocked on commit and legacy fallback."
+                    },
                     "events": {
                         "type": "array",
                         "minItems": 1,
@@ -4368,11 +4406,33 @@ fn parse_read_after_write_targets(value: Option<&Value>) -> Result<Vec<Value>, T
     Ok(out)
 }
 
-fn is_high_impact_event_type(event_type: &str) -> bool {
+const PLAN_UPDATE_VOLUME_DELTA_HIGH_IMPACT_ABS_GTE: f64 = 15.0;
+const PLAN_UPDATE_INTENSITY_DELTA_HIGH_IMPACT_ABS_GTE: f64 = 10.0;
+const PLAN_UPDATE_FREQUENCY_DELTA_HIGH_IMPACT_ABS_GTE: f64 = 2.0;
+const PLAN_UPDATE_DURATION_DELTA_WEEKS_HIGH_IMPACT_ABS_GTE: f64 = 2.0;
+
+fn normalized_event_type(event: &Value) -> Option<String> {
+    event
+        .as_object()
+        .and_then(|obj| obj.get("event_type"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_lowercase())
+}
+
+fn contains_plan_writes(events: &[Value]) -> bool {
+    events.iter().any(|event| {
+        normalized_event_type(event)
+            .map(|event_type| event_type.starts_with("training_plan."))
+            .unwrap_or(false)
+    })
+}
+
+fn is_always_high_impact_event_type(event_type: &str) -> bool {
     matches!(
         event_type.trim().to_lowercase().as_str(),
         "training_plan.created"
-            | "training_plan.updated"
             | "training_plan.archived"
             | "projection_rule.created"
             | "projection_rule.archived"
@@ -4384,14 +4444,274 @@ fn is_high_impact_event_type(event_type: &str) -> bool {
     )
 }
 
-fn has_high_impact_events(events: &[Value]) -> bool {
-    events.iter().any(|event| {
-        event
+fn read_abs_f64(value: Option<&Value>) -> Option<f64> {
+    let raw = value?;
+    if let Some(number) = raw.as_f64() {
+        return Some(number.abs());
+    }
+    if let Some(number) = raw.as_i64() {
+        return Some((number as f64).abs());
+    }
+    if let Some(number) = raw.as_u64() {
+        return Some((number as f64).abs());
+    }
+    raw.as_str()
+        .and_then(|text| text.trim().parse::<f64>().ok())
+        .map(f64::abs)
+}
+
+fn read_plan_delta_abs(data: &Value, keys: &[&str]) -> Option<f64> {
+    for key in keys {
+        if let Some(number) = read_abs_f64(data.get(*key)) {
+            return Some(number);
+        }
+        if let Some(number) = read_abs_f64(data.get("delta").and_then(|delta| delta.get(*key))) {
+            return Some(number);
+        }
+    }
+    None
+}
+
+fn training_plan_update_is_high_impact(data: &Value) -> bool {
+    let scope = data
+        .get("change_scope")
+        .or_else(|| data.get("update_scope"))
+        .and_then(Value::as_str)
+        .map(|raw| raw.trim().to_lowercase());
+    if matches!(
+        scope.as_deref(),
+        Some(
+            "full_rewrite" | "structural" | "major_adjustment" | "mesocycle_reset" | "phase_shift"
+        )
+    ) {
+        return true;
+    }
+
+    if data
+        .get("replace_entire_plan")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || data
+            .get("archive_previous_plan")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || data
+            .get("requires_explicit_confirmation")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return true;
+    }
+
+    let volume_delta = read_plan_delta_abs(
+        data,
+        &[
+            "volume_delta_pct",
+            "planned_volume_delta_pct",
+            "total_volume_delta_pct",
+        ],
+    )
+    .unwrap_or(0.0);
+    if volume_delta >= PLAN_UPDATE_VOLUME_DELTA_HIGH_IMPACT_ABS_GTE {
+        return true;
+    }
+
+    let intensity_delta = read_plan_delta_abs(
+        data,
+        &[
+            "intensity_delta_pct",
+            "rir_delta",
+            "rpe_delta",
+            "effort_delta_pct",
+        ],
+    )
+    .unwrap_or(0.0);
+    if intensity_delta >= PLAN_UPDATE_INTENSITY_DELTA_HIGH_IMPACT_ABS_GTE {
+        return true;
+    }
+
+    let frequency_delta = read_plan_delta_abs(
+        data,
+        &["frequency_delta_per_week", "sessions_per_week_delta"],
+    )
+    .unwrap_or(0.0);
+    if frequency_delta >= PLAN_UPDATE_FREQUENCY_DELTA_HIGH_IMPACT_ABS_GTE {
+        return true;
+    }
+
+    let duration_delta = read_plan_delta_abs(
+        data,
+        &["cycle_length_weeks_delta", "plan_duration_weeks_delta"],
+    )
+    .unwrap_or(0.0);
+    duration_delta >= PLAN_UPDATE_DURATION_DELTA_WEEKS_HIGH_IMPACT_ABS_GTE
+}
+
+fn is_high_impact_event(event: &Value) -> bool {
+    let Some(event_type) = normalized_event_type(event) else {
+        return false;
+    };
+    if event_type == "training_plan.updated" {
+        return event
             .as_object()
-            .and_then(|obj| obj.get("event_type"))
+            .and_then(|obj| obj.get("data"))
+            .is_some_and(training_plan_update_is_high_impact);
+    }
+    is_always_high_impact_event_type(&event_type)
+}
+
+fn has_high_impact_events(events: &[Value]) -> bool {
+    events.iter().any(is_high_impact_event)
+}
+
+fn plan_write_requires_write_with_proof_error(
+    requested_mode: WriteMode,
+    capability_mode: &str,
+    context: Option<Value>,
+) -> ToolError {
+    let mut details = json!({
+        "contract_error": "inv_plan_write_requires_write_with_proof",
+        "required_mode": "write_with_proof",
+        "requested_mode": requested_mode.as_str(),
+        "capability_mode": capability_mode,
+        "plan_event_prefix": "training_plan."
+    });
+    if let Some(context) = context {
+        details["context"] = context;
+    }
+
+    ToolError::new(
+        "plan_write_requires_write_with_proof",
+        "training_plan.* writes must use mode=write_with_proof; legacy commit paths are blocked",
+    )
+    .with_field("mode")
+    .with_docs_hint(
+        "Use mode=write_with_proof with read_after_write_targets. Do not use commit or legacy fallback for plan writes.",
+    )
+    .with_details(details)
+}
+
+#[derive(Debug, Clone)]
+struct WriteApiErrorClassification {
+    code: String,
+    message: String,
+    field: Option<String>,
+    docs_hint: Option<String>,
+    api_error: Option<String>,
+    next_action: Option<String>,
+    next_action_url: Option<String>,
+}
+
+impl WriteApiErrorClassification {
+    fn to_value(&self) -> Value {
+        json!({
+            "code": self.code,
+            "message": self.message,
+            "field": self.field,
+            "docs_hint": self.docs_hint,
+            "api_error": self.api_error,
+            "next_action": self.next_action,
+            "next_action_url": self.next_action_url
+        })
+    }
+}
+
+fn classify_write_api_error(response: &ApiCallResult) -> WriteApiErrorClassification {
+    let api_error = response
+        .body
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let field = response
+        .body
+        .get("field")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let docs_hint = response
+        .body
+        .get("docs_hint")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let next_action = response
+        .body
+        .get("next_action")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let next_action_url = response
+        .body
+        .get("next_action_url")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let message = response
+        .body
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let message_lc = message.to_lowercase();
+
+    let (code, mapped_message, mapped_docs_hint) = if api_error.as_deref()
+        == Some("inv_plan_write_requires_write_with_proof")
+    {
+        (
+            "plan_write_requires_write_with_proof".to_string(),
+            "Plan writes must use /v1/agent/write-with-proof; legacy event write endpoints are blocked."
+                .to_string(),
+            Some(
+                "Switch to mode=write_with_proof and provide read_after_write_targets."
+                    .to_string(),
+            ),
+        )
+    } else if api_error.as_deref() == Some("validation_failed")
+        && message_lc.contains("write_with_proof blocked by preflight checks")
+    {
+        let first_blocker = response
+            .body
+            .pointer("/received/blockers/0/code")
             .and_then(Value::as_str)
-            .is_some_and(is_high_impact_event_type)
-    })
+            .map(str::to_string);
+        (
+            "write_preflight_blocked".to_string(),
+            match first_blocker {
+                Some(code) => format!("Write blocked by preflight checks (first blocker: {code})."),
+                None => "Write blocked by preflight checks.".to_string(),
+            },
+            docs_hint.clone(),
+        )
+    } else if message_lc.contains("approval")
+        && (message_lc.contains("timed out") || message_lc.contains("timeout"))
+    {
+        (
+            "approval_timeout".to_string(),
+            "Execution approval timed out before the write could run.".to_string(),
+            docs_hint.or(Some(
+                "Retry and approve promptly, or route execution to a non-interactive node."
+                    .to_string(),
+            )),
+        )
+    } else {
+        (
+            api_error.clone().unwrap_or_else(|| "api_error".to_string()),
+            if message.is_empty() {
+                format!("kura_events_write failed with HTTP {}", response.status)
+            } else {
+                message.to_string()
+            },
+            docs_hint.clone(),
+        )
+    };
+
+    WriteApiErrorClassification {
+        code,
+        message: mapped_message,
+        field,
+        docs_hint: mapped_docs_hint,
+        api_error,
+        next_action,
+        next_action_url,
+    }
 }
 
 fn build_default_intent_handshake(
@@ -5261,6 +5581,97 @@ mod tests {
             write_tool.input_schema["properties"]["allow_legacy_write_with_proof_fallback"]["default"],
             json!(false)
         );
+    }
+
+    #[test]
+    fn high_impact_classification_keeps_routine_plan_update_low_impact() {
+        let events = vec![json!({
+            "event_type": "training_plan.updated",
+            "data": {
+                "change_scope": "routine_adjustment",
+                "volume_delta_pct": 8.0,
+                "intensity_delta_pct": 4.0,
+                "frequency_delta_per_week": 1.0
+            }
+        })];
+        assert!(!has_high_impact_events(&events));
+    }
+
+    #[test]
+    fn high_impact_classification_escalates_large_plan_shift() {
+        let events = vec![json!({
+            "event_type": "training_plan.updated",
+            "data": {
+                "change_scope": "full_rewrite",
+                "replace_entire_plan": true,
+                "volume_delta_pct": 22.0
+            }
+        })];
+        assert!(has_high_impact_events(&events));
+    }
+
+    #[test]
+    fn plan_write_detection_matches_training_plan_prefix() {
+        let events = vec![
+            json!({"event_type": "set.logged", "data": {"reps": 5}}),
+            json!({"event_type": "training_plan.updated", "data": {"change_scope": "routine_adjustment"}}),
+        ];
+        assert!(contains_plan_writes(&events));
+    }
+
+    #[test]
+    fn plan_write_contract_error_exposes_required_mode_and_hint() {
+        let err = plan_write_requires_write_with_proof_error(
+            WriteMode::Commit,
+            "preferred_contract",
+            None,
+        );
+        assert_eq!(err.code, "plan_write_requires_write_with_proof");
+        assert_eq!(err.field.as_deref(), Some("mode"));
+        assert!(
+            err.docs_hint
+                .as_deref()
+                .unwrap_or_default()
+                .contains("write_with_proof")
+        );
+    }
+
+    #[test]
+    fn write_api_error_classification_maps_preflight_blockers() {
+        let response = ApiCallResult {
+            status: 400,
+            body: json!({
+                "error": "validation_failed",
+                "message": "write_with_proof blocked by preflight checks",
+                "docs_hint": "Resolve blockers first",
+                "received": {
+                    "blockers": [
+                        {"code": "health_consent_required"}
+                    ]
+                }
+            }),
+            headers: None,
+        };
+
+        let classification = classify_write_api_error(&response);
+        assert_eq!(classification.code, "write_preflight_blocked");
+        assert!(classification.message.contains("health_consent_required"));
+    }
+
+    #[test]
+    fn write_api_error_classification_maps_approval_timeout() {
+        let response = ApiCallResult {
+            status: 403,
+            body: json!({
+                "error": "forbidden",
+                "message": "exec denied: approval timed out",
+            }),
+            headers: None,
+        };
+
+        let classification = classify_write_api_error(&response);
+        assert_eq!(classification.code, "approval_timeout");
+        assert!(classification.message.contains("approval"));
     }
 
     // ── Context gate tests ──────────────────────────────────────────

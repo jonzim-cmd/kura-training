@@ -1233,6 +1233,11 @@ fn evaluate_legacy_domain_invariants(
     }
 
     if has_plan_writes {
+        tracing::warn!(
+            event_types = ?normalized_event_types,
+            violation_code = "inv_plan_write_requires_write_with_proof",
+            "legacy_plan_write_blocked"
+        );
         return Err(policy_violation(
             "inv_plan_write_requires_write_with_proof",
             "training_plan.* writes require /v1/agent/write-with-proof to satisfy read-after-write guarantees",
