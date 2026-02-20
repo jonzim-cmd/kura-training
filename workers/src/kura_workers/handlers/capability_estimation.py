@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -21,6 +22,7 @@ from ..capability_estimation_runtime import (
     interval_around,
     summarize_observations,
 )
+from ..inference_event_registry import CAPABILITY_BACKFILL_TRIGGER_EVENT_TYPES
 from ..registry import projection_handler
 from ..training_load_v2 import infer_row_modality_with_context
 from ..training_signal_normalization import normalize_training_signal_rows
@@ -32,6 +34,84 @@ from ..utils import (
     normalize_temporal_point,
     resolve_timezone_context,
 )
+
+MODEL_VERSION = "capability_estimation.v1"
+
+
+@dataclass(frozen=True)
+class CapabilityEnvelopeSpec:
+    capability: str
+    required_observations: int
+    minimum_observations: int
+    comparability_fields: tuple[str, ...]
+    comparability_fallback: str
+    insufficient_recommendations: tuple[str, ...]
+    degraded_reason_code: str | None = None
+    degraded_recommendations: tuple[str, ...] = ()
+    degraded_caveat_code: str | None = None
+
+
+CAPABILITY_SPECS: dict[str, CapabilityEnvelopeSpec] = {
+    "strength_1rm": CapabilityEnvelopeSpec(
+        capability="strength_1rm",
+        required_observations=6,
+        minimum_observations=3,
+        comparability_fields=("equipment_profile", "implements_type"),
+        comparability_fallback="strength:unspecified",
+        insufficient_recommendations=(
+            "Log additional heavy sets with reps and load.",
+            "Add RIR or RPE to improve effort-adjusted estimation.",
+        ),
+        degraded_reason_code="multiple_comparability_groups",
+        degraded_recommendations=("Keep equipment and setup stable for tighter comparability.",),
+        degraded_caveat_code="multiple_comparability_groups",
+    ),
+    "sprint_max_speed": CapabilityEnvelopeSpec(
+        capability="sprint_max_speed",
+        required_observations=6,
+        minimum_observations=3,
+        comparability_fields=("surface", "timing_method"),
+        comparability_fallback="sprint:unknown_protocol",
+        insufficient_recommendations=(
+            "Log sprint sets with distance_meters and duration_seconds.",
+            "Persist timing_method and surface for comparability.",
+        ),
+        degraded_reason_code="protocol_mismatch",
+        degraded_recommendations=("Keep timing method and surface consistent.",),
+        degraded_caveat_code="protocol_mismatch",
+    ),
+    "jump_height": CapabilityEnvelopeSpec(
+        capability="jump_height",
+        required_observations=6,
+        minimum_observations=3,
+        comparability_fields=("device_type", "surface"),
+        comparability_fallback="jump:unknown_protocol",
+        insufficient_recommendations=(
+            "Log jump height attempts with explicit jump_height_cm.",
+            "Include device_type and surface for comparability.",
+        ),
+        degraded_reason_code="device_surface_mismatch",
+        degraded_recommendations=("Keep device and surface stable across test sessions.",),
+        degraded_caveat_code="device_surface_mismatch",
+    ),
+    "endurance_threshold": CapabilityEnvelopeSpec(
+        capability="endurance_threshold",
+        required_observations=6,
+        minimum_observations=3,
+        comparability_fields=("reference_type", "surface"),
+        comparability_fallback="endurance:unknown_reference",
+        insufficient_recommendations=(
+            "Log duration+distance or power for endurance blocks.",
+            "Include relative_intensity reference metadata when available.",
+        ),
+        degraded_reason_code="reference_protocol_mismatch",
+        degraded_caveat_code="reference_protocol_mismatch",
+    ),
+}
+
+
+def _spec_for(capability: str) -> CapabilityEnvelopeSpec:
+    return CAPABILITY_SPECS[capability]
 
 
 def _to_float(value: Any) -> float | None:
@@ -54,7 +134,96 @@ def _comparability_group(data: dict[str, Any], fields: tuple[str, ...], *, fallb
     return "|".join(parts)
 
 
-def _strength_envelope(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_insufficient_from_spec(
+    capability: str,
+    *,
+    observed_observations: int,
+    diagnostics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    spec = _spec_for(capability)
+    return build_insufficient_envelope(
+        capability=spec.capability,
+        required_observations=spec.required_observations,
+        observed_observations=observed_observations,
+        model_version=MODEL_VERSION,
+        recommended_next_observations=list(spec.insufficient_recommendations),
+        diagnostics=diagnostics,
+    )
+
+
+def _build_envelope_from_spec(
+    capability: str,
+    *,
+    estimate_mean: float,
+    estimate_sd: float,
+    observed_observations: int,
+    groups: set[str],
+    degraded: bool,
+    include_default_degraded_metadata: bool = True,
+    extra_reason_codes: list[str] | None = None,
+    extra_recommendations: list[str] | None = None,
+    extra_caveats: list[dict[str, Any]] | None = None,
+    diagnostics: dict[str, Any] | None = None,
+    freshness_days: float | None = None,
+    freshness_half_life_days: float | None = None,
+) -> dict[str, Any]:
+    spec = _spec_for(capability)
+
+    reason_codes: list[str] = []
+    if degraded and include_default_degraded_metadata and spec.degraded_reason_code:
+        reason_codes.append(spec.degraded_reason_code)
+    if extra_reason_codes:
+        reason_codes.extend(extra_reason_codes)
+
+    recommended_next_observations: list[str] = []
+    if degraded and include_default_degraded_metadata:
+        recommended_next_observations.extend(spec.degraded_recommendations)
+    if extra_recommendations:
+        recommended_next_observations.extend(extra_recommendations)
+
+    caveats: list[dict[str, Any]] = []
+    if degraded and include_default_degraded_metadata and spec.degraded_caveat_code:
+        caveats.append(
+            {
+                "code": spec.degraded_caveat_code,
+                "severity": "medium",
+                "details": {"group_count": len(groups)},
+            }
+        )
+    if extra_caveats:
+        caveats.extend(extra_caveats)
+
+    status = STATUS_DEGRADED_COMPARABILITY if degraded else STATUS_OK
+    sufficiency = data_sufficiency_block(
+        required_observations=spec.required_observations,
+        observed_observations=observed_observations,
+        uncertainty_reason_codes=reason_codes,
+        recommended_next_observations=recommended_next_observations,
+    )
+    return build_capability_envelope(
+        capability=spec.capability,
+        estimate_mean=estimate_mean,
+        estimate_interval=interval_around(estimate_mean, estimate_sd),
+        status=status,
+        confidence=confidence_from_evidence(
+            observed_points=observed_observations,
+            required_points=spec.required_observations,
+            comparability_degraded=degraded,
+            freshness_days=freshness_days,
+            freshness_half_life_days=freshness_half_life_days,
+        ),
+        data_sufficiency=sufficiency,
+        model_version=MODEL_VERSION,
+        caveats=caveats,
+        comparability={"groups_total": len(groups), "groups": sorted(groups)},
+        diagnostics=diagnostics,
+    )
+
+
+def _strength_envelope(rows: list[dict[str, Any]], *, timezone_name: str) -> dict[str, Any]:
+    del timezone_name
+    spec = _spec_for("strength_1rm")
+
     observations: list[float] = []
     groups: set[str] = set()
     sources: dict[str, int] = {"explicit": 0, "inferred_from_rpe": 0, "fallback_epley": 0}
@@ -65,10 +234,12 @@ def _strength_envelope(rows: list[dict[str, Any]]) -> dict[str, Any]:
         modality = infer_row_modality_with_context(data).get("modality")
         if modality != "strength":
             continue
+
         weight = _to_float(data.get("weight_kg", data.get("weight")))
         reps = data.get("reps")
         if weight is None:
             continue
+
         e1rm, source = effort_adjusted_e1rm(
             weight,
             reps,
@@ -77,74 +248,39 @@ def _strength_envelope(rows: list[dict[str, Any]]) -> dict[str, Any]:
         )
         if e1rm <= 0:
             continue
+
         observations.append(e1rm)
         groups.add(
             _comparability_group(
                 data,
-                ("equipment_profile", "implements_type"),
-                fallback="strength:unspecified",
+                spec.comparability_fields,
+                fallback=spec.comparability_fallback,
             )
         )
         if source not in sources:
             sources[source] = 0
         sources[source] += 1
 
-    required = 6
     observed = len(observations)
-    if observed < 3:
-        return build_insufficient_envelope(
-            capability="strength_1rm",
-            required_observations=required,
+    if observed < spec.minimum_observations:
+        return _build_insufficient_from_spec(
+            spec.capability,
             observed_observations=observed,
-            model_version="capability_estimation.v1",
-            recommended_next_observations=[
-                "Log additional heavy sets with reps and load.",
-                "Add RIR or RPE to improve effort-adjusted estimation.",
-            ],
             diagnostics={"e1rm_source_counts": sources},
         )
 
     mean, sd = summarize_observations(observations)
     assert mean is not None
     degraded = len(groups) > 1
-    status = STATUS_DEGRADED_COMPARABILITY if degraded else STATUS_OK
-    sufficiency = data_sufficiency_block(
-        required_observations=required,
-        observed_observations=observed,
-        uncertainty_reason_codes=(
-            ["multiple_comparability_groups"] if degraded else []
-        )
-        + (["effort_context_missing"] if sources.get("fallback_epley", 0) else []),
-        recommended_next_observations=(
-            ["Keep equipment and setup stable for tighter comparability."]
-            if degraded
-            else []
-        ),
-    )
-    return build_capability_envelope(
-        capability="strength_1rm",
+    extra_reason_codes = ["effort_context_missing"] if sources.get("fallback_epley", 0) else []
+    return _build_envelope_from_spec(
+        spec.capability,
         estimate_mean=mean,
-        estimate_interval=interval_around(mean, sd),
-        status=status,
-        confidence=confidence_from_evidence(
-            observed_points=observed,
-            required_points=required,
-            comparability_degraded=degraded,
-        ),
-        data_sufficiency=sufficiency,
-        model_version="capability_estimation.v1",
-        caveats=(
-            [
-                {
-                    "code": "multiple_comparability_groups",
-                    "severity": "medium",
-                    "details": {"group_count": len(groups)},
-                }
-            ]
-            if degraded
-            else []
-        ),
-        comparability={"groups_total": len(groups), "groups": sorted(groups)},
+        estimate_sd=sd,
+        observed_observations=observed,
+        groups=groups,
+        degraded=degraded,
+        extra_reason_codes=extra_reason_codes,
         diagnostics={"e1rm_source_counts": sources},
     )
 
@@ -169,7 +305,10 @@ def _extract_speed_mps(data: dict[str, Any]) -> float | None:
     return None
 
 
-def _sprint_envelope(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _sprint_envelope(rows: list[dict[str, Any]], *, timezone_name: str) -> dict[str, Any]:
+    del timezone_name
+    spec = _spec_for("sprint_max_speed")
+
     observations: list[float] = []
     groups: set[str] = set()
     for row in rows:
@@ -179,72 +318,36 @@ def _sprint_envelope(rows: list[dict[str, Any]]) -> dict[str, Any]:
         modality = infer_row_modality_with_context(data).get("modality")
         if modality != "sprint":
             continue
+
         speed = _extract_speed_mps(data)
         if speed is None or speed <= 0:
             continue
+
         observations.append(speed)
         groups.add(
             _comparability_group(
                 data,
-                ("surface", "timing_method"),
-                fallback="sprint:unknown_protocol",
+                spec.comparability_fields,
+                fallback=spec.comparability_fallback,
             )
         )
 
-    required = 6
     observed = len(observations)
-    if observed < 3:
-        return build_insufficient_envelope(
-            capability="sprint_max_speed",
-            required_observations=required,
-            observed_observations=observed,
-            model_version="capability_estimation.v1",
-            recommended_next_observations=[
-                "Log sprint sets with distance_meters and duration_seconds.",
-                "Persist timing_method and surface for comparability.",
-            ],
-        )
+    if observed < spec.minimum_observations:
+        return _build_insufficient_from_spec(spec.capability, observed_observations=observed)
 
     # Top-end speed capability is better represented by fast-tail observations.
     tail = sorted(observations, reverse=True)[: max(3, observed // 3)]
     mean, sd = summarize_observations(tail)
     assert mean is not None
     degraded = len(groups) > 1
-    status = STATUS_DEGRADED_COMPARABILITY if degraded else STATUS_OK
-    sufficiency = data_sufficiency_block(
-        required_observations=required,
-        observed_observations=observed,
-        uncertainty_reason_codes=(["protocol_mismatch"] if degraded else []),
-        recommended_next_observations=(
-            ["Keep timing method and surface consistent."]
-            if degraded
-            else []
-        ),
-    )
-    return build_capability_envelope(
-        capability="sprint_max_speed",
+    return _build_envelope_from_spec(
+        spec.capability,
         estimate_mean=mean,
-        estimate_interval=interval_around(mean, sd),
-        status=status,
-        confidence=confidence_from_evidence(
-            observed_points=observed,
-            required_points=required,
-            comparability_degraded=degraded,
-        ),
-        data_sufficiency=sufficiency,
-        model_version="capability_estimation.v1",
-        caveats=(
-            [
-                {
-                    "code": "protocol_mismatch",
-                    "severity": "medium",
-                    "details": {"group_count": len(groups)},
-                }
-            ]
-            if degraded
-            else []
-        ),
-        comparability={"groups_total": len(groups), "groups": sorted(groups)},
+        estimate_sd=sd,
+        observed_observations=observed,
+        groups=groups,
+        degraded=degraded,
     )
 
 
@@ -260,11 +363,9 @@ def _extract_jump_height_cm(data: dict[str, Any]) -> float | None:
     return None
 
 
-def _jump_envelope(
-    rows: list[dict[str, Any]],
-    *,
-    timezone_name: str,
-) -> dict[str, Any]:
+def _jump_envelope(rows: list[dict[str, Any]], *, timezone_name: str) -> dict[str, Any]:
+    spec = _spec_for("jump_height")
+
     attempts: list[tuple[str, float, str]] = []
     fallback_session_state: SessionBoundaryState | None = None
     for row in rows:
@@ -284,6 +385,7 @@ def _jump_envelope(
         ts = row.get("timestamp")
         if not isinstance(ts, datetime):
             continue
+
         temporal = normalize_temporal_point(
             ts,
             timezone_name=timezone_name,
@@ -300,22 +402,17 @@ def _jump_envelope(
                 timestamp_utc=temporal.timestamp_utc,
                 state=fallback_session_state,
             )
-        group = _comparability_group(data, ("device_type", "surface"), fallback="jump:unknown_protocol")
+
+        group = _comparability_group(
+            data,
+            spec.comparability_fields,
+            fallback=spec.comparability_fallback,
+        )
         attempts.append((session_key, jump_cm, group))
 
-    required = 6
     observed = len(attempts)
-    if observed < 3:
-        return build_insufficient_envelope(
-            capability="jump_height",
-            required_observations=required,
-            observed_observations=observed,
-            model_version="capability_estimation.v1",
-            recommended_next_observations=[
-                "Log jump height attempts with explicit jump_height_cm.",
-                "Include device_type and surface for comparability.",
-            ],
-        )
+    if observed < spec.minimum_observations:
+        return _build_insufficient_from_spec(spec.capability, observed_observations=observed)
 
     grouped_attempts: dict[str, list[float]] = defaultdict(list)
     groups: set[str] = set()
@@ -327,41 +424,13 @@ def _jump_envelope(
     mean, sd = summarize_observations(session_best)
     assert mean is not None
     degraded = len(groups) > 1
-    status = STATUS_DEGRADED_COMPARABILITY if degraded else STATUS_OK
-    sufficiency = data_sufficiency_block(
-        required_observations=required,
-        observed_observations=observed,
-        uncertainty_reason_codes=(["device_surface_mismatch"] if degraded else []),
-        recommended_next_observations=(
-            ["Keep device and surface stable across test sessions."]
-            if degraded
-            else []
-        ),
-    )
-    return build_capability_envelope(
-        capability="jump_height",
+    return _build_envelope_from_spec(
+        spec.capability,
         estimate_mean=mean,
-        estimate_interval=interval_around(mean, sd),
-        status=status,
-        confidence=confidence_from_evidence(
-            observed_points=observed,
-            required_points=required,
-            comparability_degraded=degraded,
-        ),
-        data_sufficiency=sufficiency,
-        model_version="capability_estimation.v1",
-        caveats=(
-            [
-                {
-                    "code": "device_surface_mismatch",
-                    "severity": "medium",
-                    "details": {"group_count": len(groups)},
-                }
-            ]
-            if degraded
-            else []
-        ),
-        comparability={"groups_total": len(groups), "groups": sorted(groups)},
+        estimate_sd=sd,
+        observed_observations=observed,
+        groups=groups,
+        degraded=degraded,
         diagnostics={"session_trials": len(grouped_attempts)},
     )
 
@@ -391,20 +460,21 @@ def _endurance_observation(data: dict[str, Any]) -> tuple[float | None, float | 
                 if measured_dt is not None and measured_dt.tzinfo is not None:
                     freshness_days = max(
                         0.0,
-                        (
-                            datetime.now(measured_dt.tzinfo) - measured_dt
-                        ).total_seconds()
-                        / 86400.0,
+                        (datetime.now(measured_dt.tzinfo) - measured_dt).total_seconds() / 86400.0,
                     )
             return reference * (pct / 100.0), freshness_days
     return None, None
 
 
-def _endurance_envelope(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _endurance_envelope(rows: list[dict[str, Any]], *, timezone_name: str) -> dict[str, Any]:
+    del timezone_name
+    spec = _spec_for("endurance_threshold")
+
     observations: list[float] = []
     freshness_days: list[float] = []
     groups: set[str] = set()
     stale_reference_count = 0
+
     for row in rows:
         data = row.get("data")
         if not isinstance(data, dict):
@@ -412,9 +482,11 @@ def _endurance_envelope(rows: list[dict[str, Any]]) -> dict[str, Any]:
         modality = infer_row_modality_with_context(data).get("modality")
         if modality != "endurance":
             continue
+
         value, freshness = _endurance_observation(data)
         if value is None or value <= 0:
             continue
+
         observations.append(value)
         if freshness is not None:
             freshness_days.append(freshness)
@@ -423,73 +495,63 @@ def _endurance_envelope(rows: list[dict[str, Any]]) -> dict[str, Any]:
         groups.add(
             _comparability_group(
                 data,
-                ("reference_type", "surface"),
-                fallback="endurance:unknown_reference",
+                spec.comparability_fields,
+                fallback=spec.comparability_fallback,
             )
         )
 
-    required = 6
     observed = len(observations)
-    if observed < 3:
-        return build_insufficient_envelope(
-            capability="endurance_threshold",
-            required_observations=required,
-            observed_observations=observed,
-            model_version="capability_estimation.v1",
-            recommended_next_observations=[
-                "Log duration+distance or power for endurance blocks.",
-                "Include relative_intensity reference metadata when available.",
-            ],
-        )
+    if observed < spec.minimum_observations:
+        return _build_insufficient_from_spec(spec.capability, observed_observations=observed)
 
     mean, sd = summarize_observations(observations)
     assert mean is not None
+
     average_freshness = (sum(freshness_days) / len(freshness_days)) if freshness_days else None
-    degraded = len(groups) > 1 or stale_reference_count > 0
-    status = STATUS_DEGRADED_COMPARABILITY if degraded else STATUS_OK
-    reason_codes: list[str] = []
-    if len(groups) > 1:
-        reason_codes.append("reference_protocol_mismatch")
-    if stale_reference_count > 0:
-        reason_codes.append("stale_reference")
-    sufficiency = data_sufficiency_block(
-        required_observations=required,
-        observed_observations=observed,
-        uncertainty_reason_codes=reason_codes,
-        recommended_next_observations=(
-            ["Refresh threshold references (MSS/critical speed/power) periodically."]
-            if stale_reference_count > 0
-            else []
-        ),
-    )
-    return build_capability_envelope(
-        capability="endurance_threshold",
+    mismatched_groups = len(groups) > 1
+    stale_reference = stale_reference_count > 0
+    degraded = mismatched_groups or stale_reference
+
+    extra_reason_codes: list[str] = []
+    extra_recommendations: list[str] = []
+    extra_caveats: list[dict[str, Any]] = []
+
+    if stale_reference:
+        extra_reason_codes.append("stale_reference")
+        extra_recommendations.append(
+            "Refresh threshold references (MSS/critical speed/power) periodically."
+        )
+        extra_caveats.append(
+            {
+                "code": "stale_reference",
+                "severity": "medium",
+                "details": {"stale_reference_count": stale_reference_count},
+            }
+        )
+
+    return _build_envelope_from_spec(
+        spec.capability,
         estimate_mean=mean,
-        estimate_interval=interval_around(mean, sd),
-        status=status,
-        confidence=confidence_from_evidence(
-            observed_points=observed,
-            required_points=required,
-            comparability_degraded=degraded,
-            freshness_days=average_freshness,
-            freshness_half_life_days=21.0,
-        ),
-        data_sufficiency=sufficiency,
-        model_version="capability_estimation.v1",
-        caveats=(
-            [
-                {
-                    "code": "stale_reference",
-                    "severity": "medium",
-                    "details": {"stale_reference_count": stale_reference_count},
-                }
-            ]
-            if stale_reference_count > 0
-            else []
-        ),
-        comparability={"groups_total": len(groups), "groups": sorted(groups)},
+        estimate_sd=sd,
+        observed_observations=observed,
+        groups=groups,
+        degraded=degraded,
+        include_default_degraded_metadata=mismatched_groups,
+        extra_reason_codes=extra_reason_codes,
+        extra_recommendations=extra_recommendations,
+        extra_caveats=extra_caveats,
         diagnostics={"average_reference_freshness_days": average_freshness},
+        freshness_days=average_freshness,
+        freshness_half_life_days=21.0,
     )
+
+
+CAPABILITY_ENVELOPE_BUILDERS = {
+    "strength_1rm": _strength_envelope,
+    "sprint_max_speed": _sprint_envelope,
+    "jump_height": _jump_envelope,
+    "endurance_threshold": _endurance_envelope,
+}
 
 
 def build_capability_envelopes(
@@ -498,18 +560,13 @@ def build_capability_envelopes(
     timezone_name: str,
 ) -> dict[str, dict[str, Any]]:
     return {
-        "strength_1rm": _strength_envelope(rows),
-        "sprint_max_speed": _sprint_envelope(rows),
-        "jump_height": _jump_envelope(rows, timezone_name=timezone_name),
-        "endurance_threshold": _endurance_envelope(rows),
+        capability: builder(rows, timezone_name=timezone_name)
+        for capability, builder in CAPABILITY_ENVELOPE_BUILDERS.items()
     }
 
 
 @projection_handler(
-    "set.logged",
-    "session.logged",
-    "set.corrected",
-    "external.activity_imported",
+    *CAPABILITY_BACKFILL_TRIGGER_EVENT_TYPES,
     dimension_meta={
         "name": "capability_estimation",
         "description": (
@@ -549,10 +606,7 @@ async def update_capability_estimation(
               AND event_type = ANY(%s)
             ORDER BY timestamp ASC, id ASC
             """,
-            (
-                user_id,
-                ["set.logged", "session.logged", "set.corrected", "external.activity_imported"],
-            ),
+            (user_id, list(CAPABILITY_BACKFILL_TRIGGER_EVENT_TYPES)),
         )
         rows = await cur.fetchall()
 

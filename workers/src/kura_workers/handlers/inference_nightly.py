@@ -11,7 +11,10 @@ from psycopg.types.json import Json
 
 from ..consistency_inbox import refresh_all_consistency_inboxes
 from ..extraction_calibration import refresh_extraction_calibration
-from ..inference_event_registry import NIGHTLY_REFIT_TRIGGER_EVENT_TYPES
+from ..inference_event_registry import (
+    CAPABILITY_BACKFILL_TRIGGER_EVENT_TYPES,
+    NIGHTLY_REFIT_TRIGGER_EVENT_TYPES,
+)
 from ..issue_clustering import refresh_issue_clusters
 from ..learning_backlog_bridge import refresh_learning_backlog_candidates
 from ..population_priors import refresh_population_prior_profiles
@@ -45,14 +48,60 @@ async def _latest_event_id_for_type(
     return str(row["id"])
 
 
+async def _candidate_user_ids_for_event_types(
+    conn: psycopg.AsyncConnection[Any],
+    *,
+    event_types: tuple[str, ...],
+) -> list[str]:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT DISTINCT user_id
+            FROM events
+            WHERE event_type = ANY(%s)
+            ORDER BY user_id
+            """,
+            (list(event_types),),
+        )
+        rows = await cur.fetchall()
+    return [str(row["user_id"]) for row in rows]
+
+
+def _coerce_event_types(
+    raw_event_types: Any,
+    *,
+    default: tuple[str, ...],
+    allowed: tuple[str, ...],
+) -> tuple[str, ...]:
+    if not isinstance(raw_event_types, list):
+        return default
+    allowed_set = set(allowed)
+    selected = [
+        event_type
+        for event_type in [str(value or "").strip() for value in raw_event_types]
+        if event_type in allowed_set
+    ]
+    if not selected:
+        return default
+    return tuple(dict.fromkeys(selected))
+
+
+def _coerce_user_ids(raw_user_ids: Any) -> list[str]:
+    if not isinstance(raw_user_ids, list):
+        return []
+    selected = [str(value or "").strip() for value in raw_user_ids]
+    return [user_id for user_id in selected if user_id]
+
+
 async def _enqueue_projection_update_dedup(
     conn: psycopg.AsyncConnection[Any],
     *,
     user_id: str,
     event_type: str,
     event_id: str,
+    source: str,
 ) -> bool:
-    """Enqueue nightly projection update once per user/event_type while in-flight."""
+    """Enqueue projection.update once per user/event_type/source while in-flight."""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
@@ -63,7 +112,7 @@ async def _enqueue_projection_update_dedup(
                 FROM background_jobs
                 WHERE job_type = 'projection.update'
                   AND status IN ('pending', 'processing')
-                  AND payload->>'source' = 'inference.nightly_refit'
+                  AND payload->>'source' = %s
                   AND payload->>'user_id' = %s
                   AND payload->>'event_type' = %s
             )
@@ -76,9 +125,10 @@ async def _enqueue_projection_update_dedup(
                         "event_id": event_id,
                         "event_type": event_type,
                         "user_id": user_id,
-                        "source": "inference.nightly_refit",
+                        "source": source,
                     }
                 ),
+                source,
                 user_id,
                 event_type,
             ),
@@ -87,22 +137,13 @@ async def _enqueue_projection_update_dedup(
     return row is not None
 
 
-@register("inference.nightly_refit")
-async def handle_inference_nightly_refit(
-    conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
-) -> None:
-    """Enqueue projection refresh jobs for nightly inference maintenance."""
-    interval_h = int(payload.get("interval_hours", nightly_interval_hours()))
-    scheduler_key = str(payload.get("scheduler_key") or "").strip()
-    missed_runs = int(payload.get("missed_runs") or 0)
-    event_types = NIGHTLY_REFIT_TRIGGER_EVENT_TYPES
-
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute("SELECT DISTINCT user_id FROM events ORDER BY user_id")
-        user_rows = await cur.fetchall()
-
-    user_ids = [str(r["user_id"]) for r in user_rows]
-
+async def _enqueue_projection_updates_for_user_set(
+    conn: psycopg.AsyncConnection[Any],
+    *,
+    user_ids: list[str],
+    event_types: tuple[str, ...],
+    source: str,
+) -> int:
     enqueued = 0
     for user_id in user_ids:
         for event_type in event_types:
@@ -114,9 +155,30 @@ async def handle_inference_nightly_refit(
                 user_id=user_id,
                 event_type=event_type,
                 event_id=latest_event_id,
+                source=source,
             )
             if inserted:
                 enqueued += 1
+    return enqueued
+
+
+@register("inference.nightly_refit")
+async def handle_inference_nightly_refit(
+    conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
+) -> None:
+    """Enqueue projection refresh jobs for nightly inference maintenance."""
+    interval_h = int(payload.get("interval_hours", nightly_interval_hours()))
+    scheduler_key = str(payload.get("scheduler_key") or "").strip()
+    missed_runs = int(payload.get("missed_runs") or 0)
+    event_types = NIGHTLY_REFIT_TRIGGER_EVENT_TYPES
+    user_ids = await _candidate_user_ids_for_event_types(conn, event_types=event_types)
+    source = "inference.nightly_refit"
+    enqueued = await _enqueue_projection_updates_for_user_set(
+        conn,
+        user_ids=user_ids,
+        event_types=event_types,
+        source=source,
+    )
 
     population_prior_summary: dict[str, Any] | None = None
     try:
@@ -183,4 +245,41 @@ async def handle_inference_nightly_refit(
         unknown_dimension_summary or {"status": "failed"},
         learning_backlog_summary or {"status": "failed"},
         consistency_inbox_summary or {"status": "failed"},
+    )
+
+
+@register("inference.capability_backfill")
+async def handle_inference_capability_backfill(
+    conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
+) -> None:
+    """Run a one-shot capability-estimation projection backfill queue fan-out."""
+    source = str(payload.get("source") or "inference.capability_backfill").strip()
+    if not source:
+        source = "inference.capability_backfill"
+
+    event_types = _coerce_event_types(
+        payload.get("event_types"),
+        default=CAPABILITY_BACKFILL_TRIGGER_EVENT_TYPES,
+        allowed=CAPABILITY_BACKFILL_TRIGGER_EVENT_TYPES,
+    )
+
+    requested_user_ids = _coerce_user_ids(payload.get("user_ids"))
+    if requested_user_ids:
+        user_ids = requested_user_ids
+    else:
+        user_ids = await _candidate_user_ids_for_event_types(conn, event_types=event_types)
+
+    enqueued = await _enqueue_projection_updates_for_user_set(
+        conn,
+        user_ids=user_ids,
+        event_types=event_types,
+        source=source,
+    )
+
+    logger.info(
+        "Capability backfill enqueued %d projection.update jobs across %d users (source=%s, event_types=%s)",
+        enqueued,
+        len(user_ids),
+        source,
+        ",".join(event_types),
     )

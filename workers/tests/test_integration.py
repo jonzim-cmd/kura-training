@@ -42,7 +42,10 @@ from kura_workers.extraction_calibration import (
 )
 from kura_workers.eval_harness import run_eval_harness, run_shadow_evaluation
 from kura_workers.scheduler import ensure_nightly_inference_scheduler
-from kura_workers.handlers.inference_nightly import handle_inference_nightly_refit
+from kura_workers.handlers.inference_nightly import (
+    handle_inference_capability_backfill,
+    handle_inference_nightly_refit,
+)
 from kura_workers.semantic_bootstrap import ensure_semantic_catalog
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -1757,6 +1760,78 @@ class TestInferenceNightlyRefitIntegration:
         assert len(rows) == 2
         event_types = {row["event_type"] for row in rows}
         assert event_types == {"set.logged", "sleep.logged"}
+
+    async def test_capability_backfill_enqueues_capability_projection_updates(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "bench_press", "weight_kg": 90, "reps": 5,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+        await insert_event(db, test_user_id, "session.logged", {
+            "session_type": "sprint",
+            "blocks": [{"block_type": "performance", "distance_meters": 30, "duration_seconds": 4.2}],
+        }, "TIMESTAMP '2026-02-02 10:00:00+01'")
+        await insert_event(db, test_user_id, "sleep.logged", {
+            "duration_hours": 7.5,
+        }, "TIMESTAMP '2026-02-02 07:00:00+01'")
+
+        source = "test.capability_backfill"
+        await db.execute("SET ROLE app_worker")
+        await handle_inference_capability_backfill(db, {"source": source})
+        await db.execute("RESET ROLE")
+
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT payload->>'event_type' AS event_type
+                FROM background_jobs
+                WHERE user_id = %s
+                  AND job_type = 'projection.update'
+                  AND payload->>'source' = %s
+                ORDER BY id ASC
+                """,
+                (test_user_id, source),
+            )
+            rows = await cur.fetchall()
+
+        event_types = {row["event_type"] for row in rows}
+        assert event_types == {"set.logged", "session.logged"}
+
+    async def test_capability_backfill_deduplicates_projection_update_jobs(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "bench_press", "weight_kg": 90, "reps": 5,
+        }, "TIMESTAMP '2026-02-01 10:00:00+01'")
+        await insert_event(db, test_user_id, "set.corrected", {
+            "target_event_id": str(uuid.uuid4()),
+            "changed_fields": {"reps": 6},
+        }, "TIMESTAMP '2026-02-01 10:10:00+01'")
+
+        source = "test.capability_backfill.dedup"
+        payload = {"source": source}
+
+        await db.execute("SET ROLE app_worker")
+        await handle_inference_capability_backfill(db, payload)
+        await handle_inference_capability_backfill(db, payload)
+        await db.execute("RESET ROLE")
+
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT payload->>'event_type' AS event_type
+                FROM background_jobs
+                WHERE user_id = %s
+                  AND job_type = 'projection.update'
+                  AND payload->>'source' = %s
+                  AND status IN ('pending', 'processing')
+                ORDER BY event_type
+                """,
+                (test_user_id, source),
+            )
+            rows = await cur.fetchall()
+
+        event_types = {row["event_type"] for row in rows}
+        assert event_types == {"set.corrected", "set.logged"}
+        assert len(rows) == 2
 
     async def test_nightly_refit_refreshes_learning_issue_clusters(self, db, test_user_id):
         other_user_id = str(uuid.uuid4())

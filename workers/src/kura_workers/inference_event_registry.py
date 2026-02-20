@@ -44,6 +44,13 @@ NIGHTLY_REFIT_TRIGGER_EVENT_TYPES: tuple[str, ...] = (
     "external.activity_imported",
 )
 
+CAPABILITY_BACKFILL_TRIGGER_EVENT_TYPES: tuple[str, ...] = (
+    "set.logged",
+    "session.logged",
+    "set.corrected",
+    "external.activity_imported",
+)
+
 EVAL_READINESS_EVENT_TYPES: tuple[str, ...] = (
     *READINESS_SIGNAL_EVENT_TYPES,
     "preference.set",
