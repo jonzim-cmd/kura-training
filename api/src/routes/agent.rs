@@ -173,6 +173,25 @@ pub struct AgentConsentWriteGate {
     pub next_action_url: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentContextMetricSnapshot {
+    pub schema_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_frequency_per_week: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_frequency_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planned_sessions_per_week: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readiness_mean: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readiness_state: Option<String>,
+    pub user_profile_present: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experience_level: Option<String>,
+    pub goals_count: usize,
+}
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct AgentContextMeta {
     pub generated_at: DateTime<Utc>,
@@ -195,6 +214,7 @@ pub struct AgentContextMeta {
     pub challenge_mode: AgentChallengeMode,
     pub memory_tier_contract: AgentMemoryTierContract,
     pub consent_write_gate: AgentConsentWriteGate,
+    pub metric_snapshot: AgentContextMetricSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -3473,6 +3493,7 @@ const DECISION_BRIEF_BALANCED_ITEMS_PER_BLOCK: usize = 4;
 const DECISION_BRIEF_DETAILED_ITEMS_PER_BLOCK: usize = 5;
 const DECISION_BRIEF_MAX_ITEMS_PER_BLOCK: usize = 6;
 const AGENT_CONTEXT_OVERFLOW_SCHEMA_VERSION: &str = "agent_context_overflow.v1";
+const AGENT_CONTEXT_METRIC_SNAPSHOT_SCHEMA_VERSION: &str = "agent_context.metric_snapshot.v1";
 const DECISION_BRIEF_CHAT_TEMPLATE_ID: &str = "decision_brief.chat.context.v1";
 const OBSERVATION_DRAFT_CONTEXT_SCHEMA_VERSION: &str = "observation_draft_context.v1";
 const OBSERVATION_DRAFT_LIST_SCHEMA_VERSION: &str = "observation_draft_list.v1";
@@ -3510,6 +3531,137 @@ fn read_value_string_list(value: Option<&Value>) -> Vec<String> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default()
+}
+
+fn normalize_readiness_state(raw: Option<String>, readiness_mean: Option<f64>) -> Option<String> {
+    if let Some(value) = raw {
+        let normalized = value.trim().to_lowercase();
+        if matches!(normalized.as_str(), "high" | "moderate" | "low") {
+            return Some(normalized);
+        }
+    }
+    readiness_mean.map(|mean| {
+        if mean >= 0.75 {
+            "high".to_string()
+        } else if mean >= 0.5 {
+            "moderate".to_string()
+        } else {
+            "low".to_string()
+        }
+    })
+}
+
+fn extract_actual_frequency_per_week(
+    training_timeline: Option<&ProjectionResponse>,
+) -> (Option<f64>, Option<String>) {
+    let Some(data) = training_timeline.map(|projection| &projection.projection.data) else {
+        return (None, None);
+    };
+
+    let candidates = [
+        (
+            data.pointer("/current_frequency/last_4_weeks"),
+            "training_timeline.current_frequency.last_4_weeks",
+        ),
+        (
+            data.pointer("/current_frequency/sessions_per_week"),
+            "training_timeline.current_frequency.sessions_per_week",
+        ),
+        (
+            data.pointer("/frequency/last_4_weeks"),
+            "training_timeline.frequency.last_4_weeks",
+        ),
+        (
+            data.pointer("/frequency/sessions_per_week"),
+            "training_timeline.frequency.sessions_per_week",
+        ),
+    ];
+
+    for (candidate, source) in candidates {
+        if let Some(value) = read_value_f64(candidate) {
+            return (Some((value * 100.0).round() / 100.0), Some(source.to_string()));
+        }
+    }
+
+    (None, None)
+}
+
+fn extract_planned_sessions_per_week(training_plan: Option<&ProjectionResponse>) -> Option<f64> {
+    let Some(data) = training_plan.map(|projection| &projection.projection.data) else {
+        return None;
+    };
+
+    if let Some(sessions) = data
+        .pointer("/active_plan/sessions")
+        .and_then(Value::as_array)
+        .map(|items| items.len())
+    {
+        return Some(sessions as f64);
+    }
+
+    read_value_f64(
+        data.pointer("/active_plan/sessions_per_week")
+            .or_else(|| data.get("sessions_per_week")),
+    )
+}
+
+fn extract_readiness_snapshot(
+    readiness_inference: Option<&ProjectionResponse>,
+) -> (Option<f64>, Option<String>) {
+    let Some(data) = readiness_inference.map(|projection| &projection.projection.data) else {
+        return (None, None);
+    };
+
+    if let Some(readiness_today) = data.get("readiness_today") {
+        let readiness_mean = read_value_f64(readiness_today.get("mean"));
+        let readiness_state =
+            normalize_readiness_state(read_value_string(readiness_today.get("state")), readiness_mean);
+        if readiness_mean.is_some() || readiness_state.is_some() {
+            return (readiness_mean, readiness_state);
+        }
+    }
+
+    let readiness_mean = data
+        .get("daily_scores")
+        .and_then(Value::as_array)
+        .and_then(|scores| scores.last())
+        .and_then(|entry| read_value_f64(entry.get("score")));
+    let readiness_state = normalize_readiness_state(None, readiness_mean);
+    (readiness_mean, readiness_state)
+}
+
+fn build_agent_context_metric_snapshot(
+    user_profile: &ProjectionResponse,
+    training_timeline: Option<&ProjectionResponse>,
+    training_plan: Option<&ProjectionResponse>,
+    readiness_inference: Option<&ProjectionResponse>,
+) -> AgentContextMetricSnapshot {
+    let (actual_frequency_per_week, actual_frequency_source) =
+        extract_actual_frequency_per_week(training_timeline);
+    let planned_sessions_per_week = extract_planned_sessions_per_week(training_plan);
+    let (readiness_mean, readiness_state) = extract_readiness_snapshot(readiness_inference);
+
+    let user_data = user_profile.projection.data.get("user");
+    let profile = user_data.and_then(|value| value.get("profile"));
+    let user_profile_present = profile.is_some_and(|value| value.is_object());
+    let experience_level = read_value_string(profile.and_then(|value| value.get("experience_level")));
+    let goals_count = user_data
+        .and_then(|value| value.get("goals"))
+        .and_then(Value::as_array)
+        .map(|goals| goals.len())
+        .unwrap_or(0);
+
+    AgentContextMetricSnapshot {
+        schema_version: AGENT_CONTEXT_METRIC_SNAPSHOT_SCHEMA_VERSION.to_string(),
+        actual_frequency_per_week,
+        actual_frequency_source,
+        planned_sessions_per_week,
+        readiness_mean,
+        readiness_state,
+        user_profile_present,
+        experience_level,
+        goals_count,
+    }
 }
 
 fn push_decision_brief_entry(block: &mut Vec<String>, text: impl Into<String>) {
@@ -7454,6 +7606,12 @@ pub async fn get_agent_context(
     );
     let system_response = if include_system { system.clone() } else { None };
     let consent_write_gate = build_agent_consent_write_gate(health_data_processing_consent);
+    let metric_snapshot = build_agent_context_metric_snapshot(
+        &user_profile,
+        training_timeline.as_ref(),
+        training_plan.as_ref(),
+        readiness_inference.as_ref(),
+    );
     let mut response = AgentContextResponse {
         action_required,
         agent_brief,
@@ -7496,6 +7654,7 @@ pub async fn get_agent_context(
             challenge_mode,
             memory_tier_contract,
             consent_write_gate,
+            metric_snapshot,
         },
     };
     apply_agent_context_budget(&mut response);
@@ -12247,6 +12406,153 @@ mod tests {
         assert_eq!(temporal_context.timezone_source, "assumed_default");
         assert!(temporal_context.timezone_assumed);
         assert!(temporal_context.assumption_disclosure.is_some());
+    }
+
+    #[test]
+    fn agent_context_metric_snapshot_contract_prefers_current_schema_fields() {
+        let user_profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "profile": { "experience_level": "advanced" },
+                    "goals": [{ "goal_type": "strength" }, { "goal_type": "speed" }]
+                }
+            }),
+        );
+        let training_timeline = make_projection_response(
+            "training_timeline",
+            "overview",
+            Utc::now(),
+            json!({
+                "current_frequency": { "last_4_weeks": 1.25 }
+            }),
+        );
+        let training_plan = make_projection_response(
+            "training_plan",
+            "overview",
+            Utc::now(),
+            json!({
+                "active_plan": {
+                    "sessions": [{}, {}, {}]
+                }
+            }),
+        );
+        let readiness = make_projection_response(
+            "readiness_inference",
+            "overview",
+            Utc::now(),
+            json!({
+                "readiness_today": {
+                    "mean": 0.64,
+                    "state": "moderate"
+                },
+                "daily_scores": [{"score": 0.71}]
+            }),
+        );
+
+        let snapshot = super::build_agent_context_metric_snapshot(
+            &user_profile,
+            Some(&training_timeline),
+            Some(&training_plan),
+            Some(&readiness),
+        );
+
+        assert_eq!(
+            snapshot.schema_version,
+            super::AGENT_CONTEXT_METRIC_SNAPSHOT_SCHEMA_VERSION
+        );
+        assert_eq!(snapshot.actual_frequency_per_week, Some(1.25));
+        assert_eq!(
+            snapshot.actual_frequency_source.as_deref(),
+            Some("training_timeline.current_frequency.last_4_weeks")
+        );
+        assert_eq!(snapshot.planned_sessions_per_week, Some(3.0));
+        assert_eq!(snapshot.readiness_mean, Some(0.64));
+        assert_eq!(snapshot.readiness_state.as_deref(), Some("moderate"));
+        assert!(snapshot.user_profile_present);
+        assert_eq!(snapshot.experience_level.as_deref(), Some("advanced"));
+        assert_eq!(snapshot.goals_count, 2);
+    }
+
+    #[test]
+    fn agent_context_metric_snapshot_contract_falls_back_to_legacy_paths() {
+        let user_profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "profile": {},
+                    "goals": []
+                }
+            }),
+        );
+        let training_timeline = make_projection_response(
+            "training_timeline",
+            "overview",
+            Utc::now(),
+            json!({
+                "frequency": { "sessions_per_week": 0.75 }
+            }),
+        );
+        let training_plan = make_projection_response(
+            "training_plan",
+            "overview",
+            Utc::now(),
+            json!({
+                "active_plan": {
+                    "sessions_per_week": 2
+                }
+            }),
+        );
+        let readiness = make_projection_response(
+            "readiness_inference",
+            "overview",
+            Utc::now(),
+            json!({
+                "daily_scores": [
+                    {"date": "2026-02-19", "score": 0.62},
+                    {"date": "2026-02-20", "score": 0.82}
+                ]
+            }),
+        );
+
+        let snapshot = super::build_agent_context_metric_snapshot(
+            &user_profile,
+            Some(&training_timeline),
+            Some(&training_plan),
+            Some(&readiness),
+        );
+
+        assert_eq!(snapshot.actual_frequency_per_week, Some(0.75));
+        assert_eq!(
+            snapshot.actual_frequency_source.as_deref(),
+            Some("training_timeline.frequency.sessions_per_week")
+        );
+        assert_eq!(snapshot.planned_sessions_per_week, Some(2.0));
+        assert_eq!(snapshot.readiness_mean, Some(0.82));
+        assert_eq!(snapshot.readiness_state.as_deref(), Some("high"));
+        assert!(snapshot.user_profile_present);
+    }
+
+    #[test]
+    fn agent_context_metric_snapshot_contract_marks_missing_profile_data() {
+        let user_profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": null
+            }),
+        );
+        let snapshot =
+            super::build_agent_context_metric_snapshot(&user_profile, None, None, None);
+
+        assert!(!snapshot.user_profile_present);
+        assert_eq!(snapshot.experience_level, None);
+        assert_eq!(snapshot.goals_count, 0);
     }
 
     #[test]

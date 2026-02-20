@@ -14,6 +14,7 @@ Full recompute on every event — idempotent by design.
 
 import json
 import logging
+from datetime import datetime
 from typing import Any
 
 import psycopg
@@ -137,6 +138,36 @@ def _compute_rir_target_summary(sessions: Any) -> dict[str, Any]:
     return result
 
 
+def _normalized_plan_id(value: Any) -> str:
+    if isinstance(value, str):
+        plan_id = value.strip()
+        if plan_id:
+            return plan_id
+    return "default"
+
+
+def _sanitize_plan_id_for_name(plan_id: str) -> str:
+    sanitized = "".join(
+        char for char in plan_id.lower() if char.isalnum() or char in {"-", "_"}
+    ).strip("-_")
+    return sanitized[:24] or "default"
+
+
+def _resolve_plan_name(value: Any, *, plan_id: str, timestamp: datetime) -> str:
+    if isinstance(value, str):
+        name = value.strip()
+        if name:
+            return name
+    return f"plan-{timestamp.date().isoformat()}-{_sanitize_plan_id_for_name(plan_id)}"
+
+
+def _resolve_optional_plan_name(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    name = value.strip()
+    return name or None
+
+
 def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Extract summary for user_profile manifest."""
     if not projection_rows:
@@ -258,7 +289,7 @@ async def update_training_plan(
         data = row["data"]
         ts = row["timestamp"]
         event_type = row["event_type"]
-        plan_id = data.get("plan_id", "default")
+        plan_id = _normalized_plan_id(data.get("plan_id"))
 
         if event_type == "training_plan.created":
             normalized_sessions = _normalize_plan_sessions_with_rir(
@@ -266,7 +297,7 @@ async def update_training_plan(
             )
             plans[plan_id] = {
                 "plan_id": plan_id,
-                "name": data.get("name", "unnamed"),
+                "name": _resolve_plan_name(data.get("name"), plan_id=plan_id, timestamp=ts),
                 "created_at": ts.isoformat(),
                 "updated_at": ts.isoformat(),
                 "status": "active",
@@ -282,7 +313,9 @@ async def update_training_plan(
                 plan["updated_at"] = ts.isoformat()
                 # Delta merge: update provided fields
                 if "name" in data:
-                    plan["name"] = data["name"]
+                    normalized_name = _resolve_optional_plan_name(data.get("name"))
+                    if normalized_name is not None:
+                        plan["name"] = normalized_name
                 if "sessions" in data:
                     normalized_sessions = _normalize_plan_sessions_with_rir(
                         data["sessions"]

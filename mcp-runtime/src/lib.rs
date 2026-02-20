@@ -1820,19 +1820,25 @@ impl McpServer {
                 .await?;
         }
 
+        let response_value = response.to_value();
+        let metric_snapshot = derive_agent_context_metric_snapshot(
+            response_value.get("body"),
+        );
+
         Ok(json!({
             "request": {
                 "path": effective_path,
                 "query": pairs_to_json_object(&effective_query)
             },
-            "response": response.to_value(),
+            "response": response_value,
             "completion": {
                 "status": if fallback_applied { "complete_with_fallback" } else { "complete" }
             },
             "compatibility": {
                 "capability_mode": self.capability_profile.mode.as_str(),
                 "fallback_applied": fallback_applied,
-                "notes": compatibility_notes
+                "notes": compatibility_notes,
+                "metric_snapshot": metric_snapshot
             }
         }))
     }
@@ -3232,6 +3238,222 @@ fn tool_completion_status(payload: &Value) -> &'static str {
     } else {
         "complete"
     }
+}
+
+fn read_json_f64(value: Option<&Value>) -> Option<f64> {
+    let raw = value?;
+    if let Some(number) = raw.as_f64() {
+        return Some(number);
+    }
+    if let Some(number) = raw.as_i64() {
+        return Some(number as f64);
+    }
+    raw.as_str().and_then(|raw| raw.trim().parse::<f64>().ok())
+}
+
+fn read_json_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+        .map(ToString::to_string)
+}
+
+fn normalize_readiness_state_compat(raw: Option<String>, readiness_mean: Option<f64>) -> Option<String> {
+    if let Some(value) = raw {
+        let normalized = value.trim().to_lowercase();
+        if matches!(normalized.as_str(), "high" | "moderate" | "low") {
+            return Some(normalized);
+        }
+    }
+    readiness_mean.map(|mean| {
+        if mean >= 0.75 {
+            "high".to_string()
+        } else if mean >= 0.5 {
+            "moderate".to_string()
+        } else {
+            "low".to_string()
+        }
+    })
+}
+
+fn derive_metric_snapshot_from_projection_payloads(
+    user_profile_data: Option<&Value>,
+    training_timeline_data: Option<&Value>,
+    training_plan_data: Option<&Value>,
+    readiness_data: Option<&Value>,
+    source: &str,
+) -> Value {
+    let mut actual_frequency_source: Option<String> = None;
+    let actual_frequency_per_week = if let Some(timeline) = training_timeline_data {
+        let candidates = [
+            (
+                timeline.pointer("/current_frequency/last_4_weeks"),
+                "training_timeline.current_frequency.last_4_weeks",
+            ),
+            (
+                timeline.pointer("/current_frequency/sessions_per_week"),
+                "training_timeline.current_frequency.sessions_per_week",
+            ),
+            (
+                timeline.pointer("/frequency/last_4_weeks"),
+                "training_timeline.frequency.last_4_weeks",
+            ),
+            (
+                timeline.pointer("/frequency/sessions_per_week"),
+                "training_timeline.frequency.sessions_per_week",
+            ),
+        ];
+        let mut value = None;
+        for (candidate, source_field) in candidates {
+            if let Some(parsed) = read_json_f64(candidate) {
+                actual_frequency_source = Some(source_field.to_string());
+                value = Some((parsed * 100.0).round() / 100.0);
+                break;
+            }
+        }
+        value
+    } else {
+        None
+    };
+
+    let planned_sessions_per_week = training_plan_data.and_then(|plan| {
+        if let Some(sessions) = plan
+            .pointer("/active_plan/sessions")
+            .and_then(Value::as_array)
+            .map(|rows| rows.len())
+        {
+            return Some(sessions as f64);
+        }
+        read_json_f64(
+            plan.pointer("/active_plan/sessions_per_week")
+                .or_else(|| plan.get("sessions_per_week")),
+        )
+    });
+
+    let (readiness_mean, readiness_state) = if let Some(readiness) = readiness_data {
+        if let Some(readiness_today) = readiness.get("readiness_today") {
+            let readiness_mean = read_json_f64(readiness_today.get("mean"));
+            let readiness_state = normalize_readiness_state_compat(
+                read_json_string(readiness_today.get("state")),
+                readiness_mean,
+            );
+            if readiness_mean.is_some() || readiness_state.is_some() {
+                (readiness_mean, readiness_state)
+            } else {
+                let readiness_mean = readiness
+                    .get("daily_scores")
+                    .and_then(Value::as_array)
+                    .and_then(|scores| scores.last())
+                    .and_then(|entry| read_json_f64(entry.get("score")));
+                let readiness_state = normalize_readiness_state_compat(None, readiness_mean);
+                (readiness_mean, readiness_state)
+            }
+        } else {
+            let readiness_mean = readiness
+                .get("daily_scores")
+                .and_then(Value::as_array)
+                .and_then(|scores| scores.last())
+                .and_then(|entry| read_json_f64(entry.get("score")));
+            let readiness_state = normalize_readiness_state_compat(None, readiness_mean);
+            (readiness_mean, readiness_state)
+        }
+    } else {
+        (None, None)
+    };
+
+    let user_data = user_profile_data.and_then(|profile| profile.get("user"));
+    let profile = user_data.and_then(|user| user.get("profile"));
+    let user_profile_present = profile.is_some_and(Value::is_object);
+    let experience_level = read_json_string(profile.and_then(|profile| profile.get("experience_level")));
+    let goals_count = user_data
+        .and_then(|user| user.get("goals"))
+        .and_then(Value::as_array)
+        .map(|goals| goals.len())
+        .unwrap_or(0);
+
+    json!({
+        "schema_version": "agent_context.metric_snapshot.v1",
+        "source": source,
+        "actual_frequency_per_week": actual_frequency_per_week,
+        "actual_frequency_source": actual_frequency_source,
+        "planned_sessions_per_week": planned_sessions_per_week,
+        "readiness_mean": readiness_mean,
+        "readiness_state": readiness_state,
+        "user_profile_present": user_profile_present,
+        "experience_level": experience_level,
+        "goals_count": goals_count
+    })
+}
+
+fn derive_agent_context_metric_snapshot(body: Option<&Value>) -> Value {
+    let Some(body) = body else {
+        return json!({
+            "schema_version": "agent_context.metric_snapshot.v1",
+            "source": "missing_body",
+            "user_profile_present": false,
+            "goals_count": 0
+        });
+    };
+
+    if let Some(snapshot) = body.pointer("/meta/metric_snapshot").cloned() {
+        return snapshot;
+    }
+
+    if body.is_object() {
+        let user_profile_data = body.pointer("/user_profile/projection/data");
+        let training_timeline_data = body.pointer("/training_timeline/projection/data");
+        let training_plan_data = body.pointer("/training_plan/projection/data");
+        let readiness_data = body.pointer("/readiness_inference/projection/data");
+        return derive_metric_snapshot_from_projection_payloads(
+            user_profile_data,
+            training_timeline_data,
+            training_plan_data,
+            readiness_data,
+            "runtime_derived.agent_context_body",
+        );
+    }
+
+    if let Some(rows) = body.as_array() {
+        let mut user_profile_data: Option<&Value> = None;
+        let mut training_timeline_data: Option<&Value> = None;
+        let mut training_plan_data: Option<&Value> = None;
+        let mut readiness_data: Option<&Value> = None;
+
+        for row in rows {
+            let projection_type = row
+                .pointer("/projection/projection_type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let key = row
+                .pointer("/projection/key")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let data = row.pointer("/projection/data");
+            match (projection_type, key) {
+                ("user_profile", "me") => user_profile_data = data,
+                ("training_timeline", "overview") => training_timeline_data = data,
+                ("training_plan", "overview") => training_plan_data = data,
+                ("readiness_inference", "overview") => readiness_data = data,
+                _ => {}
+            }
+        }
+
+        return derive_metric_snapshot_from_projection_payloads(
+            user_profile_data,
+            training_timeline_data,
+            training_plan_data,
+            readiness_data,
+            "runtime_derived.legacy_projection_list",
+        );
+    }
+
+    json!({
+        "schema_version": "agent_context.metric_snapshot.v1",
+        "source": "unsupported_body_shape",
+        "user_profile_present": false,
+        "goals_count": 0
+    })
 }
 
 fn tool_text_content(_tool: &str, envelope: &Value) -> String {
@@ -5257,6 +5479,150 @@ mod tests {
             stale_hit.is_none(),
             "stale entry must not be used for dedupe response"
         );
+    }
+
+    #[test]
+    fn metric_snapshot_prefers_api_meta_payload_when_present() {
+        let body = json!({
+            "meta": {
+                "metric_snapshot": {
+                    "schema_version": "agent_context.metric_snapshot.v1",
+                    "source": "api.meta.metric_snapshot",
+                    "actual_frequency_per_week": 1.5,
+                    "user_profile_present": true,
+                    "goals_count": 2
+                }
+            }
+        });
+
+        let snapshot = derive_agent_context_metric_snapshot(Some(&body));
+        assert_eq!(snapshot["source"], "api.meta.metric_snapshot");
+        assert_eq!(snapshot["actual_frequency_per_week"], json!(1.5));
+        assert_eq!(snapshot["user_profile_present"], json!(true));
+        assert_eq!(snapshot["goals_count"], json!(2));
+    }
+
+    #[test]
+    fn metric_snapshot_falls_back_to_agent_context_projection_paths() {
+        let body = json!({
+            "user_profile": {
+                "projection": {
+                    "data": {
+                        "user": {
+                            "profile": {"experience_level": "advanced"},
+                            "goals": [{"goal_type": "speed"}]
+                        }
+                    }
+                }
+            },
+            "training_timeline": {
+                "projection": {
+                    "data": {
+                        "current_frequency": {"last_4_weeks": 1.236}
+                    }
+                }
+            },
+            "training_plan": {
+                "projection": {
+                    "data": {
+                        "active_plan": {
+                            "sessions": [{}, {}, {}]
+                        }
+                    }
+                }
+            },
+            "readiness_inference": {
+                "projection": {
+                    "data": {
+                        "daily_scores": [
+                            {"score": 0.52},
+                            {"score": 0.83}
+                        ]
+                    }
+                }
+            }
+        });
+
+        let snapshot = derive_agent_context_metric_snapshot(Some(&body));
+        assert_eq!(snapshot["source"], "runtime_derived.agent_context_body");
+        assert_eq!(snapshot["actual_frequency_per_week"], json!(1.24));
+        assert_eq!(
+            snapshot["actual_frequency_source"],
+            "training_timeline.current_frequency.last_4_weeks"
+        );
+        assert_eq!(snapshot["planned_sessions_per_week"], json!(3.0));
+        assert_eq!(snapshot["readiness_mean"], json!(0.83));
+        assert_eq!(snapshot["readiness_state"], "high");
+        assert_eq!(snapshot["user_profile_present"], json!(true));
+        assert_eq!(snapshot["experience_level"], "advanced");
+        assert_eq!(snapshot["goals_count"], json!(1));
+    }
+
+    #[test]
+    fn metric_snapshot_falls_back_to_legacy_projection_list_shape() {
+        let body = json!([
+            {
+                "projection": {
+                    "projection_type": "user_profile",
+                    "key": "me",
+                    "data": {
+                        "user": {
+                            "profile": {},
+                            "goals": []
+                        }
+                    }
+                }
+            },
+            {
+                "projection": {
+                    "projection_type": "training_timeline",
+                    "key": "overview",
+                    "data": {
+                        "frequency": {"sessions_per_week": 0.8}
+                    }
+                }
+            },
+            {
+                "projection": {
+                    "projection_type": "training_plan",
+                    "key": "overview",
+                    "data": {
+                        "active_plan": {"sessions_per_week": 2}
+                    }
+                }
+            },
+            {
+                "projection": {
+                    "projection_type": "readiness_inference",
+                    "key": "overview",
+                    "data": {
+                        "readiness_today": {"mean": 0.61, "state": "MODERATE"}
+                    }
+                }
+            }
+        ]);
+
+        let snapshot = derive_agent_context_metric_snapshot(Some(&body));
+        assert_eq!(snapshot["source"], "runtime_derived.legacy_projection_list");
+        assert_eq!(snapshot["actual_frequency_per_week"], json!(0.8));
+        assert_eq!(
+            snapshot["actual_frequency_source"],
+            "training_timeline.frequency.sessions_per_week"
+        );
+        assert_eq!(snapshot["planned_sessions_per_week"], json!(2.0));
+        assert_eq!(snapshot["readiness_mean"], json!(0.61));
+        assert_eq!(snapshot["readiness_state"], "moderate");
+        assert_eq!(snapshot["user_profile_present"], json!(true));
+        assert_eq!(snapshot["goals_count"], json!(0));
+    }
+
+    #[test]
+    fn metric_snapshot_returns_default_shape_when_body_missing() {
+        let snapshot = derive_agent_context_metric_snapshot(None);
+        assert_eq!(snapshot["source"], "missing_body");
+        assert_eq!(snapshot["schema_version"], "agent_context.metric_snapshot.v1");
+        assert_eq!(snapshot["user_profile_present"], json!(false));
+        assert_eq!(snapshot["goals_count"], json!(0));
     }
 
     #[tokio::test]

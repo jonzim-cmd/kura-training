@@ -188,8 +188,11 @@ fn validate_critical_invariants(req: &CreateEventRequest) -> Result<(), AppError
         "set.corrected" => validate_set_correction_invariants(&req.data),
         "set.logged" => validate_set_logged_intensity_invariants(&req.data),
         "session.logged" => validate_session_logged_invariants(&req.data),
-        "training_plan.created" | "training_plan.updated" => {
-            validate_training_plan_intensity_invariants(&req.data)
+        "training_plan.created" => {
+            validate_training_plan_invariants("training_plan.created", &req.data)
+        }
+        "training_plan.updated" => {
+            validate_training_plan_invariants("training_plan.updated", &req.data)
         }
         "projection_rule.created" => validate_projection_rule_created_invariants(&req.data),
         "projection_rule.archived" => validate_projection_rule_archived_invariants(&req.data),
@@ -312,12 +315,78 @@ fn validate_set_logged_intensity_invariants(data: &Value) -> Result<(), AppError
     Ok(())
 }
 
-fn validate_training_plan_intensity_invariants(data: &Value) -> Result<(), AppError> {
+fn training_plan_policy_violation(
+    event_type: &str,
+    code: &str,
+    message: impl Into<String>,
+    field: Option<&str>,
+    received: Option<serde_json::Value>,
+    docs_hint: Option<&str>,
+) -> AppError {
+    let message = message.into();
+    tracing::warn!(
+        event_type,
+        policy_code = code,
+        field = field.unwrap_or(""),
+        "Rejected training_plan payload invariant: {}",
+        message
+    );
+    policy_violation(code, message, field, received, docs_hint)
+}
+
+fn validate_training_plan_invariants(event_type: &str, data: &Value) -> Result<(), AppError> {
+    if let Some(plan_id_raw) = data.get("plan_id") {
+        if !plan_id_raw
+            .as_str()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+        {
+            return Err(training_plan_policy_violation(
+                event_type,
+                "inv_training_plan_plan_id_invalid",
+                "data.plan_id must be a non-empty string when provided",
+                Some("data.plan_id"),
+                Some(plan_id_raw.clone()),
+                Some("Provide a stable plan_id, e.g. 'offseason_block_a'."),
+            ));
+        }
+    }
+
+    if let Some(name_raw) = data.get("name") {
+        if !name_raw
+            .as_str()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+        {
+            return Err(training_plan_policy_violation(
+                event_type,
+                "inv_training_plan_name_invalid",
+                "data.name must be a non-empty string when provided",
+                Some("data.name"),
+                Some(name_raw.clone()),
+                Some("Provide a descriptive plan name like '3x Full Body'."),
+            ));
+        }
+    }
+
     let Some(sessions) = data.get("sessions") else {
+        if event_type == "training_plan.created" {
+            return Err(training_plan_policy_violation(
+                event_type,
+                "inv_training_plan_sessions_required",
+                "training_plan.created requires data.sessions with at least one session",
+                Some("data.sessions"),
+                None,
+                Some(
+                    "Set data.sessions to a non-empty array of session objects, or send training_plan.updated for partial plan edits.",
+                ),
+            ));
+        }
         return Ok(());
     };
     let Some(session_rows) = sessions.as_array() else {
-        return Err(policy_violation(
+        return Err(training_plan_policy_violation(
+            event_type,
             "inv_training_plan_sessions_invalid",
             "data.sessions must be an array when provided",
             Some("data.sessions"),
@@ -325,6 +394,18 @@ fn validate_training_plan_intensity_invariants(data: &Value) -> Result<(), AppEr
             Some("Use sessions as an array of session objects."),
         ));
     };
+    if session_rows.is_empty() {
+        return Err(training_plan_policy_violation(
+            event_type,
+            "inv_training_plan_sessions_empty",
+            "data.sessions must include at least one session when provided",
+            Some("data.sessions"),
+            Some(sessions.clone()),
+            Some(
+                "Provide at least one session object, or omit data.sessions on training_plan.updated for metadata-only edits.",
+            ),
+        ));
+    }
 
     for (session_idx, session) in session_rows.iter().enumerate() {
         let Some(session_obj) = session.as_object() else {
@@ -335,7 +416,8 @@ fn validate_training_plan_intensity_invariants(data: &Value) -> Result<(), AppEr
         };
         let Some(exercise_rows) = exercises.as_array() else {
             let field = format!("data.sessions[{session_idx}].exercises");
-            return Err(policy_violation(
+            return Err(training_plan_policy_violation(
+                event_type,
                 "inv_training_plan_exercises_invalid",
                 format!("{field} must be an array when provided"),
                 Some(field.as_str()),
@@ -388,7 +470,8 @@ fn validate_training_plan_intensity_invariants(data: &Value) -> Result<(), AppEr
                 let field_path =
                     format!("data.sessions[{session_idx}].exercises[{exercise_idx}].{field_key}");
                 let Some(parsed) = parse_flexible_float(raw) else {
-                    return Err(policy_violation(
+                    return Err(training_plan_policy_violation(
+                        event_type,
                         invalid_code,
                         format!("{field_path} must be numeric"),
                         Some(field_path.as_str()),
@@ -1556,6 +1639,20 @@ fn check_event_plausibility(event_type: &str, data: &serde_json::Value) -> Vec<E
                         severity: "warning".to_string(),
                     });
                 }
+            }
+        }
+        "training_plan.created" | "training_plan.updated" => {
+            if data
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_none_or(|name| name.is_empty())
+            {
+                warnings.push(EventWarning {
+                    field: "name".to_string(),
+                    message: "training plan name missing; a deterministic fallback name will be used".to_string(),
+                    severity: "warning".to_string(),
+                });
             }
         }
         _ => {} // Unknown event types: no plausibility checks
@@ -3641,6 +3738,73 @@ mod tests {
     }
 
     #[test]
+    fn test_training_plan_created_requires_sessions() {
+        let req = make_request("training_plan.created", json!({"name": "Strength Block"}));
+        let err = validate_event(&req).expect_err("expected policy violation");
+        assert_policy_violation(
+            err,
+            "inv_training_plan_sessions_required",
+            "data.sessions",
+        );
+    }
+
+    #[test]
+    fn test_training_plan_created_rejects_empty_sessions() {
+        let req = make_request(
+            "training_plan.created",
+            json!({
+                "name": "Strength Block",
+                "sessions": []
+            }),
+        );
+        let err = validate_event(&req).expect_err("expected policy violation");
+        assert_policy_violation(err, "inv_training_plan_sessions_empty", "data.sessions");
+    }
+
+    #[test]
+    fn test_training_plan_updated_rejects_empty_sessions() {
+        let req = make_request(
+            "training_plan.updated",
+            json!({
+                "plan_id": "strength-a",
+                "sessions": []
+            }),
+        );
+        let err = validate_event(&req).expect_err("expected policy violation");
+        assert_policy_violation(err, "inv_training_plan_sessions_empty", "data.sessions");
+    }
+
+    #[test]
+    fn test_training_plan_rejects_blank_name() {
+        let req = make_request(
+            "training_plan.updated",
+            json!({
+                "plan_id": "strength-a",
+                "name": "   "
+            }),
+        );
+        let err = validate_event(&req).expect_err("expected policy violation");
+        assert_policy_violation(err, "inv_training_plan_name_invalid", "data.name");
+    }
+
+    #[test]
+    fn test_training_plan_accepts_missing_name_with_sessions() {
+        let req = make_request(
+            "training_plan.created",
+            json!({
+                "sessions": [{
+                    "day": "monday",
+                    "exercises": [{
+                        "exercise_id": "bench_press",
+                        "target_rir": 2.0
+                    }]
+                }]
+            }),
+        );
+        assert!(validate_event(&req).is_ok());
+    }
+
+    #[test]
     fn test_training_plan_accepts_decimal_comma_target_rir() {
         let req = make_request(
             "training_plan.updated",
@@ -3655,6 +3819,22 @@ mod tests {
             }),
         );
         assert!(validate_event(&req).is_ok());
+    }
+
+    #[test]
+    fn test_training_plan_missing_name_warns() {
+        let warnings = check_event_plausibility(
+            "training_plan.created",
+            &json!({
+                "sessions": [{
+                    "day": "monday",
+                    "exercises": [{"exercise_id": "bench_press"}]
+                }]
+            }),
+        );
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].field, "name");
+        assert_eq!(warnings[0].severity, "warning");
     }
 
     #[test]

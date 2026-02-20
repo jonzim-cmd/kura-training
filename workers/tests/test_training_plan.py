@@ -1,9 +1,13 @@
 """Tests for training_plan handler pure functions and data handling."""
 
+from datetime import datetime
+
 from kura_workers.handlers.training_plan import _manifest_contribution
 from kura_workers.handlers.training_plan import (
     _compute_rir_target_summary,
     _normalize_plan_sessions_with_rir,
+    _resolve_optional_plan_name,
+    _resolve_plan_name,
 )
 
 
@@ -129,3 +133,23 @@ class TestRirNormalization:
         assert summary["exercises_with_target_rir"] == 2
         assert summary["inferred_target_rir"] == 1
         assert summary["average_target_rir"] == 2.5
+
+
+class TestPlanNaming:
+    def test_resolve_plan_name_keeps_explicit_name(self):
+        ts = datetime(2026, 2, 20, 12, 0, 0)
+        assert (
+            _resolve_plan_name("  Performance Block  ", plan_id="default", timestamp=ts)
+            == "Performance Block"
+        )
+
+    def test_resolve_plan_name_generates_deterministic_fallback(self):
+        ts = datetime(2026, 2, 20, 12, 0, 0)
+        assert (
+            _resolve_plan_name(None, plan_id="Pre-Pause-Feb-2026", timestamp=ts)
+            == "plan-2026-02-20-pre-pause-feb-2026"
+        )
+
+    def test_resolve_optional_plan_name_ignores_blank_values(self):
+        assert _resolve_optional_plan_name("   ") is None
+        assert _resolve_optional_plan_name("Deload") == "Deload"
