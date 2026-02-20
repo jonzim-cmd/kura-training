@@ -21,6 +21,8 @@ from .external_import_mapping_v2 import import_mapping_contract_v2
 from .interview_guide import get_interview_guide
 from .registry import get_dimension_metadata
 from .capability_estimation_v1 import capability_estimation_contract_v1
+from .capability_eval_gate_v1 import capability_eval_gate_contract_v1
+from .strength_gold_model_v1 import strength_gold_model_contract_v1
 from .training_hardening_gate_v1 import hardening_gate_contract_v1
 from .training_legacy_compat import legacy_compat_contract_v1
 from .training_load_calibration_v1 import calibration_protocol_v1
@@ -1210,6 +1212,22 @@ def _get_conventions() -> dict[str, Any]:
                 "Roll out in deterministic migration phases with dependency order.",
             ],
             "contract": capability_estimation_contract_v1(),
+        },
+        "capability_eval_gate_v1": {
+            "rules": [
+                "Cross-capability rollout requires one shared gate over strength, sprint, jump, and endurance outputs.",
+                "Gate must explicitly distinguish pass, fail, and insufficient_data states.",
+                "Missing capability rows or missing required fields are rollout blockers.",
+            ],
+            "contract": capability_eval_gate_contract_v1(),
+        },
+        "strength_gold_model_v1": {
+            "rules": [
+                "Strength gold-standard path is hierarchical Bayesian with exercise/protocol-aware uncertainty.",
+                "Runtime may use a surrogate engine, but fallback and diagnostics must stay explicit.",
+                "Output schema must remain backward compatible across staging levels.",
+            ],
+            "contract": strength_gold_model_contract_v1(),
         },
         "causal_inference": {
             "rules": [

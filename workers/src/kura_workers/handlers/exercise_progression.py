@@ -22,13 +22,23 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
+from ..capability_estimation_runtime import (
+    STATUS_DEGRADED_COMPARABILITY,
+    STATUS_INSUFFICIENT_DATA,
+    STATUS_OK,
+    build_capability_envelope,
+    confidence_from_evidence,
+    data_sufficiency_block,
+    effort_adjusted_e1rm,
+    interval_around,
+    summarize_observations,
+)
 from ..registry import projection_handler
 from ..set_corrections import apply_set_correction_chain
 from ..training_core_fields import evaluate_set_context_rows
 from ..utils import (
     SessionBoundaryState,
     check_expected_fields,
-    epley_1rm,
     find_all_keys_for_canonical,
     get_alias_map,
     get_retracted_event_ids,
@@ -491,7 +501,12 @@ async def update_exercise_progression(
                 continue
             volume = weight * reps
             bucket["total_volume_kg"] += volume
-            e1rm = epley_1rm(weight, reps)
+            e1rm, _ = effort_adjusted_e1rm(
+                weight,
+                reps,
+                rir=data.get("rir"),
+                rpe=data.get("rpe"),
+            )
             if e1rm > bucket["estimated_1rm"]:
                 bucket["estimated_1rm"] = e1rm
                 bucket["estimated_1rm_date"] = row["timestamp"]
@@ -519,6 +534,8 @@ async def update_exercise_progression(
         observed_attr_counts: dict[str, dict[str, int]] = {}
         temporal_conflicts: dict[str, int] = {}
         fallback_session_state: SessionBoundaryState | None = None
+        e1rm_sources: dict[str, int] = {"explicit": 0, "inferred_from_rpe": 0, "fallback_epley": 0}
+        primary_e1rm_values: list[float] = []
 
         for row in rows:
             data = row.get("effective_data") or row["data"]
@@ -584,7 +601,28 @@ async def update_exercise_progression(
             total_sets += 1
             total_volume_kg += volume
             session_keys.add(session_key)
-            e1rm = epley_1rm(weight, reps)
+
+            parsed_rpe: float | None = None
+            if "rpe" in data:
+                try:
+                    parsed_rpe = float(data["rpe"])
+                except (ValueError, TypeError):
+                    parsed_rpe = None
+            parsed_rir, rir_source = _resolve_set_rir(data, parsed_rpe)
+            if parsed_rir is None and effective_defaults.get("rir") is not None:
+                parsed_rir = _normalize_rir(effective_defaults.get("rir"))
+                rir_source = "session_default"
+
+            e1rm, e1rm_source = effort_adjusted_e1rm(
+                weight,
+                reps,
+                rir=parsed_rir,
+                rpe=parsed_rpe,
+            )
+            if e1rm_source not in e1rm_sources:
+                e1rm_sources[e1rm_source] = 0
+            e1rm_sources[e1rm_source] += 1
+            primary_e1rm_values.append(e1rm)
 
             if best_1rm > 0 and e1rm > best_1rm * 2:
                 anomalies.append({
@@ -616,20 +654,12 @@ async def update_exercise_progression(
                 "weight_kg": weight,
                 "reps": reps,
                 "estimated_1rm": round(e1rm, 1),
+                "estimated_1rm_source": e1rm_source,
                 "comparability_group": group,
                 "_session_key": session_key,
             }
-            parsed_rpe: float | None = None
-            if "rpe" in data:
-                try:
-                    parsed_rpe = float(data["rpe"])
-                    set_entry["rpe"] = parsed_rpe
-                except (ValueError, TypeError):
-                    pass
-            parsed_rir, rir_source = _resolve_set_rir(data, parsed_rpe)
-            if parsed_rir is None and effective_defaults.get("rir") is not None:
-                parsed_rir = _normalize_rir(effective_defaults.get("rir"))
-                rir_source = "session_default"
+            if parsed_rpe is not None:
+                set_entry["rpe"] = parsed_rpe
             if parsed_rir is not None:
                 set_entry["rir"] = parsed_rir
                 if rir_source and rir_source != "explicit":
@@ -731,10 +761,86 @@ async def update_exercise_progression(
                 "estimated_1rm_date": estimated_date_value,
             })
 
+        comparability_degraded = len(comparability_groups) > 1
+        status = STATUS_OK
+        if total_sets < 3:
+            status = STATUS_INSUFFICIENT_DATA
+        elif comparability_degraded:
+            status = STATUS_DEGRADED_COMPARABILITY
+
+        mean_e1rm, sd_e1rm = summarize_observations(primary_e1rm_values)
+        if mean_e1rm is None:
+            mean_e1rm = best_1rm
+        estimate_interval = interval_around(mean_e1rm, sd_e1rm)
+        confidence = confidence_from_evidence(
+            observed_points=total_sets,
+            required_points=6,
+            comparability_degraded=comparability_degraded,
+        )
+        next_observations: list[str] = []
+        if total_sets < 6:
+            next_observations.append("Log 3-6 additional high-intent sets for this exercise.")
+        if e1rm_sources.get("fallback_epley", 0) > 0:
+            next_observations.append("Add RIR or RPE to reduce e1RM uncertainty.")
+        if comparability_degraded:
+            next_observations.append(
+                "Keep equipment/protocol consistent or persist comparability_group explicitly."
+            )
+        reason_codes: list[str] = []
+        if total_sets < 3:
+            reason_codes.append("insufficient_observation_count")
+        if comparability_degraded:
+            reason_codes.append("multiple_comparability_groups")
+        if e1rm_sources.get("fallback_epley", 0) > 0:
+            reason_codes.append("effort_context_missing")
+
+        data_sufficiency = data_sufficiency_block(
+            required_observations=6,
+            observed_observations=total_sets,
+            uncertainty_reason_codes=reason_codes,
+            recommended_next_observations=next_observations,
+        )
+        capability_estimation = build_capability_envelope(
+            capability="strength_1rm",
+            estimate_mean=mean_e1rm,
+            estimate_interval=estimate_interval,
+            status=status,
+            confidence=confidence,
+            data_sufficiency=data_sufficiency,
+            model_version="strength_effort_adjusted.v1",
+            caveats=[
+                {
+                    "code": "multiple_comparability_groups",
+                    "severity": "medium",
+                    "details": {"groups_total": len(comparability_groups)},
+                }
+            ]
+            if comparability_degraded
+            else [],
+            protocol_signature={
+                "primary_group": primary_group,
+                "group_count": len(comparability_groups),
+            },
+            comparability={
+                "primary_group": primary_group,
+                "groups_total": len(comparability_groups),
+                "multiple_groups_detected": comparability_degraded,
+            },
+            diagnostics={
+                "e1rm_source_counts": e1rm_sources,
+                "timezone": timezone_context.get("timezone"),
+            },
+        )
+
         projection_data: dict[str, Any] = {
             "exercise": canonical,
             "estimated_1rm": round(best_1rm, 1),
+            "estimated_1rm_interval": estimate_interval,
             "estimated_1rm_date": best_1rm_date.isoformat() if best_1rm_date else None,
+            "status": status,
+            "confidence": confidence,
+            "data_sufficiency": data_sufficiency,
+            "capability_estimation": capability_estimation,
             "total_sessions": len(session_keys),
             "total_sets": total_sets,
             "total_volume_kg": round(total_volume_kg, 1),
@@ -752,6 +858,7 @@ async def update_exercise_progression(
                 "field_hints": field_hints,
                 "observed_attributes": observed_attr_counts,
                 "temporal_conflicts": temporal_conflicts,
+                "e1rm_source_counts": e1rm_sources,
             },
         }
 

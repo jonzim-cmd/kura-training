@@ -96,6 +96,12 @@ def _sigmoid(value: float) -> float:
     return exp_pos / (1.0 + exp_pos)
 
 
+def _normal_cdf(x: float, mu: float, sigma: float) -> float:
+    sigma = max(1e-9, sigma)
+    z = (x - mu) / (sigma * math.sqrt(2.0))
+    return 0.5 * (1.0 + math.erf(z))
+
+
 def _standardize(matrix: list[list[float]]) -> tuple[list[list[float]], list[float], list[float]]:
     if not matrix:
         return [], [], []
@@ -151,6 +157,210 @@ def _fit_logistic(
             weights[j] -= lr * grad
 
     return bias, weights
+
+
+def _fit_linear_regression(
+    features: list[list[float]],
+    targets: list[float],
+    *,
+    learning_rate: float = 0.08,
+    l2: float = 0.03,
+    iterations: int = 800,
+) -> tuple[float, list[float]]:
+    if not features:
+        return 0.0, []
+    n = len(features)
+    d = len(features[0])
+    bias = _mean(targets)
+    weights = [0.0] * d
+
+    for step in range(iterations):
+        grad_b = 0.0
+        grad_w = [0.0] * d
+        for idx, row in enumerate(features):
+            prediction = bias + sum(weights[j] * row[j] for j in range(d))
+            err = prediction - targets[idx]
+            grad_b += err
+            for j in range(d):
+                grad_w[j] += err * row[j]
+        inv_n = 1.0 / max(1, n)
+        lr = learning_rate / (1.0 + 0.003 * step)
+        bias -= lr * (grad_b * inv_n)
+        for j in range(d):
+            grad = (grad_w[j] * inv_n) + (l2 * weights[j])
+            weights[j] -= lr * grad
+    return bias, weights
+
+
+def _predict_linear(bias: float, weights: list[float], row: list[float]) -> float:
+    return bias + sum(weights[idx] * row[idx] for idx in range(min(len(weights), len(row))))
+
+
+def _standardize_with_reference(
+    matrix: list[list[float]],
+    means: list[float],
+    stds: list[float],
+) -> list[list[float]]:
+    if not matrix:
+        return []
+    out: list[list[float]] = []
+    for row in matrix:
+        out.append(
+            [
+                (row[idx] - means[idx]) / max(stds[idx], 1e-12)
+                for idx in range(min(len(row), len(means)))
+            ]
+        )
+    return out
+
+
+def _estimate_aipw_crossfit(
+    rows: list[dict[str, Any]],
+    feature_names: list[str],
+    *,
+    overlap_floor: float,
+    folds: int = 3,
+) -> dict[str, Any] | None:
+    n = len(rows)
+    if n < 12:
+        return None
+    folds = max(2, min(int(folds), n))
+
+    feature_matrix = [
+        [float(row["confounders"].get(name, 0.0)) for name in feature_names]
+        for row in rows
+    ]
+    treated = [int(row["treated"]) for row in rows]
+    outcomes = [float(row["outcome"]) for row in rows]
+
+    propensity_hat: list[float | None] = [None] * n
+    mu1_hat: list[float | None] = [None] * n
+    mu0_hat: list[float | None] = [None] * n
+    fold_sizes: list[int] = []
+
+    index_to_fold = {idx: (idx % folds) for idx in range(n)}
+    for fold_idx in range(folds):
+        test_indices = [idx for idx in range(n) if index_to_fold[idx] == fold_idx]
+        train_indices = [idx for idx in range(n) if index_to_fold[idx] != fold_idx]
+        if not test_indices or not train_indices:
+            return None
+
+        x_train_raw = [feature_matrix[idx] for idx in train_indices]
+        x_train, means, stds = _standardize(x_train_raw)
+        y_treat_train = [treated[idx] for idx in train_indices]
+        y_outcome_train = [outcomes[idx] for idx in train_indices]
+
+        treated_train_count = sum(y_treat_train)
+        control_train_count = len(y_treat_train) - treated_train_count
+        if treated_train_count < 3 or control_train_count < 3:
+            return None
+
+        prop_bias, prop_weights = _fit_logistic(x_train, y_treat_train)
+
+        treated_features = [x_train[i] for i, t in enumerate(y_treat_train) if t == 1]
+        treated_outcomes = [y_outcome_train[i] for i, t in enumerate(y_treat_train) if t == 1]
+        control_features = [x_train[i] for i, t in enumerate(y_treat_train) if t == 0]
+        control_outcomes = [y_outcome_train[i] for i, t in enumerate(y_treat_train) if t == 0]
+        if len(treated_features) < 3 or len(control_features) < 3:
+            return None
+
+        mu1_bias, mu1_weights = _fit_linear_regression(treated_features, treated_outcomes)
+        mu0_bias, mu0_weights = _fit_linear_regression(control_features, control_outcomes)
+
+        x_test_raw = [feature_matrix[idx] for idx in test_indices]
+        x_test = _standardize_with_reference(x_test_raw, means, stds)
+        fold_sizes.append(len(test_indices))
+        for pos, row_idx in enumerate(test_indices):
+            row = x_test[pos]
+            e_hat = _sigmoid(prop_bias + sum(prop_weights[j] * row[j] for j in range(len(prop_weights))))
+            e_hat = _clamp(e_hat, overlap_floor, 1.0 - overlap_floor)
+            propensity_hat[row_idx] = e_hat
+            mu1_hat[row_idx] = _predict_linear(mu1_bias, mu1_weights, row)
+            mu0_hat[row_idx] = _predict_linear(mu0_bias, mu0_weights, row)
+
+    if any(v is None for v in propensity_hat) or any(v is None for v in mu1_hat) or any(v is None for v in mu0_hat):
+        return None
+
+    e = [float(v) for v in propensity_hat]
+    mu1 = [float(v) for v in mu1_hat]
+    mu0 = [float(v) for v in mu0_hat]
+
+    pseudo_outcomes: list[float] = []
+    treated_props: list[float] = []
+    control_props: list[float] = []
+    aipw_weights: list[float] = []
+    treated_weights: list[float] = []
+    control_weights: list[float] = []
+    for idx in range(n):
+        t = treated[idx]
+        y = outcomes[idx]
+        e_i = _clamp(e[idx], overlap_floor, 1.0 - overlap_floor)
+        m1_i = mu1[idx]
+        m0_i = mu0[idx]
+        pseudo = m1_i - m0_i + (t * (y - m1_i) / e_i) - ((1 - t) * (y - m0_i) / (1.0 - e_i))
+        pseudo_outcomes.append(pseudo)
+
+        if t == 1:
+            treated_props.append(e_i)
+            w = 1.0 / e_i
+            treated_weights.append(w)
+            control_weights.append(0.0)
+            aipw_weights.append(w)
+        else:
+            control_props.append(e_i)
+            w = 1.0 / (1.0 - e_i)
+            treated_weights.append(0.0)
+            control_weights.append(w)
+            aipw_weights.append(w)
+
+    ate = _mean(pseudo_outcomes)
+    pseudo_var = _variance(pseudo_outcomes, center=ate)
+    if not math.isfinite(pseudo_var):
+        return None
+    effect_sd = math.sqrt(max(pseudo_var, 1e-9))
+    se = effect_sd / math.sqrt(max(1, n))
+    delta = 1.96 * max(se, 1e-9)
+    ci95 = [ate - delta, ate + delta]
+    probability_positive = 1.0 - _normal_cdf(0.0, ate, max(se, 1e-9))
+
+    treated_weight_sum = sum(treated_weights)
+    control_weight_sum = sum(control_weights)
+    treated_effective_n = (
+        (treated_weight_sum ** 2)
+        / max(sum(w * w for w in treated_weights if w > 0.0), 1e-9)
+    )
+    control_effective_n = (
+        (control_weight_sum ** 2)
+        / max(sum(w * w for w in control_weights if w > 0.0), 1e-9)
+    )
+    overlap_low = max(min(treated_props), min(control_props))
+    overlap_high = min(max(treated_props), max(control_props))
+    overlap_width = max(0.0, overlap_high - overlap_low)
+
+    return {
+        "ate": ate,
+        "ci95": ci95,
+        "effect_sd": effect_sd,
+        "probability_positive": probability_positive,
+        "folds": folds,
+        "fold_sizes": fold_sizes,
+        "diagnostics": {
+            "overlap": {
+                "treated_propensity_range": [min(treated_props), max(treated_props)],
+                "control_propensity_range": [min(control_props), max(control_props)],
+                "overlap_range": [overlap_low, overlap_high],
+                "overlap_width": overlap_width,
+            },
+            "weights": {
+                "max": max(aipw_weights),
+                "p95": _quantile(aipw_weights, 0.95),
+            },
+            "effective_sample_size": {
+                "treated": treated_effective_n,
+                "control": control_effective_n,
+            },
+        },
+    }
 
 
 def _weighted_mean(values: list[float], weights: list[float]) -> float:
@@ -477,17 +687,6 @@ def estimate_intervention_effect(
         overlap_floor=overlap_floor,
         bootstrap_samples=max(20, bootstrap_samples),
     )
-    mean_ate = float(estimate["ate"])
-
-    if len(bootstrap_ates) >= 25:
-        ci95 = [_quantile(bootstrap_ates, 0.025), _quantile(bootstrap_ates, 0.975)]
-        effect_sd = math.sqrt(max(_variance(bootstrap_ates), 0.0))
-        probability_positive = sum(1 for value in bootstrap_ates if value > 0.0) / len(bootstrap_ates)
-    else:
-        effect_sd = math.sqrt(max(_variance([mean_ate]), 0.0))
-        delta = 1.96 * max(0.01, effect_sd)
-        ci95 = [mean_ate - delta, mean_ate + delta]
-        probability_positive = 1.0 if mean_ate > 0.0 else 0.0
 
     diagnostics = dict(estimate["diagnostics"])
     diagnostics["observed_samples"] = total
@@ -495,14 +694,59 @@ def estimate_intervention_effect(
     diagnostics["control_samples"] = control_count
     diagnostics["outcome_std"] = math.sqrt(max(_variance([float(row["outcome"]) for row in rows]), 0.0))
     diagnostics["bootstrap_valid_samples"] = len(bootstrap_ates)
-    diagnostics["effect_sd"] = effect_sd
+
+    aipw = _estimate_aipw_crossfit(
+        rows,
+        feature_names,
+        overlap_floor=overlap_floor,
+        folds=3,
+    )
+    estimator_method = "aipw_crossfit"
+    fallback_reason: str | None = None
+    if aipw is not None:
+        mean_ate = float(aipw["ate"])
+        ci95 = [float(aipw["ci95"][0]), float(aipw["ci95"][1])]
+        effect_sd = float(aipw["effect_sd"])
+        probability_positive = float(aipw["probability_positive"])
+        aipw_diag = dict(aipw.get("diagnostics") or {})
+        if isinstance(aipw_diag.get("overlap"), dict):
+            diagnostics["overlap"] = aipw_diag["overlap"]
+        if isinstance(aipw_diag.get("weights"), dict):
+            diagnostics["weights"] = aipw_diag["weights"]
+        if isinstance(aipw_diag.get("effective_sample_size"), dict):
+            diagnostics["effective_sample_size"] = aipw_diag["effective_sample_size"]
+        diagnostics["effect_sd"] = effect_sd
+        diagnostics["estimator"] = {
+            "method": "aipw_crossfit",
+            "folds": int(aipw.get("folds", 0) or 0),
+            "fold_sizes": list(aipw.get("fold_sizes") or []),
+        }
+    else:
+        estimator_method = "logistic_ipw_fallback"
+        fallback_reason = "aipw_crossfit_unavailable"
+        mean_ate = float(estimate["ate"])
+
+        if len(bootstrap_ates) >= 25:
+            ci95 = [_quantile(bootstrap_ates, 0.025), _quantile(bootstrap_ates, 0.975)]
+            effect_sd = math.sqrt(max(_variance(bootstrap_ates), 0.0))
+            probability_positive = sum(1 for value in bootstrap_ates if value > 0.0) / len(bootstrap_ates)
+        else:
+            effect_sd = math.sqrt(max(_variance([mean_ate]), 0.0))
+            delta = 1.96 * max(0.01, effect_sd)
+            ci95 = [mean_ate - delta, mean_ate + delta]
+            probability_positive = 1.0 if mean_ate > 0.0 else 0.0
+        diagnostics["effect_sd"] = effect_sd
+        diagnostics["estimator"] = {
+            "method": "logistic_ipw_fallback",
+            "fallback_reason": fallback_reason,
+        }
 
     overlap_width = float(diagnostics["overlap"]["overlap_width"])
     weight_max = float(diagnostics["weights"]["max"])
     weight_p95 = float(diagnostics["weights"]["p95"])
     eff_t = float(diagnostics["effective_sample_size"]["treated"])
     eff_c = float(diagnostics["effective_sample_size"]["control"])
-    mean_abs_smd_after = float(diagnostics["balance"]["mean_abs_smd_after"])
+    mean_abs_smd_after = float((diagnostics.get("balance") or {}).get("mean_abs_smd_after", 0.0) or 0.0)
 
     if overlap_width < 0.12:
         caveats.append(
@@ -570,7 +814,8 @@ def estimate_intervention_effect(
             "probability_positive": round(float(probability_positive), 4),
         },
         "propensity": {
-            "method": "logistic_ipw",
+            "method": estimator_method,
+            "legacy_method": "logistic_ipw",
             "treated_prevalence": round(_mean([float(row["treated"]) for row in rows]), 4),
             "feature_names": feature_names,
             "model": estimate["model"],
@@ -582,6 +827,7 @@ def estimate_intervention_effect(
             "outcome_std": round(float(diagnostics["outcome_std"]), 4),
             "bootstrap_valid_samples": diagnostics["bootstrap_valid_samples"],
             "effect_sd": round(float(diagnostics["effect_sd"]), 4),
+            "estimator": diagnostics.get("estimator"),
             "overlap": {
                 "treated_propensity_range": [
                     round(float(diagnostics["overlap"]["treated_propensity_range"][0]), 4),
@@ -606,6 +852,7 @@ def estimate_intervention_effect(
                 "control": round(float(diagnostics["effective_sample_size"]["control"]), 2),
             },
             "balance": diagnostics["balance"],
+            "fallback_reason": fallback_reason,
         },
         "caveats": caveats,
     }

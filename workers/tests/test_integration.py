@@ -22,6 +22,7 @@ from psycopg.rows import dict_row
 # Import handlers to trigger registration
 import kura_workers.handlers  # noqa: F401
 from kura_workers.handlers.body_composition import update_body_composition
+from kura_workers.handlers.capability_estimation import update_capability_estimation
 from kura_workers.handlers.exercise_progression import update_exercise_progression
 from kura_workers.handlers.nutrition import update_nutrition
 from kura_workers.handlers.open_observations import update_open_observations
@@ -988,6 +989,249 @@ class TestInferenceIntegration:
         assert run is not None
         assert run["status"] == "skipped"
         assert run["diagnostics"]["skip_reason"] == "event_not_found"
+
+    async def test_capability_estimation_emits_all_capability_keys(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+
+        trigger_event_id = await insert_event(
+            db,
+            test_user_id,
+            "set.logged",
+            {
+                "exercise_id": "barbell_back_squat",
+                "weight_kg": 100,
+                "reps": 3,
+                "rir": 2,
+            },
+            "TIMESTAMP '2026-02-01 10:00:00+01'",
+        )
+        await insert_event(
+            db,
+            test_user_id,
+            "set.logged",
+            {
+                "exercise_id": "max_velocity_sprint",
+                "distance_meters": 30,
+                "duration_seconds": 3.8,
+                "surface": "track",
+                "timing_method": "timing_gates",
+            },
+            "TIMESTAMP '2026-02-02 10:00:00+01'",
+        )
+        await insert_event(
+            db,
+            test_user_id,
+            "set.logged",
+            {
+                "exercise_id": "countermovement_jump",
+                "jump_height_cm": 42,
+                "device_type": "force_plate",
+                "surface": "hardwood",
+            },
+            "TIMESTAMP '2026-02-03 10:00:00+01'",
+        )
+        await insert_event(
+            db,
+            test_user_id,
+            "set.logged",
+            {
+                "exercise_id": "continuous_endurance",
+                "distance_meters": 3000,
+                "duration_seconds": 900,
+                "relative_intensity": {
+                    "value_pct": 92,
+                    "reference_type": "critical_speed",
+                    "reference_value": 3.5,
+                    "reference_measured_at": "2026-01-20T00:00:00+00:00",
+                },
+            },
+            "TIMESTAMP '2026-02-04 10:00:00+01'",
+        )
+
+        await db.execute("SET ROLE app_worker")
+        await update_capability_estimation(
+            db,
+            {
+                "user_id": test_user_id,
+                "event_type": "set.logged",
+                "event_id": trigger_event_id,
+            },
+        )
+        await db.execute("RESET ROLE")
+
+        for key in (
+            "strength_1rm",
+            "sprint_max_speed",
+            "jump_height",
+            "endurance_threshold",
+        ):
+            projection = await get_projection(db, test_user_id, "capability_estimation", key)
+            assert projection is not None
+            data = projection["data"]
+            assert data["schema_version"] == "capability_output.v1"
+            assert data["capability"] == key
+            assert "status" in data
+            assert "estimate" in data
+            assert "confidence" in data
+            assert "data_sufficiency" in data
+
+    async def test_capability_estimation_uses_machine_readable_insufficient_payload(
+        self, db, test_user_id
+    ):
+        await create_test_user(db, test_user_id)
+        trigger_event_id = await insert_event(
+            db,
+            test_user_id,
+            "set.logged",
+            {
+                "exercise_id": "barbell_back_squat",
+                "weight_kg": 100,
+                "reps": 5,
+            },
+            "TIMESTAMP '2026-02-01 10:00:00+01'",
+        )
+
+        await db.execute("SET ROLE app_worker")
+        await update_capability_estimation(
+            db,
+            {
+                "user_id": test_user_id,
+                "event_type": "set.logged",
+                "event_id": trigger_event_id,
+            },
+        )
+        await db.execute("RESET ROLE")
+
+        sprint = await get_projection(
+            db, test_user_id, "capability_estimation", "sprint_max_speed"
+        )
+        assert sprint is not None
+        sprint_data = sprint["data"]
+        assert sprint_data["status"] == "insufficient_data"
+        assert (
+            sprint_data["data_sufficiency"]["required_observations"]
+            > sprint_data["data_sufficiency"]["observed_observations"]
+        )
+        assert sprint_data["recommended_next_observations"]
+
+    async def test_strength_inference_timezone_fallback_session_grouping_uses_local_day(
+        self, db, test_user_id
+    ):
+        await create_test_user(db, test_user_id)
+        await insert_event(
+            db,
+            test_user_id,
+            "preference.set",
+            {"key": "timezone", "value": "Asia/Tokyo"},
+        )
+
+        # Local Tokyo time: 08:30 and 09:30 on the same day, but UTC dates differ.
+        await insert_event(
+            db,
+            test_user_id,
+            "set.logged",
+            {
+                "exercise_id": "bench_press",
+                "exercise": "Bench Press",
+                "weight_kg": 80,
+                "reps": 5,
+            },
+            "TIMESTAMP '2026-02-01 23:30:00+00'",
+        )
+        trigger_event_id = await insert_event(
+            db,
+            test_user_id,
+            "set.logged",
+            {
+                "exercise_id": "bench_press",
+                "exercise": "Bench Press",
+                "weight_kg": 82.5,
+                "reps": 5,
+            },
+            "TIMESTAMP '2026-02-02 00:30:00+00'",
+        )
+
+        await db.execute("SET ROLE app_worker")
+        await update_strength_inference(
+            db,
+            {
+                "user_id": test_user_id,
+                "event_type": "set.logged",
+                "event_id": trigger_event_id,
+            },
+        )
+        await db.execute("RESET ROLE")
+
+        projection = await get_projection(db, test_user_id, "strength_inference", "bench_press")
+        assert projection is not None
+        data = projection["data"]
+        assert data["timezone_context"]["timezone"] == "Asia/Tokyo"
+        assert data["data_quality"]["sessions_used"] == 1
+
+    async def test_strength_inference_effort_adjusted_e1rm_distinguishes_rir_context(
+        self, db, test_user_id
+    ):
+        await create_test_user(db, test_user_id)
+
+        await insert_event(
+            db,
+            test_user_id,
+            "set.logged",
+            {
+                "exercise_id": "bench_press",
+                "exercise": "Bench Press",
+                "weight_kg": 70,
+                "reps": 3,
+                "rir": 3,
+            },
+            "TIMESTAMP '2026-02-01 10:00:00+01'",
+        )
+        await insert_event(
+            db,
+            test_user_id,
+            "set.logged",
+            {
+                "exercise_id": "bench_press",
+                "exercise": "Bench Press",
+                "weight_kg": 70,
+                "reps": 3,
+                "rir": 0,
+            },
+            "TIMESTAMP '2026-02-02 10:00:00+01'",
+        )
+        trigger_event_id = await insert_event(
+            db,
+            test_user_id,
+            "set.logged",
+            {
+                "exercise_id": "bench_press",
+                "exercise": "Bench Press",
+                "weight_kg": 72.5,
+                "reps": 3,
+                "rir": 1,
+            },
+            "TIMESTAMP '2026-02-03 10:00:00+01'",
+        )
+
+        await db.execute("SET ROLE app_worker")
+        await update_strength_inference(
+            db,
+            {
+                "user_id": test_user_id,
+                "event_type": "set.logged",
+                "event_id": trigger_event_id,
+            },
+        )
+        await db.execute("RESET ROLE")
+
+        projection = await get_projection(db, test_user_id, "strength_inference", "bench_press")
+        assert projection is not None
+        data = projection["data"]
+        history = data["history"]
+        assert len(history) >= 3
+        # Day 1: 70x3@RIR3 should estimate higher than Day 2: 70x3@RIR0.
+        assert history[0]["estimated_1rm"] > history[1]["estimated_1rm"]
+        assert data["data_quality"]["e1rm_source_counts"]["explicit"] >= 3
 
     async def test_strength_inference_set_correction_target_lookup_is_user_scoped(self, db, test_user_id):
         await create_test_user(db, test_user_id)

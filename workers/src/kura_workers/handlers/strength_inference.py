@@ -14,6 +14,15 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
+from ..capability_estimation_runtime import (
+    STATUS_INSUFFICIENT_DATA,
+    STATUS_OK,
+    build_capability_envelope,
+    build_insufficient_envelope,
+    confidence_from_evidence,
+    data_sufficiency_block,
+    effort_adjusted_e1rm,
+)
 from ..inference_engine import run_strength_inference, weekly_phase_from_date
 from ..inference_telemetry import (
     INFERENCE_ERROR_INSUFFICIENT_DATA,
@@ -25,11 +34,15 @@ from ..registry import projection_handler
 from ..session_block_expansion import expand_session_logged_row
 from ..training_signal_normalization import normalize_training_signal_rows
 from ..utils import (
-    epley_1rm,
+    SessionBoundaryState,
     find_all_keys_for_canonical,
     get_alias_map,
     get_retracted_event_ids,
+    load_timezone_preference,
+    next_fallback_session_key,
+    normalize_temporal_point,
     resolve_exercise_key,
+    resolve_timezone_context,
     resolve_through_aliases,
 )
 
@@ -145,6 +158,9 @@ async def update_strength_inference(
     try:
         retracted_ids = await get_retracted_event_ids(conn, user_id)
         alias_map = await get_alias_map(conn, user_id, retracted_ids=retracted_ids)
+        timezone_pref = await load_timezone_preference(conn, user_id, retracted_ids)
+        timezone_context = resolve_timezone_context(timezone_pref)
+        timezone_name = timezone_context["timezone"]
 
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
@@ -317,10 +333,23 @@ async def update_strength_inference(
         # Aggregate best e1rm per session/day.
         session_best: dict[str, tuple[datetime, float]] = {}
         by_date_best: dict[str, float] = defaultdict(float)
+        e1rm_sources: dict[str, int] = {"explicit": 0, "inferred_from_rpe": 0, "fallback_epley": 0}
+        temporal_conflicts: dict[str, int] = {}
+        fallback_session_state: SessionBoundaryState | None = None
         for row in rows:
             data = row["data"]
             ts = row["timestamp"]
             metadata = row.get("metadata") or {}
+            temporal = normalize_temporal_point(
+                ts,
+                timezone_name=timezone_name,
+                data=data if isinstance(data, dict) else {},
+                metadata=metadata if isinstance(metadata, dict) else {},
+            )
+            ts = temporal.timestamp_utc
+            local_day = temporal.local_date
+            for conflict in temporal.conflicts:
+                temporal_conflicts[conflict] = temporal_conflicts.get(conflict, 0) + 1
 
             try:
                 weight = float(data.get("weight_kg", data.get("weight", 0)))
@@ -328,16 +357,35 @@ async def update_strength_inference(
             except (ValueError, TypeError):
                 continue
 
-            e1rm = epley_1rm(weight, reps)
+            e1rm, e1rm_source = effort_adjusted_e1rm(
+                weight,
+                reps,
+                rir=data.get("rir"),
+                rpe=data.get("rpe"),
+            )
             if e1rm <= 0:
                 continue
 
-            session_id = metadata.get("session_id") or ts.date().isoformat()
+            if e1rm_source not in e1rm_sources:
+                e1rm_sources[e1rm_source] = 0
+            e1rm_sources[e1rm_source] += 1
+
+            raw_session_id = str(metadata.get("session_id") or "").strip()
+            if raw_session_id:
+                session_id = raw_session_id
+                fallback_session_state = None
+            else:
+                session_id, fallback_session_state = next_fallback_session_key(
+                    local_date=local_day,
+                    timestamp_utc=ts,
+                    state=fallback_session_state,
+                )
+
             prev = session_best.get(session_id)
             if prev is None or e1rm > prev[1]:
                 session_best[session_id] = (ts, e1rm)
 
-            day_key = ts.date().isoformat()
+            day_key = local_day.isoformat()
             if e1rm > by_date_best[day_key]:
                 by_date_best[day_key] = e1rm
 
@@ -385,10 +433,85 @@ async def update_strength_inference(
         dynamics_snapshot = dict(inference.get("dynamics", {}))
         projection_phase = str(dynamics_snapshot.get("phase") or "unknown")
         weekly_cycle = weekly_phase_from_date(history[-1]["date"] if history else None)
+        observed_points = len(points)
+        required_points = int(inference.get("required_points", 3) or 3)
+        insufficient = inference.get("status") == STATUS_INSUFFICIENT_DATA
+        status = STATUS_INSUFFICIENT_DATA if insufficient else STATUS_OK
+        confidence = confidence_from_evidence(
+            observed_points=observed_points,
+            required_points=required_points,
+        )
+        data_sufficiency = data_sufficiency_block(
+            required_observations=required_points,
+            observed_observations=observed_points,
+            uncertainty_reason_codes=(
+                ["insufficient_observation_count"] if insufficient else []
+            )
+            + (["effort_context_missing"] if e1rm_sources.get("fallback_epley", 0) > 0 else []),
+            recommended_next_observations=(
+                [
+                    "Log additional heavy sets until at least three sessions are available.",
+                    "Provide RIR or RPE to reduce e1RM uncertainty.",
+                ]
+                if insufficient
+                else (
+                    ["Provide RIR or RPE for more sets to improve confidence."]
+                    if e1rm_sources.get("fallback_epley", 0) > 0
+                    else []
+                )
+            ),
+        )
+
+        if insufficient:
+            capability_estimation = build_insufficient_envelope(
+                capability="strength_1rm",
+                required_observations=required_points,
+                observed_observations=observed_points,
+                model_version="strength_inference.v2",
+                recommended_next_observations=data_sufficiency.get(
+                    "recommended_next_observations"
+                ),
+                protocol_signature={"projection_key": canonical},
+                diagnostics={
+                    "sessions_used": len(points),
+                    "sets_used": len(rows),
+                    "e1rm_source_counts": e1rm_sources,
+                    "temporal_conflicts": temporal_conflicts,
+                    "timezone": timezone_context.get("timezone"),
+                },
+            )
+        else:
+            capability_estimation = build_capability_envelope(
+                capability="strength_1rm",
+                estimate_mean=float((inference.get("estimated_1rm") or {}).get("mean", 0.0)),
+                estimate_interval=(inference.get("estimated_1rm") or {}).get("ci95") or [None, None],
+                status=status,
+                confidence=confidence,
+                data_sufficiency=data_sufficiency,
+                model_version="strength_inference.v2",
+                protocol_signature={"projection_key": canonical},
+                diagnostics={
+                    "sessions_used": len(points),
+                    "sets_used": len(rows),
+                    "e1rm_source_counts": e1rm_sources,
+                    "temporal_conflicts": temporal_conflicts,
+                    "timezone": timezone_context.get("timezone"),
+                    "engine": inference.get("engine"),
+                },
+            )
 
         projection_data: dict[str, Any] = {
             "exercise_id": canonical,
             "history": history,
+            "status": status,
+            "confidence": confidence,
+            "data_sufficiency": data_sufficiency,
+            "estimate": {
+                "mean": (inference.get("estimated_1rm") or {}).get("mean"),
+                "interval": (inference.get("estimated_1rm") or {}).get("ci95"),
+            },
+            "capability_estimation": capability_estimation,
+            "timezone_context": timezone_context,
             "dynamics": {"estimated_1rm": dynamics_snapshot},
             "phase": {
                 "projection_phase": projection_phase,
@@ -398,6 +521,8 @@ async def update_strength_inference(
                 "sessions_used": len(points),
                 "sets_used": len(rows),
                 "insufficient_data": inference.get("status") == "insufficient_data",
+                "e1rm_source_counts": e1rm_sources,
+                "temporal_conflicts": temporal_conflicts,
             },
             "diagnostics": inference.get("diagnostics", {}),
             "engine": inference.get("engine"),
@@ -410,7 +535,7 @@ async def update_strength_inference(
         if isinstance(inference.get("population_prior"), dict):
             telemetry_diagnostics["population_prior"] = inference["population_prior"]
         if inference.get("status") == "insufficient_data":
-            projection_data["status"] = "insufficient_data"
+            projection_data["status"] = STATUS_INSUFFICIENT_DATA
             projection_data["required_points"] = inference.get("required_points", 3)
             projection_data["observed_points"] = inference.get("observed_points", len(points))
             telemetry_status = "skipped"

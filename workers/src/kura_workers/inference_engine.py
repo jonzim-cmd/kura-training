@@ -397,6 +397,77 @@ def _closed_form_strength(
     }
 
 
+def _hierarchical_surrogate_strength(
+    x: list[float],
+    y: list[float],
+    horizon_days: float,
+    slope_plateau_threshold: float,
+    *,
+    prior_beta_mean: float = 0.0,
+    prior_beta_var: float = 4.0,
+) -> dict:
+    """Surrogate hierarchical path with deterministic shrinkage.
+
+    This keeps runtime inexpensive while exposing a staging-compatible engine
+    contract until a heavier full hierarchical MCMC path is used for offline
+    refits.
+    """
+    base = _closed_form_strength(
+        x,
+        y,
+        horizon_days,
+        slope_plateau_threshold,
+        prior_beta_mean=prior_beta_mean,
+        prior_beta_var=prior_beta_var,
+    )
+    n = max(1, len(x))
+    shrinkage = min(0.7, max(0.15, 4.0 / (n + 4.0)))
+    slope = _as_float((base.get("trend") or {}).get("slope_kg_per_day")) or 0.0
+    shrunk_slope = ((1.0 - shrinkage) * slope) + (shrinkage * prior_beta_mean)
+    slope_sd = ((base.get("trend") or {}).get("slope_ci95") or [0.0, 0.0])
+    if isinstance(slope_sd, list) and len(slope_sd) == 2:
+        ci_center = shrunk_slope
+        ci_half_width = max(0.0, abs(float(slope_sd[1]) - float(slope_sd[0])) / 2.0) * (1.0 + 0.25 * shrinkage)
+        slope_ci95 = [round(ci_center - ci_half_width, 2), round(ci_center + ci_half_width, 2)]
+    else:
+        slope_ci95 = [round(shrunk_slope - 0.05, 2), round(shrunk_slope + 0.05, 2)]
+
+    estimated = dict(base.get("estimated_1rm") or {})
+    predicted = dict(base.get("predicted_1rm") or {})
+    est_mean = _as_float(estimated.get("mean")) or 0.0
+    adjustment = (shrunk_slope - slope) * (horizon_days / 2.0)
+    predicted_mean = (_as_float(predicted.get("mean")) or est_mean) + adjustment
+    predicted["mean"] = round(predicted_mean, 2)
+
+    trend = dict(base.get("trend") or {})
+    trend["slope_kg_per_day"] = round(shrunk_slope, 4)
+    trend["slope_kg_per_week"] = round(shrunk_slope * 7.0, 3)
+    trend["slope_ci95"] = slope_ci95
+    trend["plateau_probability"] = round(
+        _normal_cdf(slope_plateau_threshold, shrunk_slope, max(0.005, abs(slope_ci95[1] - slope_ci95[0]) / 3.92)),
+        4,
+    )
+    trend["improving_probability"] = round(
+        1.0 - _normal_cdf(0.0, shrunk_slope, max(0.005, abs(slope_ci95[1] - slope_ci95[0]) / 3.92)),
+        4,
+    )
+
+    diagnostics = dict(base.get("diagnostics") or {})
+    diagnostics["surrogate"] = True
+    diagnostics["hierarchical_shrinkage"] = round(shrinkage, 4)
+    diagnostics["prior_beta_mean"] = round(prior_beta_mean, 4)
+    diagnostics["prior_beta_var"] = round(prior_beta_var, 6)
+    diagnostics["fallback_reason"] = "surrogate_runtime_stage"
+
+    return {
+        "engine": "hierarchical_bayes_surrogate",
+        "trend": trend,
+        "estimated_1rm": estimated,
+        "predicted_1rm": predicted,
+        "diagnostics": diagnostics,
+    }
+
+
 def _pymc_strength(
     x: list[float],
     y: list[float],
@@ -522,7 +593,16 @@ def run_strength_inference(
     preferred_engine = os.environ.get("KURA_BAYES_ENGINE", "pymc").strip().lower()
 
     result: dict[str, Any]
-    if preferred_engine == "pymc":
+    if preferred_engine == "hierarchical_bayes":
+        result = _hierarchical_surrogate_strength(
+            x,
+            y,
+            horizon_days,
+            slope_plateau_threshold,
+            prior_beta_mean=prior_beta_mean,
+            prior_beta_var=prior_beta_var,
+        )
+    elif preferred_engine == "pymc":
         pymc_result = _pymc_strength(
             x,
             y,

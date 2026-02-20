@@ -23,6 +23,7 @@ from psycopg.types.json import Json
 
 from .causal_inference import ASSUMPTIONS, estimate_intervention_effect
 from .embeddings import cosine_similarity, get_embedding_provider
+from .handlers.capability_estimation import build_capability_envelopes
 from .inference_engine import (
     run_readiness_inference,
     run_strength_inference,
@@ -30,16 +31,22 @@ from .inference_engine import (
 )
 from .inference_event_registry import (
     EVAL_CAUSAL_EVENT_TYPES,
+    EVAL_CAPABILITY_EVENT_TYPES,
     EVAL_READINESS_EVENT_TYPES,
     EVAL_SEMANTIC_EVENT_TYPES,
     EVAL_STRENGTH_EVENT_TYPES,
 )
 from .readiness_signals import build_readiness_daily_scores
+from .strength_benchmark import (
+    build_strength_benchmark_rows,
+    evaluate_strength_benchmark,
+)
 from .training_signal_normalization import normalize_training_signal_rows
 from .utils import (
     epley_1rm,
     get_alias_map,
     get_retracted_event_ids,
+    load_timezone_preference,
     normalize_temporal_point,
     resolve_exercise_key,
     resolve_timezone_context,
@@ -51,6 +58,7 @@ SUPPORTED_PROJECTION_TYPES = (
     "strength_inference",
     "readiness_inference",
     "causal_inference",
+    "capability_estimation",
 )
 EVAL_SOURCE_PROJECTION_HISTORY = "projection_history"
 EVAL_SOURCE_EVENT_STORE = "event_store"
@@ -909,6 +917,52 @@ def evaluate_causal_projection(key: str, projection_data: Any) -> dict[str, Any]
         "labeled_windows": outcome_ok,
         "engines_used": ({engine: 1} if engine else {}),
         "metrics": metrics,
+    }
+
+
+def evaluate_capability_projection(key: str, projection_data: Any) -> dict[str, Any]:
+    data = projection_data if isinstance(projection_data, dict) else {}
+    required_fields = {
+        "schema_version",
+        "capability",
+        "status",
+        "estimate",
+        "confidence",
+        "data_sufficiency",
+        "model_version",
+    }
+    required_fields_ok = required_fields <= set(data.keys())
+
+    estimate = data.get("estimate")
+    interval_width: float | None = None
+    if isinstance(estimate, dict):
+        ci = _ci_bounds(estimate.get("interval"))
+        if ci is not None:
+            interval_width = max(0.0, ci[1] - ci[0])
+
+    confidence = _as_float(data.get("confidence"))
+    comparability = data.get("comparability")
+    comparability_degraded = None
+    if isinstance(comparability, dict):
+        groups_total = int(_as_float(comparability.get("groups_total")) or 0)
+        comparability_degraded = groups_total > 1
+
+    return {
+        "projection_type": "capability_estimation",
+        "key": key,
+        "status": str(data.get("status") or "insufficient_data"),
+        "series_points": int(
+            _as_float((data.get("data_sufficiency") or {}).get("observed_observations")) or 0
+        ),
+        "replay_windows": 1,
+        "labeled_windows": 1 if str(data.get("status") or "") == "ok" else 0,
+        "engines_used": {str(data.get("model_version") or "unknown"): 1},
+        "metrics": {
+            "required_fields_ok": required_fields_ok,
+            "interval_width": _round_or_none(interval_width, 6),
+            "confidence": _round_or_none(confidence, 6),
+            "comparability_degraded": comparability_degraded,
+        },
     }
 
 
@@ -1802,6 +1856,26 @@ def evaluate_from_event_store_rows(
         result["source"] = EVAL_SOURCE_EVENT_STORE
         results.append(result)
 
+    if "capability_estimation" in selected:
+        timezone_pref = _timezone_preference_from_rows(active_rows)
+        timezone_context = resolve_timezone_context(timezone_pref)
+        normalized_capability_rows = normalize_training_signal_rows(
+            [
+                row
+                for row in active_rows
+                if str(row.get("event_type") or "") in EVAL_CAPABILITY_EVENT_TYPES
+            ],
+            include_passthrough=True,
+        )
+        envelopes = build_capability_envelopes(
+            normalized_capability_rows,
+            timezone_name=str(timezone_context["timezone"]),
+        )
+        for capability_key, payload in sorted(envelopes.items(), key=lambda item: item[0]):
+            result = evaluate_capability_projection(capability_key, payload)
+            result["source"] = EVAL_SOURCE_EVENT_STORE
+            results.append(result)
+
     return results
 
 
@@ -1854,6 +1928,97 @@ def summarize_projection_results_by_source(results: list[dict[str, Any]]) -> dic
         if row.get("status") == "ok":
             by_type["ok_rows"] += 1
     return by_source
+
+
+def build_cross_capability_release_gate(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Shared pass/fail gate for capability_estimation.v1 rollout decisions."""
+    capability_rows = [
+        row for row in results if str(row.get("projection_type") or "") == "capability_estimation"
+    ]
+    required = {"strength_1rm", "sprint_max_speed", "jump_height", "endurance_threshold"}
+    seen = {str(row.get("key") or "") for row in capability_rows}
+    missing = sorted(required - seen)
+    if missing:
+        return {
+            "status": "insufficient_data",
+            "allow_rollout": False,
+            "reasons": [f"missing_capability:{name}" for name in missing],
+            "required_capabilities": sorted(required),
+            "observed_capabilities": sorted(seen),
+            "metrics": {"mean_confidence": None, "required_fields_ok_rate": None},
+        }
+
+    invalid = [
+        row
+        for row in capability_rows
+        if not bool(((row.get("metrics") or {}).get("required_fields_ok")))
+    ]
+    if invalid:
+        return {
+            "status": "fail",
+            "allow_rollout": False,
+            "reasons": [f"required_fields_missing:{row.get('key')}" for row in invalid],
+            "required_capabilities": sorted(required),
+            "observed_capabilities": sorted(seen),
+            "metrics": {"mean_confidence": None, "required_fields_ok_rate": 0.0},
+        }
+
+    status_by_key = {str(row.get("key") or ""): str(row.get("status") or "") for row in capability_rows}
+    if any(status_by_key.get(key) == "insufficient_data" for key in required):
+        return {
+            "status": "insufficient_data",
+            "allow_rollout": False,
+            "reasons": [
+                f"capability_insufficient:{key}"
+                for key in sorted(required)
+                if status_by_key.get(key) == "insufficient_data"
+            ],
+            "required_capabilities": sorted(required),
+            "observed_capabilities": sorted(seen),
+            "metrics": {"mean_confidence": None, "required_fields_ok_rate": 1.0},
+        }
+
+    confidences = [
+        _as_float((row.get("metrics") or {}).get("confidence"))
+        for row in capability_rows
+        if _as_float((row.get("metrics") or {}).get("confidence")) is not None
+    ]
+    mean_confidence = _safe_mean([float(v) for v in confidences if v is not None])
+    if mean_confidence is None:
+        return {
+            "status": "insufficient_data",
+            "allow_rollout": False,
+            "reasons": ["missing_confidence_metrics"],
+            "required_capabilities": sorted(required),
+            "observed_capabilities": sorted(seen),
+            "metrics": {"mean_confidence": None, "required_fields_ok_rate": 1.0},
+        }
+
+    confidence_threshold = _metric_threshold("KURA_CAPABILITY_GATE_CONFIDENCE_MIN", 0.55)
+    if mean_confidence < confidence_threshold:
+        return {
+            "status": "fail",
+            "allow_rollout": False,
+            "reasons": [f"mean_confidence_below_threshold:{round(mean_confidence, 6)}"],
+            "required_capabilities": sorted(required),
+            "observed_capabilities": sorted(seen),
+            "metrics": {
+                "mean_confidence": round(mean_confidence, 6),
+                "required_fields_ok_rate": 1.0,
+            },
+        }
+
+    return {
+        "status": "pass",
+        "allow_rollout": True,
+        "reasons": [],
+        "required_capabilities": sorted(required),
+        "observed_capabilities": sorted(seen),
+        "metrics": {
+            "mean_confidence": round(mean_confidence, 6),
+            "required_fields_ok_rate": 1.0,
+        },
+    }
 
 
 def _metric_threshold(name: str, default: float) -> float:
@@ -3448,6 +3613,8 @@ async def _projection_history_results(
             )
         elif projection_type == "causal_inference":
             eval_result = evaluate_causal_projection(key, data)
+        elif projection_type == "capability_estimation":
+            eval_result = evaluate_capability_projection(key, data)
         else:
             continue
         eval_result["updated_at"] = (
@@ -3478,6 +3645,8 @@ async def _event_store_results(
         event_types.update(EVAL_READINESS_EVENT_TYPES)
     if "causal_inference" in projection_types:
         event_types.update(EVAL_CAUSAL_EVENT_TYPES)
+    if "capability_estimation" in projection_types:
+        event_types.update(EVAL_CAPABILITY_EVENT_TYPES)
     if not event_types:
         return []
 
@@ -3536,6 +3705,27 @@ async def _event_store_results(
         semantic_result["source"] = EVAL_SOURCE_EVENT_STORE
         results.append(semantic_result)
 
+    if "capability_estimation" in projection_types:
+        timezone_pref = await load_timezone_preference(conn, user_id, retracted_ids)
+        timezone_context = resolve_timezone_context(timezone_pref)
+        capability_rows = [
+            row
+            for row in active_rows
+            if str(row.get("event_type") or "") in EVAL_CAPABILITY_EVENT_TYPES
+        ]
+        normalized_capability_rows = normalize_training_signal_rows(
+            capability_rows,
+            include_passthrough=True,
+        )
+        envelopes = build_capability_envelopes(
+            normalized_capability_rows,
+            timezone_name=str(timezone_context["timezone"]),
+        )
+        for capability_key, payload in sorted(envelopes.items(), key=lambda item: item[0]):
+            eval_result = evaluate_capability_projection(capability_key, payload)
+            eval_result["source"] = EVAL_SOURCE_EVENT_STORE
+            results.append(eval_result)
+
     return results
 
 
@@ -3588,9 +3778,32 @@ async def run_eval_harness(
             )
         )
 
+    strength_benchmark: dict[str, Any] | None = None
+    if "strength_inference" in selected:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT id, timestamp, event_type, data, metadata
+                FROM events
+                WHERE user_id = %s
+                  AND event_type = ANY(%s)
+                ORDER BY timestamp ASC, id ASC
+                """,
+                (user_id, sorted(EVAL_STRENGTH_EVENT_TYPES)),
+            )
+            strength_rows = await cur.fetchall()
+        retracted_ids = await get_retracted_event_ids(conn, user_id)
+        strength_rows = [row for row in strength_rows if str(row.get("id") or "") not in retracted_ids]
+        strength_rows = normalize_training_signal_rows(strength_rows, include_passthrough=False)
+        alias_map = await get_alias_map(conn, user_id, retracted_ids=retracted_ids)
+        benchmark_rows = build_strength_benchmark_rows(strength_rows, alias_map=alias_map)
+        strength_benchmark = evaluate_strength_benchmark(benchmark_rows)
+        strength_benchmark["rows"] = benchmark_rows
+
     summary = summarize_projection_results(results)
     summary_by_source = summarize_projection_results_by_source(results)
     shadow_mode = build_shadow_mode_rollout_checks(results, source_mode=source_mode)
+    capability_release_gate = build_cross_capability_release_gate(results)
     output: dict[str, Any] = {
         "user_id": user_id,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -3603,8 +3816,11 @@ async def run_eval_harness(
         "summary_by_source": summary_by_source,
         "eval_status": _eval_run_status(results),
         "shadow_mode": shadow_mode,
+        "capability_release_gate": capability_release_gate,
         "results": results,
     }
+    if strength_benchmark is not None:
+        output["strength_benchmark"] = strength_benchmark
 
     if persist:
         run_id = await persist_eval_run(

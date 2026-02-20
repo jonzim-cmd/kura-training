@@ -5,12 +5,14 @@ from datetime import date, datetime, timedelta, timezone
 
 from kura_workers.eval_harness import (
     _shadow_tier_variants,
+    build_cross_capability_release_gate,
     build_proof_in_production_artifact,
     build_semantic_labels_from_event_rows,
     build_shadow_evaluation_report,
     build_shadow_mode_rollout_checks,
     evaluate_synthetic_adversarial_corpus,
     evaluate_causal_projection,
+    evaluate_capability_projection,
     evaluate_semantic_event_store_labels,
     evaluate_semantic_memory_projection_labels,
     evaluate_from_event_store_rows,
@@ -242,6 +244,110 @@ def test_evaluate_from_event_store_rows_builds_strength_and_readiness(monkeypatc
     assert readiness[0]["status"] == "ok"
 
 
+def test_evaluate_from_event_store_rows_builds_capability_estimation():
+    rows = [
+        {
+            "id": "s-1",
+            "event_type": "set.logged",
+            "timestamp": datetime(2026, 2, 1, 8, 0, tzinfo=timezone.utc),
+            "data": {"exercise_id": "bench_press", "weight_kg": 100, "reps": 5, "rir": 2},
+            "metadata": {},
+        },
+        {
+            "id": "s-2",
+            "event_type": "set.logged",
+            "timestamp": datetime(2026, 2, 2, 8, 0, tzinfo=timezone.utc),
+            "data": {
+                "exercise_id": "max_velocity_sprint",
+                "distance_meters": 30,
+                "duration_seconds": 3.7,
+                "surface": "track",
+                "timing_method": "timing_gates",
+            },
+            "metadata": {},
+        },
+        {
+            "id": "s-3",
+            "event_type": "set.logged",
+            "timestamp": datetime(2026, 2, 3, 8, 0, tzinfo=timezone.utc),
+            "data": {"exercise_id": "countermovement_jump", "jump_height_cm": 44, "device_type": "force_plate"},
+            "metadata": {},
+        },
+        {
+            "id": "s-4",
+            "event_type": "set.logged",
+            "timestamp": datetime(2026, 2, 4, 8, 0, tzinfo=timezone.utc),
+            "data": {"exercise_id": "continuous_endurance", "distance_meters": 3000, "duration_seconds": 900},
+            "metadata": {},
+        },
+        {
+            "id": "s-5",
+            "event_type": "set.logged",
+            "timestamp": datetime(2026, 2, 5, 8, 0, tzinfo=timezone.utc),
+            "data": {"exercise_id": "bench_press", "weight_kg": 102.5, "reps": 5, "rir": 1},
+            "metadata": {},
+        },
+        {
+            "id": "s-6",
+            "event_type": "set.logged",
+            "timestamp": datetime(2026, 2, 6, 8, 0, tzinfo=timezone.utc),
+            "data": {"exercise_id": "max_velocity_sprint", "distance_meters": 30, "duration_seconds": 3.6},
+            "metadata": {},
+        },
+        {
+            "id": "s-7",
+            "event_type": "set.logged",
+            "timestamp": datetime(2026, 2, 7, 8, 0, tzinfo=timezone.utc),
+            "data": {"exercise_id": "countermovement_jump", "jump_height_cm": 45, "device_type": "force_plate"},
+            "metadata": {},
+        },
+        {
+            "id": "s-8",
+            "event_type": "set.logged",
+            "timestamp": datetime(2026, 2, 8, 8, 0, tzinfo=timezone.utc),
+            "data": {"exercise_id": "continuous_endurance", "distance_meters": 3200, "duration_seconds": 930},
+            "metadata": {},
+        },
+        {
+            "id": "s-9",
+            "event_type": "set.logged",
+            "timestamp": datetime(2026, 2, 9, 8, 0, tzinfo=timezone.utc),
+            "data": {"exercise_id": "bench_press", "weight_kg": 105, "reps": 3, "rir": 0},
+            "metadata": {},
+        },
+        {
+            "id": "s-10",
+            "event_type": "set.logged",
+            "timestamp": datetime(2026, 2, 10, 8, 0, tzinfo=timezone.utc),
+            "data": {"exercise_id": "max_velocity_sprint", "distance_meters": 30, "duration_seconds": 3.5},
+            "metadata": {},
+        },
+        {
+            "id": "s-11",
+            "event_type": "set.logged",
+            "timestamp": datetime(2026, 2, 11, 8, 0, tzinfo=timezone.utc),
+            "data": {"exercise_id": "countermovement_jump", "jump_height_cm": 46, "device_type": "force_plate"},
+            "metadata": {},
+        },
+        {
+            "id": "s-12",
+            "event_type": "set.logged",
+            "timestamp": datetime(2026, 2, 12, 8, 0, tzinfo=timezone.utc),
+            "data": {"exercise_id": "continuous_endurance", "distance_meters": 3400, "duration_seconds": 990},
+            "metadata": {},
+        },
+    ]
+    results = evaluate_from_event_store_rows(rows, projection_types=["capability_estimation"])
+    capability = [r for r in results if r["projection_type"] == "capability_estimation"]
+    assert len(capability) == 4
+    assert {row["key"] for row in capability} == {
+        "strength_1rm",
+        "sprint_max_speed",
+        "jump_height",
+        "endurance_threshold",
+    }
+
+
 def test_evaluate_causal_projection_ok():
     projection_data = {
         "engine": "propensity_ipw_bootstrap",
@@ -331,6 +437,63 @@ def test_evaluate_causal_projection_ok():
     assert result["metrics"]["median_ci95_width"] == 0.2
     assert result["metrics"]["high_severity_caveat_rate"] == 0.333333
     assert result["metrics"]["overlap_warning_rate"] == 0.333333
+
+
+def test_evaluate_capability_projection_ok():
+    projection_data = {
+        "schema_version": "capability_output.v1",
+        "capability": "sprint_max_speed",
+        "status": "ok",
+        "estimate": {"mean": 9.2, "interval": [8.9, 9.5]},
+        "confidence": 0.81,
+        "data_sufficiency": {
+            "required_observations": 6,
+            "observed_observations": 7,
+            "uncertainty_reason_codes": [],
+            "recommended_next_observations": [],
+        },
+        "model_version": "capability_estimation.v1",
+    }
+    result = evaluate_capability_projection("sprint_max_speed", projection_data)
+    assert result["projection_type"] == "capability_estimation"
+    assert result["status"] == "ok"
+    assert result["metrics"]["required_fields_ok"] is True
+    assert result["metrics"]["interval_width"] == 0.6
+
+
+def test_build_cross_capability_release_gate_passes_with_complete_confident_set():
+    results = []
+    for key in ("strength_1rm", "sprint_max_speed", "jump_height", "endurance_threshold"):
+        results.append(
+            {
+                "projection_type": "capability_estimation",
+                "key": key,
+                "status": "ok",
+                "metrics": {
+                    "required_fields_ok": True,
+                    "confidence": 0.75,
+                },
+            }
+        )
+
+    gate = build_cross_capability_release_gate(results)
+    assert gate["status"] == "pass"
+    assert gate["allow_rollout"] is True
+
+
+def test_build_cross_capability_release_gate_marks_missing_capabilities_as_insufficient():
+    results = [
+        {
+            "projection_type": "capability_estimation",
+            "key": "strength_1rm",
+            "status": "ok",
+            "metrics": {"required_fields_ok": True, "confidence": 0.8},
+        }
+    ]
+    gate = build_cross_capability_release_gate(results)
+    assert gate["status"] == "insufficient_data"
+    assert gate["allow_rollout"] is False
+    assert any(reason.startswith("missing_capability:") for reason in gate["reasons"])
 
 
 def test_evaluate_from_event_store_rows_builds_causal(monkeypatch):

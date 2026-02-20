@@ -63,7 +63,9 @@ def test_causal_effect_returns_estimate_and_ci():
     assert result["effect"] is not None
     assert result["effect"]["mean_ate"] > 0.03
     assert result["effect"]["ci95"][0] < result["effect"]["ci95"][1]
-    assert result["propensity"]["method"] == "logistic_ipw"
+    assert result["propensity"]["method"] in {"aipw_crossfit", "logistic_ipw_fallback"}
+    assert result["propensity"]["legacy_method"] == "logistic_ipw"
+    assert result["diagnostics"]["estimator"] is not None
     assert any(a["code"] == "no_unmeasured_confounding" for a in result["assumptions"])
 
 

@@ -40,6 +40,15 @@ def test_strength_inference_returns_trend():
     assert "direction" in result["dynamics"]
 
 
+def test_strength_inference_supports_hierarchical_surrogate_engine(monkeypatch):
+    monkeypatch.setenv("KURA_BAYES_ENGINE", "hierarchical_bayes")
+    points = [(0.0, 100.0), (7.0, 101.5), (14.0, 102.8), (21.0, 104.0)]
+    result = run_strength_inference(points)
+    assert result["engine"] == "hierarchical_bayes_surrogate"
+    assert result["diagnostics"]["surrogate"] is True
+    assert "hierarchical_shrinkage" in result["diagnostics"]
+
+
 def test_strength_inference_applies_population_prior():
     points = [(0.0, 100.0), (7.0, 101.0), (14.0, 102.0), (21.0, 103.0)]
     result = run_strength_inference(

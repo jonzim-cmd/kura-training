@@ -65,3 +65,12 @@ EVAL_SEMANTIC_EVENT_TYPES: tuple[str, ...] = (
 EVAL_STRENGTH_EVENT_TYPES: tuple[str, ...] = (
     *EVAL_SEMANTIC_EVENT_TYPES,
 )
+
+EVAL_CAPABILITY_EVENT_TYPES: tuple[str, ...] = (
+    "set.logged",
+    "session.logged",
+    "set.corrected",
+    "external.activity_imported",
+    "preference.set",
+    "event.retracted",
+)
