@@ -158,10 +158,17 @@ def get_interview_guide() -> dict[str, Any]:
             },
             {
                 "area": "goals",
-                "description": "What the user wants to achieve — strength, hypertrophy, weight loss, health",
+                "description": (
+                    "What the user wants to achieve — objective-first framing with "
+                    "primary goal, optional secondary goals, and anti-goals."
+                ),
                 "approach": "narrative",
-                "produces": ["goal.set"],
-                "examples": ["Was willst du erreichen?", "Hast du konkrete Ziele?"],
+                "produces": ["objective.set", "goal.set"],
+                "examples": [
+                    "Was willst du in den naechsten 8-12 Wochen vor allem erreichen?",
+                    "Was darf auf keinen Fall schlechter werden?",
+                    "Wenn unklar: health/explore als transparenter Default setzen.",
+                ],
             },
             {
                 "area": "exercise_vocabulary",

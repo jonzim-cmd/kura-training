@@ -23,6 +23,11 @@ import psycopg
 from psycopg.rows import dict_row
 
 from ..causal_inference import ASSUMPTIONS, estimate_intervention_effect
+from ..causal_estimand_registry_v2 import (
+    CAUSAL_ESTIMAND_REGISTRY_SCHEMA_VERSION,
+    build_estimand_identity_v2,
+    resolve_estimand_spec_v2,
+)
 from ..inference_engine import weekly_phase_from_date
 from ..inference_event_registry import CAUSAL_SIGNAL_EVENT_TYPES
 from ..inference_telemetry import (
@@ -49,6 +54,24 @@ logger = logging.getLogger(__name__)
 OUTCOME_READINESS = "readiness_score_t_plus_1"
 OUTCOME_STRENGTH_AGGREGATE = "strength_aggregate_delta_t_plus_1"
 OUTCOME_STRENGTH_PER_EXERCISE = "strength_delta_by_exercise_t_plus_1"
+OBJECTIVE_MODES = {"journal", "collaborate", "coach"}
+KNOWN_MODALITIES = {
+    "running",
+    "cycling",
+    "rowing",
+    "swimming",
+    "strength",
+    "hybrid",
+    "team_sport",
+    "endurance",
+    "unknown",
+}
+POSITIVITY_ALERT_CODES = {
+    "weak_overlap",
+    "extreme_weights",
+    "low_effective_sample_size",
+    "positivity_violation",
+}
 
 
 def _median(values: list[float]) -> float:
@@ -79,6 +102,145 @@ def _safe_float(value: Any, *, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _normalize_objective_mode(value: Any) -> str:
+    mode = str(value or "").strip().lower()
+    if mode in OBJECTIVE_MODES:
+        return mode
+    return "unknown"
+
+
+def _normalize_modality(value: Any) -> str:
+    modality = str(value or "").strip().lower()
+    if not modality:
+        return "unknown"
+    if modality in KNOWN_MODALITIES:
+        return modality
+    if modality in {"bodybuilding", "powerlifting"}:
+        return "strength"
+    if modality in {"crossfit", "mixed"}:
+        return "hybrid"
+    return "unknown"
+
+
+async def _resolve_objective_context(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+) -> tuple[str, str]:
+    objective_mode = "unknown"
+    modality = "unknown"
+
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT projection_type, data
+            FROM projections
+            WHERE user_id = %s
+              AND (
+                (projection_type = 'objective_state' AND key = 'active')
+                OR (projection_type = 'user_profile' AND key = 'me')
+              )
+            """,
+            (user_id,),
+        )
+        rows = await cur.fetchall()
+
+    for row in rows:
+        projection_type = str(row.get("projection_type") or "")
+        data = row.get("data")
+        if not isinstance(data, dict):
+            continue
+
+        if projection_type == "objective_state":
+            active_objective = data.get("active_objective")
+            if isinstance(active_objective, dict):
+                objective_mode = _normalize_objective_mode(
+                    active_objective.get("mode") or objective_mode
+                )
+                primary_goal = active_objective.get("primary_goal")
+                if isinstance(primary_goal, dict):
+                    modality = _normalize_modality(
+                        primary_goal.get("modality")
+                        or primary_goal.get("sport")
+                        or primary_goal.get("discipline")
+                        or modality
+                    )
+        elif projection_type == "user_profile":
+            user = data.get("user")
+            if not isinstance(user, dict):
+                continue
+            profile = user.get("profile")
+            if isinstance(profile, dict):
+                modality = _normalize_modality(
+                    profile.get("training_modality") or modality
+                )
+            if objective_mode == "unknown":
+                objectives = user.get("objectives")
+                if isinstance(objectives, list):
+                    for objective_event in reversed(objectives):
+                        if not isinstance(objective_event, dict):
+                            continue
+                        objective_mode = _normalize_objective_mode(
+                            objective_event.get("mode")
+                        )
+                        if objective_mode != "unknown":
+                            break
+            if objective_mode == "unknown":
+                workflow_state = user.get("workflow_state")
+                if isinstance(workflow_state, dict):
+                    objective_mode = _normalize_objective_mode(workflow_state.get("mode"))
+
+    return objective_mode, modality
+
+
+def _attach_estimand_contract(
+    result: dict[str, Any],
+    *,
+    intervention: str,
+    outcome: str,
+    objective_mode: str,
+    modality: str,
+    exercise_id: str | None = None,
+) -> dict[str, Any]:
+    updated = dict(result)
+    estimand_spec = resolve_estimand_spec_v2(intervention, outcome)
+    identity = build_estimand_identity_v2(
+        intervention=intervention,
+        outcome=outcome,
+        objective_mode=objective_mode,
+        modality=modality,
+        exercise_id=exercise_id,
+    )
+    updated["estimand_identity"] = {
+        "schema_version": CAUSAL_ESTIMAND_REGISTRY_SCHEMA_VERSION,
+        "identity": identity,
+        "type": estimand_spec.get("estimand_type"),
+        "confounders": estimand_spec.get("confounders"),
+        "required_diagnostics": estimand_spec.get("required_diagnostics"),
+        "notes": estimand_spec.get("notes"),
+    }
+
+    diagnostics = dict(updated.get("diagnostics") or {})
+    caveats = updated.get("caveats")
+    positivity_alerts: list[str] = []
+    if isinstance(caveats, list):
+        positivity_alerts = sorted(
+            {
+                str(caveat.get("code") or "")
+                for caveat in caveats
+                if isinstance(caveat, dict)
+                and str(caveat.get("code") or "") in POSITIVITY_ALERT_CODES
+            }
+        )
+    diagnostics["estimand_identity"] = identity
+    diagnostics["required_confounders"] = list(estimand_spec.get("confounders") or [])
+    diagnostics["required_diagnostics"] = list(
+        estimand_spec.get("required_diagnostics") or []
+    )
+    diagnostics["positivity_alerts"] = positivity_alerts
+    updated["diagnostics"] = diagnostics
+    return updated
 
 
 def _map_effect_strength(effect_payload: Any) -> float:
@@ -475,6 +637,14 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                     },
                     "diagnostics": "object",
                     "caveats": [{"code": "string", "severity": "string", "details": "object"}],
+                    "estimand_identity": {
+                        "schema_version": "string",
+                        "identity": "object",
+                        "type": "string",
+                        "confounders": "list[string]",
+                        "required_diagnostics": "list[string]",
+                        "notes": "string",
+                    },
                     "outcomes": {
                         "readiness_score_t_plus_1": "effect object",
                         "strength_aggregate_delta_t_plus_1": "effect object",
@@ -505,6 +675,11 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                     "target_key": "string",
                 }],
             },
+            "objective_context": {
+                "objective_mode": "string (journal|collaborate|coach|unknown)",
+                "modality": "string (open-set modality label)",
+            },
+            "estimand_registry_version": "string",
             "machine_caveats": [{
                 "intervention": "string",
                 "outcome": "string",
@@ -590,6 +765,7 @@ async def update_causal_inference(
         timezone_pref = await load_timezone_preference(conn, user_id, retracted_ids)
         timezone_context = resolve_timezone_context(timezone_pref)
         timezone_name = timezone_context["timezone"]
+        objective_mode, objective_modality = await _resolve_objective_context(conn, user_id)
 
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
@@ -786,6 +962,8 @@ async def update_causal_inference(
                     OUTCOME_STRENGTH_AGGREGATE: [],
                 },
                 "strength_by_exercise": defaultdict(list),
+                "objective_mode": objective_mode,
+                "modality": objective_modality,
             },
             "nutrition_shift": {
                 "outcomes": {
@@ -793,6 +971,8 @@ async def update_causal_inference(
                     OUTCOME_STRENGTH_AGGREGATE: [],
                 },
                 "strength_by_exercise": defaultdict(list),
+                "objective_mode": objective_mode,
+                "modality": objective_modality,
             },
             "sleep_intervention": {
                 "outcomes": {
@@ -800,6 +980,8 @@ async def update_causal_inference(
                     OUTCOME_STRENGTH_AGGREGATE: [],
                 },
                 "strength_by_exercise": defaultdict(list),
+                "objective_mode": objective_mode,
+                "modality": objective_modality,
             },
         }
 
@@ -995,6 +1177,10 @@ async def update_causal_inference(
         for name, sample_payload in samples_by_intervention.items():
             outcome_samples = sample_payload["outcomes"]
             strength_by_exercise_samples = sample_payload["strength_by_exercise"]
+            intervention_objective_mode = _normalize_objective_mode(
+                sample_payload.get("objective_mode")
+            )
+            intervention_modality = _normalize_modality(sample_payload.get("modality"))
 
             readiness_samples = outcome_samples[OUTCOME_READINESS]
             treated_windows[name] = sum(
@@ -1031,12 +1217,21 @@ async def update_causal_inference(
             readiness_target_key = build_causal_estimand_target_key(
                 intervention=name,
                 outcome=OUTCOME_READINESS,
+                objective_mode=intervention_objective_mode,
+                modality=intervention_modality,
             )
             readiness_prior = await _cached_population_prior(readiness_target_key)
             readiness_result, readiness_prior_meta = _blend_population_prior_into_effect(
                 readiness_result,
                 target_key=readiness_target_key,
                 population_prior=readiness_prior,
+            )
+            readiness_result = _attach_estimand_contract(
+                readiness_result,
+                intervention=name,
+                outcome=OUTCOME_READINESS,
+                objective_mode=intervention_objective_mode,
+                modality=intervention_modality,
             )
             population_prior_usage.append(
                 {
@@ -1049,12 +1244,21 @@ async def update_causal_inference(
             strength_aggregate_target_key = build_causal_estimand_target_key(
                 intervention=name,
                 outcome=OUTCOME_STRENGTH_AGGREGATE,
+                objective_mode=intervention_objective_mode,
+                modality=intervention_modality,
             )
             strength_aggregate_prior = await _cached_population_prior(strength_aggregate_target_key)
             strength_aggregate_result, strength_aggregate_prior_meta = _blend_population_prior_into_effect(
                 strength_aggregate_result,
                 target_key=strength_aggregate_target_key,
                 population_prior=strength_aggregate_prior,
+            )
+            strength_aggregate_result = _attach_estimand_contract(
+                strength_aggregate_result,
+                intervention=name,
+                outcome=OUTCOME_STRENGTH_AGGREGATE,
+                objective_mode=intervention_objective_mode,
+                modality=intervention_modality,
             )
             population_prior_usage.append(
                 {
@@ -1068,6 +1272,8 @@ async def update_causal_inference(
                 exercise_target_key = build_causal_estimand_target_key(
                     intervention=name,
                     outcome=OUTCOME_STRENGTH_PER_EXERCISE,
+                    objective_mode=intervention_objective_mode,
+                    modality=intervention_modality,
                     exercise_id=str(exercise_id),
                 )
                 exercise_prior = await _cached_population_prior(exercise_target_key)
@@ -1075,6 +1281,14 @@ async def update_causal_inference(
                     exercise_result,
                     target_key=exercise_target_key,
                     population_prior=exercise_prior,
+                )
+                blended_exercise_result = _attach_estimand_contract(
+                    blended_exercise_result,
+                    intervention=name,
+                    outcome=OUTCOME_STRENGTH_PER_EXERCISE,
+                    objective_mode=intervention_objective_mode,
+                    modality=intervention_modality,
+                    exercise_id=str(exercise_id),
                 )
                 strength_per_exercise_results[exercise_id] = blended_exercise_result
                 population_prior_usage.append(
@@ -1169,6 +1383,8 @@ async def update_causal_inference(
             intervention_payload = dict(readiness_result)
             intervention_payload["status"] = intervention_status
             intervention_payload["primary_outcome"] = OUTCOME_READINESS
+            intervention_payload["objective_mode"] = intervention_objective_mode
+            intervention_payload["modality"] = intervention_modality
             intervention_payload["outcomes"] = {
                 OUTCOME_READINESS: readiness_result,
                 OUTCOME_STRENGTH_AGGREGATE: strength_aggregate_result,
@@ -1226,6 +1442,11 @@ async def update_causal_inference(
             "assumptions": ASSUMPTIONS,
             "interventions": intervention_results,
             "population_prior": population_prior_summary,
+            "objective_context": {
+                "objective_mode": objective_mode,
+                "modality": objective_modality,
+            },
+            "estimand_registry_version": CAUSAL_ESTIMAND_REGISTRY_SCHEMA_VERSION,
             "machine_caveats": machine_caveats,
             "evidence_window": {
                 "days_considered": len(daily_context),
@@ -1275,6 +1496,11 @@ async def update_causal_inference(
                 1 for payload in intervention_results.values() if payload.get("status") == "ok"
             ),
             "insightful_outcomes": insightful_outcomes,
+            "objective_context": {
+                "objective_mode": objective_mode,
+                "modality": objective_modality,
+            },
+            "estimand_registry_version": CAUSAL_ESTIMAND_REGISTRY_SCHEMA_VERSION,
             "population_prior": {
                 "attempted_estimands": population_prior_attempted,
                 "applied_estimands": population_prior_applied,

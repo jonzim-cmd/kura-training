@@ -200,7 +200,9 @@ def test_blend_population_prior_into_effect_applies():
         "diagnostics": {"effect_sd": 0.05},
     }
     prior = {
-        "target_key": "estimand|program_change|readiness_score_t_plus_1",
+        "target_key": (
+            "estimand|program_change|readiness_score_t_plus_1|om:unknown|mod:unknown"
+        ),
         "cohort_key": "tm:strength|el:intermediate",
         "mean": 0.03,
         "var": 0.01,
@@ -212,7 +214,7 @@ def test_blend_population_prior_into_effect_applies():
 
     blended, meta = _blend_population_prior_into_effect(
         result,
-        target_key="estimand|program_change|readiness_score_t_plus_1",
+        target_key="estimand|program_change|readiness_score_t_plus_1|om:unknown|mod:unknown",
         population_prior=prior,
     )
 
@@ -236,7 +238,7 @@ def test_blend_population_prior_into_effect_fallback_when_prior_missing():
 
     blended, meta = _blend_population_prior_into_effect(
         result,
-        target_key="estimand|nutrition_shift|readiness_score_t_plus_1",
+        target_key="estimand|nutrition_shift|readiness_score_t_plus_1|om:unknown|mod:unknown",
         population_prior=None,
     )
 

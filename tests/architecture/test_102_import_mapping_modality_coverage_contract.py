@@ -47,6 +47,7 @@ def test_import_mapping_modality_contract_is_exposed() -> None:
         "swimming",
         "rowing",
         "team_sport",
+        "unknown",
     } <= set(contract["modalities"])
     assert {
         "running",
@@ -56,6 +57,7 @@ def test_import_mapping_modality_contract_is_exposed() -> None:
         "swimming",
         "rowing",
         "team_sport",
+        "unknown",
     } <= set(contract["modality_profiles"])
     assert "provider_modality_matrix" in contract
 

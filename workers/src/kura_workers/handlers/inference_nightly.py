@@ -14,6 +14,7 @@ from ..extraction_calibration import refresh_extraction_calibration
 from ..inference_event_registry import (
     CAPABILITY_BACKFILL_TRIGGER_EVENT_TYPES,
     NIGHTLY_REFIT_TRIGGER_EVENT_TYPES,
+    OBJECTIVE_BACKFILL_TRIGGER_EVENT_TYPES,
 )
 from ..issue_clustering import refresh_issue_clusters
 from ..learning_backlog_bridge import refresh_learning_backlog_candidates
@@ -278,6 +279,43 @@ async def handle_inference_capability_backfill(
 
     logger.info(
         "Capability backfill enqueued %d projection.update jobs across %d users (source=%s, event_types=%s)",
+        enqueued,
+        len(user_ids),
+        source,
+        ",".join(event_types),
+    )
+
+
+@register("inference.objective_backfill")
+async def handle_inference_objective_backfill(
+    conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
+) -> None:
+    """Run a one-shot objective/advisory/modality projection backfill fan-out."""
+    source = str(payload.get("source") or "inference.objective_backfill").strip()
+    if not source:
+        source = "inference.objective_backfill"
+
+    event_types = _coerce_event_types(
+        payload.get("event_types"),
+        default=OBJECTIVE_BACKFILL_TRIGGER_EVENT_TYPES,
+        allowed=OBJECTIVE_BACKFILL_TRIGGER_EVENT_TYPES,
+    )
+
+    requested_user_ids = _coerce_user_ids(payload.get("user_ids"))
+    if requested_user_ids:
+        user_ids = requested_user_ids
+    else:
+        user_ids = await _candidate_user_ids_for_event_types(conn, event_types=event_types)
+
+    enqueued = await _enqueue_projection_updates_for_user_set(
+        conn,
+        user_ids=user_ids,
+        event_types=event_types,
+        source=source,
+    )
+
+    logger.info(
+        "Objective backfill enqueued %d projection.update jobs across %d users (source=%s, event_types=%s)",
         enqueued,
         len(user_ids),
         source,

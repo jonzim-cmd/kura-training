@@ -97,7 +97,10 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
         },
         "goal.set": {
             "category": "identity",
-            "description": "Training or health goal",
+            "description": (
+                "Legacy goal event for training or health goals. "
+                "Remains supported and maps into objective semantics."
+            ),
             "fields": {
                 "goal_type": "string (strength, hypertrophy, endurance, weight_loss, health)",
                 "target_exercise": "string (optional, canonical exercise_id)",
@@ -110,6 +113,100 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "target_exercise": "barbell_back_squat",
                 "target_1rm_kg": 140,
                 "timeframe_weeks": 12,
+            },
+            "legacy_compatibility": {
+                "supported": True,
+                "maps_to_objective_state": True,
+                "mapping_policy": "latest_goal_set_maps_to_primary_goal_when_objective_missing",
+            },
+        },
+        "objective.set": {
+            "category": "identity",
+            "description": "Set active objective context for Evidence-OS reasoning.",
+            "fields": {
+                "objective_id": "string (required, stable id for future updates/archive)",
+                "mode": "string (required: journal|collaborate|coach)",
+                "primary_goal": "object (required, type + target + optional unit/timeframe)",
+                "secondary_goals": "list[object] (optional)",
+                "anti_goals": "list[string] (optional, what must not degrade)",
+                "success_metrics": "list[object] (optional, machine-readable metrics)",
+                "constraint_markers": "list[string] (optional, injuries/time limits/preferences)",
+                "hypothesis": "string (optional, planned adaptation rationale)",
+                "source": "string (optional: user_explicit|agent_suggested|default_inferred)",
+                "confidence": "number (optional, 0..1)",
+            },
+            "example": {
+                "objective_id": "obj_800m_block_2026q1",
+                "mode": "collaborate",
+                "primary_goal": {
+                    "type": "performance",
+                    "target": "run_800m_time",
+                    "value": 105.0,
+                    "unit": "seconds",
+                },
+                "secondary_goals": [{"type": "strength_support"}],
+                "anti_goals": ["knee_pain_spike", "training_adherence_drop"],
+                "success_metrics": [{"metric": "time_trial_400m"}],
+                "constraint_markers": ["max_sessions_per_week:6"],
+                "source": "user_explicit",
+                "confidence": 0.95,
+            },
+        },
+        "objective.updated": {
+            "category": "identity",
+            "description": "Update active objective fields without losing objective lineage.",
+            "fields": {
+                "objective_id": "string (required, objective to update)",
+                "mode": "string (optional: journal|collaborate|coach)",
+                "primary_goal": "object (optional)",
+                "secondary_goals": "list[object] (optional)",
+                "anti_goals": "list[string] (optional)",
+                "success_metrics": "list[object] (optional)",
+                "constraint_markers": "list[string] (optional)",
+                "hypothesis": "string (optional)",
+                "source": "string (optional)",
+                "confidence": "number (optional, 0..1)",
+            },
+            "example": {
+                "objective_id": "obj_800m_block_2026q1",
+                "constraint_markers": ["max_sessions_per_week:5", "limit_high_impact:2"],
+                "hypothesis": "Short-term fatigue dip acceptable before rebound.",
+                "source": "agent_suggested",
+                "confidence": 0.72,
+            },
+        },
+        "objective.archived": {
+            "category": "identity",
+            "description": "Archive objective and close it from active planning context.",
+            "fields": {
+                "objective_id": "string (required)",
+                "reason": "string (optional)",
+                "archived_by": "string (optional: user|agent|system)",
+            },
+            "example": {
+                "objective_id": "obj_800m_block_2026q1",
+                "reason": "Goal window completed.",
+                "archived_by": "user",
+            },
+        },
+        "advisory.override.recorded": {
+            "category": "meta",
+            "description": (
+                "Explicit rationale when user/agent intentionally overrides advisory guidance."
+            ),
+            "fields": {
+                "reason": "string (required)",
+                "scope": "string (optional: objective|plan|session|single_recommendation)",
+                "expected_outcome": "string (optional)",
+                "review_point": "string (optional, ISO datetime/date or marker)",
+                "actor": "string (optional: user|agent|coach)",
+            },
+            "example": {
+                "reason": "Planned overload microcycle despite warning.",
+                "scope": "objective",
+                "expected_outcome": "peak performance at target event",
+                "review_point": "2026-03-21",
+                "actor": "user",
             },
         },
         "injury.reported": {

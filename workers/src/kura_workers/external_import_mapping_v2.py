@@ -46,25 +46,25 @@ def _infer_modality(
     workout_type: str,
     sport: str | None,
     sets_data: list[dict[str, Any]],
-) -> Modality:
+) -> tuple[Modality, float, str]:
     text = f"{workout_type} {sport or ''}".strip().lower()
     if any(
         token in text
         for token in ("soccer", "football", "basketball", "handball", "hockey", "team")
     ):
-        return "team_sport"
+        return "team_sport", 0.93, "token_hint_team_sport"
     if any(token in text for token in ("swim", "pool", "openwater")):
-        return "swimming"
+        return "swimming", 0.93, "token_hint_swimming"
     if any(token in text for token in ("row", "rowing", "erg")):
-        return "rowing"
+        return "rowing", 0.93, "token_hint_rowing"
     if any(token in text for token in ("brick", "multisport", "triathlon", "hybrid")):
-        return "hybrid"
+        return "hybrid", 0.9, "token_hint_hybrid"
     if any(token in text for token in ("bike", "ride", "cycling")):
-        return "cycling"
+        return "cycling", 0.92, "token_hint_cycling"
     if any(token in text for token in ("strength", "gym", "weight", "lift")):
-        return "strength"
+        return "strength", 0.9, "token_hint_strength"
     if any(token in text for token in ("run", "jog", "track")):
-        return "running"
+        return "running", 0.9, "token_hint_running"
 
     has_strength = any(
         set_data.get("reps") is not None or set_data.get("weight_kg") is not None
@@ -76,12 +76,14 @@ def _infer_modality(
         for set_data in sets_data
     )
     if has_strength and has_endurance:
-        return "hybrid"
+        return "hybrid", 0.74, "set_features_hybrid"
     if has_strength:
-        return "strength"
+        return "strength", 0.7, "set_features_strength"
     if has_endurance:
-        return "running"
-    return "running"
+        if sport and str(sport).strip():
+            return "unknown", 0.42, "set_features_endurance_unknown_sport"
+        return "unknown", 0.36, "set_features_endurance_open_set"
+    return "unknown", 0.2, "open_set_no_modality_signal"
 
 
 def _block_type_for_workout(modality: Modality, workout_type: str) -> str:
@@ -231,6 +233,8 @@ def _set_slice_to_block(
     set_slice: Any,
     *,
     modality: Modality,
+    modality_confidence: float,
+    modality_source: str,
 ) -> dict[str, Any] | None:
     if not hasattr(set_slice, "model_dump"):
         return None
@@ -250,8 +254,8 @@ def _set_slice_to_block(
         set_modality = "hybrid"
     elif has_strength:
         set_modality = "strength"
-    elif has_endurance and modality == "strength":
-        set_modality = "running"
+    elif has_endurance and modality in {"strength", "unknown"}:
+        set_modality = "hybrid"
 
     work: dict[str, Any] = {}
     if reps is not None:
@@ -279,6 +283,11 @@ def _set_slice_to_block(
         "provenance": {
             "source_type": "imported",
             "source_ref": "external_import_mapping.v2",
+            "modality_assignment": {
+                "value": set_modality,
+                "confidence": round(float(modality_confidence), 3),
+                "source": modality_source,
+            },
         },
     }
     if rest_seconds is not None:
@@ -335,7 +344,7 @@ def map_external_activity_to_session_logged_v2(
     ):
         pace_min_per_km = (duration_seconds / 60.0) / (distance_meters / 1000.0)
     set_rows = [set_slice.model_dump(mode="python") for set_slice in canonical.sets]
-    modality = _infer_modality(
+    modality, modality_confidence, modality_source = _infer_modality(
         workout_type=workout_type,
         sport=canonical.workout.sport,
         sets_data=set_rows,
@@ -343,7 +352,12 @@ def map_external_activity_to_session_logged_v2(
 
     blocks: list[dict[str, Any]] = []
     for set_slice in canonical.sets:
-        mapped = _set_slice_to_block(set_slice, modality=modality)
+        mapped = _set_slice_to_block(
+            set_slice,
+            modality=modality,
+            modality_confidence=modality_confidence,
+            modality_source=modality_source,
+        )
         if mapped is not None:
             blocks.append(mapped)
 
@@ -362,6 +376,11 @@ def map_external_activity_to_session_logged_v2(
             "provenance": {
                 "source_type": "imported",
                 "source_ref": "external_import_mapping.v2",
+                "modality_assignment": {
+                    "value": modality,
+                    "confidence": round(float(modality_confidence), 3),
+                    "source": modality_source,
+                },
             },
         }
         if pace_anchor is not None:
@@ -385,6 +404,9 @@ def map_external_activity_to_session_logged_v2(
         "contract_version": CONTRACT_VERSION_V1,
         "session_meta": {
             "sport": canonical.workout.sport or modality,
+            "modality": modality,
+            "modality_confidence": round(float(modality_confidence), 3),
+            "modality_source": modality_source,
             "started_at": canonical.session.started_at.isoformat(),
             "ended_at": canonical.session.ended_at.isoformat()
             if canonical.session.ended_at is not None
@@ -426,5 +448,6 @@ def import_mapping_contract_v2() -> dict[str, Any]:
             "Missing external sensors map to explicit not_measured/not_applicable semantics.",
             "Relative-intensity references are optional and must carry reference metadata when present.",
             "Running/Cycling/Strength/Hybrid/Swimming/Rowing/Team modalities must resolve to supported block types.",
+            "Open-set routing keeps uncertain modality as unknown instead of forcing hidden remaps to running.",
         ],
     }

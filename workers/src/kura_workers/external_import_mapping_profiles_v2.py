@@ -13,6 +13,7 @@ Modality = Literal[
     "swimming",
     "rowing",
     "team_sport",
+    "unknown",
 ]
 
 CORE_IMPORT_FIELDS_V2: tuple[str, ...] = (
@@ -145,6 +146,23 @@ MODALITY_PROFILES_V2: dict[Modality, dict[str, Any]] = {
         ],
         "default_block_types": ["speed_endurance", "sprint_accel_maxv", "interval_endurance"],
     },
+    "unknown": {
+        "core_fields": [
+            "session.started_at",
+            "dose.work",
+            "provenance.source_type",
+        ],
+        "optional_fields": [
+            "intensity.pace",
+            "intensity.rpe_borg",
+            "metrics.heart_rate_avg",
+            "metrics.power_watt",
+        ],
+        "provider_specific_optional": [
+            "provider.modality_hint",
+        ],
+        "default_block_types": ["continuous_endurance", "circuit_hybrid"],
+    },
 }
 
 PROVIDER_FIELD_MATRIX_V2: dict[str, dict[str, SupportState]] = {
@@ -219,6 +237,7 @@ PROVIDER_MODALITY_MATRIX_V2: dict[str, dict[Modality, SupportState]] = {
         "swimming": "supported",
         "rowing": "partial",
         "team_sport": "partial",
+        "unknown": "partial",
     },
     "strava": {
         "running": "supported",
@@ -228,6 +247,7 @@ PROVIDER_MODALITY_MATRIX_V2: dict[str, dict[Modality, SupportState]] = {
         "swimming": "partial",
         "rowing": "partial",
         "team_sport": "partial",
+        "unknown": "partial",
     },
     "trainingpeaks": {
         "running": "supported",
@@ -237,6 +257,7 @@ PROVIDER_MODALITY_MATRIX_V2: dict[str, dict[Modality, SupportState]] = {
         "swimming": "supported",
         "rowing": "supported",
         "team_sport": "partial",
+        "unknown": "partial",
     },
 }
 
@@ -249,6 +270,7 @@ FORMAT_MODALITY_MATRIX_V2: dict[str, dict[Modality, SupportState]] = {
         "swimming": "supported",
         "rowing": "partial",
         "team_sport": "partial",
+        "unknown": "partial",
     },
     "tcx": {
         "running": "supported",
@@ -258,6 +280,7 @@ FORMAT_MODALITY_MATRIX_V2: dict[str, dict[Modality, SupportState]] = {
         "swimming": "partial",
         "rowing": "partial",
         "team_sport": "partial",
+        "unknown": "partial",
     },
     "gpx": {
         "running": "supported",
@@ -267,5 +290,6 @@ FORMAT_MODALITY_MATRIX_V2: dict[str, dict[Modality, SupportState]] = {
         "swimming": "partial",
         "rowing": "partial",
         "team_sport": "not_available",
+        "unknown": "partial",
     },
 }

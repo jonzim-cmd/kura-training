@@ -949,6 +949,9 @@ def _build_agenda(
     "exercise.alias_created",
     "preference.set",
     "goal.set",
+    "objective.set",
+    "objective.updated",
+    "objective.archived",
     "profile.updated",
     "program.started",
     "injury.reported",
@@ -966,6 +969,7 @@ def _build_agenda(
     "sleep_target.set",
     "weight_target.set",
     "session.completed",
+    "advisory.override.recorded",
     "workflow.onboarding.closed",
     "workflow.onboarding.override_granted",
 )
@@ -985,8 +989,10 @@ async def update_user_profile(
             WHERE user_id = %s
               AND event_type IN (
                   'set.logged', 'session.logged', 'set.corrected', 'exercise.alias_created', 'preference.set',
-                  'goal.set', 'profile.updated', 'program.started', 'injury.reported',
+                  'goal.set', 'objective.set', 'objective.updated', 'objective.archived',
+                  'profile.updated', 'program.started', 'injury.reported',
                   'bodyweight.logged', 'session.completed', 'recovery.daily_checkin',
+                  'advisory.override.recorded',
                   'workflow.onboarding.closed', 'workflow.onboarding.override_granted'
               )
             ORDER BY timestamp ASC
@@ -1011,6 +1017,7 @@ async def update_user_profile(
     aliases: dict[str, dict[str, str]] = {}
     preferences: dict[str, Any] = {}
     goals: list[dict[str, Any]] = []
+    objective_events: list[dict[str, Any]] = []
     profile_data: dict[str, Any] = {}
     injuries: list[dict[str, Any]] = []
     exercises_logged: set[str] = set()
@@ -1025,6 +1032,7 @@ async def update_user_profile(
     latest_bodyweight_kg: Any = None
     workflow_onboarding_closed = False
     workflow_override_count = 0
+    advisory_override_rationale_count = 0
     workflow_last_transition_at: str | None = None
     training_activity_timestamps: list[datetime] = []
     session_feedback_timestamps: list[datetime] = []
@@ -1104,6 +1112,19 @@ async def update_user_profile(
         elif event_type == "goal.set":
             goals.append(data)
 
+        elif event_type in {"objective.set", "objective.updated", "objective.archived"}:
+            objective_events.append(data)
+            primary_goal = data.get("primary_goal")
+            if isinstance(primary_goal, dict) and primary_goal:
+                goal_like = {
+                    "goal_type": str(primary_goal.get("type") or "objective").strip().lower(),
+                    "description": str(
+                        primary_goal.get("description") or data.get("hypothesis") or ""
+                    ).strip(),
+                    "source": "objective_event",
+                }
+                goals.append(goal_like)
+
         elif event_type == "profile.updated":
             # Delta merge: later events overwrite earlier per field
             for field_key, field_value in data.items():
@@ -1145,6 +1166,9 @@ async def update_user_profile(
                 "quality_flags": list(normalized.get("quality_flags") or []),
             }
 
+        elif event_type == "advisory.override.recorded":
+            advisory_override_rationale_count += 1
+
         elif event_type == "workflow.onboarding.closed":
             workflow_onboarding_closed = True
             workflow_last_transition_at = row["timestamp"].isoformat()
@@ -1165,6 +1189,7 @@ async def update_user_profile(
         "onboarding_closed": workflow_onboarding_closed,
         "override_active": (not workflow_onboarding_closed) and workflow_override_count > 0,
         "override_count": workflow_override_count,
+        "advisory_override_rationale_count": advisory_override_rationale_count,
         "last_transition_at": workflow_last_transition_at,
     }
     timezone_name = _resolve_timezone_name(preferences)
@@ -1383,6 +1408,7 @@ async def update_user_profile(
             "aliases": aliases,
             "preferences": preferences,
             "goals": goals,
+            "objectives": objective_events if objective_events else None,
             "profile": profile_data if profile_data else None,
             "injuries": injuries if injuries else None,
             "baseline_profile": baseline_profile,

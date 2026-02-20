@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from kura_workers.external_import_mapping_v2 import import_mapping_contract_v2
+
 TRAINING_TIMELINE = Path("workers/src/kura_workers/handlers/training_timeline.py")
 USER_PROFILE = Path("workers/src/kura_workers/handlers/user_profile.py")
 
@@ -18,3 +20,8 @@ def test_user_profile_coverage_tracks_training_activity_not_set_only_range() -> 
     assert "training_activity_range" in src
     assert "set_logged_range" not in src
 
+
+def test_modality_fairness_surface_keeps_open_set_unknown_visible() -> None:
+    contract = import_mapping_contract_v2()
+    assert "unknown" in contract["modalities"]
+    assert any("Open-set routing" in rule for rule in contract["rules"])

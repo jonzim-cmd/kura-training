@@ -176,6 +176,8 @@ class TestEventConventions:
             "program.started",
             "weight_target.set", "sleep_target.set", "nutrition_target.set",
             "profile.updated", "preference.set", "goal.set", "injury.reported",
+            "objective.set", "objective.updated", "objective.archived",
+            "advisory.override.recorded",
             "session.completed", "learning.signal.logged",
             "event.retracted",
             "workflow.onboarding.closed", "workflow.onboarding.override_granted",

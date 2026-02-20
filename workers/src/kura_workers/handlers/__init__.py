@@ -23,5 +23,7 @@ from . import consistency_inbox  # noqa: F401
 from . import open_observations  # noqa: F401
 from . import account_lifecycle  # noqa: F401
 from . import log_retention  # noqa: F401
+from . import objective_state  # noqa: F401
+from . import objective_advisory  # noqa: F401
 from . import user_profile  # noqa: F401
 from . import router  # noqa: F401

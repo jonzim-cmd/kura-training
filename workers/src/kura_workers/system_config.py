@@ -20,8 +20,12 @@ from .external_import_error_taxonomy import external_import_error_taxonomy_v1
 from .external_import_mapping_v2 import import_mapping_contract_v2
 from .interview_guide import get_interview_guide
 from .registry import get_dimension_metadata
+from .causal_estimand_registry_v2 import causal_estimand_registry_v2
 from .capability_estimation_v1 import capability_estimation_contract_v1
 from .capability_eval_gate_v1 import capability_eval_gate_contract_v1
+from .objective_contract_v1 import objective_contract_v1
+from .objective_advisory_v1 import objective_advisory_contract_v1
+from .objective_statistical_contract_v1 import objective_statistical_method_contract_v1
 from .strength_gold_model_v1 import strength_gold_model_contract_v1
 from .training_hardening_gate_v1 import hardening_gate_contract_v1
 from .training_legacy_compat import legacy_compat_contract_v1
@@ -73,6 +77,39 @@ def _get_conventions() -> dict[str, Any]:
                 "immediate_logging_checklist",
                 "planning_or_coaching_without_onboarding_offer",
             ],
+        },
+        "objective_contract_v1": {
+            "rules": [
+                "Objective modeling is optional for first-log flow; if missing, use transparent defaults.",
+                "Goal packs are advisory templates, not hard constraints.",
+                "Legacy goal.set remains valid and maps deterministically into objective semantics.",
+                "Objective warnings must remain advisory-only.",
+            ],
+            "contract": objective_contract_v1(),
+        },
+        "objective_statistical_method_v1": {
+            "rules": [
+                "Evaluation and calibration must surface objective/modality strata explicitly.",
+                "Global means are insufficient on their own for rollout decisions.",
+                "Small-sample segments must use shrinkage and explicit caveats.",
+            ],
+            "contract": objective_statistical_method_contract_v1(),
+        },
+        "objective_advisory_v1": {
+            "rules": [
+                "Objective-consistency signals are warnings only (advisory-only policy role).",
+                "Override rationales are first-class learning signals and remain user/agent-controllable.",
+                "Safety invariants remain active even when advisory warnings are overridden.",
+            ],
+            "contract": objective_advisory_contract_v1(),
+        },
+        "causal_estimand_registry_v2": {
+            "rules": [
+                "Causal estimands are identified by intervention x outcome x objective_mode x modality.",
+                "Each estimand includes explicit confounders and required overlap/positivity diagnostics.",
+                "Unknown interventions remain evaluable with transparent fallback estimand specs.",
+            ],
+            "contract": causal_estimand_registry_v2(),
         },
         "exercise_normalization": {
             "rules": [

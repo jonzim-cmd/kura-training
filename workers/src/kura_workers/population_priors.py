@@ -27,6 +27,10 @@ POPULATION_OPT_IN_KEY = "population_priors_opt_in"
 STRENGTH_FALLBACK_TARGET_KEY = "__all__"
 READINESS_TARGET_KEY = "overview"
 CAUSAL_ESTIMAND_TARGET_PREFIX = "estimand"
+GLOBAL_COHORT_KEY_V2 = "tm:unknown|el:unknown|om:unknown"
+GLOBAL_COHORT_KEY_V1 = "tm:unknown|el:unknown"
+OBJECTIVE_MODES = {"journal", "collaborate", "coach"}
+SHRINKAGE_PSEUDOCOUNT = 24
 CAUSAL_OUTCOME_READINESS = "readiness_score_t_plus_1"
 CAUSAL_OUTCOME_STRENGTH_AGGREGATE = "strength_aggregate_delta_t_plus_1"
 CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE = "strength_delta_by_exercise_t_plus_1"
@@ -46,15 +50,19 @@ def build_causal_estimand_target_key(
     *,
     intervention: str,
     outcome: str,
+    objective_mode: str | None = None,
+    modality: str | None = None,
     exercise_id: str | None = None,
 ) -> str:
     parts = [
         CAUSAL_ESTIMAND_TARGET_PREFIX,
         _normalize(intervention),
         _normalize(outcome),
+        f"om:{_normalize(objective_mode)}",
+        f"mod:{_normalize(modality)}",
     ]
     if exercise_id is not None:
-        parts.append(_normalize(exercise_id))
+        parts.append(f"ex:{_normalize(exercise_id)}")
     return "|".join(parts)
 
 
@@ -127,6 +135,56 @@ def _weighted_stats(values: list[float], weights: list[float]) -> tuple[float, f
     return mean, max(1e-6, var)
 
 
+def _objective_mode_from_user_profile(data: dict[str, Any] | None) -> str:
+    if not isinstance(data, dict):
+        return "unknown"
+    user = data.get("user")
+    if not isinstance(user, dict):
+        return "unknown"
+
+    objectives = user.get("objectives")
+    if isinstance(objectives, list):
+        for event in reversed(objectives):
+            if not isinstance(event, dict):
+                continue
+            mode = _normalize(event.get("mode"))
+            if mode in OBJECTIVE_MODES:
+                return mode
+
+    workflow = user.get("workflow_state")
+    if isinstance(workflow, dict):
+        mode = _normalize(workflow.get("mode"))
+        if mode in OBJECTIVE_MODES:
+            return mode
+    return "unknown"
+
+
+def _legacy_cohort_key_from_components(training_modality: str, experience_level: str) -> str:
+    return f"tm:{training_modality}|el:{experience_level}"
+
+
+def _legacy_cohort_key_from_cohort_key(cohort_key: str) -> str:
+    parts = [segment for segment in str(cohort_key).split("|") if segment]
+    tm = "tm:unknown"
+    el = "el:unknown"
+    for segment in parts:
+        if segment.startswith("tm:"):
+            tm = segment
+        elif segment.startswith("el:"):
+            el = segment
+    return f"{tm}|{el}"
+
+
+def _cohort_key_variants(cohort_key: str) -> tuple[str, ...]:
+    ordered = [
+        cohort_key,
+        _legacy_cohort_key_from_cohort_key(cohort_key),
+        GLOBAL_COHORT_KEY_V2,
+        GLOBAL_COHORT_KEY_V1,
+    ]
+    return tuple(dict.fromkeys(ordered))
+
+
 def _cohort_key_from_user_profile(data: dict[str, Any] | None) -> str:
     profile = {}
     if isinstance(data, dict):
@@ -138,7 +196,11 @@ def _cohort_key_from_user_profile(data: dict[str, Any] | None) -> str:
 
     training_modality = _normalize(profile.get("training_modality"))
     experience_level = _normalize(profile.get("experience_level"))
-    return f"tm:{training_modality}|el:{experience_level}"
+    objective_mode = _objective_mode_from_user_profile(data)
+    return (
+        f"tm:{training_modality}|el:{experience_level}|"
+        f"om:{objective_mode if objective_mode in OBJECTIVE_MODES else 'unknown'}"
+    )
 
 
 async def _record_refresh_run(
@@ -257,7 +319,7 @@ async def _load_user_cohorts(
         )
         rows = await cur.fetchall()
 
-    cohort_by_user = {user_id: "tm:unknown|el:unknown" for user_id in user_ids}
+    cohort_by_user = {user_id: GLOBAL_COHORT_KEY_V2 for user_id in user_ids}
     for row in rows:
         user_id = str(row["user_id"])
         data = row.get("data") if isinstance(row.get("data"), dict) else {}
@@ -429,25 +491,25 @@ def _build_strength_prior_rows(
         if confidence is None:
             confidence = 0.5
 
-        cohort_key = cohort_by_user.get(user_id, "tm:unknown|el:unknown")
+        cohort_key = cohort_by_user.get(user_id, GLOBAL_COHORT_KEY_V2)
         target_key = _normalize(row.get("key"))
-
-        _add_aggregate_sample(
-            groups,
-            cohort_key=cohort_key,
-            target_key=target_key,
-            user_id=user_id,
-            value=slope,
-            weight=confidence,
-        )
-        _add_aggregate_sample(
-            groups,
-            cohort_key=cohort_key,
-            target_key=STRENGTH_FALLBACK_TARGET_KEY,
-            user_id=user_id,
-            value=slope,
-            weight=confidence,
-        )
+        for cohort_variant in _cohort_key_variants(cohort_key):
+            _add_aggregate_sample(
+                groups,
+                cohort_key=cohort_variant,
+                target_key=target_key,
+                user_id=user_id,
+                value=slope,
+                weight=confidence,
+            )
+            _add_aggregate_sample(
+                groups,
+                cohort_key=cohort_variant,
+                target_key=STRENGTH_FALLBACK_TARGET_KEY,
+                user_id=user_id,
+                value=slope,
+                weight=confidence,
+            )
 
     out: list[dict[str, Any]] = []
     for (cohort_key, target_key), bucket in groups.items():
@@ -508,15 +570,16 @@ def _build_readiness_prior_rows(
         if confidence is None:
             confidence = 0.5
 
-        cohort_key = cohort_by_user.get(user_id, "tm:unknown|el:unknown")
-        _add_aggregate_sample(
-            groups,
-            cohort_key=cohort_key,
-            target_key=READINESS_TARGET_KEY,
-            user_id=user_id,
-            value=mean_value,
-            weight=confidence,
-        )
+        cohort_key = cohort_by_user.get(user_id, GLOBAL_COHORT_KEY_V2)
+        for cohort_variant in _cohort_key_variants(cohort_key):
+            _add_aggregate_sample(
+                groups,
+                cohort_key=cohort_variant,
+                target_key=READINESS_TARGET_KEY,
+                user_id=user_id,
+                value=mean_value,
+                weight=confidence,
+            )
 
     out: list[dict[str, Any]] = []
     for (cohort_key, target_key), bucket in groups.items():
@@ -645,11 +708,13 @@ def _build_causal_prior_rows(
         if not isinstance(interventions, dict):
             continue
 
-        cohort_key = cohort_by_user.get(user_id, "tm:unknown|el:unknown")
+        cohort_key = cohort_by_user.get(user_id, GLOBAL_COHORT_KEY_V2)
         for intervention_name, intervention_payload in interventions.items():
             if not isinstance(intervention_payload, dict):
                 continue
 
+            objective_mode = str(intervention_payload.get("objective_mode") or "unknown")
+            modality = str(intervention_payload.get("modality") or "unknown")
             outcomes = intervention_payload.get("outcomes")
             if not isinstance(outcomes, dict):
                 continue
@@ -664,17 +729,20 @@ def _build_causal_prior_rows(
                 target_key = build_causal_estimand_target_key(
                     intervention=intervention_name,
                     outcome=outcome_name,
+                    objective_mode=objective_mode,
+                    modality=modality,
                 )
-                _add_causal_sample(
-                    groups,
-                    cohort_key=cohort_key,
-                    target_key=target_key,
-                    user_id=user_id,
-                    mean_ate=sample[0],
-                    var_ate=sample[1],
-                    intervention=intervention_name,
-                    outcome=outcome_name,
-                )
+                for cohort_variant in _cohort_key_variants(cohort_key):
+                    _add_causal_sample(
+                        groups,
+                        cohort_key=cohort_variant,
+                        target_key=target_key,
+                        user_id=user_id,
+                        mean_ate=sample[0],
+                        var_ate=sample[1],
+                        intervention=intervention_name,
+                        outcome=outcome_name,
+                    )
 
             per_exercise = outcomes.get(CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE)
             if not isinstance(per_exercise, dict):
@@ -687,19 +755,22 @@ def _build_causal_prior_rows(
                 target_key = build_causal_estimand_target_key(
                     intervention=intervention_name,
                     outcome=CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE,
+                    objective_mode=objective_mode,
+                    modality=modality,
                     exercise_id=str(exercise_id),
                 )
-                _add_causal_sample(
-                    groups,
-                    cohort_key=cohort_key,
-                    target_key=target_key,
-                    user_id=user_id,
-                    mean_ate=sample[0],
-                    var_ate=sample[1],
-                    intervention=intervention_name,
-                    outcome=CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE,
-                    exercise_id=str(exercise_id),
-                )
+                for cohort_variant in _cohort_key_variants(cohort_key):
+                    _add_causal_sample(
+                        groups,
+                        cohort_key=cohort_variant,
+                        target_key=target_key,
+                        user_id=user_id,
+                        mean_ate=sample[0],
+                        var_ate=sample[1],
+                        intervention=intervention_name,
+                        outcome=CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE,
+                        exercise_id=str(exercise_id),
+                    )
 
     out: list[dict[str, Any]] = []
     for (cohort_key, target_key), bucket in groups.items():
@@ -979,29 +1050,122 @@ async def _user_cohort_key(conn: psycopg.AsyncConnection[Any], user_id: str) -> 
         row = await cur.fetchone()
 
     if row is None or not isinstance(row.get("data"), dict):
-        return "tm:unknown|el:unknown"
+        return GLOBAL_COHORT_KEY_V2
     return _cohort_key_from_user_profile(row["data"])
 
 
-def _build_causal_lookup_targets(target_key: str) -> list[str]:
+def _parse_causal_target_key(target_key: str) -> dict[str, str | None] | None:
     normalized_target = _normalize(target_key)
     expected_prefix = f"{CAUSAL_ESTIMAND_TARGET_PREFIX}|"
     if not normalized_target.startswith(expected_prefix):
+        return None
+
+    parts = [part for part in normalized_target.split("|") if part]
+    if len(parts) < 3:
+        return None
+
+    intervention = _normalize(parts[1])
+    outcome = _normalize(parts[2])
+    objective_mode = "unknown"
+    modality = "unknown"
+    exercise_id: str | None = None
+    for segment in parts[3:]:
+        if segment.startswith("om:"):
+            objective_mode = _normalize(segment.split(":", 1)[1])
+            continue
+        if segment.startswith("mod:"):
+            modality = _normalize(segment.split(":", 1)[1])
+            continue
+        if segment.startswith("ex:"):
+            exercise_id = _normalize(segment.split(":", 1)[1])
+            continue
+        # Legacy per-exercise key shape: estimand|intervention|outcome|exercise_id
+        if (
+            exercise_id is None
+            and outcome == CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE
+            and segment
+        ):
+            exercise_id = _normalize(segment)
+
+    return {
+        "intervention": intervention,
+        "outcome": outcome,
+        "objective_mode": objective_mode,
+        "modality": modality,
+        "exercise_id": exercise_id,
+    }
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(values))
+
+
+def _cohort_hierarchy_level(*, cohort_rank: int, target_rank: int, cohort_key: str) -> str:
+    if cohort_rank == 0 and target_rank == 0:
+        return "stratum"
+    if cohort_key in {GLOBAL_COHORT_KEY_V2, GLOBAL_COHORT_KEY_V1}:
+        return "global"
+    if cohort_rank <= 1 and target_rank <= 1:
+        return "cohort"
+    return "global"
+
+
+def _shrinkage_weight(*, sample_size: int, min_cohort_size: int) -> tuple[float, float]:
+    effective_n = max(0, int(sample_size))
+    base = max(int(min_cohort_size), 1)
+    confidence = effective_n / float(effective_n + max(base * 2, SHRINKAGE_PSEUDOCOUNT))
+    confidence = max(0.05, min(1.0, confidence))
+    return confidence, 1.0 - confidence
+
+
+def _build_causal_lookup_targets(target_key: str) -> list[str]:
+    parsed = _parse_causal_target_key(target_key)
+    if parsed is None:
         return []
 
-    lookup_targets = [normalized_target]
-    parts = normalized_target.split("|")
-    if (
-        len(parts) == 4
-        and parts[2] == CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE
-    ):
-        aggregate_target = build_causal_estimand_target_key(
-            intervention=parts[1],
-            outcome=CAUSAL_OUTCOME_STRENGTH_AGGREGATE,
+    intervention = str(parsed["intervention"] or "unknown")
+    outcome = str(parsed["outcome"] or "unknown")
+    objective_mode = str(parsed["objective_mode"] or "unknown")
+    modality = str(parsed["modality"] or "unknown")
+    exercise_id = str(parsed["exercise_id"] or "unknown")
+
+    objective_mode_variants = _dedupe_preserve_order([objective_mode, "unknown"])
+    modality_variants = _dedupe_preserve_order([modality, "unknown"])
+
+    lookup_targets: list[str] = []
+    for objective_mode_variant in objective_mode_variants:
+        for modality_variant in modality_variants:
+            lookup_targets.append(
+                build_causal_estimand_target_key(
+                    intervention=intervention,
+                    outcome=outcome,
+                    objective_mode=objective_mode_variant,
+                    modality=modality_variant,
+                    exercise_id=(exercise_id if outcome == CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE else None),
+                )
+            )
+            if outcome == CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE:
+                lookup_targets.append(
+                    build_causal_estimand_target_key(
+                        intervention=intervention,
+                        outcome=CAUSAL_OUTCOME_STRENGTH_AGGREGATE,
+                        objective_mode=objective_mode_variant,
+                        modality=modality_variant,
+                    )
+                )
+
+    # Legacy key variants for backward-compatible lookup.
+    if outcome == CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE:
+        lookup_targets.append(
+            f"{CAUSAL_ESTIMAND_TARGET_PREFIX}|{intervention}|{outcome}|{exercise_id}"
         )
-        if aggregate_target not in lookup_targets:
-            lookup_targets.append(aggregate_target)
-    return lookup_targets
+        lookup_targets.append(
+            f"{CAUSAL_ESTIMAND_TARGET_PREFIX}|{intervention}|{CAUSAL_OUTCOME_STRENGTH_AGGREGATE}"
+        )
+    else:
+        lookup_targets.append(f"{CAUSAL_ESTIMAND_TARGET_PREFIX}|{intervention}|{outcome}")
+
+    return _dedupe_preserve_order(lookup_targets)
 
 
 def _lookup_targets_for_projection(
@@ -1074,6 +1238,10 @@ async def resolve_population_prior(
     if not lookup_targets:
         return None
 
+    cohort_variants = _cohort_key_variants(cohort_key)
+    cohort_rank = {key: idx for idx, key in enumerate(cohort_variants)}
+    target_rank = {key: idx for idx, key in enumerate(lookup_targets)}
+
     try:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
@@ -1082,38 +1250,86 @@ async def resolve_population_prior(
                        sample_size, computed_at
                 FROM population_prior_profiles
                 WHERE projection_type = %s
-                  AND cohort_key = %s
+                  AND cohort_key = ANY(%s)
                   AND target_key = ANY(%s)
                   AND participants_count >= %s
-                ORDER BY
-                    CASE WHEN target_key = %s THEN 0 ELSE 1 END,
-                    computed_at DESC
-                LIMIT 1
+                ORDER BY computed_at DESC
                 """,
                 (
                     projection_type,
-                    cohort_key,
+                    list(cohort_variants),
                     lookup_targets,
                     min_cohort_size,
-                    lookup_targets[0],
                 ),
             )
-            row = await cur.fetchone()
+            rows = await cur.fetchall()
     except Exception as exc:
         logger.warning("Population prior lookup skipped: %s", exc)
         return None
 
-    if row is None:
+    if not rows:
         return None
 
-    prior_payload = row.get("prior_payload")
-    if not isinstance(prior_payload, dict):
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        row_target_key = str(row.get("target_key") or "")
+        row_cohort_key = str(row.get("cohort_key") or "")
+        if row_target_key not in target_rank or row_cohort_key not in cohort_rank:
+            continue
+        prior_payload = row.get("prior_payload")
+        if not isinstance(prior_payload, dict):
+            continue
+        stats = _validated_payload_stats(projection_type, prior_payload)
+        if stats is None:
+            continue
+        mean, var = stats
+        sample_size = int(row.get("sample_size") or 0)
+        participants_count = int(row.get("participants_count") or 0)
+        confidence, shrinkage = _shrinkage_weight(
+            sample_size=sample_size,
+            min_cohort_size=min_cohort_size,
+        )
+        candidates.append(
+            {
+                "row": row,
+                "prior_payload": prior_payload,
+                "mean": mean,
+                "var": var,
+                "cohort_rank": cohort_rank[row_cohort_key],
+                "target_rank": target_rank[row_target_key],
+                "sample_size": sample_size,
+                "participants_count": participants_count,
+                "confidence": confidence,
+                "shrinkage_factor": shrinkage,
+            }
+        )
+
+    if not candidates:
         return None
 
-    stats = _validated_payload_stats(projection_type, prior_payload)
-    if stats is None:
-        return None
-    mean, var = stats
+    best = sorted(
+        candidates,
+        key=lambda item: (
+            item["cohort_rank"],
+            item["target_rank"],
+            -item["participants_count"],
+            -item["sample_size"],
+            str(item["row"].get("computed_at") or ""),
+        ),
+    )[0]
+
+    row = best["row"]
+    prior_payload = best["prior_payload"]
+    mean = float(best["mean"])
+    var = float(best["var"])
+    confidence = float(best["confidence"])
+    shrinkage_factor = float(best["shrinkage_factor"])
+    resolved_blend_weight = population_prior_blend_weight() * confidence
+    hierarchy_level = _cohort_hierarchy_level(
+        cohort_rank=int(best["cohort_rank"]),
+        target_rank=int(best["target_rank"]),
+        cohort_key=str(row["cohort_key"]),
+    )
 
     resolved: dict[str, Any] = {
         "projection_type": projection_type,
@@ -1123,7 +1339,25 @@ async def resolve_population_prior(
         "var": var,
         "participants_count": int(row["participants_count"]),
         "sample_size": int(row["sample_size"]),
-        "blend_weight": population_prior_blend_weight(),
+        "blend_weight": round(resolved_blend_weight, 6),
+        "hierarchical_level": hierarchy_level,
+        "lookup_fallback_used": (
+            int(best["cohort_rank"]) > 0 or int(best["target_rank"]) > 0
+        ),
+        "lookup_path": {
+            "requested_cohort_key": cohort_key,
+            "resolved_cohort_key": str(row["cohort_key"]),
+            "requested_target_key": lookup_targets[0],
+            "resolved_target_key": str(row["target_key"]),
+            "cohort_variant_rank": int(best["cohort_rank"]),
+            "target_variant_rank": int(best["target_rank"]),
+        },
+        "shrinkage": {
+            "strategy": "hierarchical_shrinkage",
+            "sample_size_confidence": round(confidence, 6),
+            "shrinkage_factor": round(shrinkage_factor, 6),
+            "pseudo_count": SHRINKAGE_PSEUDOCOUNT,
+        },
         "computed_at": (
             row["computed_at"].isoformat()
             if hasattr(row["computed_at"], "isoformat")

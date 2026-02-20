@@ -87,6 +87,12 @@ _CAUSAL_OVERLAP_CAVEAT_CODES = {
     "positivity_violation",
     "residual_confounding_risk",
 }
+_STRATIFIED_CALIBRATION_SCHEMA_VERSION = "stratified_calibration.v1"
+_UNCERTAINTY_CALIBRATION_DRIFT_SCHEMA_VERSION = "uncertainty_calibration_drift.v1"
+_STATISTICAL_ROBUSTNESS_GUARD_SCHEMA_VERSION = "statistical_robustness_guard.v1"
+_STRATIFIED_MIN_SAMPLES = 12
+_STRATIFIED_MIN_UNIQUE_USERS = 6
+_STRATIFIED_SHRINKAGE_PSEUDOCOUNT = 24
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +149,479 @@ def _safe_ratio(numerator: int, denominator: int) -> float | None:
     if denominator <= 0:
         return None
     return numerator / denominator
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _normalize_objective_mode_tag(value: Any) -> str:
+    mode = str(value or "").strip().lower()
+    if mode in {"journal", "collaborate", "coach"}:
+        return mode
+    return "unknown"
+
+
+def _normalize_modality_tag(value: Any) -> str:
+    modality = str(value or "").strip().lower()
+    if not modality:
+        return "unknown"
+    if modality in {
+        "running",
+        "cycling",
+        "rowing",
+        "swimming",
+        "strength",
+        "hybrid",
+        "team_sport",
+        "endurance",
+        "unknown",
+    }:
+        return modality
+    if modality in {"bodybuilding", "powerlifting"}:
+        return "strength"
+    if modality in {"crossfit", "mixed"}:
+        return "hybrid"
+    return "unknown"
+
+
+def _quality_band_from_health_status(value: Any) -> str:
+    status = str(value or "").strip().lower()
+    if status == "healthy":
+        return "high"
+    if status == "monitor":
+        return "medium"
+    if status == "degraded":
+        return "low"
+    return "unknown"
+
+
+def _confidence_signal_from_eval_row(row: dict[str, Any]) -> float:
+    metrics = row.get("metrics")
+    if not isinstance(metrics, dict):
+        return 0.6 if str(row.get("status") or "") == "ok" else 0.4
+
+    direct_candidates = [
+        "confidence",
+        "coverage_ci95",
+        "coverage_ci95_nowcast",
+        "top1_accuracy",
+        "topk_recall",
+        "ok_outcome_rate",
+        "segment_ok_rate",
+    ]
+    for key in direct_candidates:
+        parsed = _as_float(metrics.get(key))
+        if parsed is not None:
+            return _clamp01(parsed)
+
+    high_severity_rate = _as_float(metrics.get("high_severity_caveat_rate"))
+    if high_severity_rate is not None:
+        return _clamp01(1.0 - high_severity_rate)
+
+    required_fields_ok = metrics.get("required_fields_ok")
+    if isinstance(required_fields_ok, bool):
+        return 0.9 if required_fields_ok else 0.3
+
+    return 0.6 if str(row.get("status") or "") == "ok" else 0.4
+
+
+def _ece_from_predictions(rows: list[tuple[float, float]], *, bins: int = 10) -> float | None:
+    if not rows:
+        return None
+    bins = max(2, int(bins))
+    bucket_sum_prob = [0.0] * bins
+    bucket_sum_obs = [0.0] * bins
+    bucket_count = [0] * bins
+
+    for prob, obs in rows:
+        p = _clamp01(prob)
+        idx = min(bins - 1, int(p * bins))
+        bucket_sum_prob[idx] += p
+        bucket_sum_obs[idx] += _clamp01(obs)
+        bucket_count[idx] += 1
+
+    total = len(rows)
+    ece = 0.0
+    for idx in range(bins):
+        count = bucket_count[idx]
+        if count <= 0:
+            continue
+        avg_prob = bucket_sum_prob[idx] / count
+        avg_obs = bucket_sum_obs[idx] / count
+        ece += (count / total) * abs(avg_prob - avg_obs)
+    return ece
+
+
+def _coverage_metric_from_row(row: dict[str, Any]) -> float | None:
+    metrics = row.get("metrics")
+    if not isinstance(metrics, dict):
+        return None
+    for key in ("coverage_ci95", "coverage_ci95_nowcast"):
+        parsed = _as_float(metrics.get(key))
+        if parsed is not None:
+            return _clamp01(parsed)
+    return None
+
+
+def _segment_axis_summary(
+    segments: list[dict[str, Any]],
+    *,
+    axis: str,
+) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for segment in segments:
+        axis_value = str(segment.get(axis) or "unknown")
+        sample_size = int(segment.get("sample_size") or 0)
+        if sample_size <= 0:
+            continue
+        bucket = out.setdefault(
+            axis_value,
+            {
+                "sample_size": 0,
+                "weighted_brier": 0.0,
+                "weighted_ece": 0.0,
+                "ece_weight": 0,
+            },
+        )
+        bucket["sample_size"] += sample_size
+        brier_value = _as_float(segment.get("brier_score_shrunk"))
+        if brier_value is not None:
+            bucket["weighted_brier"] += float(brier_value) * sample_size
+        ece_value = _as_float(segment.get("ece_shrunk"))
+        if ece_value is not None:
+            bucket["weighted_ece"] += float(ece_value) * sample_size
+            bucket["ece_weight"] += sample_size
+
+    summary: dict[str, dict[str, Any]] = {}
+    for axis_value, bucket in out.items():
+        sample_size = int(bucket["sample_size"])
+        summary[axis_value] = {
+            "sample_size": sample_size,
+            "brier_score_shrunk": _round_or_none(
+                bucket["weighted_brier"] / sample_size if sample_size > 0 else None,
+                6,
+            ),
+            "ece_shrunk": _round_or_none(
+                bucket["weighted_ece"] / bucket["ece_weight"]
+                if bucket["ece_weight"] > 0
+                else None,
+                6,
+            ),
+        }
+    return summary
+
+
+def build_stratified_calibration_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    segment_rows: dict[tuple[str, str, str], list[tuple[float, float, float | None, str]]] = {}
+    global_predictions: list[tuple[float, float]] = []
+    global_coverages: list[float] = []
+
+    for row in results:
+        objective_mode = _normalize_objective_mode_tag(row.get("objective_mode"))
+        modality = _normalize_modality_tag(row.get("modality"))
+        quality_band = str(row.get("quality_band") or "unknown").strip().lower() or "unknown"
+
+        prediction = _confidence_signal_from_eval_row(row)
+        observed = 1.0 if str(row.get("status") or "") == "ok" else 0.0
+        coverage = _coverage_metric_from_row(row)
+        user_ref = str(row.get("user_ref") or row.get("user_id") or "")
+
+        global_predictions.append((prediction, observed))
+        if coverage is not None:
+            global_coverages.append(float(coverage))
+        segment_rows.setdefault((objective_mode, modality, quality_band), []).append(
+            (prediction, observed, coverage, user_ref)
+        )
+
+    global_brier = _safe_mean(
+        [(prediction - observed) ** 2 for prediction, observed in global_predictions]
+    )
+    global_ece = _ece_from_predictions(global_predictions)
+    global_coverage = _safe_mean(global_coverages)
+
+    segments: list[dict[str, Any]] = []
+    for (objective_mode, modality, quality_band), rows in sorted(segment_rows.items()):
+        predictions = [(item[0], item[1]) for item in rows]
+        segment_coverages = [item[2] for item in rows if item[2] is not None]
+        sample_size = len(rows)
+        unique_users = len({item[3] for item in rows if item[3]})
+        brier = _safe_mean([(pred - obs) ** 2 for pred, obs in predictions])
+        ece = _ece_from_predictions(predictions)
+        coverage = _safe_mean(segment_coverages)
+
+        shrinkage_confidence = sample_size / float(
+            sample_size + _STRATIFIED_SHRINKAGE_PSEUDOCOUNT
+        )
+        shrinkage_confidence = max(0.05, min(1.0, shrinkage_confidence))
+        shrinkage_factor = 1.0 - shrinkage_confidence
+
+        brier_shrunk = (
+            ((1.0 - shrinkage_factor) * brier) + (shrinkage_factor * global_brier)
+            if brier is not None and global_brier is not None
+            else brier
+        )
+        ece_shrunk = (
+            ((1.0 - shrinkage_factor) * ece) + (shrinkage_factor * global_ece)
+            if ece is not None and global_ece is not None
+            else ece
+        )
+        coverage_shrunk = (
+            ((1.0 - shrinkage_factor) * coverage) + (shrinkage_factor * global_coverage)
+            if coverage is not None and global_coverage is not None
+            else coverage
+        )
+        segments.append(
+            {
+                "objective_mode": objective_mode,
+                "modality": modality,
+                "quality_band": quality_band,
+                "sample_size": sample_size,
+                "unique_users": unique_users,
+                "small_sample_caveat": (
+                    sample_size < _STRATIFIED_MIN_SAMPLES
+                    or unique_users < _STRATIFIED_MIN_UNIQUE_USERS
+                ),
+                "brier_score": _round_or_none(brier, 6),
+                "ece": _round_or_none(ece, 6),
+                "coverage_ci95": _round_or_none(coverage, 6),
+                "brier_score_shrunk": _round_or_none(brier_shrunk, 6),
+                "ece_shrunk": _round_or_none(ece_shrunk, 6),
+                "coverage_ci95_shrunk": _round_or_none(coverage_shrunk, 6),
+                "shrinkage_factor": _round_or_none(shrinkage_factor, 6),
+                "shrinkage_pseudocount": _STRATIFIED_SHRINKAGE_PSEUDOCOUNT,
+            }
+        )
+
+    return {
+        "schema_version": _STRATIFIED_CALIBRATION_SCHEMA_VERSION,
+        "segmentation_axes": ["objective_mode", "modality", "quality_band"],
+        "min_samples_per_stratum": _STRATIFIED_MIN_SAMPLES,
+        "min_unique_users_per_stratum": _STRATIFIED_MIN_UNIQUE_USERS,
+        "global": {
+            "sample_size": len(global_predictions),
+            "brier_score": _round_or_none(global_brier, 6),
+            "ece": _round_or_none(global_ece, 6),
+            "coverage_ci95": _round_or_none(global_coverage, 6),
+        },
+        "by_axis": {
+            "objective_mode": _segment_axis_summary(segments, axis="objective_mode"),
+            "modality": _segment_axis_summary(segments, axis="modality"),
+            "quality_band": _segment_axis_summary(segments, axis="quality_band"),
+        },
+        "segments": segments,
+    }
+
+
+def build_uncertainty_calibration_drift_guard(
+    stratified_calibration: dict[str, Any],
+) -> dict[str, Any]:
+    segments = stratified_calibration.get("segments")
+    if not isinstance(segments, list) or not segments:
+        return {
+            "schema_version": _UNCERTAINTY_CALIBRATION_DRIFT_SCHEMA_VERSION,
+            "status": "insufficient_data",
+            "thresholds": {
+                "max_abs_ece_delta": _metric_threshold("KURA_STRATIFIED_ECE_DRIFT_MAX", 0.12),
+                "max_abs_brier_delta": _metric_threshold("KURA_STRATIFIED_BRIER_DRIFT_MAX", 0.08),
+            },
+            "drifted_segments": [],
+        }
+
+    global_metrics = stratified_calibration.get("global") or {}
+    global_ece = _as_float(global_metrics.get("ece"))
+    global_brier = _as_float(global_metrics.get("brier_score"))
+    if global_ece is None or global_brier is None:
+        return {
+            "schema_version": _UNCERTAINTY_CALIBRATION_DRIFT_SCHEMA_VERSION,
+            "status": "insufficient_data",
+            "thresholds": {
+                "max_abs_ece_delta": _metric_threshold("KURA_STRATIFIED_ECE_DRIFT_MAX", 0.12),
+                "max_abs_brier_delta": _metric_threshold("KURA_STRATIFIED_BRIER_DRIFT_MAX", 0.08),
+            },
+            "drifted_segments": [],
+        }
+
+    ece_limit = _metric_threshold("KURA_STRATIFIED_ECE_DRIFT_MAX", 0.12)
+    brier_limit = _metric_threshold("KURA_STRATIFIED_BRIER_DRIFT_MAX", 0.08)
+    drifted_segments: list[dict[str, Any]] = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        sample_size = int(segment.get("sample_size") or 0)
+        if sample_size <= 0:
+            continue
+        segment_ece = _as_float(segment.get("ece_shrunk"))
+        segment_brier = _as_float(segment.get("brier_score_shrunk"))
+        if segment_ece is None or segment_brier is None:
+            continue
+        ece_delta = abs(segment_ece - global_ece)
+        brier_delta = abs(segment_brier - global_brier)
+        if ece_delta > ece_limit or brier_delta > brier_limit:
+            drifted_segments.append(
+                {
+                    "objective_mode": str(segment.get("objective_mode") or "unknown"),
+                    "modality": str(segment.get("modality") or "unknown"),
+                    "quality_band": str(segment.get("quality_band") or "unknown"),
+                    "sample_size": sample_size,
+                    "ece_delta": _round_or_none(ece_delta, 6),
+                    "brier_delta": _round_or_none(brier_delta, 6),
+                }
+            )
+
+    return {
+        "schema_version": _UNCERTAINTY_CALIBRATION_DRIFT_SCHEMA_VERSION,
+        "status": "fail" if drifted_segments else "pass",
+        "thresholds": {
+            "max_abs_ece_delta": ece_limit,
+            "max_abs_brier_delta": brier_limit,
+        },
+        "drifted_segments": drifted_segments,
+    }
+
+
+def _simpson_sign_reversal_indicators(
+    results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    metric_specs = [
+        ("strength_inference", "coverage_ci95"),
+        ("strength_inference", "mae"),
+        ("readiness_inference", "coverage_ci95_nowcast"),
+        ("readiness_inference", "mae_nowcast"),
+        ("semantic_memory", "top1_accuracy"),
+        ("causal_inference", "ok_outcome_rate"),
+        ("causal_inference", "high_severity_caveat_rate"),
+    ]
+    indicators: list[dict[str, Any]] = []
+    for projection_type, metric_name in metric_specs:
+        per_source: dict[str, list[float]] = {"projection_history": [], "event_store": []}
+        per_segment: dict[
+            tuple[str, str, str],
+            dict[str, list[float]],
+        ] = {}
+        for row in results:
+            if str(row.get("projection_type") or "") != projection_type:
+                continue
+            source = str(row.get("source") or "")
+            if source not in per_source:
+                continue
+            if str(row.get("status") or "") != "ok":
+                continue
+            metrics = row.get("metrics")
+            if not isinstance(metrics, dict):
+                continue
+            value = _as_float(metrics.get(metric_name))
+            if value is None:
+                continue
+            per_source[source].append(value)
+            key = (
+                _normalize_objective_mode_tag(row.get("objective_mode")),
+                _normalize_modality_tag(row.get("modality")),
+                str(row.get("quality_band") or "unknown").strip().lower() or "unknown",
+            )
+            bucket = per_segment.setdefault(
+                key,
+                {"projection_history": [], "event_store": []},
+            )
+            bucket[source].append(value)
+
+        global_a = _safe_mean(per_source["projection_history"])
+        global_b = _safe_mean(per_source["event_store"])
+        if global_a is None or global_b is None:
+            continue
+        global_delta = global_b - global_a
+        if abs(global_delta) <= 1e-9:
+            continue
+
+        weighted_delta_sum = 0.0
+        weighted_n = 0
+        valid_segments = 0
+        for values in per_segment.values():
+            seg_a = _safe_mean(values["projection_history"])
+            seg_b = _safe_mean(values["event_store"])
+            if seg_a is None or seg_b is None:
+                continue
+            delta = seg_b - seg_a
+            n = len(values["projection_history"]) + len(values["event_store"])
+            weighted_delta_sum += delta * n
+            weighted_n += n
+            valid_segments += 1
+        if valid_segments < 2 or weighted_n <= 0:
+            continue
+
+        weighted_segment_delta = weighted_delta_sum / weighted_n
+        if global_delta * weighted_segment_delta < 0.0:
+            indicators.append(
+                {
+                    "projection_type": projection_type,
+                    "metric": metric_name,
+                    "global_delta": _round_or_none(global_delta, 6),
+                    "weighted_segment_delta": _round_or_none(weighted_segment_delta, 6),
+                    "segments_compared": valid_segments,
+                }
+            )
+    return indicators
+
+
+def build_statistical_robustness_guard(
+    results: list[dict[str, Any]],
+    *,
+    stratified_calibration: dict[str, Any],
+    uncertainty_calibration_drift: dict[str, Any],
+) -> dict[str, Any]:
+    segments = stratified_calibration.get("segments")
+    if not isinstance(segments, list) or not segments:
+        return {
+            "schema_version": _STATISTICAL_ROBUSTNESS_GUARD_SCHEMA_VERSION,
+            "policy_role": "advisory_regression_gate",
+            "status": "insufficient_data",
+            "checks": {
+                "simpson_sign_reversals": [],
+                "small_sample_segments": 0,
+                "calibration_drift_status": str(
+                    uncertainty_calibration_drift.get("status") or "unknown"
+                ),
+            },
+            "reasons": ["missing_stratified_segments"],
+        }
+
+    simpson_sign_reversals = _simpson_sign_reversal_indicators(results)
+    small_sample_segments = sum(
+        1
+        for segment in segments
+        if isinstance(segment, dict) and bool(segment.get("small_sample_caveat"))
+    )
+    drift_status = str(uncertainty_calibration_drift.get("status") or "unknown")
+
+    reasons: list[str] = []
+    if simpson_sign_reversals:
+        reasons.append("simpson_sign_reversal_detected")
+    if drift_status == "fail":
+        reasons.append("calibration_drift_threshold_exceeded")
+    if small_sample_segments > 0:
+        reasons.append("small_sample_segments_present")
+
+    status = "pass"
+    if simpson_sign_reversals or drift_status == "fail":
+        status = "fail"
+
+    return {
+        "schema_version": _STATISTICAL_ROBUSTNESS_GUARD_SCHEMA_VERSION,
+        "policy_role": "advisory_regression_gate",
+        "status": status,
+        "checks": {
+            "simpson_sign_reversals": simpson_sign_reversals,
+            "small_sample_segments": small_sample_segments,
+            "calibration_drift_status": drift_status,
+        },
+        "small_sample_policy": {
+            "strategy": "hierarchical_shrinkage",
+            "min_samples_per_stratum": _STRATIFIED_MIN_SAMPLES,
+            "min_unique_users_per_stratum": _STRATIFIED_MIN_UNIQUE_USERS,
+            "must_emit_small_n_caveat": True,
+        },
+        "reasons": sorted(set(reasons)),
+    }
 
 
 def _mae(errors: list[float]) -> float | None:
@@ -2794,6 +3273,7 @@ def _build_shadow_tier_matrix(
     for model_tier in model_tiers:
         baseline_tier_eval = baseline_map.get(model_tier)
         candidate_tier_eval = candidate_map.get(model_tier)
+        candidate_robustness_status = "unknown"
 
         if baseline_tier_eval is None or candidate_tier_eval is None:
             missing_side = "baseline" if baseline_tier_eval is None else "candidate"
@@ -2816,11 +3296,37 @@ def _build_shadow_tier_matrix(
             candidate_shadow_status = str(
                 (candidate_tier_eval.get("shadow_mode") or {}).get("status") or "unknown"
             )
+            candidate_robustness_status = str(
+                (
+                    candidate_tier_eval.get("statistical_robustness_guard") or {}
+                ).get("status")
+                or "unknown"
+            )
+            if candidate_robustness_status == "fail":
+                failed_metrics = sorted(
+                    set(failed_metrics + ["statistical_robustness_guard"])
+                )
+            elif candidate_robustness_status == "insufficient_data":
+                missing_metrics = sorted(
+                    set(missing_metrics + ["statistical_robustness_guard"])
+                )
             gate_status, reasons = _resolve_shadow_release_gate(
                 missing_metrics=missing_metrics,
                 failed_metrics=failed_metrics,
                 candidate_shadow_status=candidate_shadow_status,
             )
+            if candidate_robustness_status in {"fail", "insufficient_data"}:
+                reason = (
+                    "candidate_statistical_robustness_status="
+                    + candidate_robustness_status
+                )
+                if reason not in reasons:
+                    reasons.append(reason)
+                if candidate_robustness_status == "fail":
+                    if gate_status != "insufficient_data":
+                        gate_status = "fail"
+                else:
+                    gate_status = "insufficient_data"
 
         entries.append(
             {
@@ -2833,6 +3339,7 @@ def _build_shadow_tier_matrix(
                     "missing_metrics": missing_metrics,
                     "failed_metrics": failed_metrics,
                     "candidate_shadow_mode_status": candidate_shadow_status,
+                    "candidate_statistical_robustness_status": candidate_robustness_status,
                     "reasons": reasons,
                 },
             }
@@ -2912,12 +3419,27 @@ def build_shadow_evaluation_report(
 
     baseline_shadow_status = str((baseline_eval.get("shadow_mode") or {}).get("status") or "unknown")
     candidate_shadow_status = str((candidate_eval.get("shadow_mode") or {}).get("status") or "unknown")
+    baseline_robustness_status = str(
+        (baseline_eval.get("statistical_robustness_guard") or {}).get("status") or "unknown"
+    )
+    candidate_robustness_status = str(
+        (candidate_eval.get("statistical_robustness_guard") or {}).get("status") or "unknown"
+    )
 
     gate_status, reasons = _resolve_shadow_release_gate(
         missing_metrics=missing_metrics,
         failed_metrics=failed_metrics,
         candidate_shadow_status=candidate_shadow_status,
     )
+    if candidate_robustness_status in {"fail", "insufficient_data"}:
+        reason = f"candidate_statistical_robustness_status={candidate_robustness_status}"
+        if reason not in reasons:
+            reasons.append(reason)
+        if candidate_robustness_status == "fail":
+            if gate_status != "insufficient_data":
+                gate_status = "fail"
+        else:
+            gate_status = "insufficient_data"
 
     tier_matrix = _build_shadow_tier_matrix(
         baseline_eval=baseline_eval,
@@ -2950,6 +3472,10 @@ def build_shadow_evaluation_report(
         candidate_eval=candidate_eval,
     )
     release_failed_metrics = sorted(set(failed_metrics))
+    if candidate_robustness_status == "fail":
+        release_failed_metrics = sorted(
+            set(release_failed_metrics + ["statistical_robustness_guard"])
+        )
     if adversarial_corpus["status"] == "fail":
         failed_modes = [
             str(mode) for mode in adversarial_corpus.get("failed_modes") or []
@@ -2974,8 +3500,13 @@ def build_shadow_evaluation_report(
             "strength_engine": baseline_eval.get("strength_engine"),
             "eval_status": baseline_eval.get("eval_status"),
             "shadow_mode_status": baseline_shadow_status,
+            "statistical_robustness_status": baseline_robustness_status,
             "summary": baseline_eval.get("summary") or {},
             "summary_by_source": baseline_eval.get("summary_by_source") or {},
+            "stratified_calibration": baseline_eval.get("stratified_calibration") or {},
+            "uncertainty_calibration_drift": baseline_eval.get("uncertainty_calibration_drift") or {},
+            "statistical_robustness_guard": baseline_eval.get("statistical_robustness_guard")
+            or {},
         },
         "candidate": {
             "model_tier": _normalize_model_tier(candidate_eval.get("model_tier")),
@@ -2983,8 +3514,13 @@ def build_shadow_evaluation_report(
             "strength_engine": candidate_eval.get("strength_engine"),
             "eval_status": candidate_eval.get("eval_status"),
             "shadow_mode_status": candidate_shadow_status,
+            "statistical_robustness_status": candidate_robustness_status,
             "summary": candidate_eval.get("summary") or {},
             "summary_by_source": candidate_eval.get("summary_by_source") or {},
+            "stratified_calibration": candidate_eval.get("stratified_calibration") or {},
+            "uncertainty_calibration_drift": candidate_eval.get("uncertainty_calibration_drift") or {},
+            "statistical_robustness_guard": candidate_eval.get("statistical_robustness_guard")
+            or {},
         },
         "metric_deltas": metric_deltas,
         "tier_matrix": tier_matrix,
@@ -3063,6 +3599,10 @@ def _proof_recommended_next_steps(
         elif reason.startswith("adversarial_failure_mode_regression:"):
             steps.append(
                 "Reduce adversarial failure-mode regressions and improve sidecar alignment before promotion."
+            )
+        elif reason.startswith("candidate_statistical_robustness_status="):
+            steps.append(
+                "Investigate statistical robustness failures (Simpson reversals, drift, small-sample concentration)."
             )
         elif reason.startswith("candidate_shadow_mode_status="):
             steps.append("Investigate candidate shadow-mode check failures.")
@@ -3263,6 +3803,15 @@ def _merge_shadow_eval_outputs(outputs: list[dict[str, Any]]) -> dict[str, Any]:
     summary = summarize_projection_results(all_results)
     summary_by_source = summarize_projection_results_by_source(all_results)
     shadow_mode = build_shadow_mode_rollout_checks(all_results, source_mode=source_mode)
+    stratified_calibration = build_stratified_calibration_summary(all_results)
+    uncertainty_calibration_drift = build_uncertainty_calibration_drift_guard(
+        stratified_calibration
+    )
+    statistical_robustness_guard = build_statistical_robustness_guard(
+        all_results,
+        stratified_calibration=stratified_calibration,
+        uncertainty_calibration_drift=uncertainty_calibration_drift,
+    )
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "projection_types": sorted(projection_types),
@@ -3274,6 +3823,9 @@ def _merge_shadow_eval_outputs(outputs: list[dict[str, Any]]) -> dict[str, Any]:
         "summary_by_source": summary_by_source,
         "eval_status": _eval_run_status(all_results),
         "shadow_mode": shadow_mode,
+        "stratified_calibration": stratified_calibration,
+        "uncertainty_calibration_drift": uncertainty_calibration_drift,
+        "statistical_robustness_guard": statistical_robustness_guard,
         "results": all_results,
     }
 
@@ -3430,6 +3982,9 @@ async def persist_eval_run(
     summary: dict[str, Any],
     summary_by_source: dict[str, Any],
     shadow_mode: dict[str, Any],
+    stratified_calibration: dict[str, Any] | None,
+    uncertainty_calibration_drift: dict[str, Any] | None,
+    statistical_robustness_guard: dict[str, Any] | None,
     results: list[dict[str, Any]],
 ) -> str:
     persisted_source = "combined" if source == EVAL_SOURCE_BOTH else source
@@ -3462,6 +4017,11 @@ async def persist_eval_run(
                         "by_projection_type": summary,
                         "by_source": summary_by_source,
                         "shadow_mode": shadow_mode,
+                        "stratified_calibration": stratified_calibration or {},
+                        "uncertainty_calibration_drift": uncertainty_calibration_drift
+                        or {},
+                        "statistical_robustness_guard": statistical_robustness_guard
+                        or {},
                     }
                 ),
             ),
@@ -3576,6 +4136,76 @@ async def _fetch_active_semantic_label_rows(
     retracted_ids = await get_retracted_event_ids(conn, user_id)
     filtered_rows = [r for r in rows if str(r["id"]) not in retracted_ids]
     return filter_retracted_event_rows(filtered_rows)
+
+
+async def _fetch_eval_context_tags(
+    conn: psycopg.AsyncConnection[Any],
+    *,
+    user_id: str,
+) -> dict[str, str]:
+    objective_mode = "unknown"
+    modality = "unknown"
+    quality_band = "unknown"
+
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT projection_type, key, data
+            FROM projections
+            WHERE user_id = %s
+              AND (
+                (projection_type = 'objective_state' AND key = 'active')
+                OR (projection_type = 'user_profile' AND key = 'me')
+                OR (projection_type = 'quality_health' AND key = 'overview')
+              )
+            """,
+            (user_id,),
+        )
+        rows = await cur.fetchall()
+
+    for row in rows:
+        projection_type = str(row.get("projection_type") or "")
+        data = row.get("data")
+        if not isinstance(data, dict):
+            continue
+
+        if projection_type == "objective_state":
+            active_objective = data.get("active_objective")
+            if isinstance(active_objective, dict):
+                objective_mode = _normalize_objective_mode_tag(
+                    active_objective.get("mode") or objective_mode
+                )
+                primary_goal = active_objective.get("primary_goal")
+                if isinstance(primary_goal, dict):
+                    modality = _normalize_modality_tag(
+                        primary_goal.get("modality")
+                        or primary_goal.get("sport")
+                        or primary_goal.get("discipline")
+                        or modality
+                    )
+        elif projection_type == "user_profile":
+            user = data.get("user")
+            if isinstance(user, dict):
+                if objective_mode == "unknown":
+                    workflow = user.get("workflow_state")
+                    if isinstance(workflow, dict):
+                        objective_mode = _normalize_objective_mode_tag(
+                            workflow.get("mode")
+                        )
+                profile = user.get("profile")
+                if isinstance(profile, dict):
+                    modality = _normalize_modality_tag(
+                        profile.get("training_modality") or modality
+                    )
+        elif projection_type == "quality_health":
+            status = data.get("status") or data.get("quality_status")
+            quality_band = _quality_band_from_health_status(status)
+
+    return {
+        "objective_mode": objective_mode,
+        "modality": modality,
+        "quality_band": quality_band,
+    }
 
 
 async def _projection_history_results(
@@ -3778,6 +4408,17 @@ async def run_eval_harness(
             )
         )
 
+    context_tags = await _fetch_eval_context_tags(conn, user_id=user_id)
+    for row in results:
+        row["objective_mode"] = _normalize_objective_mode_tag(
+            row.get("objective_mode") or context_tags.get("objective_mode")
+        )
+        row["modality"] = _normalize_modality_tag(
+            row.get("modality") or context_tags.get("modality")
+        )
+        quality_band = str(row.get("quality_band") or context_tags.get("quality_band") or "unknown")
+        row["quality_band"] = quality_band.strip().lower() or "unknown"
+
     strength_benchmark: dict[str, Any] | None = None
     if "strength_inference" in selected:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -3803,6 +4444,15 @@ async def run_eval_harness(
     summary = summarize_projection_results(results)
     summary_by_source = summarize_projection_results_by_source(results)
     shadow_mode = build_shadow_mode_rollout_checks(results, source_mode=source_mode)
+    stratified_calibration = build_stratified_calibration_summary(results)
+    uncertainty_calibration_drift = build_uncertainty_calibration_drift_guard(
+        stratified_calibration
+    )
+    statistical_robustness_guard = build_statistical_robustness_guard(
+        results,
+        stratified_calibration=stratified_calibration,
+        uncertainty_calibration_drift=uncertainty_calibration_drift,
+    )
     capability_release_gate = build_cross_capability_release_gate(results)
     output: dict[str, Any] = {
         "user_id": user_id,
@@ -3816,6 +4466,9 @@ async def run_eval_harness(
         "summary_by_source": summary_by_source,
         "eval_status": _eval_run_status(results),
         "shadow_mode": shadow_mode,
+        "stratified_calibration": stratified_calibration,
+        "uncertainty_calibration_drift": uncertainty_calibration_drift,
+        "statistical_robustness_guard": statistical_robustness_guard,
         "capability_release_gate": capability_release_gate,
         "results": results,
     }
@@ -3832,6 +4485,9 @@ async def run_eval_harness(
             summary=summary,
             summary_by_source=summary_by_source,
             shadow_mode=shadow_mode,
+            stratified_calibration=stratified_calibration,
+            uncertainty_calibration_drift=uncertainty_calibration_drift,
+            statistical_robustness_guard=statistical_robustness_guard,
             results=results,
         )
         output["run_id"] = run_id

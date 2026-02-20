@@ -18,6 +18,11 @@ CAUSAL_SIGNAL_EVENT_TYPES: tuple[str, ...] = (
     "training_plan.created",
     "training_plan.updated",
     "training_plan.archived",
+    "goal.set",
+    "objective.set",
+    "objective.updated",
+    "objective.archived",
+    "advisory.override.recorded",
     "meal.logged",
     "nutrition_target.set",
     "sleep.logged",
@@ -37,6 +42,11 @@ NIGHTLY_REFIT_TRIGGER_EVENT_TYPES: tuple[str, ...] = (
     "session.logged",
     "set.corrected",
     "exercise.alias_created",
+    "goal.set",
+    "objective.set",
+    "objective.updated",
+    "objective.archived",
+    "advisory.override.recorded",
     "sleep.logged",
     "soreness.logged",
     "energy.logged",
@@ -48,6 +58,18 @@ CAPABILITY_BACKFILL_TRIGGER_EVENT_TYPES: tuple[str, ...] = (
     "set.logged",
     "session.logged",
     "set.corrected",
+    "external.activity_imported",
+)
+
+OBJECTIVE_BACKFILL_TRIGGER_EVENT_TYPES: tuple[str, ...] = (
+    "goal.set",
+    "objective.set",
+    "objective.updated",
+    "objective.archived",
+    "advisory.override.recorded",
+    "profile.updated",
+    "set.logged",
+    "session.logged",
     "external.activity_imported",
 )
 

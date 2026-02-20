@@ -358,6 +358,10 @@ pub struct AgentContextResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub causal_inference: Option<ProjectionResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub objective_state: Option<ProjectionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub objective_advisory: Option<ProjectionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub quality_health: Option<ProjectionResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub consistency_inbox: Option<ProjectionResponse>,
@@ -2059,6 +2063,8 @@ fn agent_context_reload_hint(section: &str) -> &'static str {
         "session_feedback" => "Reload with GET /v1/projections/session_feedback/overview.",
         "causal_inference" => "Reload with GET /v1/projections/causal_inference/overview.",
         "readiness_inference" => "Reload with GET /v1/projections/readiness_inference/overview.",
+        "objective_state" => "Reload with GET /v1/projections/objective_state/active.",
+        "objective_advisory" => "Reload with GET /v1/projections/objective_advisory/overview.",
         "training_timeline" => "Reload with GET /v1/projections/training_timeline/overview.",
         _ => "Reload with GET /v1/projections/{projection_type}/{key}.",
     }
@@ -2108,6 +2114,8 @@ fn take_optional_context_section(
         "semantic_memory" => response.semantic_memory.take().map(serialize_to_value),
         "readiness_inference" => response.readiness_inference.take().map(serialize_to_value),
         "causal_inference" => response.causal_inference.take().map(serialize_to_value),
+        "objective_state" => response.objective_state.take().map(serialize_to_value),
+        "objective_advisory" => response.objective_advisory.take().map(serialize_to_value),
         "quality_health" => response.quality_health.take().map(serialize_to_value),
         "consistency_inbox" => response.consistency_inbox.take().map(serialize_to_value),
         _ => None,
@@ -2131,6 +2139,8 @@ fn apply_agent_context_budget(response: &mut AgentContextResponse) {
         "custom",
         "consistency_inbox",
         "quality_health",
+        "objective_advisory",
+        "objective_state",
         "causal_inference",
         "semantic_memory",
         "training_plan",
@@ -2351,6 +2361,18 @@ fn agent_brief_projection_section(
 
 fn agent_brief_projection_sections() -> Vec<AgentBriefSectionRef> {
     vec![
+        agent_brief_projection_section(
+            "projections.objective_state",
+            "Active objective context with source lineage and confidence.",
+            "/v1/projections/objective_state",
+            None,
+        ),
+        agent_brief_projection_section(
+            "projections.objective_advisory",
+            "Objective consistency advisories and override rationale summary.",
+            "/v1/projections/objective_advisory",
+            None,
+        ),
         agent_brief_projection_section(
             "projections.exercise_progression",
             "Detailed progression signal per exercise key.",
@@ -7356,6 +7378,9 @@ pub async fn get_agent_context(
         fetch_projection(&mut tx, user_id, "readiness_inference", "overview").await?;
     let causal_inference =
         fetch_projection(&mut tx, user_id, "causal_inference", "overview").await?;
+    let objective_state = fetch_projection(&mut tx, user_id, "objective_state", "active").await?;
+    let objective_advisory =
+        fetch_projection(&mut tx, user_id, "objective_advisory", "overview").await?;
     let quality_health = fetch_projection(&mut tx, user_id, "quality_health", "overview").await?;
     let consistency_inbox =
         fetch_projection(&mut tx, user_id, "consistency_inbox", "overview").await?;
@@ -7444,6 +7469,8 @@ pub async fn get_agent_context(
         semantic_memory,
         readiness_inference,
         causal_inference,
+        objective_state,
+        objective_advisory,
         quality_health,
         consistency_inbox,
         decision_brief,

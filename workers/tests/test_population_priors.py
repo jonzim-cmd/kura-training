@@ -27,11 +27,19 @@ def test_bool_from_any_parses_common_values():
 
 
 def test_cohort_key_from_user_profile_defaults_unknown():
-    assert _cohort_key_from_user_profile(None) == "tm:unknown|el:unknown"
-    assert _cohort_key_from_user_profile({}) == "tm:unknown|el:unknown"
+    assert _cohort_key_from_user_profile(None) == "tm:unknown|el:unknown|om:unknown"
+    assert _cohort_key_from_user_profile({}) == "tm:unknown|el:unknown|om:unknown"
     assert _cohort_key_from_user_profile(
         {"user": {"profile": {"training_modality": "Strength", "experience_level": "Advanced"}}}
-    ) == "tm:strength|el:advanced"
+    ) == "tm:strength|el:advanced|om:unknown"
+    assert _cohort_key_from_user_profile(
+        {
+            "user": {
+                "profile": {"training_modality": "running", "experience_level": "intermediate"},
+                "workflow_state": {"mode": "coach"},
+            }
+        }
+    ) == "tm:running|el:intermediate|om:coach"
 
 
 def test_quality_health_status_from_projection_prefers_explicit_status():
@@ -78,8 +86,8 @@ def test_build_strength_prior_rows_respects_privacy_gate():
         },
     ]
     cohort_by_user = {
-        "u1": "tm:strength|el:intermediate",
-        "u2": "tm:strength|el:intermediate",
+        "u1": "tm:strength|el:intermediate|om:unknown",
+        "u2": "tm:strength|el:intermediate|om:unknown",
     }
 
     blocked = _build_strength_prior_rows(
@@ -97,8 +105,11 @@ def test_build_strength_prior_rows_respects_privacy_gate():
         window_days=180,
     )
     targets = {(row["cohort_key"], row["target_key"]) for row in allowed}
-    assert ("tm:strength|el:intermediate", "bench_press") in targets
-    assert ("tm:strength|el:intermediate", STRENGTH_FALLBACK_TARGET_KEY) in targets
+    assert ("tm:strength|el:intermediate|om:unknown", "bench_press") in targets
+    assert (
+        "tm:strength|el:intermediate|om:unknown",
+        STRENGTH_FALLBACK_TARGET_KEY,
+    ) in targets
 
 
 def test_build_readiness_prior_rows():
@@ -123,8 +134,8 @@ def test_build_readiness_prior_rows():
         },
     ]
     cohort_by_user = {
-        "u1": "tm:strength|el:intermediate",
-        "u2": "tm:strength|el:intermediate",
+        "u1": "tm:strength|el:intermediate|om:unknown",
+        "u2": "tm:strength|el:intermediate|om:unknown",
     }
     priors = _build_readiness_prior_rows(
         rows,
@@ -132,21 +143,29 @@ def test_build_readiness_prior_rows():
         min_cohort_size=2,
         window_days=180,
     )
-    assert len(priors) == 1
-    assert priors[0]["projection_type"] == "readiness_inference"
-    assert priors[0]["prior_payload"]["privacy_gate_passed"] is True
+    assert priors
+    assert all(prior["projection_type"] == "readiness_inference" for prior in priors)
+    assert any(
+        prior["cohort_key"] == "tm:strength|el:intermediate|om:unknown"
+        and prior["target_key"] == "overview"
+        for prior in priors
+    )
+    assert all(prior["prior_payload"]["privacy_gate_passed"] for prior in priors)
 
 
 def test_build_causal_estimand_target_key_normalizes_components():
     assert build_causal_estimand_target_key(
         intervention=" Nutrition_Shift ",
         outcome="Readiness_Score_T_Plus_1",
-    ) == "estimand|nutrition_shift|readiness_score_t_plus_1"
+    ) == "estimand|nutrition_shift|readiness_score_t_plus_1|om:unknown|mod:unknown"
     assert build_causal_estimand_target_key(
         intervention="program_change",
         outcome=CAUSAL_OUTCOME_STRENGTH_PER_EXERCISE,
         exercise_id=" Bench_Press ",
-    ) == "estimand|program_change|strength_delta_by_exercise_t_plus_1|bench_press"
+    ) == (
+        "estimand|program_change|strength_delta_by_exercise_t_plus_1|"
+        "om:unknown|mod:unknown|ex:bench_press"
+    )
 
 
 def test_build_causal_lookup_targets_uses_strength_aggregate_fallback():
@@ -158,7 +177,7 @@ def test_build_causal_lookup_targets_uses_strength_aggregate_fallback():
     lookup_targets = _build_causal_lookup_targets(target)
     assert lookup_targets[0] == target
     assert (
-        "estimand|sleep_intervention|strength_aggregate_delta_t_plus_1"
+        "estimand|sleep_intervention|strength_aggregate_delta_t_plus_1|om:unknown|mod:unknown"
         in lookup_targets
     )
 
@@ -205,8 +224,8 @@ def test_build_causal_prior_rows():
         },
     ]
     cohort_by_user = {
-        "u1": "tm:strength|el:intermediate",
-        "u2": "tm:strength|el:intermediate",
+        "u1": "tm:strength|el:intermediate|om:unknown",
+        "u2": "tm:strength|el:intermediate|om:unknown",
     }
 
     priors = _build_causal_prior_rows(
@@ -216,10 +235,17 @@ def test_build_causal_prior_rows():
         window_days=180,
     )
 
-    assert len(priors) == 1
-    prior = priors[0]
+    assert priors
+    readiness_targets = [
+        prior
+        for prior in priors
+        if prior["target_key"]
+        == "estimand|program_change|readiness_score_t_plus_1|om:unknown|mod:unknown"
+    ]
+    assert readiness_targets
+    prior = readiness_targets[0]
     assert prior["projection_type"] == "causal_inference"
-    assert prior["target_key"] == "estimand|program_change|readiness_score_t_plus_1"
+    assert prior["cohort_key"] == "tm:strength|el:intermediate|om:unknown"
     assert prior["prior_payload"]["privacy_gate_passed"] is True
     assert prior["prior_payload"]["mean"] > 0.0
     assert prior["prior_payload"]["var"] > 0.0
