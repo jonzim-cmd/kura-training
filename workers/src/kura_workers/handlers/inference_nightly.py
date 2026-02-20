@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any
 
 import psycopg
@@ -94,6 +95,19 @@ def _coerce_user_ids(raw_user_ids: Any) -> list[str]:
     return [user_id for user_id in selected if user_id]
 
 
+def _coerce_bool(raw: Any, *, default: bool = False) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return default
+    value = str(raw).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 async def _enqueue_projection_update_dedup(
     conn: psycopg.AsyncConnection[Any],
     *,
@@ -138,19 +152,36 @@ async def _enqueue_projection_update_dedup(
     return row is not None
 
 
+def _synthetic_projection_event_id(*, user_id: str, event_type: str, source: str) -> str:
+    return str(
+        uuid.uuid5(
+            uuid.uuid5(uuid.NAMESPACE_URL, f"kura:{source}:{event_type}"),
+            user_id,
+        )
+    )
+
+
 async def _enqueue_projection_updates_for_user_set(
     conn: psycopg.AsyncConnection[Any],
     *,
     user_ids: list[str],
     event_types: tuple[str, ...],
     source: str,
+    synthetic_event_type: str | None = None,
 ) -> int:
     enqueued = 0
     for user_id in user_ids:
         for event_type in event_types:
             latest_event_id = await _latest_event_id_for_type(conn, user_id, event_type)
             if latest_event_id is None:
-                continue
+                if synthetic_event_type and event_type == synthetic_event_type:
+                    latest_event_id = _synthetic_projection_event_id(
+                        user_id=user_id,
+                        event_type=event_type,
+                        source=source,
+                    )
+                else:
+                    continue
             inserted = await _enqueue_projection_update_dedup(
                 conn,
                 user_id=user_id,
@@ -302,22 +333,30 @@ async def handle_inference_objective_backfill(
     )
 
     requested_user_ids = _coerce_user_ids(payload.get("user_ids"))
+    include_all_users = _coerce_bool(payload.get("include_all_users"), default=True)
     if requested_user_ids:
         user_ids = requested_user_ids
     else:
         user_ids = await _candidate_user_ids_for_event_types(conn, event_types=event_types)
+        if include_all_users:
+            logger.warning(
+                "Objective backfill requested include_all_users=true without explicit user_ids; "
+                "falling back to signal-derived users only."
+            )
 
     enqueued = await _enqueue_projection_updates_for_user_set(
         conn,
         user_ids=user_ids,
         event_types=event_types,
         source=source,
+        synthetic_event_type="profile.updated",
     )
 
     logger.info(
-        "Objective backfill enqueued %d projection.update jobs across %d users (source=%s, event_types=%s)",
+        "Objective backfill enqueued %d projection.update jobs across %d users (source=%s, include_all_users=%s, event_types=%s)",
         enqueued,
         len(user_ids),
         source,
+        include_all_users,
         ",".join(event_types),
     )

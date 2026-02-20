@@ -88,11 +88,15 @@ SOURCE_SQL="${SOURCE//\'/\'\'}"
 EVENT_TYPES_SQL="'goal.set','objective.set','objective.updated','objective.archived','advisory.override.recorded','profile.updated','set.logged','session.logged','external.activity_imported'"
 
 ENQUEUE_SQL="
-WITH seed AS (
-    SELECT user_id
-    FROM events
-    WHERE event_type IN (${EVENT_TYPES_SQL})
-    ORDER BY timestamp DESC
+WITH all_users AS (
+    SELECT id
+    FROM users
+    ORDER BY id
+),
+seed AS (
+    SELECT id AS user_id
+    FROM all_users
+    ORDER BY user_id DESC
     LIMIT 1
 ),
 inflight AS (
@@ -109,6 +113,8 @@ ins AS (
            'inference.objective_backfill',
            jsonb_build_object(
                'source', '${SOURCE_SQL}',
+               'include_all_users', true,
+               'user_ids', (SELECT COALESCE(jsonb_agg(id), '[]'::jsonb) FROM all_users),
                'event_types', jsonb_build_array(
                    'goal.set',
                    'objective.set',
@@ -128,7 +134,7 @@ ins AS (
     RETURNING id
 )
 SELECT CASE
-    WHEN NOT EXISTS (SELECT 1 FROM seed) THEN 'no_objective_seed_user'
+    WHEN NOT EXISTS (SELECT 1 FROM seed) THEN 'no_users_found'
     WHEN EXISTS (SELECT 1 FROM inflight) THEN 'already_inflight'
     WHEN EXISTS (SELECT 1 FROM ins) THEN 'enqueued:' || (SELECT id::text FROM ins LIMIT 1)
     ELSE 'skipped'
@@ -145,8 +151,8 @@ case "$ENQUEUE_STATUS" in
     already_inflight)
         info "Skipped enqueue (matching backfill job already pending/processing)."
         ;;
-    no_objective_seed_user)
-        warn "No users with objective-related event types yet; nothing enqueued."
+    no_users_found)
+        warn "No users found; nothing enqueued."
         ;;
     *)
         error "Backfill enqueue failed or returned unexpected status: ${ENQUEUE_STATUS}"
@@ -177,9 +183,13 @@ GROUP BY status
 ORDER BY status;
 "
 
-info "Coverage check (target users vs objective projections)..."
+info "Coverage check (all users + signal users vs objective projections)..."
 run_query_table "
-WITH target_users AS (
+WITH all_users AS (
+    SELECT id AS user_id
+    FROM users
+),
+signal_users AS (
     SELECT DISTINCT user_id
     FROM events
     WHERE event_type IN (${EVENT_TYPES_SQL})
@@ -197,16 +207,24 @@ objective_advisory_projection AS (
       AND key = 'overview'
 )
 SELECT
-    (SELECT COUNT(*) FROM target_users) AS users_with_objective_signals,
+    (SELECT COUNT(*) FROM all_users) AS users_total,
+    (SELECT COUNT(*) FROM signal_users) AS users_with_objective_signals,
     (SELECT COUNT(*) FROM objective_state_projection) AS users_with_objective_state,
     (SELECT COUNT(*) FROM objective_advisory_projection) AS users_with_objective_advisory,
     (
         SELECT COUNT(*)
-        FROM target_users t
+        FROM all_users t
         LEFT JOIN objective_state_projection s ON s.user_id = t.user_id
         LEFT JOIN objective_advisory_projection a ON a.user_id = t.user_id
         WHERE s.user_id IS NULL OR a.user_id IS NULL
-    ) AS users_missing_objective_surfaces;
+    ) AS users_missing_objective_surfaces_all_users,
+    (
+        SELECT COUNT(*)
+        FROM signal_users t
+        LEFT JOIN objective_state_projection s ON s.user_id = t.user_id
+        LEFT JOIN objective_advisory_projection a ON a.user_id = t.user_id
+        WHERE s.user_id IS NULL OR a.user_id IS NULL
+    ) AS users_missing_objective_surfaces_signal_users;
 "
 
 info "Lag check (projection freshness against latest objective signal)..."

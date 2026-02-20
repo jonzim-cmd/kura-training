@@ -200,6 +200,58 @@ def _unresolved_fields(active_objective: dict[str, Any] | None) -> list[str]:
     return unresolved
 
 
+async def _load_profile_data_from_projection(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+) -> dict[str, Any]:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT data
+            FROM projections
+            WHERE user_id = %s
+              AND projection_type = 'user_profile'
+              AND key = 'me'
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = await cur.fetchone()
+
+    if row is None or not isinstance(row.get("data"), dict):
+        return {}
+
+    user = row["data"].get("user")
+    if not isinstance(user, dict):
+        return {}
+    profile = user.get("profile")
+    if not isinstance(profile, dict):
+        return {}
+    return dict(profile)
+
+
+async def _upsert_objective_state_projection(
+    conn: psycopg.AsyncConnection[Any],
+    *,
+    user_id: str,
+    projection_data: dict[str, Any],
+    last_event_id: str | None,
+) -> None:
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            INSERT INTO projections (user_id, projection_type, key, data, version, last_event_id, updated_at)
+            VALUES (%s, 'objective_state', 'active', %s, 1, %s, NOW())
+            ON CONFLICT (user_id, projection_type, key) DO UPDATE SET
+                data = EXCLUDED.data,
+                version = projections.version + 1,
+                last_event_id = EXCLUDED.last_event_id,
+                updated_at = NOW()
+            """,
+            (user_id, json.dumps(projection_data), last_event_id),
+        )
+
+
 @projection_handler(
     "goal.set",
     "objective.set",
@@ -261,11 +313,35 @@ async def update_objective_state(
 
     rows = [row for row in rows if str(row.get("id") or "") not in retracted_ids]
     if not rows:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "DELETE FROM projections WHERE user_id = %s AND projection_type = 'objective_state' AND key = 'active'",
-                (user_id,),
-            )
+        profile_data = await _load_profile_data_from_projection(conn, user_id)
+        active_objective = _default_objective_from_profile(profile_data)
+        inferred_confidence = _normalize_confidence(
+            active_objective.get("confidence"),
+            fallback=0.45,
+        )
+        active_objective["confidence"] = inferred_confidence
+
+        projection_data = {
+            "schema_version": OBJECTIVE_STATE_SCHEMA_VERSION,
+            "active_objective": active_objective,
+            "objective_history": [],
+            "active_constraints": list(active_objective.get("constraint_markers") or []),
+            "unresolved_fields": _unresolved_fields(active_objective),
+            "inferred_confidence": inferred_confidence,
+            "source_summary": {
+                "explicit_objective_events": 0,
+                "legacy_goal_events": 0,
+                "override_rationale_events": 0,
+                "default_inferred": True,
+            },
+            "model_version": OBJECTIVE_STATE_MODEL_VERSION,
+        }
+        await _upsert_objective_state_projection(
+            conn,
+            user_id=str(user_id),
+            projection_data=projection_data,
+            last_event_id=None,
+        )
         return
 
     objectives: dict[str, dict[str, Any]] = {}
@@ -391,17 +467,9 @@ async def update_objective_state(
         "model_version": OBJECTIVE_STATE_MODEL_VERSION,
     }
     last_event_id = str(rows[-1]["id"])
-    async with conn.cursor() as cur:
-        await cur.execute(
-            """
-            INSERT INTO projections (user_id, projection_type, key, data, version, last_event_id, updated_at)
-            VALUES (%s, 'objective_state', 'active', %s, 1, %s, NOW())
-            ON CONFLICT (user_id, projection_type, key) DO UPDATE SET
-                data = EXCLUDED.data,
-                version = projections.version + 1,
-                last_event_id = EXCLUDED.last_event_id,
-                updated_at = NOW()
-            """,
-            (user_id, json.dumps(projection_data), last_event_id),
-        )
-
+    await _upsert_objective_state_projection(
+        conn,
+        user_id=str(user_id),
+        projection_data=projection_data,
+        last_event_id=last_event_id,
+    )

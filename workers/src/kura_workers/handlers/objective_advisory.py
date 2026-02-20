@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -17,6 +18,29 @@ OBJECTIVE_ADVISORY_POLICY_ROLE = "advisory_only"
 _METRIC_STALENESS_DAYS = 21
 _OVERRIDE_RECENT_DAYS = 30
 _OVERRIDE_RECENT_LIMIT = 25
+
+
+async def _event_id_exists_for_user(
+    conn: psycopg.AsyncConnection[Any], *, user_id: str, event_id: str
+) -> bool:
+    try:
+        parsed_event_id = str(uuid.UUID(event_id))
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT 1
+            FROM events
+            WHERE id = %s
+              AND user_id = %s
+            LIMIT 1
+            """,
+            (parsed_event_id, user_id),
+        )
+        row = await cur.fetchone()
+    return row is not None
 
 
 def _as_confidence(value: Any, *, fallback: float = 0.5) -> float:
@@ -337,11 +361,14 @@ async def update_objective_advisory(
         "generated_at": now.isoformat(),
     }
 
-    last_event_id = str(payload.get("event_id") or "")
-    if not last_event_id and rows:
+    payload_event_id = str(payload.get("event_id") or "").strip()
+    last_event_id: str | None = None
+    if payload_event_id and await _event_id_exists_for_user(
+        conn, user_id=user_id, event_id=payload_event_id
+    ):
+        last_event_id = payload_event_id
+    elif rows:
         last_event_id = str(rows[0]["id"])
-    if not last_event_id:
-        last_event_id = "objective_advisory.synthetic"
 
     async with conn.cursor() as cur:
         await cur.execute(
@@ -358,4 +385,3 @@ async def update_objective_advisory(
             """,
             (user_id, json.dumps(projection_data), last_event_id),
         )
-

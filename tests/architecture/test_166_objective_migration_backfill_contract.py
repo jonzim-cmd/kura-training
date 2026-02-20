@@ -29,11 +29,15 @@ def test_objective_backfill_handler_is_registered() -> None:
     assert '@register("inference.objective_backfill")' in src
     assert "OBJECTIVE_BACKFILL_TRIGGER_EVENT_TYPES" in src
     assert "_enqueue_projection_updates_for_user_set" in src
+    assert "include_all_users" in src
+    assert "synthetic_event_type=\"profile.updated\"" in src
 
 
 def test_objective_backfill_script_contains_enqueue_and_verification_contract() -> None:
     src = BACKFILL_SCRIPT.read_text(encoding="utf-8")
     assert "inference.objective_backfill" in src
+    assert "'include_all_users', true" in src
+    assert "'user_ids'" in src
     assert "projection.update" in src
     assert "Coverage check" in src
     assert "Lag check" in src
@@ -44,6 +48,8 @@ def test_objective_backfill_script_contains_enqueue_and_verification_contract() 
 def test_objective_backfill_runbook_references_script_and_coverage_queries() -> None:
     src = BACKFILL_RUNBOOK.read_text(encoding="utf-8")
     assert "scripts/backfill-objective-foundation.sh" in src
+    assert "users_total" in src
     assert "users_with_objective_signals" in src
-    assert "users_missing_objective_surfaces" in src
+    assert "users_missing_objective_surfaces_all_users" in src
+    assert "users_missing_objective_surfaces_signal_users" in src
     assert "avg_projection_age_minutes" in src

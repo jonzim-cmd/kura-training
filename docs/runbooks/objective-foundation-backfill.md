@@ -18,6 +18,8 @@ scripts/backfill-objective-foundation.sh \
 
 The command enqueues a single `inference.objective_backfill` job (deduplicated by `source` while pending/processing). The worker fans out deduplicated `projection.update` jobs per user and objective-relevant event type.
 
+`include_all_users=true` is enabled and the script snapshots all `users.id` into `user_ids`, so users without prior events still receive seeded objective surfaces via synthetic `profile.updated` projection updates.
+
 ## Verification queries
 
 Queue progress for the backfill controller job:
@@ -42,10 +44,14 @@ GROUP BY status
 ORDER BY status;
 ```
 
-Coverage (users with objective signals vs users with objective projections):
+Coverage (all users + signal users vs users with objective projections):
 
 ```sql
-WITH target_users AS (
+WITH all_users AS (
+    SELECT id AS user_id
+    FROM users
+),
+signal_users AS (
     SELECT DISTINCT user_id
     FROM events
     WHERE event_type IN (
@@ -73,16 +79,24 @@ objective_advisory_projection AS (
       AND key = 'overview'
 )
 SELECT
-    (SELECT COUNT(*) FROM target_users) AS users_with_objective_signals,
+    (SELECT COUNT(*) FROM all_users) AS users_total,
+    (SELECT COUNT(*) FROM signal_users) AS users_with_objective_signals,
     (SELECT COUNT(*) FROM objective_state_projection) AS users_with_objective_state,
     (SELECT COUNT(*) FROM objective_advisory_projection) AS users_with_objective_advisory,
     (
         SELECT COUNT(*)
-        FROM target_users t
+        FROM all_users t
         LEFT JOIN objective_state_projection s ON s.user_id = t.user_id
         LEFT JOIN objective_advisory_projection a ON a.user_id = t.user_id
         WHERE s.user_id IS NULL OR a.user_id IS NULL
-    ) AS users_missing_objective_surfaces;
+    ) AS users_missing_objective_surfaces_all_users,
+    (
+        SELECT COUNT(*)
+        FROM signal_users t
+        LEFT JOIN objective_state_projection s ON s.user_id = t.user_id
+        LEFT JOIN objective_advisory_projection a ON a.user_id = t.user_id
+        WHERE s.user_id IS NULL OR a.user_id IS NULL
+    ) AS users_missing_objective_surfaces_signal_users;
 ```
 
 Lag/freshness (projection update time relative to latest objective signal):

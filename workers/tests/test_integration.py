@@ -44,6 +44,7 @@ from kura_workers.eval_harness import run_eval_harness, run_shadow_evaluation
 from kura_workers.scheduler import ensure_nightly_inference_scheduler
 from kura_workers.handlers.inference_nightly import (
     handle_inference_capability_backfill,
+    handle_inference_objective_backfill,
     handle_inference_nightly_refit,
 )
 from kura_workers.semantic_bootstrap import ensure_semantic_catalog
@@ -1832,6 +1833,107 @@ class TestInferenceNightlyRefitIntegration:
         event_types = {row["event_type"] for row in rows}
         assert event_types == {"set.corrected", "set.logged"}
         assert len(rows) == 2
+
+    async def test_objective_backfill_include_all_users_enqueues_profile_update_for_eventless_users(
+        self, db, test_user_id
+    ):
+        second_user_id = str(uuid.uuid4())
+        await create_test_user(db, test_user_id)
+        await create_test_user(db, second_user_id)
+        await insert_event(
+            db,
+            test_user_id,
+            "set.logged",
+            {
+                "exercise_id": "bench_press",
+                "weight_kg": 90,
+                "reps": 5,
+            },
+            "TIMESTAMP '2026-02-01 10:00:00+01'",
+        )
+
+        source = "test.objective_backfill.include_all_users"
+        await db.execute("SET ROLE app_worker")
+        await handle_inference_objective_backfill(
+            db,
+            {
+                "source": source,
+                "include_all_users": True,
+                "user_ids": [test_user_id, second_user_id],
+            },
+        )
+        await db.execute("RESET ROLE")
+
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT payload->>'event_type' AS event_type, payload->>'event_id' AS event_id
+                FROM background_jobs
+                WHERE user_id = %s
+                  AND job_type = 'projection.update'
+                  AND payload->>'source' = %s
+                  AND status IN ('pending', 'processing')
+                ORDER BY id ASC
+                """,
+                (second_user_id, source),
+            )
+            rows = await cur.fetchall()
+
+        assert rows
+        assert {row["event_type"] for row in rows} == {"profile.updated"}
+        for row in rows:
+            uuid.UUID(str(row["event_id"]))
+
+    async def test_synthetic_profile_update_seeds_objective_surfaces_for_eventless_user(
+        self, db, test_user_id
+    ):
+        await create_test_user(db, test_user_id)
+        source = "test.objective.seed"
+
+        await db.execute("SET ROLE app_worker")
+        await handle_inference_objective_backfill(
+            db,
+            {
+                "source": source,
+                "user_ids": [test_user_id],
+                "event_types": ["profile.updated"],
+            },
+        )
+        async with db.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT payload
+                FROM background_jobs
+                WHERE user_id = %s
+                  AND job_type = 'projection.update'
+                  AND payload->>'source' = %s
+                  AND payload->>'event_type' = 'profile.updated'
+                  AND status IN ('pending', 'processing')
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (test_user_id, source),
+            )
+            row = await cur.fetchone()
+        assert row is not None
+        await handle_projection_update(db, row["payload"])
+        await db.execute("RESET ROLE")
+
+        objective_state = await get_projection(db, test_user_id, "objective_state", "active")
+        objective_advisory = await get_projection(
+            db,
+            test_user_id,
+            "objective_advisory",
+            "overview",
+        )
+        assert objective_state is not None
+        assert objective_advisory is not None
+
+        objective_state_data = objective_state["data"]
+        active_objective = objective_state_data["active_objective"]
+        assert objective_state_data["schema_version"] == "objective_state.v1"
+        assert active_objective["source"] == "default_inferred"
+        assert active_objective["objective_id"] == "default.objective"
 
     async def test_nightly_refit_refreshes_learning_issue_clusters(self, db, test_user_id):
         other_user_id = str(uuid.uuid4())
