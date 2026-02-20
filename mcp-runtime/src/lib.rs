@@ -2003,15 +2003,66 @@ impl McpServer {
         }
 
         let action_required = extract_action_required_from_context_body(&response.body);
-        let agent_brief = response.body.get("agent_brief").cloned().ok_or_else(|| {
-            ToolError::new(
-                "agent_brief_missing",
-                "Agent context response missing required body.agent_brief field.",
-            )
-            .with_docs_hint(
-                "Ensure API route /v1/agent/context returns the agent_brief contract and retry.",
-            )
-        })?;
+        let agent_brief_raw = response
+            .body
+            .get("agent_brief")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                ToolError::new(
+                    "agent_brief_missing",
+                    "Agent context response missing required body.agent_brief field.",
+                )
+                .with_docs_hint(
+                    "Ensure API route /v1/agent/context returns the agent_brief contract and retry.",
+                )
+            })?;
+        let available_sections = agent_brief_raw
+            .get("available_sections")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let available_sections_preview: Vec<Value> = available_sections
+            .iter()
+            .filter_map(|section| {
+                section
+                    .get("section")
+                    .and_then(Value::as_str)
+                    .map(|value| Value::String(value.to_string()))
+            })
+            .take(8)
+            .collect();
+        let available_sections_total = available_sections.len();
+        let workflow_state = agent_brief_raw
+            .get("workflow_state")
+            .cloned()
+            .unwrap_or_else(|| {
+                json!({
+                    "phase": "onboarding",
+                    "onboarding_closed": false,
+                    "override_active": false
+                })
+            });
+        let mut agent_brief = json!({
+            "schema_version": agent_brief_raw
+                .get("schema_version")
+                .cloned()
+                .unwrap_or_else(|| json!("agent_brief.v1")),
+            "action_required": action_required.clone(),
+            "must_cover_intents": agent_brief_raw
+                .get("must_cover_intents")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+            "coverage_gaps": agent_brief_raw
+                .get("coverage_gaps")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+            "workflow_state": workflow_state,
+            "available_sections_preview": available_sections_preview,
+            "available_sections_total": available_sections_total
+        });
+        if let Some(system_ref) = agent_brief_raw.get("system_config_ref").cloned() {
+            agent_brief["system_config_ref"] = system_ref;
+        }
         let metric_snapshot = response
             .body
             .get("meta")
