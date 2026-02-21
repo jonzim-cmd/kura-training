@@ -351,6 +351,7 @@ fn build_rule_event_data(rule: &ProjectionRuleDraft) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     map.insert("name".to_string(), serde_json::json!(rule.name));
     map.insert("type".to_string(), serde_json::json!(rule.rule_type));
+    map.insert("rule_type".to_string(), serde_json::json!(rule.rule_type));
     map.insert(
         "source_events".to_string(),
         serde_json::json!(rule.source_events),
@@ -457,6 +458,7 @@ async fn load_active_rules(
         let rule_type = row
             .data
             .get("type")
+            .or_else(|| row.data.get("rule_type"))
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();

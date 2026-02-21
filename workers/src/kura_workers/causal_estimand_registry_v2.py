@@ -31,6 +31,19 @@ _STRENGTH_CONFOUNDERS = _DEFAULT_CONFOUNDERS + [
     "current_strength_aggregate",
 ]
 
+_SUPPLEMENT_CONFOUNDERS = _DEFAULT_CONFOUNDERS + [
+    "baseline_supplement_adherence",
+    "current_supplement_adherence",
+    "baseline_supplement_expected",
+    "current_supplement_expected",
+    "current_supplement_skipped",
+]
+
+_SUPPLEMENT_STRENGTH_CONFOUNDERS = _SUPPLEMENT_CONFOUNDERS + [
+    "baseline_strength_aggregate",
+    "current_strength_aggregate",
+]
+
 _INTERVENTION_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
     "program_change": {
         "readiness_score_t_plus_1": {
@@ -81,6 +94,30 @@ _INTERVENTION_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
             "estimand_type": "average_treatment_effect",
             "confounders": list(_STRENGTH_CONFOUNDERS),
             "notes": "Exercise-level sleep response can be sparse for low-frequency lifts.",
+        },
+    },
+    "supplement_adherence": {
+        "readiness_score_t_plus_1": {
+            "estimand_type": "average_treatment_effect",
+            "confounders": list(_SUPPLEMENT_CONFOUNDERS),
+            "notes": (
+                "Adherence effects can be confounded by overall routine quality; "
+                "interpret with overlap diagnostics and caveats."
+            ),
+        },
+        "strength_aggregate_delta_t_plus_1": {
+            "estimand_type": "average_treatment_effect",
+            "confounders": list(_SUPPLEMENT_STRENGTH_CONFOUNDERS),
+            "notes": (
+                "Strength response to supplement adherence may be delayed and regimen-specific."
+            ),
+        },
+        "strength_delta_by_exercise_t_plus_1": {
+            "estimand_type": "average_treatment_effect",
+            "confounders": list(_SUPPLEMENT_STRENGTH_CONFOUNDERS),
+            "notes": (
+                "Exercise-level adherence effects require repeated exposure and sufficient overlap."
+            ),
         },
     },
 }

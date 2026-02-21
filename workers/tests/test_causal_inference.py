@@ -1,12 +1,16 @@
 """Tests for observational causal inference utilities."""
 
+from datetime import date
+
 from kura_workers.causal_inference import estimate_intervention_effect
 from kura_workers.handlers.causal_inference import (
     OUTCOME_STRENGTH_PER_EXERCISE,
     _append_result_caveats,
     _blend_population_prior_into_effect,
     _estimate_segment_slices,
+    _index_supplement_daily_status,
     _manifest_contribution,
+    _supplement_adherence_intervention_flag,
 )
 
 
@@ -247,3 +251,36 @@ def test_blend_population_prior_into_effect_fallback_when_prior_missing():
     assert meta["reason"] == "prior_unavailable_or_invalid"
     assert blended["effect"]["mean_ate"] == 0.07
     assert blended["diagnostics"]["population_prior"]["reason"] == "prior_unavailable_or_invalid"
+
+
+def test_index_supplement_daily_status_parses_valid_rows_only():
+    indexed = _index_supplement_daily_status(
+        {
+            "daily_status": [
+                {"date": "2026-02-20", "adherence_rate": 1.0, "expected_count": 1},
+                {"date": "invalid-date", "adherence_rate": 0.0},
+                "bad-row",
+            ]
+        }
+    )
+    assert set(indexed.keys()) == {date(2026, 2, 20)}
+    assert indexed[date(2026, 2, 20)]["expected_count"] == 1
+
+
+def test_supplement_adherence_intervention_requires_expected_dose():
+    assert (
+        _supplement_adherence_intervention_flag(
+            current_adherence=1.0,
+            baseline_adherence=0.5,
+            expected_count=0,
+        )
+        == 0
+    )
+    assert (
+        _supplement_adherence_intervention_flag(
+            current_adherence=0.92,
+            baseline_adherence=0.7,
+            expected_count=1,
+        )
+        == 1
+    )

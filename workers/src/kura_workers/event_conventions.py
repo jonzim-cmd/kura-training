@@ -790,6 +790,142 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 ),
             },
         },
+        # --- Supplements ---
+        "supplement.regimen.set": {
+            "category": "planning",
+            "description": (
+                "Create or update a supplement regimen with default cadence semantics. "
+                "When assume_taken_by_default=true, days without explicit take/skip are "
+                "counted as assumed intake until paused/stopped."
+            ),
+            "fields": {
+                "name": "string (required, stable supplement identifier, e.g. creatine_monohydrate)",
+                "dose_amount": "number (optional, dose value)",
+                "dose_unit": "string (optional: mg, mcg, g, IU, capsule, tablet, scoop, drop, ml)",
+                "cadence": "string (optional: daily, weekly, custom; default daily)",
+                "times_per_day": "number (optional, default 1)",
+                "days_of_week": "list[string] (optional, mon..sun; used for weekly/custom cadence)",
+                "start_date": "string (optional, ISO date; default event local day)",
+                "assume_taken_by_default": "boolean (optional, default true)",
+                "notes": "string (optional)",
+            },
+            "example": {
+                "name": "creatine_monohydrate",
+                "dose_amount": 5,
+                "dose_unit": "g",
+                "cadence": "daily",
+                "times_per_day": 1,
+                "assume_taken_by_default": True,
+            },
+        },
+        "supplement.regimen.paused": {
+            "category": "planning",
+            "description": (
+                "Pause a regimen for a bounded or open-ended window. "
+                "Use duration_days for requests like 'pause for 3 days'."
+            ),
+            "fields": {
+                "name": "string (required)",
+                "start_date": "string (optional, ISO date; default event local day)",
+                "until_date": "string (optional, ISO date, inclusive)",
+                "duration_days": "number (optional, positive integer alternative to until_date)",
+                "reason": "string (optional)",
+            },
+            "example": {
+                "name": "creatine_monohydrate",
+                "duration_days": 3,
+                "reason": "travel",
+            },
+        },
+        "supplement.regimen.resumed": {
+            "category": "planning",
+            "description": "Resume a previously paused regimen.",
+            "fields": {
+                "name": "string (required)",
+                "effective_date": "string (optional, ISO date; default event local day)",
+                "reason": "string (optional)",
+            },
+            "example": {
+                "name": "creatine_monohydrate",
+                "effective_date": "2026-02-24",
+            },
+        },
+        "supplement.regimen.stopped": {
+            "category": "planning",
+            "description": "Stop a regimen (permanent unless set again).",
+            "fields": {
+                "name": "string (required)",
+                "effective_date": "string (optional, ISO date; default event local day)",
+                "reason": "string (optional)",
+            },
+            "example": {
+                "name": "creatine_monohydrate",
+                "reason": "digestive_side_effects",
+            },
+        },
+        "supplement.taken": {
+            "category": "tracking",
+            "description": (
+                "Explicit intake confirmation for a supplement on a specific day."
+            ),
+            "fields": {
+                "name": "string (required)",
+                "date": "string (optional, ISO date; default event local day)",
+                "dose_amount": "number (optional)",
+                "dose_unit": "string (optional)",
+                "notes": "string (optional)",
+            },
+            "example": {
+                "name": "creatine_monohydrate",
+                "date": "2026-02-21",
+            },
+        },
+        "supplement.skipped": {
+            "category": "tracking",
+            "description": (
+                "Explicitly mark a supplement as not taken for a day, overriding assumed intake."
+            ),
+            "fields": {
+                "name": "string (required)",
+                "date": "string (optional, ISO date; default event local day)",
+                "reason": "string (optional)",
+                "notes": "string (optional)",
+            },
+            "example": {
+                "name": "creatine_monohydrate",
+                "date": "2026-02-21",
+                "reason": "forgot",
+            },
+        },
+        "supplement.logged": {
+            "category": "tracking",
+            "description": (
+                "Legacy supplement event. Treated as taken by default unless status='skipped'. "
+                "Prefer supplement.taken / supplement.skipped for new writes."
+            ),
+            "fields": {
+                "name": "string (required)",
+                "status": "string (optional: taken, skipped; default taken)",
+                "date": "string (optional, ISO date; default event local day)",
+                "dose_amount": "number (optional)",
+                "dose_unit": "string (optional)",
+                "timing": "string (optional)",
+                "notes": "string (optional)",
+            },
+            "example": {
+                "name": "creatine_monohydrate",
+                "status": "taken",
+                "dose_amount": 5,
+                "dose_unit": "g",
+            },
+            "legacy_compatibility": {
+                "supported": True,
+                "maps_to": {
+                    "default": "supplement.taken",
+                    "status=skipped": "supplement.skipped",
+                },
+            },
+        },
         # --- Nutrition ---
         "meal.logged": {
             "category": "tracking",
@@ -799,6 +935,11 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "protein_g": "number (optional)",
                 "carbs_g": "number (optional)",
                 "fat_g": "number (optional)",
+                "fiber_g": "number (optional)",
+                "added_sugar_g": "number (optional)",
+                "sodium_mg": "number (optional)",
+                "saturated_fat_g": "number (optional)",
+                "alcohol_units": "number (optional, standard drinks)",
                 "meal_type": "string (optional: breakfast, lunch, dinner, snack)",
                 "description": "string (optional, free text)",
             },
@@ -807,6 +948,8 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "protein_g": 45,
                 "carbs_g": 80,
                 "fat_g": 25,
+                "fiber_g": 12,
+                "sodium_mg": 900,
                 "meal_type": "lunch",
             },
         },
@@ -842,12 +985,19 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "target_protein_g": "number (optional)",
                 "target_carbs_g": "number (optional)",
                 "target_fat_g": "number (optional)",
+                "target_fiber_g": "number (optional)",
+                "target_added_sugar_g_max": "number (optional)",
+                "target_sodium_mg_max": "number (optional)",
+                "target_saturated_fat_g_max": "number (optional)",
+                "target_alcohol_units_max": "number (optional)",
             },
             "example": {
                 "target_calories": 2200,
                 "target_protein_g": 160,
                 "target_carbs_g": 220,
                 "target_fat_g": 70,
+                "target_fiber_g": 35,
+                "target_sodium_mg_max": 2300,
             },
         },
         # --- Adaptive Projections (Phase 3, Decision 10) ---

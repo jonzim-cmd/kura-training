@@ -6,7 +6,7 @@ use axum::http::{HeaderMap, HeaderValue, header::HeaderName};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
@@ -63,6 +63,7 @@ fn event_requires_health_data_consent(event_type: &str) -> bool {
             | "bodyweight.logged"
             | "measurement.logged"
             | "meal.logged"
+            | "supplement.logged"
             | "sleep.logged"
             | "soreness.logged"
             | "energy.logged"
@@ -79,6 +80,7 @@ fn event_requires_health_data_consent(event_type: &str) -> bool {
         || normalized.starts_with("pain.")
         || normalized.starts_with("health.")
         || normalized.starts_with("nutrition.")
+        || normalized.starts_with("supplement.")
 }
 
 fn batch_requires_health_data_consent(events: &[CreateEventRequest]) -> bool {
@@ -196,6 +198,31 @@ fn validate_critical_invariants(req: &CreateEventRequest) -> Result<(), AppError
         }
         "projection_rule.created" => validate_projection_rule_created_invariants(&req.data),
         "projection_rule.archived" => validate_projection_rule_archived_invariants(&req.data),
+        "supplement.regimen.set" => validate_supplement_regimen_set_invariants(&req.data),
+        "supplement.regimen.paused" => validate_supplement_regimen_paused_invariants(&req.data),
+        "supplement.regimen.resumed" => {
+            validate_supplement_named_event_invariants("supplement.regimen.resumed", &req.data)?;
+            validate_optional_iso_date_field(
+                "supplement.regimen.resumed",
+                &req.data,
+                "effective_date",
+            )?;
+            validate_optional_iso_date_field("supplement.regimen.resumed", &req.data, "date")
+        }
+        "supplement.regimen.stopped" => {
+            validate_supplement_named_event_invariants("supplement.regimen.stopped", &req.data)?;
+            validate_optional_iso_date_field(
+                "supplement.regimen.stopped",
+                &req.data,
+                "effective_date",
+            )?;
+            validate_optional_iso_date_field("supplement.regimen.stopped", &req.data, "date")
+        }
+        "supplement.taken" => validate_supplement_daily_event_invariants("supplement.taken", &req.data),
+        "supplement.skipped" => {
+            validate_supplement_daily_event_invariants("supplement.skipped", &req.data)
+        }
+        "supplement.logged" => validate_supplement_logged_invariants(&req.data),
         _ => Ok(()),
     }
 }
@@ -1036,15 +1063,24 @@ fn validate_projection_rule_created_invariants(data: &serde_json::Value) -> Resu
         )
     })?;
 
-    let rule_type = non_empty_string_field(data, "rule_type").ok_or_else(|| {
-        policy_violation(
-            "inv_projection_rule_type_required",
-            "projection_rule.created requires data.rule_type",
-            Some("data.rule_type"),
-            data.get("rule_type").cloned(),
-            Some("Use one of: field_tracking, categorized_tracking."),
-        )
-    })?;
+    let canonical_type = non_empty_string_field(data, "type");
+    let legacy_rule_type = non_empty_string_field(data, "rule_type");
+    let (rule_type, rule_type_field): (String, &str) =
+        if let Some(value) = canonical_type.clone() {
+            (value, "data.type")
+        } else if let Some(value) = legacy_rule_type.clone() {
+            (value, "data.rule_type")
+        } else {
+            return Err(policy_violation(
+                "inv_projection_rule_type_required",
+                "projection_rule.created requires data.type (legacy data.rule_type accepted)",
+                Some("data.type"),
+                data.get("type")
+                    .cloned()
+                    .or_else(|| data.get("rule_type").cloned()),
+                Some("Use one of: field_tracking, categorized_tracking."),
+            ));
+        };
 
     if !matches!(
         rule_type.as_str(),
@@ -1056,7 +1092,7 @@ fn validate_projection_rule_created_invariants(data: &serde_json::Value) -> Resu
                 "projection_rule.created has unsupported rule_type '{}'",
                 rule_type
             ),
-            Some("data.rule_type"),
+            Some(rule_type_field),
             Some(serde_json::Value::String(rule_type)),
             Some("Allowed values: field_tracking, categorized_tracking."),
         ));
@@ -1147,6 +1183,214 @@ fn validate_projection_rule_archived_invariants(data: &serde_json::Value) -> Res
         ));
     }
 
+    Ok(())
+}
+
+fn parse_iso_date_string(raw: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").ok()
+}
+
+fn validate_optional_iso_date_field(
+    event_type: &str,
+    data: &serde_json::Value,
+    field_name: &str,
+) -> Result<(), AppError> {
+    let Some(value) = data.get(field_name) else {
+        return Ok(());
+    };
+    if value.is_null() {
+        return Ok(());
+    }
+    let Some(raw) = value.as_str().map(str::trim).filter(|v| !v.is_empty()) else {
+        return Err(policy_violation(
+            "inv_supplement_date_invalid",
+            format!("{event_type} field '{field_name}' must be a non-empty ISO date string"),
+            Some(&format!("data.{field_name}")),
+            Some(value.clone()),
+            Some("Use YYYY-MM-DD format."),
+        ));
+    };
+    if parse_iso_date_string(raw).is_none() {
+        return Err(policy_violation(
+            "inv_supplement_date_invalid",
+            format!("{event_type} field '{field_name}' must use YYYY-MM-DD"),
+            Some(&format!("data.{field_name}")),
+            Some(value.clone()),
+            Some("Use YYYY-MM-DD format."),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_supplement_named_event_invariants(
+    event_type: &str,
+    data: &serde_json::Value,
+) -> Result<(), AppError> {
+    if non_empty_string_field(data, "name").is_none() {
+        return Err(policy_violation(
+            "inv_supplement_name_required",
+            format!("{event_type} requires data.name"),
+            Some("data.name"),
+            data.get("name").cloned(),
+            Some("Provide a stable supplement name like 'creatine'."),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_supplement_regimen_set_invariants(data: &serde_json::Value) -> Result<(), AppError> {
+    validate_supplement_named_event_invariants("supplement.regimen.set", data)?;
+    validate_optional_iso_date_field("supplement.regimen.set", data, "start_date")?;
+    validate_optional_iso_date_field("supplement.regimen.set", data, "date")?;
+
+    if let Some(cadence_value) = data.get("cadence").and_then(Value::as_str) {
+        let cadence = cadence_value.trim().to_ascii_lowercase();
+        if !matches!(cadence.as_str(), "daily" | "weekly" | "custom") {
+            return Err(policy_violation(
+                "inv_supplement_cadence_invalid",
+                "supplement.regimen.set data.cadence must be daily|weekly|custom",
+                Some("data.cadence"),
+                data.get("cadence").cloned(),
+                Some("Use cadence values: daily, weekly, custom."),
+            ));
+        }
+    }
+
+    if let Some(times) = data.get("times_per_day") {
+        let Some(parsed) = parse_flexible_float(times).map(|v| v.round() as i64) else {
+            return Err(policy_violation(
+                "inv_supplement_times_per_day_invalid",
+                "supplement.regimen.set data.times_per_day must be numeric",
+                Some("data.times_per_day"),
+                Some(times.clone()),
+                Some("Use a positive integer, e.g. 1."),
+            ));
+        };
+        if !(1..=8).contains(&parsed) {
+            return Err(policy_violation(
+                "inv_supplement_times_per_day_invalid",
+                "supplement.regimen.set data.times_per_day must be in [1, 8]",
+                Some("data.times_per_day"),
+                Some(times.clone()),
+                Some("Use a realistic integer count between 1 and 8."),
+            ));
+        }
+    }
+
+    if let Some(days) = data.get("days_of_week") {
+        let Some(items) = days.as_array() else {
+            return Err(policy_violation(
+                "inv_supplement_days_of_week_invalid",
+                "supplement.regimen.set data.days_of_week must be a list of weekday tokens",
+                Some("data.days_of_week"),
+                Some(days.clone()),
+                Some("Use values like ['mon','wed','fri']."),
+            ));
+        };
+        if items.is_empty() {
+            return Err(policy_violation(
+                "inv_supplement_days_of_week_invalid",
+                "supplement.regimen.set data.days_of_week must not be empty when provided",
+                Some("data.days_of_week"),
+                Some(days.clone()),
+                Some("Omit days_of_week or provide at least one weekday."),
+            ));
+        }
+        for item in items {
+            let token = item.as_str().map(str::trim).unwrap_or_default().to_ascii_lowercase();
+            if !matches!(
+                token.as_str(),
+                "mon"
+                    | "monday"
+                    | "tue"
+                    | "tues"
+                    | "tuesday"
+                    | "wed"
+                    | "wednesday"
+                    | "thu"
+                    | "thur"
+                    | "thurs"
+                    | "thursday"
+                    | "fri"
+                    | "friday"
+                    | "sat"
+                    | "saturday"
+                    | "sun"
+                    | "sunday"
+            ) {
+                return Err(policy_violation(
+                    "inv_supplement_days_of_week_invalid",
+                    "supplement.regimen.set data.days_of_week has unsupported weekday token",
+                    Some("data.days_of_week"),
+                    Some(item.clone()),
+                    Some("Use weekday tokens like mon, tue, wed, thu, fri, sat, sun."),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_supplement_regimen_paused_invariants(data: &serde_json::Value) -> Result<(), AppError> {
+    validate_supplement_named_event_invariants("supplement.regimen.paused", data)?;
+    validate_optional_iso_date_field("supplement.regimen.paused", data, "start_date")?;
+    validate_optional_iso_date_field("supplement.regimen.paused", data, "until_date")?;
+    validate_optional_iso_date_field("supplement.regimen.paused", data, "date")?;
+
+    if let Some(duration_value) = data.get("duration_days") {
+        let Some(parsed) = parse_flexible_float(duration_value).map(|v| v.round() as i64) else {
+            return Err(policy_violation(
+                "inv_supplement_duration_invalid",
+                "supplement.regimen.paused data.duration_days must be numeric",
+                Some("data.duration_days"),
+                Some(duration_value.clone()),
+                Some("Use a positive integer, e.g. 3."),
+            ));
+        };
+        if parsed <= 0 {
+            return Err(policy_violation(
+                "inv_supplement_duration_invalid",
+                "supplement.regimen.paused data.duration_days must be > 0",
+                Some("data.duration_days"),
+                Some(duration_value.clone()),
+                Some("Use a positive integer, e.g. 3."),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_supplement_daily_event_invariants(
+    event_type: &str,
+    data: &serde_json::Value,
+) -> Result<(), AppError> {
+    validate_supplement_named_event_invariants(event_type, data)?;
+    validate_optional_iso_date_field(event_type, data, "date")
+}
+
+fn validate_supplement_logged_invariants(data: &serde_json::Value) -> Result<(), AppError> {
+    validate_supplement_daily_event_invariants("supplement.logged", data)?;
+    if let Some(status_value) = data.get("status") {
+        let Some(status) = status_value.as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+            return Err(policy_violation(
+                "inv_supplement_logged_status_invalid",
+                "supplement.logged data.status must be a non-empty string",
+                Some("data.status"),
+                Some(status_value.clone()),
+                Some("Use status values: taken or skipped."),
+            ));
+        };
+        let normalized = status.to_ascii_lowercase();
+        if !matches!(normalized.as_str(), "taken" | "skipped") {
+            return Err(policy_violation(
+                "inv_supplement_logged_status_invalid",
+                "supplement.logged data.status must be taken|skipped",
+                Some("data.status"),
+                Some(status_value.clone()),
+                Some("Use status values: taken or skipped."),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -3523,12 +3767,46 @@ mod tests {
     }
 
     #[test]
+    fn test_projection_rule_created_accepts_type_field_for_rule_kind() {
+        let req = make_request(
+            "projection_rule.created",
+            json!({
+                "name": "rest_tracking",
+                "type": "field_tracking",
+                "source_events": ["set.logged", "set.corrected"],
+                "fields": ["rest_seconds", "rir"],
+            }),
+        );
+        assert!(validate_event(&req).is_ok());
+    }
+
+    #[test]
     fn test_set_logged_accepts_decimal_comma_intensity_values() {
         let req = make_request(
             "set.logged",
             json!({"exercise": "Bench Press", "reps": 5, "rpe": "8,5", "rir": "1,5"}),
         );
         assert!(validate_event(&req).is_ok());
+    }
+
+    #[test]
+    fn test_supplement_regimen_set_rejects_invalid_cadence() {
+        let req = make_request(
+            "supplement.regimen.set",
+            json!({"name": "creatine", "cadence": "hourly"}),
+        );
+        let err = validate_event(&req).expect_err("expected policy violation");
+        assert_policy_violation(err, "inv_supplement_cadence_invalid", "data.cadence");
+    }
+
+    #[test]
+    fn test_supplement_logged_rejects_invalid_status() {
+        let req = make_request(
+            "supplement.logged",
+            json!({"name": "creatine", "status": "sometimes"}),
+        );
+        let err = validate_event(&req).expect_err("expected policy violation");
+        assert_policy_violation(err, "inv_supplement_logged_status_invalid", "data.status");
     }
 
     #[test]
@@ -4551,6 +4829,7 @@ mod tests {
     fn test_health_consent_required_for_health_prefix() {
         assert!(event_requires_health_data_consent("health.symptom.logged"));
         assert!(event_requires_health_data_consent("recovery.daily_checkin"));
+        assert!(event_requires_health_data_consent("supplement.taken"));
     }
 
     #[test]

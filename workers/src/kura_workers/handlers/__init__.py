@@ -7,6 +7,7 @@ from . import training_timeline  # noqa: F401
 from . import body_composition  # noqa: F401
 from . import recovery  # noqa: F401
 from . import nutrition  # noqa: F401
+from . import supplements  # noqa: F401
 from . import training_plan  # noqa: F401
 from . import semantic_memory  # noqa: F401
 from . import strength_inference  # noqa: F401

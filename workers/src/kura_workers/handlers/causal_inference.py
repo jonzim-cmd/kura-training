@@ -104,6 +104,47 @@ def _safe_float(value: Any, *, default: float = 0.0) -> float:
         return default
 
 
+def _safe_int(value: Any, *, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _index_supplement_daily_status(data: dict[str, Any]) -> dict[date, dict[str, Any]]:
+    """Index supplements daily_status rows by date for causal context joins."""
+    rows = data.get("daily_status")
+    if not isinstance(rows, list):
+        return {}
+    indexed: dict[date, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        day_raw = row.get("date")
+        if not isinstance(day_raw, str):
+            continue
+        try:
+            local_day = date.fromisoformat(day_raw)
+        except ValueError:
+            continue
+        indexed[local_day] = row
+    return indexed
+
+
+def _supplement_adherence_intervention_flag(
+    *,
+    current_adherence: float,
+    baseline_adherence: float,
+    expected_count: int,
+) -> int:
+    if expected_count <= 0:
+        return 0
+    threshold = max(0.8, baseline_adherence + 0.1)
+    return 1 if current_adherence >= threshold else 0
+
+
 def _normalize_objective_mode(value: Any) -> str:
     mode = str(value or "").strip().lower()
     if mode in OBJECTIVE_MODES:
@@ -589,12 +630,14 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "readiness_inference": {"join": "day", "why": "causal outcome metric is readiness-like"},
             "recovery": {"join": "day", "why": "sleep/energy/soreness confounders"},
             "nutrition": {"join": "day", "why": "protein and calorie confounding signals"},
+            "supplements": {"join": "day", "why": "adherence intervention and confounding context"},
             "training_plan": {"join": "event", "why": "program-change intervention markers"},
             "strength_inference": {"join": "week", "why": "future extension target outcome"},
         },
         "context_seeds": [
             "current_program",
             "nutrition_goals",
+            "supplement_stack",
             "sleep_habits",
             "training_frequency",
         ],
@@ -707,6 +750,11 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                 "program_change_event": "boolean",
                 "sleep_target_event": "boolean",
                 "nutrition_target_event": "boolean",
+                "supplement_adherence": "number [0,1]",
+                "supplement_expected_count": "integer",
+                "supplement_taken_explicit_count": "integer",
+                "supplement_taken_assumed_count": "integer",
+                "supplement_skipped_count": "integer",
             }],
             "data_quality": {
                 "events_processed": "integer",
@@ -716,6 +764,7 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                     "program_change": "integer",
                     "nutrition_shift": "integer",
                     "sleep_intervention": "integer",
+                    "supplement_adherence": "integer",
                 },
                 "outcome_windows": {
                     "<intervention_name>": {
@@ -825,6 +874,24 @@ async def update_causal_inference(
             for entry in readiness_daily
             if isinstance(entry, dict) and isinstance(entry.get("date"), str)
         }
+        supplement_daily_by_day: dict[date, dict[str, Any]] = {}
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT data
+                FROM projections
+                WHERE user_id = %s
+                  AND projection_type = 'supplements'
+                  AND key = 'overview'
+                """,
+                (user_id,),
+            )
+            supplement_projection_row = await cur.fetchone()
+        if supplement_projection_row and isinstance(supplement_projection_row.get("data"), dict):
+            supplement_daily_by_day = _index_supplement_daily_status(
+                supplement_projection_row["data"]
+            )
+
         alias_map: dict[str, str] = {}
         for row in signal_rows:
             if row.get("event_type") != "exercise.alias_created":
@@ -914,6 +981,7 @@ async def update_causal_inference(
             signal_row = readiness_by_day.get(day.isoformat()) or {}
             signal_values = signal_row.get("signals") if isinstance(signal_row.get("signals"), dict) else {}
             bucket = per_day_aux[day]
+            supplement_row = supplement_daily_by_day.get(day) or {}
 
             sleep_hours = _safe_float(signal_values.get("sleep_hours"), default=fallback_sleep_hours)
             energy = _safe_float(signal_values.get("energy_level"), default=fallback_energy_level)
@@ -921,6 +989,23 @@ async def update_causal_inference(
             load_volume = _safe_float(signal_values.get("load_score"), default=0.0)
             readiness_score = _safe_float(signal_row.get("score"), default=0.0)
             protein_g = float(bucket["protein_g"])
+            supplement_adherence = _safe_float(
+                supplement_row.get("adherence_rate"),
+                default=0.0,
+            )
+            supplement_expected = _safe_int(supplement_row.get("expected_count"), default=0)
+            supplement_taken_explicit = _safe_int(
+                len(supplement_row.get("taken_explicit") or []),
+                default=0,
+            )
+            supplement_taken_assumed = _safe_int(
+                len(supplement_row.get("taken_assumed") or []),
+                default=0,
+            )
+            supplement_skipped = _safe_int(
+                len(supplement_row.get("skipped") or []),
+                default=0,
+            )
 
             for exercise_id, value in (bucket["strength_by_exercise"] or {}).items():
                 strength_state[str(exercise_id)] = _safe_float(value, default=0.0)
@@ -950,6 +1035,11 @@ async def update_causal_inference(
                     "program_change_event": bool(bucket["program_events"]),
                     "sleep_target_event": bool(bucket["sleep_target_events"]),
                     "nutrition_target_event": bool(bucket["nutrition_target_events"]),
+                    "supplement_adherence": round(supplement_adherence, 3),
+                    "supplement_expected_count": supplement_expected,
+                    "supplement_taken_explicit_count": supplement_taken_explicit,
+                    "supplement_taken_assumed_count": supplement_taken_assumed,
+                    "supplement_skipped_count": supplement_skipped,
                 }
             )
 
@@ -975,6 +1065,15 @@ async def update_causal_inference(
                 "modality": objective_modality,
             },
             "sleep_intervention": {
+                "outcomes": {
+                    OUTCOME_READINESS: [],
+                    OUTCOME_STRENGTH_AGGREGATE: [],
+                },
+                "strength_by_exercise": defaultdict(list),
+                "objective_mode": objective_mode,
+                "modality": objective_modality,
+            },
+            "supplement_adherence": {
                 "outcomes": {
                     OUTCOME_READINESS: [],
                     OUTCOME_STRENGTH_AGGREGATE: [],
@@ -1022,6 +1121,14 @@ async def update_causal_inference(
                 [_safe_float(day.get("protein_g")) for day in history],
                 fallback=0.0,
             )
+            baseline_supplement_adherence = _mean(
+                [_safe_float(day.get("supplement_adherence")) for day in history],
+                fallback=0.0,
+            )
+            baseline_supplement_expected = _mean(
+                [_safe_float(day.get("supplement_expected_count")) for day in history],
+                fallback=0.0,
+            )
             baseline_strength_aggregate = _mean(
                 [
                     _safe_float(day.get("strength_aggregate_e1rm"), default=0.0)
@@ -1055,12 +1162,26 @@ async def update_causal_inference(
                 "baseline_sleep_hours": baseline_sleep,
                 "baseline_load_volume": baseline_load,
                 "baseline_protein_g": baseline_protein,
+                "baseline_supplement_adherence": baseline_supplement_adherence,
+                "baseline_supplement_expected": baseline_supplement_expected,
                 "baseline_strength_aggregate": baseline_strength_aggregate,
                 "current_readiness": current_readiness,
                 "current_sleep_hours": _safe_float(current.get("sleep_hours"), default=0.0),
                 "current_load_volume": _safe_float(current.get("load_volume"), default=0.0),
                 "current_protein_g": _safe_float(current.get("protein_g"), default=0.0),
                 "current_calories": _safe_float(current.get("calories"), default=0.0),
+                "current_supplement_adherence": _safe_float(
+                    current.get("supplement_adherence"),
+                    default=0.0,
+                ),
+                "current_supplement_expected": _safe_float(
+                    current.get("supplement_expected_count"),
+                    default=0.0,
+                ),
+                "current_supplement_skipped": _safe_float(
+                    current.get("supplement_skipped_count"),
+                    default=0.0,
+                ),
                 "current_strength_aggregate": current_strength_aggregate or 0.0,
             }
 
@@ -1072,6 +1193,17 @@ async def update_causal_inference(
                 "sleep_intervention": 1
                 if bool(current.get("sleep_target_event")) or sleep_shift
                 else 0,
+                "supplement_adherence": _supplement_adherence_intervention_flag(
+                    current_adherence=_safe_float(
+                        current.get("supplement_adherence"),
+                        default=0.0,
+                    ),
+                    baseline_adherence=baseline_supplement_adherence,
+                    expected_count=_safe_int(
+                        current.get("supplement_expected_count"),
+                        default=0,
+                    ),
+                ),
             }
 
             readiness_outcome = _safe_float(next_day.get("readiness_score"), default=0.0)

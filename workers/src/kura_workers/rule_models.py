@@ -97,6 +97,8 @@ def validate_rule(data: dict[str, Any]) -> ProjectionRule:
 
     Raises pydantic.ValidationError on invalid input.
     """
+    if "type" not in data and "rule_type" in data:
+        data = {**data, "type": data.get("rule_type")}
     rule_type = data.get("type")
     if rule_type == "field_tracking":
         return FieldTrackingRule.model_validate(data)

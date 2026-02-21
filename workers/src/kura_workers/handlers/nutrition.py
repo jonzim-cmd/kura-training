@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 _KNOWN_FIELDS: set[str] = {
     "calories", "protein_g", "carbs_g", "fat_g",
+    "fiber_g", "added_sugar_g", "sodium_mg", "saturated_fat_g", "alcohol_units",
     "meal_type", "description",
 }
 
@@ -91,6 +92,11 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "protein_g": "number",
             "carbs_g": "number",
             "fat_g": "number",
+            "fiber_g": "number",
+            "added_sugar_g": "number",
+            "sodium_mg": "number",
+            "saturated_fat_g": "number",
+            "alcohol_units": "number",
             "meals": "integer",
         }],
         "weekly_average": [{
@@ -99,6 +105,11 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "avg_protein_g": "number",
             "avg_carbs_g": "number",
             "avg_fat_g": "number",
+            "avg_fiber_g": "number",
+            "avg_added_sugar_g": "number",
+            "avg_sodium_mg": "number",
+            "avg_saturated_fat_g": "number",
+            "avg_alcohol_units": "number",
             "tracking_days": "integer",
             "total_meals": "integer",
         }],
@@ -108,6 +119,11 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
             "protein_g": "number (optional)",
             "carbs_g": "number (optional)",
             "fat_g": "number (optional)",
+            "fiber_g": "number (optional)",
+            "added_sugar_g": "number (optional)",
+            "sodium_mg": "number (optional)",
+            "saturated_fat_g": "number (optional)",
+            "alcohol_units": "number (optional)",
             "meal_type": "string (optional)",
             "description": "string (optional)",
         }],
@@ -188,6 +204,11 @@ async def update_nutrition(
             "protein_g": 0.0,
             "carbs_g": 0.0,
             "fat_g": 0.0,
+            "fiber_g": 0.0,
+            "added_sugar_g": 0.0,
+            "sodium_mg": 0.0,
+            "saturated_fat_g": 0.0,
+            "alcohol_units": 0.0,
             "meals": 0,
             "meal_types": set(),
         }
@@ -200,6 +221,11 @@ async def update_nutrition(
             "protein_g": 0.0,
             "carbs_g": 0.0,
             "fat_g": 0.0,
+            "fiber_g": 0.0,
+            "added_sugar_g": 0.0,
+            "sodium_mg": 0.0,
+            "saturated_fat_g": 0.0,
+            "alcohol_units": 0.0,
             "meals": 0,
             "tracking_days": set(),
         }
@@ -227,23 +253,22 @@ async def update_nutrition(
         _known, unknown = separate_known_unknown(data, _KNOWN_FIELDS)
         merge_observed_attributes(observed_attr_counts, "meal.logged", unknown)
 
+        def _read_float(field: str) -> float:
+            try:
+                return float(data.get(field, 0))
+            except (ValueError, TypeError):
+                return 0.0
+
         # Extract nutritional values (all optional, tolerant parsing)
-        try:
-            calories = float(data.get("calories", 0))
-        except (ValueError, TypeError):
-            calories = 0.0
-        try:
-            protein = float(data.get("protein_g", 0))
-        except (ValueError, TypeError):
-            protein = 0.0
-        try:
-            carbs = float(data.get("carbs_g", 0))
-        except (ValueError, TypeError):
-            carbs = 0.0
-        try:
-            fat = float(data.get("fat_g", 0))
-        except (ValueError, TypeError):
-            fat = 0.0
+        calories = _read_float("calories")
+        protein = _read_float("protein_g")
+        carbs = _read_float("carbs_g")
+        fat = _read_float("fat_g")
+        fiber = _read_float("fiber_g")
+        added_sugar = _read_float("added_sugar_g")
+        sodium = _read_float("sodium_mg")
+        saturated_fat = _read_float("saturated_fat_g")
+        alcohol_units = _read_float("alcohol_units")
 
         # Anomaly detection: single meal bounds
         if calories < 0 or calories > 5000:
@@ -263,6 +288,24 @@ async def update_nutrition(
                     "expected_range": [0, 500],
                     "message": f"Single meal with {macro_val:.0f}g {macro_name.replace('_g', '')} on {d.isoformat()}",
                 })
+        for field_name, field_value, expected_range, unit in [
+            ("fiber_g", fiber, [0, 200], "g"),
+            ("added_sugar_g", added_sugar, [0, 300], "g"),
+            ("sodium_mg", sodium, [0, 10000], "mg"),
+            ("saturated_fat_g", saturated_fat, [0, 200], "g"),
+            ("alcohol_units", alcohol_units, [0, 20], "units"),
+        ]:
+            if field_value < expected_range[0] or field_value > expected_range[1]:
+                anomalies.append({
+                    "event_id": str(row["id"]),
+                    "field": field_name,
+                    "value": field_value,
+                    "expected_range": expected_range,
+                    "message": (
+                        f"Single meal with {field_value:.0f}{unit} {field_name} "
+                        f"on {d.isoformat()}"
+                    ),
+                })
 
         meal_type = data.get("meal_type", "").strip().lower()
 
@@ -271,6 +314,11 @@ async def update_nutrition(
         day_data[d]["protein_g"] += protein
         day_data[d]["carbs_g"] += carbs
         day_data[d]["fat_g"] += fat
+        day_data[d]["fiber_g"] += fiber
+        day_data[d]["added_sugar_g"] += added_sugar
+        day_data[d]["sodium_mg"] += sodium
+        day_data[d]["saturated_fat_g"] += saturated_fat
+        day_data[d]["alcohol_units"] += alcohol_units
         day_data[d]["meals"] += 1
         if meal_type:
             day_data[d]["meal_types"].add(meal_type)
@@ -280,6 +328,11 @@ async def update_nutrition(
         week_data[w]["protein_g"] += protein
         week_data[w]["carbs_g"] += carbs
         week_data[w]["fat_g"] += fat
+        week_data[w]["fiber_g"] += fiber
+        week_data[w]["added_sugar_g"] += added_sugar
+        week_data[w]["sodium_mg"] += sodium
+        week_data[w]["saturated_fat_g"] += saturated_fat
+        week_data[w]["alcohol_units"] += alcohol_units
         week_data[w]["meals"] += 1
         week_data[w]["tracking_days"].add(d)
 
@@ -293,6 +346,16 @@ async def update_nutrition(
             entry["carbs_g"] = carbs
         if fat:
             entry["fat_g"] = fat
+        if fiber:
+            entry["fiber_g"] = fiber
+        if added_sugar:
+            entry["added_sugar_g"] = added_sugar
+        if sodium:
+            entry["sodium_mg"] = sodium
+        if saturated_fat:
+            entry["saturated_fat_g"] = saturated_fat
+        if alcohol_units:
+            entry["alcohol_units"] = alcohol_units
         if meal_type:
             entry["meal_type"] = meal_type
         if "description" in data:
@@ -309,6 +372,11 @@ async def update_nutrition(
             "protein_g": round(day_data[d]["protein_g"], 1),
             "carbs_g": round(day_data[d]["carbs_g"], 1),
             "fat_g": round(day_data[d]["fat_g"], 1),
+            "fiber_g": round(day_data[d]["fiber_g"], 1),
+            "added_sugar_g": round(day_data[d]["added_sugar_g"], 1),
+            "sodium_mg": round(day_data[d]["sodium_mg"], 0),
+            "saturated_fat_g": round(day_data[d]["saturated_fat_g"], 1),
+            "alcohol_units": round(day_data[d]["alcohol_units"], 1),
             "meals": day_data[d]["meals"],
         }
         for d in sorted_days
@@ -327,6 +395,11 @@ async def update_nutrition(
             "avg_protein_g": round(wd["protein_g"] / tracking_days, 1) if tracking_days else 0,
             "avg_carbs_g": round(wd["carbs_g"] / tracking_days, 1) if tracking_days else 0,
             "avg_fat_g": round(wd["fat_g"] / tracking_days, 1) if tracking_days else 0,
+            "avg_fiber_g": round(wd["fiber_g"] / tracking_days, 1) if tracking_days else 0,
+            "avg_added_sugar_g": round(wd["added_sugar_g"] / tracking_days, 1) if tracking_days else 0,
+            "avg_sodium_mg": round(wd["sodium_mg"] / tracking_days, 0) if tracking_days else 0,
+            "avg_saturated_fat_g": round(wd["saturated_fat_g"] / tracking_days, 1) if tracking_days else 0,
+            "avg_alcohol_units": round(wd["alcohol_units"] / tracking_days, 1) if tracking_days else 0,
             "tracking_days": tracking_days,
             "total_meals": wd["meals"],
         })

@@ -33,6 +33,7 @@ from kura_workers.handlers.recovery import update_recovery
 from kura_workers.handlers.router import handle_projection_retry, handle_projection_update
 from kura_workers.handlers.semantic_memory import update_semantic_memory
 from kura_workers.handlers.strength_inference import update_strength_inference
+from kura_workers.handlers.supplements import update_supplements
 from kura_workers.handlers.training_plan import update_training_plan
 from kura_workers.handlers.training_timeline import update_training_timeline
 from kura_workers.handlers.user_profile import update_user_profile
@@ -840,6 +841,105 @@ class TestNutritionIntegration:
         assert context["source"] == "assumed_default"
         assert context["assumed"] is True
         assert "UTC" in context["assumption_disclosure"]
+
+    async def test_nutrition_quality_fields_are_aggregated(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "meal.logged", {
+            "calories": 700,
+            "protein_g": 40,
+            "carbs_g": 80,
+            "fat_g": 20,
+            "fiber_g": 12,
+            "added_sugar_g": 8,
+            "sodium_mg": 900,
+            "saturated_fat_g": 6,
+            "alcohol_units": 1,
+        }, "TIMESTAMP '2026-02-02 08:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_nutrition(db, {
+            "user_id": test_user_id, "event_type": "meal.logged",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "nutrition")
+        assert proj is not None
+        day = proj["data"]["daily_totals"][0]
+        assert day["fiber_g"] == 12.0
+        assert day["added_sugar_g"] == 8.0
+        assert day["sodium_mg"] == 900.0
+        assert day["saturated_fat_g"] == 6.0
+        assert day["alcohol_units"] == 1.0
+
+
+class TestSupplementsIntegration:
+    async def test_daily_regimen_skip_and_pause_windows(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "supplement.regimen.set", {
+            "name": "Creatine",
+            "dose_amount": 5,
+            "dose_unit": "g",
+            "cadence": "daily",
+            "assume_taken_by_default": True,
+        }, "TIMESTAMP '2026-02-01 08:00:00+01'")
+        await insert_event(db, test_user_id, "supplement.skipped", {
+            "name": "Creatine",
+            "date": "2026-02-03",
+            "reason": "forgot",
+        }, "TIMESTAMP '2026-02-03 08:00:00+01'")
+        await insert_event(db, test_user_id, "supplement.regimen.paused", {
+            "name": "Creatine",
+            "start_date": "2026-02-05",
+            "duration_days": 3,
+        }, "TIMESTAMP '2026-02-05 08:00:00+01'")
+        await insert_event(db, test_user_id, "supplement.regimen.resumed", {
+            "name": "Creatine",
+            "effective_date": "2026-02-08",
+        }, "TIMESTAMP '2026-02-08 08:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_supplements(db, {
+            "user_id": test_user_id, "event_type": "supplement.regimen.resumed",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "supplements")
+        assert proj is not None
+        data = proj["data"]
+        assert len(data["active_stack"]) == 1
+        assert data["active_stack"][0]["name"] == "creatine"
+
+        by_day = {row["date"]: row for row in data["daily_status"]}
+        assert "creatine" in by_day["2026-02-03"]["skipped"]
+        assert "creatine" in by_day["2026-02-06"]["paused"]
+        assert "creatine" in by_day["2026-02-08"]["taken_assumed"]
+
+    async def test_daily_checkin_supplements_count_as_explicit_taken(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "supplement.regimen.set", {
+            "name": "Creatine",
+            "cadence": "daily",
+            "assume_taken_by_default": True,
+        }, "TIMESTAMP '2026-02-10 07:30:00+01'")
+        await insert_event(db, test_user_id, "recovery.daily_checkin", {
+            "sleep_hours": 7.0,
+            "motivation": 8,
+            "soreness": 2,
+            "supplements": ["Creatine"],
+        }, "TIMESTAMP '2026-02-11 07:30:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_supplements(db, {
+            "user_id": test_user_id, "event_type": "recovery.daily_checkin",
+        })
+        await db.execute("RESET ROLE")
+
+        proj = await get_projection(db, test_user_id, "supplements")
+        assert proj is not None
+        by_day = {row["date"]: row for row in proj["data"]["daily_status"]}
+        assert "creatine" in by_day["2026-02-11"]["taken_explicit"]
+        per = {row["name"]: row for row in proj["data"]["per_supplement"]}
+        assert per["creatine"]["taken_explicit_30d"] >= 1
 
 
 # ---------------------------------------------------------------------------

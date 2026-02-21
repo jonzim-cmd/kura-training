@@ -134,6 +134,16 @@ class TestValidateRule:
         assert isinstance(rule, CategorizedTrackingRule)
         assert rule.group_by == "name"
 
+    def test_rule_type_legacy_alias_is_supported(self):
+        rule = validate_rule({
+            "name": "hrv_tracking",
+            "rule_type": "field_tracking",
+            "source_events": ["sleep.logged"],
+            "fields": ["hrv_rmssd"],
+        })
+        assert isinstance(rule, FieldTrackingRule)
+        assert rule.type == "field_tracking"
+
     def test_unknown_type_raises(self):
         with pytest.raises(ValueError, match="Unknown rule type"):
             validate_rule({

@@ -497,6 +497,8 @@ pub struct AgentContextResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nutrition: Option<ProjectionResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub supplements: Option<ProjectionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub training_plan: Option<ProjectionResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic_memory: Option<ProjectionResponse>,
@@ -1814,6 +1816,12 @@ fn classify_intent(tokens: &HashSet<String>) -> IntentClass {
         "carbs",
         "fat",
         "makro",
+        "supplement",
+        "supplements",
+        "creatine",
+        "vitamin",
+        "omega",
+        "magnesium",
     ]) {
         return IntentClass::Nutrition;
     }
@@ -1983,6 +1991,16 @@ fn confidence_score(projection_type: &str, data: &Value) -> f64 {
             let sessions = json_f64(data, &["counts", "sessions_with_feedback"]).unwrap_or(0.0);
             (sessions / 12.0).clamp(0.1, 1.0)
         }
+        "supplements" => {
+            let expected = json_f64(data, &["adherence_summary", "expected_30d"]).unwrap_or(0.0);
+            let active = data
+                .get("active_stack")
+                .and_then(Value::as_array)
+                .map(|items| items.len())
+                .unwrap_or(0) as f64;
+            (0.7 * (expected / 30.0).clamp(0.0, 1.0) + 0.3 * (active / 4.0).clamp(0.0, 1.0))
+                .clamp(0.1, 1.0)
+        }
         _ => 0.5,
     }
 }
@@ -2012,6 +2030,7 @@ fn intent_alignment_score(projection_type: &str, intent: IntentClass) -> f64 {
         IntentClass::Recovery => match projection_type {
             "readiness_inference" => 1.0,
             "recovery" => 0.95,
+            "supplements" => 0.7,
             "session_feedback" => 0.75,
             "training_timeline" => 0.75,
             "strength_inference" => 0.55,
@@ -2020,6 +2039,7 @@ fn intent_alignment_score(projection_type: &str, intent: IntentClass) -> f64 {
         },
         IntentClass::Nutrition => match projection_type {
             "nutrition" => 1.0,
+            "supplements" => 0.95,
             "body_composition" => 0.75,
             "custom" => 0.7,
             "training_timeline" => 0.5,
@@ -2208,6 +2228,7 @@ fn agent_context_reload_hint(section: &str) -> &'static str {
         "training_plan" => "Reload with GET /v1/projections/training_plan/overview.",
         "recovery" => "Reload with GET /v1/projections/recovery/overview.",
         "nutrition" => "Reload with GET /v1/projections/nutrition/overview.",
+        "supplements" => "Reload with GET /v1/projections/supplements/overview.",
         "body_composition" => "Reload with GET /v1/projections/body_composition/overview.",
         "session_feedback" => "Reload with GET /v1/projections/session_feedback/overview.",
         "causal_inference" => "Reload with GET /v1/projections/causal_inference/overview.",
@@ -2259,6 +2280,7 @@ fn take_optional_context_section(
         "body_composition" => response.body_composition.take().map(serialize_to_value),
         "recovery" => response.recovery.take().map(serialize_to_value),
         "nutrition" => response.nutrition.take().map(serialize_to_value),
+        "supplements" => response.supplements.take().map(serialize_to_value),
         "training_plan" => response.training_plan.take().map(serialize_to_value),
         "semantic_memory" => response.semantic_memory.take().map(serialize_to_value),
         "readiness_inference" => response.readiness_inference.take().map(serialize_to_value),
@@ -2294,6 +2316,7 @@ fn apply_agent_context_budget(response: &mut AgentContextResponse) {
         "semantic_memory",
         "training_plan",
         "nutrition",
+        "supplements",
         "recovery",
         "body_composition",
         "session_feedback",
@@ -3243,6 +3266,7 @@ fn agent_event_requires_health_data_consent(event_type: &str) -> bool {
             | "bodyweight.logged"
             | "measurement.logged"
             | "meal.logged"
+            | "supplement.logged"
             | "sleep.logged"
             | "soreness.logged"
             | "energy.logged"
@@ -3259,6 +3283,7 @@ fn agent_event_requires_health_data_consent(event_type: &str) -> bool {
         || normalized.starts_with("pain.")
         || normalized.starts_with("health.")
         || normalized.starts_with("nutrition.")
+        || normalized.starts_with("supplement.")
 }
 
 fn batch_requires_health_data_consent(events: &[CreateEventRequest]) -> bool {
@@ -8115,6 +8140,7 @@ fn build_agent_consent_write_gate(health_data_processing_consent: bool) -> Agent
             "pain".to_string(),
             "health".to_string(),
             "nutrition".to_string(),
+            "supplement".to_string(),
         ],
         reason_code: Some(AGENT_HEALTH_CONSENT_ERROR_CODE.to_string()),
         next_action: Some(AGENT_HEALTH_CONSENT_NEXT_ACTION.to_string()),
@@ -8204,6 +8230,7 @@ pub async fn get_agent_context(
         fetch_projection(&mut tx, user_id, "body_composition", "overview").await?;
     let recovery = fetch_projection(&mut tx, user_id, "recovery", "overview").await?;
     let nutrition = fetch_projection(&mut tx, user_id, "nutrition", "overview").await?;
+    let supplements = fetch_projection(&mut tx, user_id, "supplements", "overview").await?;
     let training_plan = fetch_projection(&mut tx, user_id, "training_plan", "overview").await?;
     let semantic_memory = fetch_projection(&mut tx, user_id, "semantic_memory", "overview").await?;
     let readiness_inference =
@@ -8303,6 +8330,7 @@ pub async fn get_agent_context(
         body_composition,
         recovery,
         nutrition,
+        supplements,
         training_plan,
         semantic_memory,
         readiness_inference,
