@@ -850,10 +850,10 @@ impl CapabilityProfile {
 
 impl McpServer {
     fn new(config: McpRuntimeConfig) -> Self {
-        // Session ID: token-derived for HTTP (stable across requests),
+        // Session ID: credential-derived for HTTP (stable across requests),
         // random UUID for stdio (one server = one session).
         let session_id = match &config.explicit_token {
-            Some(token) => format!("tok-{:x}", {
+            Some(token) => format!("sid-{:x}", {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 token.hash(&mut h);
@@ -6963,7 +6963,7 @@ mod tests {
     }
 
     #[test]
-    fn session_id_is_token_derived_for_explicit_token() {
+    fn session_id_is_credential_derived_for_explicit_token() {
         let server = McpServer::new(McpRuntimeConfig {
             api_url: "http://127.0.0.1:9".to_string(),
             no_auth: true,
@@ -6973,9 +6973,13 @@ mod tests {
             allow_admin: false,
         });
         assert!(
-            server.session_id.starts_with("tok-"),
-            "token-based session_id should start with 'tok-', got: {}",
+            server.session_id.starts_with("sid-"),
+            "credential-derived session_id should start with 'sid-', got: {}",
             server.session_id
+        );
+        assert!(
+            !server.session_id.starts_with("tok-"),
+            "session_id must not look like an access token handle"
         );
     }
 
