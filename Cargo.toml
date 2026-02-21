@@ -3,7 +3,7 @@ members = ["api", "cli", "core", "mcp", "mcp-runtime"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "BUSL-1.1"
 repository = "https://github.com/jonzim-cmd/kura-training"
