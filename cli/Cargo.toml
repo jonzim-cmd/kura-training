@@ -3,6 +3,9 @@ name = "kura-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Kura Training CLI for interacting with the Kura API and MCP runtime."
 
 [[bin]]
 name = "kura"

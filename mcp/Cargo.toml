@@ -3,6 +3,9 @@ name = "kura-mcp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Standalone MCP server binary for Kura."
 
 [[bin]]
 name = "kura-mcp"

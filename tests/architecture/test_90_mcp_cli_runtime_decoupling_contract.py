@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -25,7 +26,13 @@ def test_cli_and_mcp_depend_on_shared_runtime_crate() -> None:
     mcp_cargo = MCP_CARGO.read_text(encoding="utf-8")
     workspace_cargo = WORKSPACE_CARGO.read_text(encoding="utf-8")
 
-    assert "kura-mcp-runtime = { path = \"mcp-runtime\" }" in workspace_cargo
+    runtime_dep = re.search(
+        r'kura-mcp-runtime\s*=\s*\{[^}]*\}',
+        workspace_cargo,
+    )
+    assert runtime_dep is not None
+    assert 'path = "mcp-runtime"' in runtime_dep.group(0)
+    assert "version =" in runtime_dep.group(0)
     assert "kura-mcp-runtime = { workspace = true }" in cli_cargo
     assert "kura-mcp-runtime = { workspace = true }" in mcp_cargo
 

@@ -6,6 +6,8 @@ resolver = "2"
 version = "0.1.0"
 edition = "2024"
 license = "BUSL-1.1"
+repository = "https://github.com/jonzim-cmd/kura-training"
+homepage = "https://withkura.com"
 
 [workspace.dependencies]
 # Async runtime
@@ -70,5 +72,5 @@ open = "5"
 dirs = "6"
 
 # Shared crate
-kura-core = { path = "core" }
-kura-mcp-runtime = { path = "mcp-runtime" }
+kura-core = { version = "0.1.0", path = "core" }
+kura-mcp-runtime = { version = "0.1.0", path = "mcp-runtime" }

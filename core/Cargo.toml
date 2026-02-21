@@ -3,6 +3,9 @@ name = "kura-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Shared core types and auth utilities for Kura services and tools."
 
 [dependencies]
 serde = { workspace = true }
