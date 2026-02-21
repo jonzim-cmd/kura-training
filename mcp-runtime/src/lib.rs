@@ -38,8 +38,28 @@ const RETRIEVAL_FSM_MAX_RELOADS_ENV: &str = "KURA_MCP_RETRIEVAL_FSM_MAX_RELOADS"
 const RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK_ENV: &str =
     "KURA_MCP_RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK";
 const RETRIEVAL_OBSERVABILITY_SCHEMA_VERSION: &str = "mcp_retrieval_observability.v1";
+const ROLLOUT_GUARD_SCHEMA_VERSION: &str = "mcp_rollout_guard.v1";
 const IMPORT_DEVICE_TOOLS_ENABLED_ENV: &str = "KURA_MCP_ENABLE_IMPORT_PROVIDER_TOOLS";
 const FAIL_CLOSED_STARTUP_ENV: &str = "KURA_MCP_FAIL_CLOSED_STARTUP";
+const DETERMINISM_ROLLOUT_MODE_ENV: &str = "KURA_MCP_DETERMINISM_ROLLOUT_MODE";
+const DETERMINISM_CANARY_PERCENT_ENV: &str = "KURA_MCP_DETERMINISM_CANARY_PERCENT";
+const DETERMINISM_CANARY_ALLOWLIST_ENV: &str = "KURA_MCP_DETERMINISM_CANARY_ALLOWLIST";
+const DETERMINISM_ABORT_ON_BREACH_ENV: &str = "KURA_MCP_DETERMINISM_ABORT_ON_BREACH";
+const DETERMINISM_ABORT_OVERFLOW_RATE_MAX_ENV: &str = "KURA_MCP_ROLLOUT_ABORT_OVERFLOW_RATE_MAX";
+const DETERMINISM_ABORT_CRITICAL_MISSING_RATE_MAX_ENV: &str =
+    "KURA_MCP_ROLLOUT_ABORT_CRITICAL_MISSING_RATE_MAX";
+const DETERMINISM_ABORT_BLOCKED_RATE_MAX_ENV: &str = "KURA_MCP_ROLLOUT_ABORT_BLOCKED_RATE_MAX";
+const DETERMINISM_ABORT_SPECULATIVE_RATE_MAX_ENV: &str =
+    "KURA_MCP_ROLLOUT_ABORT_SPECULATIVE_RATE_MAX";
+const DETERMINISM_MIN_CONTEXT_CALLS_ENV: &str = "KURA_MCP_ROLLOUT_MIN_CONTEXT_CALLS";
+const DETERMINISM_MIN_TOTAL_CALLS_ENV: &str = "KURA_MCP_ROLLOUT_MIN_TOTAL_CALLS";
+const DETERMINISM_DEFAULT_CANARY_PERCENT: u8 = 10;
+const DETERMINISM_DEFAULT_ABORT_OVERFLOW_RATE_MAX: f64 = 0.45;
+const DETERMINISM_DEFAULT_ABORT_CRITICAL_MISSING_RATE_MAX: f64 = 0.15;
+const DETERMINISM_DEFAULT_ABORT_BLOCKED_RATE_MAX: f64 = 0.35;
+const DETERMINISM_DEFAULT_ABORT_SPECULATIVE_RATE_MAX: f64 = 0.02;
+const DETERMINISM_DEFAULT_MIN_CONTEXT_CALLS: u64 = 3;
+const DETERMINISM_DEFAULT_MIN_TOTAL_CALLS: u64 = 10;
 const STARTUP_REQUIRED_FIRST_TOOL: &str = "kura_agent_context";
 const STARTUP_PREFERRED_FIRST_TOOL: &str = "kura_agent_brief";
 const STARTUP_FALLBACK_FIRST_TOOL: &str = "kura_agent_context";
@@ -62,6 +82,8 @@ static RETRIEVAL_CONTROL_STATE: LazyLock<Mutex<HashMap<String, RetrievalControlS
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static RETRIEVAL_FSM_POLICY: LazyLock<RetrievalFsmPolicy> =
     LazyLock::new(load_retrieval_fsm_policy_from_env);
+static DETERMINISM_ROLLOUT_POLICY: LazyLock<DeterminismRolloutPolicy> =
+    LazyLock::new(load_determinism_rollout_policy_from_env);
 static IMPORT_DEVICE_TOOLS_ENABLED: LazyLock<bool> =
     LazyLock::new(load_import_device_tools_enabled_from_env);
 static FAIL_CLOSED_STARTUP: LazyLock<bool> = LazyLock::new(load_fail_closed_startup_from_env);
@@ -71,6 +93,45 @@ struct RetrievalFsmPolicy {
     window_secs: u64,
     max_reloads_per_window: u32,
     max_repeat_signature_streak: u32,
+    configured_via_env: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeterminismRolloutMode {
+    Off,
+    Shadow,
+    Canary,
+    Full,
+}
+
+impl DeterminismRolloutMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Shadow => "shadow",
+            Self::Canary => "canary",
+            Self::Full => "full",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RolloutAbortThresholds {
+    overflow_rate_max: f64,
+    critical_missing_rate_max: f64,
+    blocked_rate_max: f64,
+    speculative_answer_rate_max: f64,
+}
+
+#[derive(Clone, Debug)]
+struct DeterminismRolloutPolicy {
+    mode: DeterminismRolloutMode,
+    canary_percent: u8,
+    canary_allowlist: HashSet<String>,
+    abort_on_breach: bool,
+    min_context_calls: u64,
+    min_total_tool_calls: u64,
+    thresholds: RolloutAbortThresholds,
     configured_via_env: bool,
 }
 
@@ -108,6 +169,7 @@ struct RetrievalControlState {
     context_calls: u64,
     context_overflow_count: u64,
     context_critical_missing_count: u64,
+    speculative_answer_signal_count: u64,
     projection_page_calls: u64,
     abort_reasons: BTreeMap<String, u64>,
 }
@@ -130,6 +192,7 @@ impl RetrievalControlState {
             context_calls: 0,
             context_overflow_count: 0,
             context_critical_missing_count: 0,
+            speculative_answer_signal_count: 0,
             projection_page_calls: 0,
             abort_reasons: BTreeMap::new(),
         }
@@ -206,6 +269,160 @@ fn parse_env_u32_with_bounds(raw: Option<String>, min: u32, max: u32, default: u
         Some(parsed) => (parsed.clamp(min, max), true),
         None => (default, false),
     }
+}
+
+fn parse_env_f64_with_bounds(raw: Option<String>, min: f64, max: f64, default: f64) -> (f64, bool) {
+    match raw {
+        Some(value) => match value.trim().parse::<f64>() {
+            Ok(parsed) => (parsed.clamp(min, max), true),
+            Err(_) => (default, true),
+        },
+        None => (default, false),
+    }
+}
+
+fn parse_determinism_rollout_mode(raw: Option<String>) -> (DeterminismRolloutMode, bool) {
+    match raw {
+        Some(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            if normalized.is_empty() {
+                return (DeterminismRolloutMode::Full, true);
+            }
+            let mode = match normalized.as_str() {
+                "off" => DeterminismRolloutMode::Off,
+                "shadow" => DeterminismRolloutMode::Shadow,
+                "canary" => DeterminismRolloutMode::Canary,
+                "full" => DeterminismRolloutMode::Full,
+                _ => DeterminismRolloutMode::Full,
+            };
+            (mode, true)
+        }
+        None => (DeterminismRolloutMode::Full, false),
+    }
+}
+
+fn parse_determinism_canary_allowlist(raw: Option<String>) -> (HashSet<String>, bool) {
+    match raw {
+        Some(value) => {
+            let configured = !value.trim().is_empty();
+            let items = value
+                .split([',', ';'])
+                .flat_map(|chunk| chunk.split_whitespace())
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(ToString::to_string)
+                .collect::<HashSet<_>>();
+            (items, configured)
+        }
+        None => (HashSet::new(), false),
+    }
+}
+
+fn parse_determinism_rollout_policy_from_raw(
+    mode_raw: Option<String>,
+    canary_percent_raw: Option<String>,
+    canary_allowlist_raw: Option<String>,
+    abort_on_breach_raw: Option<String>,
+    overflow_rate_max_raw: Option<String>,
+    critical_missing_rate_max_raw: Option<String>,
+    blocked_rate_max_raw: Option<String>,
+    speculative_rate_max_raw: Option<String>,
+    min_context_calls_raw: Option<String>,
+    min_total_tool_calls_raw: Option<String>,
+) -> DeterminismRolloutPolicy {
+    let (mode, mode_set) = parse_determinism_rollout_mode(mode_raw);
+    let (canary_percent_raw, canary_percent_set) = parse_env_u64_with_bounds(
+        canary_percent_raw,
+        0,
+        100,
+        u64::from(DETERMINISM_DEFAULT_CANARY_PERCENT),
+    );
+    let canary_percent =
+        u8::try_from(canary_percent_raw).unwrap_or(DETERMINISM_DEFAULT_CANARY_PERCENT);
+    let (canary_allowlist, canary_allowlist_set) =
+        parse_determinism_canary_allowlist(canary_allowlist_raw);
+    let abort_on_breach = parse_env_bool_flag(abort_on_breach_raw.clone(), false);
+    let abort_on_breach_set = abort_on_breach_raw.is_some();
+    let (overflow_rate_max, overflow_rate_set) = parse_env_f64_with_bounds(
+        overflow_rate_max_raw,
+        0.0,
+        1.0,
+        DETERMINISM_DEFAULT_ABORT_OVERFLOW_RATE_MAX,
+    );
+    let (critical_missing_rate_max, critical_missing_set) = parse_env_f64_with_bounds(
+        critical_missing_rate_max_raw,
+        0.0,
+        1.0,
+        DETERMINISM_DEFAULT_ABORT_CRITICAL_MISSING_RATE_MAX,
+    );
+    let (blocked_rate_max, blocked_rate_set) = parse_env_f64_with_bounds(
+        blocked_rate_max_raw,
+        0.0,
+        1.0,
+        DETERMINISM_DEFAULT_ABORT_BLOCKED_RATE_MAX,
+    );
+    let (speculative_answer_rate_max, speculative_rate_set) = parse_env_f64_with_bounds(
+        speculative_rate_max_raw,
+        0.0,
+        1.0,
+        DETERMINISM_DEFAULT_ABORT_SPECULATIVE_RATE_MAX,
+    );
+    let (min_context_calls, min_context_calls_set) = parse_env_u64_with_bounds(
+        min_context_calls_raw,
+        1,
+        10_000,
+        DETERMINISM_DEFAULT_MIN_CONTEXT_CALLS,
+    );
+    let (min_total_tool_calls, min_total_calls_set) = parse_env_u64_with_bounds(
+        min_total_tool_calls_raw,
+        1,
+        10_000,
+        DETERMINISM_DEFAULT_MIN_TOTAL_CALLS,
+    );
+
+    DeterminismRolloutPolicy {
+        mode,
+        canary_percent,
+        canary_allowlist,
+        abort_on_breach,
+        min_context_calls,
+        min_total_tool_calls,
+        thresholds: RolloutAbortThresholds {
+            overflow_rate_max,
+            critical_missing_rate_max,
+            blocked_rate_max,
+            speculative_answer_rate_max,
+        },
+        configured_via_env: mode_set
+            || canary_percent_set
+            || canary_allowlist_set
+            || abort_on_breach_set
+            || overflow_rate_set
+            || critical_missing_set
+            || blocked_rate_set
+            || speculative_rate_set
+            || min_context_calls_set
+            || min_total_calls_set,
+    }
+}
+
+fn load_determinism_rollout_policy_from_env() -> DeterminismRolloutPolicy {
+    parse_determinism_rollout_policy_from_raw(
+        std::env::var(DETERMINISM_ROLLOUT_MODE_ENV).ok(),
+        std::env::var(DETERMINISM_CANARY_PERCENT_ENV).ok(),
+        std::env::var(DETERMINISM_CANARY_ALLOWLIST_ENV).ok(),
+        std::env::var(DETERMINISM_ABORT_ON_BREACH_ENV).ok(),
+        std::env::var(DETERMINISM_ABORT_OVERFLOW_RATE_MAX_ENV).ok(),
+        std::env::var(DETERMINISM_ABORT_CRITICAL_MISSING_RATE_MAX_ENV).ok(),
+        std::env::var(DETERMINISM_ABORT_BLOCKED_RATE_MAX_ENV).ok(),
+        std::env::var(DETERMINISM_ABORT_SPECULATIVE_RATE_MAX_ENV).ok(),
+        std::env::var(DETERMINISM_MIN_CONTEXT_CALLS_ENV).ok(),
+        std::env::var(DETERMINISM_MIN_TOTAL_CALLS_ENV).ok(),
+    )
+}
+
+fn determinism_rollout_policy() -> &'static DeterminismRolloutPolicy {
+    &DETERMINISM_ROLLOUT_POLICY
 }
 
 fn parse_retrieval_fsm_policy_from_raw(
@@ -324,6 +541,185 @@ fn record_abort_reason_for_session(session_id: &str, reason: &str) {
     with_retrieval_state_mut(session_id, |state, _| {
         record_abort_reason(state, reason);
     });
+}
+
+fn record_speculative_answer_signal_for_session(session_id: &str) {
+    with_retrieval_state_mut(session_id, |state, _| {
+        state.speculative_answer_signal_count =
+            state.speculative_answer_signal_count.saturating_add(1);
+    });
+}
+
+fn rollout_bucket_for_session(session_id: &str) -> u8 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    session_id.hash(&mut hasher);
+    (hasher.finish() % 100) as u8
+}
+
+fn session_in_rollout_canary(policy: &DeterminismRolloutPolicy, session_id: &str) -> bool {
+    if policy.canary_allowlist.contains(session_id) {
+        return true;
+    }
+    rollout_bucket_for_session(session_id) < policy.canary_percent
+}
+
+fn rollout_enforced_for_session(policy: &DeterminismRolloutPolicy, session_id: &str) -> bool {
+    match policy.mode {
+        DeterminismRolloutMode::Off | DeterminismRolloutMode::Shadow => false,
+        DeterminismRolloutMode::Canary => session_in_rollout_canary(policy, session_id),
+        DeterminismRolloutMode::Full => true,
+    }
+}
+
+fn blocked_total_for_state(state: &RetrievalControlState) -> u64 {
+    state.abort_reasons.values().copied().sum::<u64>()
+}
+
+fn build_rollout_guard_payload_for_policy(
+    policy: &DeterminismRolloutPolicy,
+    session_id: &str,
+    state: &RetrievalControlState,
+) -> Value {
+    let session_bucket = rollout_bucket_for_session(session_id);
+    let session_in_canary = session_in_rollout_canary(policy, session_id);
+    let enforced_for_session = rollout_enforced_for_session(policy, session_id);
+    let blocked_total = blocked_total_for_state(state);
+    let overflow_rate = saturating_ratio(state.context_overflow_count, state.context_calls);
+    let critical_missing_rate =
+        saturating_ratio(state.context_critical_missing_count, state.context_calls);
+    let blocked_rate = saturating_ratio(blocked_total, state.total_tool_calls);
+    let speculative_answer_rate = saturating_ratio(
+        state.speculative_answer_signal_count,
+        state.total_tool_calls,
+    );
+
+    let context_sample_ready = state.context_calls >= policy.min_context_calls;
+    let total_sample_ready = state.total_tool_calls >= policy.min_total_tool_calls;
+    let data_sufficient = context_sample_ready && total_sample_ready;
+
+    let mut breached_thresholds = Vec::<Value>::new();
+    if context_sample_ready && overflow_rate > policy.thresholds.overflow_rate_max {
+        breached_thresholds.push(json!({
+            "metric": "overflow_rate",
+            "observed": overflow_rate,
+            "threshold": policy.thresholds.overflow_rate_max,
+            "sample_count": state.context_calls
+        }));
+    }
+    if context_sample_ready && critical_missing_rate > policy.thresholds.critical_missing_rate_max {
+        breached_thresholds.push(json!({
+            "metric": "critical_missing_rate",
+            "observed": critical_missing_rate,
+            "threshold": policy.thresholds.critical_missing_rate_max,
+            "sample_count": state.context_calls
+        }));
+    }
+    if total_sample_ready && blocked_rate > policy.thresholds.blocked_rate_max {
+        breached_thresholds.push(json!({
+            "metric": "blocked_rate",
+            "observed": blocked_rate,
+            "threshold": policy.thresholds.blocked_rate_max,
+            "sample_count": state.total_tool_calls
+        }));
+    }
+    if total_sample_ready && speculative_answer_rate > policy.thresholds.speculative_answer_rate_max
+    {
+        breached_thresholds.push(json!({
+            "metric": "speculative_answer_rate",
+            "observed": speculative_answer_rate,
+            "threshold": policy.thresholds.speculative_answer_rate_max,
+            "sample_count": state.total_tool_calls
+        }));
+    }
+
+    let status = match policy.mode {
+        DeterminismRolloutMode::Off => "disabled",
+        _ if !enforced_for_session => "shadow",
+        _ if !data_sufficient => "monitoring",
+        _ if breached_thresholds.is_empty() => "healthy",
+        _ if policy.abort_on_breach => "abort_enforced",
+        _ => "abort_recommended",
+    };
+    let abort_required = status == "abort_enforced";
+
+    json!({
+        "schema_version": ROLLOUT_GUARD_SCHEMA_VERSION,
+        "mode": policy.mode.as_str(),
+        "configured_via_env": policy.configured_via_env,
+        "session_bucket": session_bucket,
+        "session_in_canary": session_in_canary,
+        "enforced_for_session": enforced_for_session,
+        "abort_on_breach": policy.abort_on_breach,
+        "abort_required": abort_required,
+        "sample_requirements": {
+            "min_context_calls": policy.min_context_calls,
+            "min_total_tool_calls": policy.min_total_tool_calls
+        },
+        "thresholds": {
+            "overflow_rate_max": policy.thresholds.overflow_rate_max,
+            "critical_missing_rate_max": policy.thresholds.critical_missing_rate_max,
+            "blocked_rate_max": policy.thresholds.blocked_rate_max,
+            "speculative_answer_rate_max": policy.thresholds.speculative_answer_rate_max
+        },
+        "observed": {
+            "overflow_rate": overflow_rate,
+            "critical_missing_rate": critical_missing_rate,
+            "blocked_rate": blocked_rate,
+            "speculative_answer_rate": speculative_answer_rate,
+            "context_calls": state.context_calls,
+            "total_tool_calls": state.total_tool_calls
+        },
+        "data_sufficient": data_sufficient,
+        "status": status,
+        "breached_thresholds": breached_thresholds,
+        "rollback_switch": {
+            "env": DETERMINISM_ROLLOUT_MODE_ENV,
+            "safe_values": ["shadow", "off"],
+            "abort_toggle_env": DETERMINISM_ABORT_ON_BREACH_ENV
+        }
+    })
+}
+
+fn is_rollout_abort_exempt_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "kura_mcp_status"
+            | "kura_discover"
+            | "kura_discover_debug"
+            | "kura_agent_brief"
+            | "kura_agent_context"
+            | "kura_agent_section_index"
+            | "kura_agent_section_fetch"
+    )
+}
+
+fn maybe_rollout_abort_guard_block_for_policy(
+    policy: &DeterminismRolloutPolicy,
+    session_id: &str,
+    tool_name: &str,
+    state: &RetrievalControlState,
+) -> Option<Value> {
+    if is_rollout_abort_exempt_tool(tool_name) {
+        return None;
+    }
+    let guard = build_rollout_guard_payload_for_policy(policy, session_id, state);
+    if guard
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(|status| status == "abort_enforced")
+    {
+        Some(guard)
+    } else {
+        None
+    }
+}
+
+fn maybe_rollout_abort_guard_block(session_id: &str, tool_name: &str) -> Option<Value> {
+    let policy = determinism_rollout_policy();
+    with_retrieval_state_mut(session_id, |state, _| {
+        maybe_rollout_abort_guard_block_for_policy(policy, session_id, tool_name, state)
+    })
 }
 
 fn retrieval_guard_for_reason(reason_code: &str) -> RetrievalGuardBlock {
@@ -477,7 +873,9 @@ fn observe_tool_error(session_id: &str, payload: &Value) {
 
 fn retrieval_observability_snapshot(session_id: &str, policy: &RetrievalFsmPolicy) -> Value {
     with_retrieval_state_mut(session_id, |state, _| {
-        let blocked_total = state.abort_reasons.values().copied().sum::<u64>();
+        let blocked_total = blocked_total_for_state(state);
+        let rollout_guard =
+            build_rollout_guard_payload_for_policy(determinism_rollout_policy(), session_id, state);
         json!({
             "schema_version": RETRIEVAL_OBSERVABILITY_SCHEMA_VERSION,
             "fsm": {
@@ -502,9 +900,11 @@ fn retrieval_observability_snapshot(session_id: &str, policy: &RetrievalFsmPolic
                 "projection_page_calls": state.projection_page_calls,
                 "avg_reload_depth": saturating_ratio(state.total_reload_depth, state.reload_depth_samples),
                 "blocked_rate": saturating_ratio(blocked_total, state.total_tool_calls),
-                "speculative_answer_rate": 0.0,
+                "speculative_answer_signal_count": state.speculative_answer_signal_count,
+                "speculative_answer_rate": saturating_ratio(state.speculative_answer_signal_count, state.total_tool_calls),
                 "abort_reasons": state.abort_reasons.clone()
-            }
+            },
+            "rollout_guard": rollout_guard
         })
     })
 }
@@ -844,11 +1244,15 @@ pub async fn run(api_url: &str, inherited_no_auth: bool, command: McpCommands) -
             match server.run_startup_diagnostics(&args).await {
                 Ok(report) => {
                     println!("{}", to_pretty_json(&report));
-                    if report
+                    let startup_ready = report
                         .get("status")
                         .and_then(Value::as_str)
-                        .is_some_and(|status| status == "ready")
-                    {
+                        .is_some_and(|status| status == "ready");
+                    let rollout_abort_required = report
+                        .pointer("/rollout_decision/abort_required")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    if startup_ready && !rollout_abort_required {
                         0
                     } else {
                         2
@@ -1254,6 +1658,7 @@ impl McpServer {
 
         if should_block_for_startup_context(name, context_loaded) {
             record_abort_reason_for_session(&self.session_id, "startup_context_required");
+            record_speculative_answer_signal_for_session(&self.session_id);
             let mut envelope = enforce_tool_payload_limit(
                 name,
                 json!({
@@ -1274,6 +1679,31 @@ impl McpServer {
                             "brief_loaded": brief_loaded,
                             "context_loaded": context_loaded,
                             "tool_surface": startup_surface
+                        }
+                    }
+                }),
+            );
+            attach_runtime_observability(&self.session_id, &mut envelope, retrieval_policy);
+            return Ok(build_tool_call_response(name, envelope, true, None));
+        }
+
+        if let Some(rollout_guard) = maybe_rollout_abort_guard_block(&self.session_id, name) {
+            record_abort_reason_for_session(&self.session_id, "rollout_abort_guard_blocked");
+            let mut envelope = enforce_tool_payload_limit(
+                name,
+                json!({
+                    "status": "error",
+                    "phase": "blocked_precondition",
+                    "tool": name,
+                    "error": {
+                        "error": "rollout_abort_guard_blocked",
+                        "message": "Deterministic rollout abort criteria were breached for this session. Tool calls are blocked until rollout mode is reduced or guard thresholds are adjusted.",
+                        "field": "tool",
+                        "docs_hint": "Set KURA_MCP_DETERMINISM_ROLLOUT_MODE=shadow (or off) to rollback safely, inspect kura_mcp_status rollout_guard, then resume once metrics recover.",
+                        "details": {
+                            "reason_code": "rollout_abort_guard_blocked",
+                            "blocked_tool": name,
+                            "rollout_guard": rollout_guard
                         }
                     }
                 }),
@@ -1327,6 +1757,7 @@ impl McpServer {
 
         if is_context_write_blocked_tool(name) && !context_loaded {
             record_abort_reason_for_session(&self.session_id, "context_required_before_write");
+            record_speculative_answer_signal_for_session(&self.session_id);
             let mut envelope = enforce_tool_payload_limit(
                 name,
                 json!({
@@ -1399,6 +1830,7 @@ impl McpServer {
                             &self.session_id,
                             "startup_critical_sections_missing",
                         );
+                        record_speculative_answer_signal_for_session(&self.session_id);
                         is_error_response = true;
                         envelope["status"] = json!("error");
                         envelope["phase"] = json!("blocked_precondition");
@@ -1646,9 +2078,16 @@ impl McpServer {
         if !warnings.is_empty() {
             payload["warnings"] = Value::Array(warnings.into_iter().map(Value::String).collect());
         }
+        let retrieval_observability =
+            retrieval_observability_snapshot(&self.session_id, retrieval_fsm_policy());
+        let rollout_guard = retrieval_observability
+            .get("rollout_guard")
+            .cloned()
+            .unwrap_or(Value::Null);
         payload["mcp_capability_status"] = self.capability_profile.to_value();
         payload["feature_flags"] = json!({
-            "import_provider_tools_exposed": import_device_tools_enabled()
+            "import_provider_tools_exposed": import_device_tools_enabled(),
+            "determinism_rollout": rollout_guard
         });
 
         // Session hint: context is required; brief is preferred when available.
@@ -1671,7 +2110,7 @@ impl McpServer {
             } else {
                 "Brief and context are loaded. You can respond to the user."
             },
-            "retrieval_observability": retrieval_observability_snapshot(&self.session_id, retrieval_fsm_policy())
+            "retrieval_observability": retrieval_observability
         });
 
         Ok(payload)
@@ -1679,6 +2118,12 @@ impl McpServer {
 
     async fn tool_mcp_status(&self, _args: &Map<String, Value>) -> Result<Value, ToolError> {
         let tool_surface = startup_tool_surface_contract();
+        let retrieval_observability =
+            retrieval_observability_snapshot(&self.session_id, retrieval_fsm_policy());
+        let rollout_guard = retrieval_observability
+            .get("rollout_guard")
+            .cloned()
+            .unwrap_or(Value::Null);
         Ok(json!({
             "server": {
                 "name": MCP_SERVER_NAME,
@@ -1695,10 +2140,11 @@ impl McpServer {
                 "fallback_first_tool": STARTUP_FALLBACK_FIRST_TOOL,
                 "startup_gate_mode": STARTUP_GATE_MODE,
                 "tool_surface": tool_surface,
-                "retrieval_observability": retrieval_observability_snapshot(&self.session_id, retrieval_fsm_policy())
+                "retrieval_observability": retrieval_observability
             },
             "feature_flags": {
-                "import_provider_tools_exposed": import_device_tools_enabled()
+                "import_provider_tools_exposed": import_device_tools_enabled(),
+                "determinism_rollout": rollout_guard
             }
         }))
     }
@@ -2706,8 +3152,21 @@ impl McpServer {
         } else {
             "blocked"
         };
-        let next_safe_action = if status == "ready" {
+        let retrieval_observability =
+            retrieval_observability_snapshot(&self.session_id, retrieval_fsm_policy());
+        let rollout_guard = retrieval_observability
+            .get("rollout_guard")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let rollout_abort_required = rollout_guard
+            .get("abort_required")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        let next_safe_action = if status == "ready" && !rollout_abort_required {
             "Startup contract satisfied. Proceed with normal task execution."
+        } else if status == "ready" {
+            "Rollout guard requires abort for this cohort. Switch KURA_MCP_DETERMINISM_ROLLOUT_MODE to shadow/off, inspect rollout_guard breaches, then re-run diagnostics."
         } else if status == "recoverable" {
             "Use recovered critical sections (startup_capsule, action_required, agent_brief, meta) before user-facing generation."
         } else {
@@ -2732,6 +3191,16 @@ impl McpServer {
                 "recovered_via_section_fetch": recovered_sections,
                 "unresolved": unresolved_sections
             },
+            "rollout_decision": {
+                "status": rollout_guard.get("status").cloned().unwrap_or(Value::Null),
+                "abort_required": rollout_abort_required,
+                "rollback_switch": {
+                    "env": DETERMINISM_ROLLOUT_MODE_ENV,
+                    "set_to": ["shadow", "off"],
+                    "abort_toggle_env": DETERMINISM_ABORT_ON_BREACH_ENV
+                }
+            },
+            "runtime_observability": retrieval_observability,
             "failures": fetch_failures,
             "artifacts": {
                 "mcp_status": {
@@ -8058,6 +8527,24 @@ mod tests {
             1
         );
         assert_eq!(snapshot["metrics"]["context_hit_rate"], 0.6667);
+        assert_eq!(snapshot["metrics"]["speculative_answer_rate"], 0.0);
+    }
+
+    #[test]
+    fn speculative_answer_rate_tracks_guard_signals() {
+        let sid = format!("test-speculative-rate-{}", Uuid::now_v7());
+        clear_retrieval_state(&sid);
+        let policy = RetrievalFsmPolicy::defaults();
+
+        observe_tool_call_start(&sid, "kura_projection_get", false);
+        observe_tool_call_start(&sid, "kura_projection_list", false);
+        record_speculative_answer_signal_for_session(&sid);
+        record_speculative_answer_signal_for_session(&sid);
+
+        let snapshot = retrieval_observability_snapshot(&sid, &policy);
+        assert_eq!(snapshot["metrics"]["total_tool_calls"], 2);
+        assert_eq!(snapshot["metrics"]["speculative_answer_signal_count"], 2);
+        assert_eq!(snapshot["metrics"]["speculative_answer_rate"], 1.0);
     }
 
     #[test]
@@ -8125,6 +8612,160 @@ mod tests {
         assert_eq!(
             snapshot["metrics"]["abort_reasons"]["repeated_reload_signature"],
             1
+        );
+    }
+
+    #[test]
+    fn determinism_rollout_policy_parser_uses_defaults_when_unset() {
+        let policy = parse_determinism_rollout_policy_from_raw(
+            None, None, None, None, None, None, None, None, None, None,
+        );
+        assert_eq!(policy.mode, DeterminismRolloutMode::Full);
+        assert_eq!(policy.canary_percent, DETERMINISM_DEFAULT_CANARY_PERCENT);
+        assert!(!policy.abort_on_breach);
+        assert_eq!(
+            policy.min_context_calls,
+            DETERMINISM_DEFAULT_MIN_CONTEXT_CALLS
+        );
+        assert_eq!(
+            policy.min_total_tool_calls,
+            DETERMINISM_DEFAULT_MIN_TOTAL_CALLS
+        );
+        assert_eq!(
+            policy.thresholds.overflow_rate_max,
+            DETERMINISM_DEFAULT_ABORT_OVERFLOW_RATE_MAX
+        );
+        assert!(!policy.configured_via_env);
+    }
+
+    #[test]
+    fn determinism_rollout_policy_parser_accepts_env_overrides() {
+        let policy = parse_determinism_rollout_policy_from_raw(
+            Some("canary".to_string()),
+            Some("25".to_string()),
+            Some("sid-a,sid-b".to_string()),
+            Some("true".to_string()),
+            Some("0.35".to_string()),
+            Some("0.1".to_string()),
+            Some("0.2".to_string()),
+            Some("0.0".to_string()),
+            Some("5".to_string()),
+            Some("15".to_string()),
+        );
+        assert_eq!(policy.mode, DeterminismRolloutMode::Canary);
+        assert_eq!(policy.canary_percent, 25);
+        assert!(policy.canary_allowlist.contains("sid-a"));
+        assert!(policy.canary_allowlist.contains("sid-b"));
+        assert!(policy.abort_on_breach);
+        assert_eq!(policy.min_context_calls, 5);
+        assert_eq!(policy.min_total_tool_calls, 15);
+        assert_eq!(policy.thresholds.overflow_rate_max, 0.35);
+        assert_eq!(policy.thresholds.critical_missing_rate_max, 0.1);
+        assert_eq!(policy.thresholds.blocked_rate_max, 0.2);
+        assert_eq!(policy.thresholds.speculative_answer_rate_max, 0.0);
+        assert!(policy.configured_via_env);
+    }
+
+    #[test]
+    fn determinism_rollout_canary_bucket_is_stable() {
+        let sid = "session-canary-stability";
+        let first = rollout_bucket_for_session(sid);
+        let second = rollout_bucket_for_session(sid);
+        assert_eq!(first, second);
+        assert!(first < 100);
+    }
+
+    #[test]
+    fn rollout_guard_recommends_abort_on_metric_breach() {
+        let policy = parse_determinism_rollout_policy_from_raw(
+            Some("full".to_string()),
+            Some("100".to_string()),
+            None,
+            Some("false".to_string()),
+            Some("0.3".to_string()),
+            Some("0.15".to_string()),
+            Some("0.25".to_string()),
+            Some("0.0".to_string()),
+            Some("3".to_string()),
+            Some("10".to_string()),
+        );
+        let mut state = RetrievalControlState::new(Instant::now());
+        state.context_calls = 12;
+        state.context_overflow_count = 8;
+        state.context_critical_missing_count = 4;
+        state.total_tool_calls = 20;
+        state
+            .abort_reasons
+            .insert("startup_context_required".to_string(), 7);
+
+        let guard = build_rollout_guard_payload_for_policy(&policy, "sid-rollout-abort", &state);
+        assert_eq!(guard["status"], "abort_recommended");
+        assert_eq!(guard["abort_required"], json!(false));
+        let breached = guard["breached_thresholds"]
+            .as_array()
+            .expect("breached_thresholds must be array");
+        assert!(
+            breached
+                .iter()
+                .filter_map(|entry| entry.get("metric").and_then(Value::as_str))
+                .any(|metric| metric == "overflow_rate")
+        );
+    }
+
+    #[test]
+    fn rollout_abort_guard_blocks_only_when_enforced_and_active() {
+        let policy = parse_determinism_rollout_policy_from_raw(
+            Some("canary".to_string()),
+            Some("0".to_string()),
+            Some("sid-canary".to_string()),
+            Some("true".to_string()),
+            Some("0.2".to_string()),
+            Some("0.2".to_string()),
+            Some("0.2".to_string()),
+            Some("0.0".to_string()),
+            Some("3".to_string()),
+            Some("10".to_string()),
+        );
+        let mut state = RetrievalControlState::new(Instant::now());
+        state.context_calls = 10;
+        state.context_overflow_count = 9;
+        state.context_critical_missing_count = 5;
+        state.total_tool_calls = 20;
+        state
+            .abort_reasons
+            .insert("startup_context_required".to_string(), 8);
+
+        let blocked = maybe_rollout_abort_guard_block_for_policy(
+            &policy,
+            "sid-canary",
+            "kura_projection_get",
+            &state,
+        );
+        assert!(
+            blocked.is_some(),
+            "active canary cohort must block on abort"
+        );
+
+        let exempt = maybe_rollout_abort_guard_block_for_policy(
+            &policy,
+            "sid-canary",
+            "kura_mcp_status",
+            &state,
+        );
+        assert!(
+            exempt.is_none(),
+            "diagnostic/status tools must stay callable"
+        );
+
+        let non_canary = maybe_rollout_abort_guard_block_for_policy(
+            &policy,
+            "sid-non-canary",
+            "kura_projection_get",
+            &state,
+        );
+        assert!(
+            non_canary.is_none(),
+            "non-canary cohort must not be blocked when mode=canary"
         );
     }
 }
