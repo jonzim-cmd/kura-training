@@ -379,6 +379,245 @@ def _default_regimen(name: str, *, start_day: date, display_name: str | None) ->
     }
 
 
+def _init_per_supplement_stats(
+    regimens: dict[str, dict[str, Any]],
+    taken_by_day: dict[date, set[str]],
+    skipped_by_day: dict[date, set[str]],
+) -> dict[str, dict[str, Any]]:
+    names = set(regimens.keys())
+    for day_names in taken_by_day.values():
+        names.update(day_names)
+    for day_names in skipped_by_day.values():
+        names.update(day_names)
+
+    stats: dict[str, dict[str, Any]] = {}
+    for name in names:
+        regimen = regimens.get(name)
+        stats[name] = {
+            "name": name,
+            "display_name": regimen.get("display_name", name) if regimen else name,
+            "expected_30d": 0,
+            "taken_explicit_30d": 0,
+            "taken_assumed_30d": 0,
+            "skipped_30d": 0,
+            "missing_30d": 0,
+            "paused_days_30d": 0,
+            "last_taken_date": None,
+            "last_skipped_date": None,
+        }
+    return stats
+
+
+def _update_last_event_dates(
+    per_supplement: dict[str, dict[str, Any]],
+    *,
+    taken_by_day: dict[date, set[str]],
+    skipped_by_day: dict[date, set[str]],
+) -> None:
+    for day, names in taken_by_day.items():
+        for name in names:
+            stats = per_supplement.get(name)
+            if stats is None:
+                continue
+            prev = stats.get("last_taken_date")
+            if not isinstance(prev, date) or day > prev:
+                stats["last_taken_date"] = day
+
+    for day, names in skipped_by_day.items():
+        for name in names:
+            stats = per_supplement.get(name)
+            if stats is None:
+                continue
+            prev = stats.get("last_skipped_date")
+            if not isinstance(prev, date) or day > prev:
+                stats["last_skipped_date"] = day
+
+
+def _build_daily_status(
+    *,
+    regimens: dict[str, dict[str, Any]],
+    taken_by_day: dict[date, set[str]],
+    skipped_by_day: dict[date, set[str]],
+    per_supplement: dict[str, dict[str, Any]],
+    window_start: date,
+    summary_start: date,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    summary = {
+        "expected_30d": 0,
+        "taken_explicit_30d": 0,
+        "taken_assumed_30d": 0,
+        "skipped_30d": 0,
+        "missing_30d": 0,
+        "paused_days_30d": 0,
+    }
+    daily_status: list[dict[str, Any]] = []
+
+    for day_offset in range(_WINDOW_DAYS):
+        local_day = window_start + timedelta(days=day_offset)
+        taken_today = set(taken_by_day.get(local_day, set()))
+        skipped_today = set(skipped_by_day.get(local_day, set()))
+
+        expected: list[str] = []
+        taken_explicit: list[str] = []
+        taken_assumed: list[str] = []
+        skipped: list[str] = []
+        missing: list[str] = []
+        paused: list[str] = []
+
+        regimen_active_count = 0
+        for name, regimen in sorted(regimens.items()):
+            state = _regimen_state_on_day(regimen, local_day)
+            expected_day = state == "active" and _is_expected_day(regimen, local_day)
+            if state == "active":
+                regimen_active_count += 1
+
+            if local_day >= summary_start and state == "paused":
+                per_supplement[name]["paused_days_30d"] += 1
+                summary["paused_days_30d"] += 1
+
+            if state == "paused":
+                paused.append(name)
+                continue
+            if state in {"not_started", "stopped"}:
+                continue
+            if not expected_day:
+                continue
+
+            expected.append(name)
+            if local_day >= summary_start:
+                per_supplement[name]["expected_30d"] += 1
+                summary["expected_30d"] += 1
+
+            if name in skipped_today:
+                skipped.append(name)
+                if local_day >= summary_start:
+                    per_supplement[name]["skipped_30d"] += 1
+                    summary["skipped_30d"] += 1
+            elif name in taken_today:
+                taken_explicit.append(name)
+                if local_day >= summary_start:
+                    per_supplement[name]["taken_explicit_30d"] += 1
+                    summary["taken_explicit_30d"] += 1
+            elif bool(regimen.get("assume_taken_by_default", True)):
+                taken_assumed.append(name)
+                if local_day >= summary_start:
+                    per_supplement[name]["taken_assumed_30d"] += 1
+                    summary["taken_assumed_30d"] += 1
+            else:
+                missing.append(name)
+                if local_day >= summary_start:
+                    per_supplement[name]["missing_30d"] += 1
+                    summary["missing_30d"] += 1
+
+        expected_set = set(expected)
+        extra_taken = sorted(taken_today - expected_set)
+        extra_skipped = sorted(skipped_today - expected_set)
+        if local_day >= summary_start:
+            for name in extra_taken:
+                per_supplement[name]["taken_explicit_30d"] += 1
+            for name in extra_skipped:
+                per_supplement[name]["skipped_30d"] += 1
+
+        expected_count = len(expected)
+        adherence_rate: float | None = None
+        if expected_count > 0:
+            adherence_rate = (len(taken_explicit) + len(taken_assumed)) / expected_count
+
+        daily_status.append(
+            {
+                "date": local_day.isoformat(),
+                "expected": sorted(expected),
+                "taken_explicit": sorted(taken_explicit),
+                "taken_assumed": sorted(taken_assumed),
+                "skipped": sorted(skipped),
+                "missing": sorted(missing),
+                "paused": sorted(paused),
+                "extra_taken": extra_taken,
+                "extra_skipped": extra_skipped,
+                "expected_count": expected_count,
+                "adherence_rate": round(adherence_rate, 3) if adherence_rate is not None else None,
+                "regimen_active_count": regimen_active_count,
+            }
+        )
+
+    return daily_status, summary
+
+
+def _build_regimen_views(
+    regimens: dict[str, dict[str, Any]],
+    *,
+    window_end: date,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    regimen_catalog: list[dict[str, Any]] = []
+    active_stack: list[dict[str, Any]] = []
+    for name, regimen in sorted(regimens.items()):
+        state = _regimen_state_on_day(regimen, window_end)
+        active_pause_window = _pause_window_on_day(regimen, window_end)
+        entry = {
+            "name": name,
+            "display_name": regimen.get("display_name", name),
+            "state": state,
+            "cadence": regimen.get("cadence", "daily"),
+            "times_per_day": regimen.get("times_per_day", 1),
+            "days_of_week": regimen.get("days_of_week"),
+            "dose_amount": regimen.get("dose_amount"),
+            "dose_unit": regimen.get("dose_unit"),
+            "start_date": regimen["start_date"].isoformat()
+            if isinstance(regimen.get("start_date"), date)
+            else None,
+            "pause_until": active_pause_window["until"].isoformat()
+            if isinstance(active_pause_window, dict) and isinstance(active_pause_window.get("until"), date)
+            else None,
+            "stopped_date": regimen["stopped_date"].isoformat()
+            if isinstance(regimen.get("stopped_date"), date)
+            else None,
+            "assume_taken_by_default": bool(regimen.get("assume_taken_by_default", True)),
+            "notes": regimen.get("notes"),
+        }
+        regimen_catalog.append(entry)
+        if state in {"active", "paused"}:
+            active_stack.append(entry)
+    return regimen_catalog, active_stack
+
+
+def _build_per_supplement_rows(
+    *,
+    per_supplement: dict[str, dict[str, Any]],
+    regimens: dict[str, dict[str, Any]],
+    window_end: date,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for name, stats in sorted(per_supplement.items(), key=lambda item: item[0]):
+        regimen = regimens.get(name)
+        current_state = _regimen_state_on_day(regimen, window_end) if regimen else "ad_hoc"
+        expected_30d = int(stats["expected_30d"])
+        taken_30d = int(stats["taken_explicit_30d"]) + int(stats["taken_assumed_30d"])
+        adherence_rate_30d = (taken_30d / expected_30d) if expected_30d > 0 else None
+        rows.append(
+            {
+                "name": name,
+                "display_name": stats["display_name"],
+                "state": current_state,
+                "expected_30d": expected_30d,
+                "taken_explicit_30d": int(stats["taken_explicit_30d"]),
+                "taken_assumed_30d": int(stats["taken_assumed_30d"]),
+                "skipped_30d": int(stats["skipped_30d"]),
+                "missing_30d": int(stats["missing_30d"]),
+                "paused_days_30d": int(stats["paused_days_30d"]),
+                "adherence_rate_30d": round(adherence_rate_30d, 3)
+                if adherence_rate_30d is not None
+                else None,
+                "last_taken_date": stats["last_taken_date"].isoformat()
+                if isinstance(stats.get("last_taken_date"), date)
+                else None,
+                "last_skipped_date": stats["last_skipped_date"].isoformat()
+                if isinstance(stats.get("last_skipped_date"), date)
+                else None,
+            }
+        )
+    return rows
+
+
 @projection_handler(
     "supplement.regimen.set",
     "supplement.regimen.paused",
@@ -846,222 +1085,43 @@ async def update_supplements(
     window_start = window_end - timedelta(days=_WINDOW_DAYS - 1)
     summary_start = window_end - timedelta(days=_SUMMARY_WINDOW_DAYS - 1)
 
-    per_supplement_names = set(regimens.keys())
-    for day_names in taken_by_day.values():
-        per_supplement_names.update(day_names)
-    for day_names in skipped_by_day.values():
-        per_supplement_names.update(day_names)
+    per_supplement = _init_per_supplement_stats(regimens, taken_by_day, skipped_by_day)
+    _update_last_event_dates(
+        per_supplement,
+        taken_by_day=taken_by_day,
+        skipped_by_day=skipped_by_day,
+    )
+    daily_status, summary = _build_daily_status(
+        regimens=regimens,
+        taken_by_day=taken_by_day,
+        skipped_by_day=skipped_by_day,
+        per_supplement=per_supplement,
+        window_start=window_start,
+        summary_start=summary_start,
+    )
+    regimen_catalog, active_stack = _build_regimen_views(regimens, window_end=window_end)
+    per_supplement_rows = _build_per_supplement_rows(
+        per_supplement=per_supplement,
+        regimens=regimens,
+        window_end=window_end,
+    )
 
-    per_supplement: dict[str, dict[str, Any]] = {}
-    for name in per_supplement_names:
-        regimen = regimens.get(name)
-        per_supplement[name] = {
-            "name": name,
-            "display_name": regimen.get("display_name", name) if regimen else name,
-            "expected_30d": 0,
-            "taken_explicit_30d": 0,
-            "taken_assumed_30d": 0,
-            "skipped_30d": 0,
-            "missing_30d": 0,
-            "paused_days_30d": 0,
-            "last_taken_date": None,
-            "last_skipped_date": None,
-        }
-
-    for day, names in taken_by_day.items():
-        for name in names:
-            stats = per_supplement.get(name)
-            if stats is None:
-                continue
-            prev = stats.get("last_taken_date")
-            if not isinstance(prev, date) or day > prev:
-                stats["last_taken_date"] = day
-
-    for day, names in skipped_by_day.items():
-        for name in names:
-            stats = per_supplement.get(name)
-            if stats is None:
-                continue
-            prev = stats.get("last_skipped_date")
-            if not isinstance(prev, date) or day > prev:
-                stats["last_skipped_date"] = day
-
-    summary_expected = 0
-    summary_taken_explicit = 0
-    summary_taken_assumed = 0
-    summary_skipped = 0
-    summary_missing = 0
-    summary_paused = 0
-    daily_status: list[dict[str, Any]] = []
-
-    for day_offset in range(_WINDOW_DAYS):
-        local_day = window_start + timedelta(days=day_offset)
-        taken_today = set(taken_by_day.get(local_day, set()))
-        skipped_today = set(skipped_by_day.get(local_day, set()))
-
-        expected: list[str] = []
-        taken_explicit: list[str] = []
-        taken_assumed: list[str] = []
-        skipped: list[str] = []
-        missing: list[str] = []
-        paused: list[str] = []
-
-        regimen_active_count = 0
-
-        for name, regimen in sorted(regimens.items()):
-            state = _regimen_state_on_day(regimen, local_day)
-            expected_day = state == "active" and _is_expected_day(regimen, local_day)
-            if state == "active":
-                regimen_active_count += 1
-
-            if local_day >= summary_start:
-                if state == "paused":
-                    per_supplement[name]["paused_days_30d"] += 1
-                    summary_paused += 1
-
-            if state == "paused":
-                paused.append(name)
-                continue
-            if state in {"not_started", "stopped"}:
-                continue
-            if not expected_day:
-                continue
-
-            expected.append(name)
-            if local_day >= summary_start:
-                per_supplement[name]["expected_30d"] += 1
-                summary_expected += 1
-
-            if name in skipped_today:
-                skipped.append(name)
-                if local_day >= summary_start:
-                    per_supplement[name]["skipped_30d"] += 1
-                    summary_skipped += 1
-            elif name in taken_today:
-                taken_explicit.append(name)
-                if local_day >= summary_start:
-                    per_supplement[name]["taken_explicit_30d"] += 1
-                    summary_taken_explicit += 1
-            elif bool(regimen.get("assume_taken_by_default", True)):
-                taken_assumed.append(name)
-                if local_day >= summary_start:
-                    per_supplement[name]["taken_assumed_30d"] += 1
-                    summary_taken_assumed += 1
-            else:
-                missing.append(name)
-                if local_day >= summary_start:
-                    per_supplement[name]["missing_30d"] += 1
-                    summary_missing += 1
-
-        expected_set = set(expected)
-        extra_taken = sorted(taken_today - expected_set)
-        extra_skipped = sorted(skipped_today - expected_set)
-        if local_day >= summary_start:
-            for name in extra_taken:
-                per_supplement[name]["taken_explicit_30d"] += 1
-            for name in extra_skipped:
-                per_supplement[name]["skipped_30d"] += 1
-
-        expected_count = len(expected)
-        adherence_rate: float | None = None
-        if expected_count > 0:
-            adherence_rate = (len(taken_explicit) + len(taken_assumed)) / expected_count
-
-        daily_status.append(
-            {
-                "date": local_day.isoformat(),
-                "expected": sorted(expected),
-                "taken_explicit": sorted(taken_explicit),
-                "taken_assumed": sorted(taken_assumed),
-                "skipped": sorted(skipped),
-                "missing": sorted(missing),
-                "paused": sorted(paused),
-                "extra_taken": extra_taken,
-                "extra_skipped": extra_skipped,
-                "expected_count": expected_count,
-                "adherence_rate": round(adherence_rate, 3) if adherence_rate is not None else None,
-                "regimen_active_count": regimen_active_count,
-            }
-        )
-
-    regimen_catalog: list[dict[str, Any]] = []
-    active_stack: list[dict[str, Any]] = []
-    for name, regimen in sorted(regimens.items()):
-        state = _regimen_state_on_day(regimen, window_end)
-        active_pause_window = _pause_window_on_day(regimen, window_end)
-        entry = {
-            "name": name,
-            "display_name": regimen.get("display_name", name),
-            "state": state,
-            "cadence": regimen.get("cadence", "daily"),
-            "times_per_day": regimen.get("times_per_day", 1),
-            "days_of_week": regimen.get("days_of_week"),
-            "dose_amount": regimen.get("dose_amount"),
-            "dose_unit": regimen.get("dose_unit"),
-            "start_date": regimen["start_date"].isoformat()
-            if isinstance(regimen.get("start_date"), date)
-            else None,
-            "pause_until": active_pause_window["until"].isoformat()
-            if isinstance(active_pause_window, dict) and isinstance(active_pause_window.get("until"), date)
-            else None,
-            "stopped_date": regimen["stopped_date"].isoformat()
-            if isinstance(regimen.get("stopped_date"), date)
-            else None,
-            "assume_taken_by_default": bool(regimen.get("assume_taken_by_default", True)),
-            "notes": regimen.get("notes"),
-        }
-        regimen_catalog.append(entry)
-        if state in {"active", "paused"}:
-            active_stack.append(entry)
-
-    per_supplement_rows: list[dict[str, Any]] = []
-    for name, stats in sorted(per_supplement.items(), key=lambda item: item[0]):
-        regimen = regimens.get(name)
-        current_state = _regimen_state_on_day(regimen, window_end) if regimen else "ad_hoc"
-        expected_30d = int(stats["expected_30d"])
-        taken_30d = int(stats["taken_explicit_30d"]) + int(stats["taken_assumed_30d"])
-        adherence_rate_30d = (
-            (taken_30d / expected_30d)
-            if expected_30d > 0
-            else None
-        )
-        per_supplement_rows.append(
-            {
-                "name": name,
-                "display_name": stats["display_name"],
-                "state": current_state,
-                "expected_30d": expected_30d,
-                "taken_explicit_30d": int(stats["taken_explicit_30d"]),
-                "taken_assumed_30d": int(stats["taken_assumed_30d"]),
-                "skipped_30d": int(stats["skipped_30d"]),
-                "missing_30d": int(stats["missing_30d"]),
-                "paused_days_30d": int(stats["paused_days_30d"]),
-                "adherence_rate_30d": round(adherence_rate_30d, 3)
-                if adherence_rate_30d is not None
-                else None,
-                "last_taken_date": stats["last_taken_date"].isoformat()
-                if isinstance(stats.get("last_taken_date"), date)
-                else None,
-                "last_skipped_date": stats["last_skipped_date"].isoformat()
-                if isinstance(stats.get("last_skipped_date"), date)
-                else None,
-            }
-        )
-
-    total_taken = summary_taken_explicit + summary_taken_assumed
+    total_taken = summary["taken_explicit_30d"] + summary["taken_assumed_30d"]
     adherence_summary = {
         "window_days": _SUMMARY_WINDOW_DAYS,
-        "expected_30d": summary_expected,
-        "taken_explicit_30d": summary_taken_explicit,
-        "taken_assumed_30d": summary_taken_assumed,
-        "skipped_30d": summary_skipped,
-        "missing_30d": summary_missing,
-        "paused_days_30d": summary_paused,
+        "expected_30d": summary["expected_30d"],
+        "taken_explicit_30d": summary["taken_explicit_30d"],
+        "taken_assumed_30d": summary["taken_assumed_30d"],
+        "skipped_30d": summary["skipped_30d"],
+        "missing_30d": summary["missing_30d"],
+        "paused_days_30d": summary["paused_days_30d"],
         "adherence_rate_30d": (
-            round(total_taken / summary_expected, 3) if summary_expected > 0 else None
+            round(total_taken / summary["expected_30d"], 3)
+            if summary["expected_30d"] > 0
+            else None
         ),
         "explicit_confirmation_rate_30d": (
-            round(summary_taken_explicit / total_taken, 3) if total_taken > 0 else None
+            round(summary["taken_explicit_30d"] / total_taken, 3) if total_taken > 0 else None
         ),
     }
 

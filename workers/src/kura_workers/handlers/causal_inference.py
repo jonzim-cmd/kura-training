@@ -72,6 +72,10 @@ POSITIVITY_ALERT_CODES = {
     "low_effective_sample_size",
     "positivity_violation",
 }
+SUPPLEMENT_EVIDENCE_OVERLAY_SCHEMA_VERSION = "supplement_evidence_overlay.v1"
+SUPPLEMENT_EVIDENCE_DISCLOSURE = (
+    "Observational evidence tier only. This is not a randomized or blinded efficacy proof."
+)
 
 
 def _median(values: list[float]) -> float:
@@ -143,6 +147,238 @@ def _supplement_adherence_intervention_flag(
         return 0
     threshold = max(0.8, baseline_adherence + 0.1)
     return 1 if current_adherence >= threshold else 0
+
+
+def _sample_date_key(sample: dict[str, Any]) -> date | None:
+    raw = sample.get("date")
+    if not isinstance(raw, str):
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _build_placebo_lead_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Negative-control design: tomorrow's treatment should not explain today's outcome."""
+    dated_samples = [sample for sample in samples if _sample_date_key(sample) is not None]
+    if len(dated_samples) < 3:
+        return []
+
+    ordered = sorted(dated_samples, key=lambda sample: _sample_date_key(sample) or date.min)
+    placebo_samples: list[dict[str, Any]] = []
+    for idx in range(len(ordered) - 1):
+        current = ordered[idx]
+        future = ordered[idx + 1]
+        placebo_samples.append(
+            {
+                "treated": int(_safe_float(future.get("treated"), default=0.0) >= 0.5),
+                "outcome": _safe_float(current.get("outcome"), default=0.0),
+                "confounders": dict(current.get("confounders") or {}),
+            }
+        )
+    return placebo_samples
+
+
+def _supplement_explicit_confirmation_rate(samples: list[dict[str, Any]]) -> float | None:
+    explicit_total = 0
+    assumed_total = 0
+    for sample in samples:
+        expected_count = _safe_int(sample.get("supplement_expected_count"), default=0)
+        if expected_count <= 0:
+            continue
+        explicit_total += max(
+            0,
+            _safe_int(sample.get("supplement_taken_explicit_count"), default=0),
+        )
+        assumed_total += max(
+            0,
+            _safe_int(sample.get("supplement_taken_assumed_count"), default=0),
+        )
+
+    denominator = explicit_total + assumed_total
+    if denominator <= 0:
+        return None
+    return explicit_total / denominator
+
+
+def _build_supplement_evidence_overlay(
+    readiness_samples: list[dict[str, Any]],
+    readiness_result: dict[str, Any],
+    *,
+    min_samples: int,
+    bootstrap_samples: int,
+    placebo_result_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    observed_samples = len(readiness_samples)
+    treated_samples = sum(
+        1 for sample in readiness_samples if int(_safe_float(sample.get("treated"), default=0.0)) == 1
+    )
+    control_samples = max(0, observed_samples - treated_samples)
+
+    diagnostics = readiness_result.get("diagnostics") if isinstance(readiness_result, dict) else {}
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    overlap = diagnostics.get("overlap")
+    overlap_width = _safe_float(
+        overlap.get("overlap_width") if isinstance(overlap, dict) else None,
+        default=0.0,
+    )
+
+    ci95 = (
+        readiness_result.get("effect", {}).get("ci95")
+        if isinstance(readiness_result, dict) and isinstance(readiness_result.get("effect"), dict)
+        else None
+    )
+    ci95_width = None
+    if isinstance(ci95, (list, tuple)) and len(ci95) == 2:
+        lower = _safe_float(ci95[0], default=float("nan"))
+        upper = _safe_float(ci95[1], default=float("nan"))
+        if math.isfinite(lower) and math.isfinite(upper) and upper > lower:
+            ci95_width = upper - lower
+
+    explicit_rate = _supplement_explicit_confirmation_rate(readiness_samples)
+
+    placebo_samples = _build_placebo_lead_samples(readiness_samples)
+    if placebo_result_override is not None:
+        placebo_result = placebo_result_override
+    elif placebo_samples:
+        placebo_result = _estimate_effect(
+            placebo_samples,
+            min_samples=max(16, min_samples // 2),
+            bootstrap_samples=max(80, bootstrap_samples // 2),
+        )
+    else:
+        placebo_result = {
+            "status": "insufficient_data",
+            "effect": None,
+            "diagnostics": {"observed_samples": len(placebo_samples)},
+            "caveats": [],
+        }
+
+    placebo_effect = placebo_result.get("effect") if isinstance(placebo_result, dict) else None
+    placebo_ci = placebo_effect.get("ci95") if isinstance(placebo_effect, dict) else None
+    placebo_mean = _safe_float(
+        placebo_effect.get("mean_ate") if isinstance(placebo_effect, dict) else None,
+        default=0.0,
+    )
+    placebo_flags_signal = False
+    if isinstance(placebo_ci, (list, tuple)) and len(placebo_ci) == 2:
+        placebo_lower = _safe_float(placebo_ci[0], default=0.0)
+        placebo_upper = _safe_float(placebo_ci[1], default=0.0)
+        placebo_flags_signal = (
+            (placebo_lower > 0.0 or placebo_upper < 0.0)
+            and abs(placebo_mean) >= 0.02
+        )
+
+    checks: list[dict[str, Any]] = []
+
+    sample_support_strong = (
+        observed_samples >= 84 and treated_samples >= 21 and control_samples >= 21
+    )
+    sample_support_suggestive = (
+        observed_samples >= 48 and treated_samples >= 12 and control_samples >= 12
+    )
+    checks.append(
+        {
+            "check": "sample_support",
+            "strong_pass": sample_support_strong,
+            "suggestive_pass": sample_support_suggestive,
+            "details": {
+                "observed_samples": observed_samples,
+                "treated_samples": treated_samples,
+                "control_samples": control_samples,
+                "thresholds": {
+                    "strong": {"observed": 84, "treated": 21, "control": 21},
+                    "suggestive": {"observed": 48, "treated": 12, "control": 12},
+                },
+            },
+        }
+    )
+
+    overlap_strong = overlap_width >= 0.25
+    overlap_suggestive = overlap_width >= 0.15
+    checks.append(
+        {
+            "check": "overlap",
+            "strong_pass": overlap_strong,
+            "suggestive_pass": overlap_suggestive,
+            "details": {
+                "overlap_width": round(overlap_width, 4),
+                "thresholds": {"strong": 0.25, "suggestive": 0.15},
+            },
+        }
+    )
+
+    precision_strong = ci95_width is not None and ci95_width <= 0.12
+    precision_suggestive = ci95_width is not None and ci95_width <= 0.2
+    checks.append(
+        {
+            "check": "precision",
+            "strong_pass": precision_strong,
+            "suggestive_pass": precision_suggestive,
+            "details": {
+                "ci95_width": round(ci95_width, 4) if ci95_width is not None else None,
+                "thresholds": {"strong_max": 0.12, "suggestive_max": 0.2},
+            },
+        }
+    )
+
+    explicit_strong = explicit_rate is not None and explicit_rate >= 0.6
+    explicit_suggestive = explicit_rate is not None and explicit_rate >= 0.4
+    checks.append(
+        {
+            "check": "explicit_confirmation",
+            "strong_pass": explicit_strong,
+            "suggestive_pass": explicit_suggestive,
+            "details": {
+                "explicit_rate": round(explicit_rate, 4) if explicit_rate is not None else None,
+                "thresholds": {"strong_min": 0.6, "suggestive_min": 0.4},
+            },
+        }
+    )
+
+    placebo_pass = not placebo_flags_signal
+    checks.append(
+        {
+            "check": "placebo_lead_sanity",
+            "strong_pass": placebo_pass,
+            "suggestive_pass": placebo_pass,
+            "details": {
+                "status": str(placebo_result.get("status") or "unknown")
+                if isinstance(placebo_result, dict)
+                else "unknown",
+                "mean_ate": round(placebo_mean, 4) if isinstance(placebo_result, dict) else None,
+                "ci95": placebo_ci if isinstance(placebo_ci, (list, tuple)) else None,
+                "flagged_signal": placebo_flags_signal,
+                "rule": "fail when lead placebo ci95 excludes 0 and |mean_ate| >= 0.02",
+            },
+        }
+    )
+
+    strong_passed = sum(1 for check in checks if bool(check.get("strong_pass")))
+    suggestive_passed = sum(1 for check in checks if bool(check.get("suggestive_pass")))
+    total_checks = len(checks)
+
+    if strong_passed == total_checks:
+        tier = "strong_observational"
+    elif suggestive_passed >= 4 and bool(readiness_result.get("status") == "ok"):
+        tier = "suggestive"
+    else:
+        tier = "exploratory"
+
+    return {
+        "schema_version": SUPPLEMENT_EVIDENCE_OVERLAY_SCHEMA_VERSION,
+        "policy_role": "advisory_only",
+        "tier": tier,
+        "summary": {
+            "strong_checks_passed": strong_passed,
+            "suggestive_checks_passed": suggestive_passed,
+            "total_checks": total_checks,
+        },
+        "checks": checks,
+        "disclosure": SUPPLEMENT_EVIDENCE_DISCLOSURE,
+    }
 
 
 def _normalize_objective_mode(value: Any) -> str:
@@ -702,6 +938,19 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
                             "phases": {"<phase>": "effect object"},
                         },
                     },
+                    "evidence_overlay": {
+                        "schema_version": "supplement_evidence_overlay.v1 (supplement_adherence only)",
+                        "policy_role": "advisory_only",
+                        "tier": "exploratory|suggestive|strong_observational",
+                        "summary": "object",
+                        "checks": [{
+                            "check": "string",
+                            "strong_pass": "boolean",
+                            "suggestive_pass": "boolean",
+                            "details": "object",
+                        }],
+                        "disclosure": "string",
+                    },
                 },
             },
             "population_prior": {
@@ -1225,9 +1474,22 @@ async def update_causal_inference(
 
                 base_sample = {
                     "treated": treated_flag,
+                    "date": str(current.get("date") or ""),
                     "confounders": dict(common_confounders),
                     "subgroup": segment_subgroup,
                     "phase": segment_phase,
+                    "supplement_expected_count": _safe_int(
+                        current.get("supplement_expected_count"),
+                        default=0,
+                    ),
+                    "supplement_taken_explicit_count": _safe_int(
+                        current.get("supplement_taken_explicit_count"),
+                        default=0,
+                    ),
+                    "supplement_taken_assumed_count": _safe_int(
+                        current.get("supplement_taken_assumed_count"),
+                        default=0,
+                    ),
                 }
 
                 outcome_bucket[OUTCOME_READINESS].append(
@@ -1523,6 +1785,13 @@ async def update_causal_inference(
                 OUTCOME_STRENGTH_PER_EXERCISE: strength_per_exercise_results,
             }
             intervention_payload["heterogeneous_effects"] = heterogeneous_effects
+            if name == "supplement_adherence":
+                intervention_payload["evidence_overlay"] = _build_supplement_evidence_overlay(
+                    readiness_samples,
+                    readiness_result,
+                    min_samples=min_samples,
+                    bootstrap_samples=bootstrap_samples,
+                )
             intervention_results[name] = intervention_payload
 
             outcome_windows[name] = {

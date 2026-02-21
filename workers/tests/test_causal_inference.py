@@ -6,6 +6,8 @@ from kura_workers.causal_inference import estimate_intervention_effect
 from kura_workers.handlers.causal_inference import (
     OUTCOME_STRENGTH_PER_EXERCISE,
     _append_result_caveats,
+    _build_placebo_lead_samples,
+    _build_supplement_evidence_overlay,
     _blend_population_prior_into_effect,
     _estimate_segment_slices,
     _index_supplement_daily_status,
@@ -284,3 +286,103 @@ def test_supplement_adherence_intervention_requires_expected_dose():
         )
         == 1
     )
+
+
+def test_build_placebo_lead_samples_uses_future_treatment_as_negative_control():
+    samples = [
+        {
+            "date": "2026-02-01",
+            "treated": 0,
+            "outcome": 0.5,
+            "confounders": {"baseline_readiness": 0.5},
+        },
+        {
+            "date": "2026-02-02",
+            "treated": 1,
+            "outcome": 0.55,
+            "confounders": {"baseline_readiness": 0.52},
+        },
+        {
+            "date": "2026-02-03",
+            "treated": 0,
+            "outcome": 0.51,
+            "confounders": {"baseline_readiness": 0.5},
+        },
+    ]
+    placebo = _build_placebo_lead_samples(samples)
+    assert len(placebo) == 2
+    assert placebo[0]["treated"] == 1
+    assert placebo[0]["outcome"] == 0.5
+    assert placebo[1]["treated"] == 0
+    assert placebo[1]["outcome"] == 0.55
+
+
+def test_supplement_evidence_overlay_marks_strong_observational_when_all_checks_pass():
+    readiness_samples = []
+    for idx in range(90):
+        readiness_samples.append(
+            {
+                "date": f"2026-03-{(idx % 28) + 1:02d}",
+                "treated": 1 if idx % 3 == 0 else 0,
+                "outcome": 0.62 + ((idx % 5) / 100.0),
+                "confounders": {"baseline_readiness": 0.52 + ((idx % 7) / 100.0)},
+                "supplement_expected_count": 1,
+                "supplement_taken_explicit_count": 1,
+                "supplement_taken_assumed_count": 0,
+            }
+        )
+
+    overlay = _build_supplement_evidence_overlay(
+        readiness_samples,
+        {
+            "status": "ok",
+            "effect": {"ci95": [0.02, 0.1], "mean_ate": 0.05},
+            "diagnostics": {"overlap": {"overlap_width": 0.31}},
+        },
+        min_samples=24,
+        bootstrap_samples=120,
+        placebo_result_override={
+            "status": "ok",
+            "effect": {"mean_ate": 0.004, "ci95": [-0.03, 0.04]},
+        },
+    )
+
+    assert overlay["tier"] == "strong_observational"
+    assert overlay["policy_role"] == "advisory_only"
+    assert overlay["summary"]["strong_checks_passed"] == overlay["summary"]["total_checks"]
+
+
+def test_supplement_evidence_overlay_downgrades_when_placebo_lead_is_flagged():
+    readiness_samples = [
+        {
+            "date": f"2026-02-{day:02d}",
+            "treated": 1 if day % 2 == 0 else 0,
+            "outcome": 0.5 + (day / 100.0),
+            "confounders": {"baseline_readiness": 0.5},
+            "supplement_expected_count": 1,
+            "supplement_taken_explicit_count": 0,
+            "supplement_taken_assumed_count": 1,
+        }
+        for day in range(1, 40)
+    ]
+
+    overlay = _build_supplement_evidence_overlay(
+        readiness_samples,
+        {
+            "status": "ok",
+            "effect": {"ci95": [0.01, 0.2], "mean_ate": 0.09},
+            "diagnostics": {"overlap": {"overlap_width": 0.23}},
+        },
+        min_samples=24,
+        bootstrap_samples=120,
+        placebo_result_override={
+            "status": "ok",
+            "effect": {"mean_ate": 0.03, "ci95": [0.01, 0.05]},
+        },
+    )
+
+    assert overlay["tier"] == "exploratory"
+    placebo_check = next(
+        check for check in overlay["checks"] if check["check"] == "placebo_lead_sanity"
+    )
+    assert placebo_check["strong_pass"] is False
