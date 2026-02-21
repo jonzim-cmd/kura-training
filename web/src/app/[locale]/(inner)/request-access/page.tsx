@@ -20,6 +20,7 @@ export default function RequestAccessPage() {
   const tn = useTranslations('nav');
   const locale = useLocale();
   const [submitted, setSubmitted] = useState(false);
+  const [accountExists, setAccountExists] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
@@ -74,6 +75,11 @@ export default function RequestAccessPage() {
       });
 
       if (res.ok || res.status === 201) {
+        const body = await res.json().catch(() => null);
+        if (body?.status === 'account_exists') {
+          setAccountExists(true);
+          return;
+        }
         setSubmitted(true);
         return;
       }
@@ -90,6 +96,22 @@ export default function RequestAccessPage() {
       setSubmitting(false);
     }
   };
+
+  if (accountExists) {
+    return (
+      <div className={styles.page}>
+        <div className={styles.container}>
+          <div className={styles.success}>
+            <h1 className={styles.successTitle}>{t('accountExistsTitle')}</h1>
+            <p className={styles.successText}>{t('accountExistsText')}</p>
+          </div>
+          <Link href="/login" className="kura-btn kura-btn--primary" style={{ width: '100%', textAlign: 'center' }}>
+            {tn('login')}
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   if (submitted) {
     return (

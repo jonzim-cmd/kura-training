@@ -75,6 +75,24 @@ pub async fn submit_access_request(
     crate::turnstile::require_turnstile_token(req.turnstile_token.as_deref(), "access_request")
         .await?;
 
+    // Check if account already exists
+    let account_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)")
+            .bind(&email)
+            .fetch_one(&state.db)
+            .await
+            .map_err(AppError::Database)?;
+
+    if account_exists {
+        return Ok((
+            StatusCode::OK,
+            Json(AccessRequestResponse {
+                status: "account_exists".to_string(),
+                message: "An account with this email already exists.".to_string(),
+            }),
+        ));
+    }
+
     let name = req
         .name
         .as_deref()

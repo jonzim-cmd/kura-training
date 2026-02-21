@@ -93,6 +93,8 @@
     "submitting": "Wird gesendet...",
     "successTitle": "Anfrage eingegangen",
     "successText": "Wir prüfen deine Anfrage und senden dir eine Einladung per E-Mail. Das dauert in der Regel ein bis zwei Tage.",
+    "accountExistsTitle": "Konto existiert bereits",
+    "accountExistsText": "Für diese E-Mail-Adresse gibt es bereits ein Konto. Du kannst dich direkt anmelden.",
     "alreadyHaveAccess": "Bereits Zugang?"
   },
   "start": {

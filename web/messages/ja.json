@@ -93,6 +93,8 @@
     "submitting": "送信中...",
     "successTitle": "リクエストを受け付けました",
     "successText": "リクエストを確認し、メールで招待をお送りします。通常1〜2日かかります。",
+    "accountExistsTitle": "アカウントは既に存在します",
+    "accountExistsText": "このメールアドレスのアカウントは既に存在します。直接ログインできます。",
     "alreadyHaveAccess": "既にアクセスをお持ちですか？"
   },
   "start": {

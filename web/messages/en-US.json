@@ -93,6 +93,8 @@
     "submitting": "Sending...",
     "successTitle": "Request received",
     "successText": "We'll review your request and send an invite to your email. This usually takes a day or two.",
+    "accountExistsTitle": "Account already exists",
+    "accountExistsText": "An account with this email already exists. You can log in directly.",
     "alreadyHaveAccess": "Already have access?"
   },
   "start": {
