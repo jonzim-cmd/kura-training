@@ -10,8 +10,9 @@
 #   - DOCKER_HOST set for rootless Docker (if applicable)
 #
 # Usage:
-#   ./scripts/deploy.sh              # Build + start
-#   ./scripts/deploy.sh --extract    # Also extract CLI binary for Fred
+#   ./scripts/deploy.sh                # Full deploy (core + web)
+#   ./scripts/deploy.sh --core-only    # Deploy only postgres/api/worker/proxy
+#   ./scripts/deploy.sh --extract      # Also extract CLI binary for Fred
 
 set -euo pipefail
 
@@ -29,6 +30,24 @@ NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
+
+CORE_ONLY=false
+EXTRACT_CLI=false
+
+while (($#)); do
+    case "$1" in
+        --core-only)
+            CORE_ONLY=true
+            ;;
+        --extract)
+            EXTRACT_CLI=true
+            ;;
+        *)
+            error "Unknown argument: $1 (supported: --core-only, --extract)"
+            ;;
+    esac
+    shift
+done
 
 # ── Preflight ─────────────────────────────────────────
 
@@ -50,8 +69,8 @@ require_env() {
     if [ -z "$trimmed" ]; then
         error "${key} is missing/empty in ${ENV_FILE}. ${hint}"
     fi
-    if [ "$value" = "CHANGE_ME" ]; then
-        error "${key} is still set to CHANGE_ME in ${ENV_FILE}. ${hint}"
+    if [ "$value" = "CHANGE_ME" ] || [ "$value" = "placeholder" ] || [ "$value" = "skip-web-build" ]; then
+        error "${key} uses a placeholder value in ${ENV_FILE}. ${hint}"
     fi
 }
 
@@ -74,6 +93,10 @@ require_env "KURA_FRONTEND_URL" "Set canonical web URL for auth/reset links (e.g
 require_env "KURA_CORS_ORIGINS" "Set allowed browser origins (comma-separated, e.g. https://withkura.com,https://www.withkura.com)."
 require_env "SUPABASE_URL" "Set Supabase project URL (e.g. https://<project-ref>.supabase.co)."
 require_env "SUPABASE_ANON_KEY" "Set Supabase anon key for social-login session validation."
+require_env "KURA_TURNSTILE_SECRET_KEY" "Set Cloudflare Turnstile secret key for backend token verification."
+if [ "$CORE_ONLY" = "false" ]; then
+    require_env "KURA_TURNSTILE_SITE_KEY" "Set Cloudflare Turnstile site key for web build/runtime."
+fi
 
 # Resolve target DB URL for migration drift preflight.
 TARGET_DATABASE_URL="${KURA_API_DATABASE_URL}"
@@ -86,8 +109,13 @@ fi
 
 # ── Build ─────────────────────────────────────────────
 
-info "Building Docker images..."
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build
+if [ "$CORE_ONLY" = "true" ]; then
+    info "Building core Docker images (kura-api/kura-worker/kura-proxy)..."
+    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build kura-api kura-worker kura-proxy
+else
+    info "Building Docker images..."
+    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build
+fi
 
 # Block deploy when DB migration state drifts from repository migrations.
 info "Running migration drift preflight..."
@@ -113,7 +141,9 @@ docker run --rm postgres:17 psql "$TARGET_DATABASE_URL" -Atqc "
 
 info "Starting core services..."
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d kura-postgres kura-api kura-worker
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d kura-web
+if [ "$CORE_ONLY" = "false" ]; then
+    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d kura-web
+fi
 
 # nginx resolves upstream IPs on startup. Force proxy recreation so it always picks
 # up the latest kura-api container IP after API recreation during deploy/rollback.
@@ -152,18 +182,20 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-info "Waiting for kura-web to become healthy..."
-for i in $(seq 1 30); do
-    if docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T kura-web \
-        node -e "fetch('http://localhost:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
-        info "kura-web is healthy!"
-        break
-    fi
-    if [ "$i" -eq 30 ]; then
-        warn "kura-web not healthy yet — it may still be starting. Check logs."
-    fi
-    sleep 1
-done
+if [ "$CORE_ONLY" = "false" ]; then
+    info "Waiting for kura-web to become healthy..."
+    for i in $(seq 1 30); do
+        if docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T kura-web \
+            node -e "fetch('http://localhost:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
+            info "kura-web is healthy!"
+            break
+        fi
+        if [ "$i" -eq 30 ]; then
+            warn "kura-web not healthy yet — it may still be starting. Check logs."
+        fi
+        sleep 1
+    done
+fi
 
 # ── Post-Deploy Recompute Hook ─────────────────────────
 # Trigger a one-shot nightly refit after successful deploy so projection logic
@@ -243,7 +275,7 @@ esac
 
 # ── Extract CLI binary ────────────────────────────────
 
-if [[ "${1:-}" == "--extract" ]]; then
+if [ "$EXTRACT_CLI" = "true" ]; then
     CLI_DEST="${CLI_DEST:-$HOME/moltbot/workspace/bin}"
     info "Extracting kura CLI binary to ${CLI_DEST}..."
     mkdir -p "$CLI_DEST"
