@@ -275,7 +275,7 @@
   },
   "setup": {
     "welcome": "Cool, dass du dabei bist!",
-    "welcomeSubtitle": "Verbinde als Nächstes deine KI mit Kura — danach kannst du direkt loslegen.",
+    "welcomeSubtitle": "Verbinde als Nächstes deine KI mit Kura. Wenn alles eingerichtet ist, sag deinem Agent: „Ich bin neu bei Kura. Erkläre mir, wie es funktioniert und mach das Onboarding mit mir.\u201C",
     "title": "Verbinde deine KI",
     "subtitle": "Wähle deine KI — wir zeigen dir Schritt für Schritt, wie es geht.",
     "cards": {

@@ -275,7 +275,7 @@
   },
   "setup": {
     "welcome": "Great to have you!",
-    "welcomeSubtitle": "Connect your AI to Kura next — then you're ready to go.",
+    "welcomeSubtitle": "Connect your AI to Kura next. Once set up, tell your agent: \"I'm new to Kura. Explain how it works and do the onboarding with me.\"",
     "title": "Connect your AI",
     "subtitle": "Choose your AI — we'll show you step by step how to set it up.",
     "cards": {

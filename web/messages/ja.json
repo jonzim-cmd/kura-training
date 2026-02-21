@@ -275,7 +275,7 @@
   },
   "setup": {
     "welcome": "ようこそ！",
-    "welcomeSubtitle": "次にAIをKuraに接続しましょう — すぐに始められます。",
+    "welcomeSubtitle": "次にAIをKuraに接続しましょう。設定が完了したら、エージェントにこう言ってみて：「Kuraを使いたい。使い方を教えて、オンボーディングをやって。」",
     "title": "AIを接続",
     "subtitle": "AIを選んでください。ステップごとにご案内します。",
     "cards": {
