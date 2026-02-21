@@ -363,11 +363,28 @@ pub struct AgentDecisionBrief {
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentActionRequiredContext {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AgentActionRequired {
     /// Machine-readable action type (e.g. "onboarding").
     pub action: String,
     /// Human-readable instruction for the agent.
     pub detail: String,
+    /// Optional structured context for decision-ready actions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<AgentActionRequiredContext>,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -2368,6 +2385,7 @@ fn extract_action_required(user_profile: &ProjectionResponse) -> Option<AgentAct
                         "New user. Introduce Kura and offer onboarding fork (Quick or Deep, Deep recommended) before anything else.",
                     )
                     .to_string(),
+                context: None,
             });
         }
     }
@@ -2457,6 +2475,7 @@ formal domain event => POST /v1/agent/observation-drafts/{{observation_id}}/prom
 {{\"event_type\":\"set.logged\",\"data\":{{...}}}}. Keep drafts open only with an explicit blocker.",
             observations_draft.open_count, oldest_age_label, draft_hygiene_status
         ),
+        context: None,
     })
 }
 
@@ -2465,6 +2484,9 @@ struct ConsistencyInboxItemView {
     item_id: String,
     severity: String,
     summary: String,
+    evidence_ref: String,
+    decision_ready: bool,
+    decision_reason: String,
 }
 
 #[derive(Debug, Clone)]
@@ -2476,10 +2498,32 @@ struct ConsistencyInboxPromptControlView {
 #[derive(Debug, Clone)]
 struct ConsistencyInboxView {
     pending_items_total: usize,
+    decision_items_total: usize,
     highest_severity: String,
     requires_human_decision: bool,
     items: Vec<ConsistencyInboxItemView>,
     prompt_control: ConsistencyInboxPromptControlView,
+}
+
+fn is_generic_consistency_summary(summary: &str) -> bool {
+    summary
+        .trim()
+        .to_lowercase()
+        .starts_with("open quality health issue detected")
+}
+
+fn fallback_consistency_item_decision_ready(
+    severity: &str,
+    summary: &str,
+    evidence_ref: &str,
+) -> bool {
+    if !matches!(severity, "critical" | "warning") {
+        return false;
+    }
+    if summary.trim().is_empty() || is_generic_consistency_summary(summary) {
+        return false;
+    }
+    !evidence_ref.trim().is_empty()
 }
 
 fn normalize_consistency_item_severity(value: Option<&Value>) -> String {
@@ -2510,11 +2554,31 @@ fn normalize_consistency_highest_severity(value: Option<&Value>) -> String {
 }
 
 fn parse_consistency_inbox_item_view(item: &Value) -> ConsistencyInboxItemView {
+    let severity = normalize_consistency_item_severity(item.get("severity"));
+    let summary = read_value_string(item.get("summary"))
+        .unwrap_or_else(|| "Offener Konsistenzfund".to_string());
+    let evidence_ref = read_value_string(item.get("evidence_ref")).unwrap_or_default();
+    let decision_ready = read_value_bool(item.get("decision_ready")).unwrap_or_else(|| {
+        fallback_consistency_item_decision_ready(
+            severity.as_str(),
+            summary.as_str(),
+            evidence_ref.as_str(),
+        )
+    });
+    let decision_reason = read_value_string(item.get("decision_reason")).unwrap_or_else(|| {
+        if decision_ready {
+            "explicit_user_decision_required".to_string()
+        } else {
+            "advisory_only_or_missing_context".to_string()
+        }
+    });
     ConsistencyInboxItemView {
         item_id: read_value_string(item.get("item_id")).unwrap_or_else(|| "unknown".to_string()),
-        severity: normalize_consistency_item_severity(item.get("severity")),
-        summary: read_value_string(item.get("summary"))
-            .unwrap_or_else(|| "Offener Konsistenzfund".to_string()),
+        severity,
+        summary,
+        evidence_ref,
+        decision_ready,
+        decision_reason,
     }
 }
 
@@ -2533,11 +2597,18 @@ fn parse_consistency_inbox_view(
         })
         .unwrap_or_default();
 
+    let decision_items_total =
+        read_value_usize(inbox_data.get("decision_items_total")).unwrap_or_else(|| {
+            items.iter().filter(|item| item.decision_ready).count()
+        });
+
     Some(ConsistencyInboxView {
-        pending_items_total: read_value_usize(inbox_data.get("pending_items_total")).unwrap_or(0),
+        pending_items_total: read_value_usize(inbox_data.get("pending_items_total"))
+            .unwrap_or(items.len()),
+        decision_items_total,
         highest_severity: normalize_consistency_highest_severity(inbox_data.get("highest_severity")),
         requires_human_decision: read_value_bool(inbox_data.get("requires_human_decision"))
-            .unwrap_or(false),
+            .unwrap_or(decision_items_total > 0),
         items,
         prompt_control: ConsistencyInboxPromptControlView {
             cooldown_active: read_value_bool(
@@ -2572,13 +2643,15 @@ fn build_consistency_action_required(
     if inbox.prompt_control.cooldown_active {
         return None;
     }
-    if inbox.pending_items_total == 0 {
+    if inbox.decision_items_total == 0 {
         return None;
     }
 
-    let top_item = inbox.items.iter().max_by_key(|item| {
-        consistency_item_severity_rank(item.severity.as_str())
-    });
+    let top_item = inbox
+        .items
+        .iter()
+        .filter(|item| item.decision_ready)
+        .max_by_key(|item| consistency_item_severity_rank(item.severity.as_str()));
 
     let (item_id, item_severity, item_summary) = match top_item {
         Some(item) => (
@@ -2592,15 +2665,31 @@ fn build_consistency_action_required(
             "Open consistency issue.".to_string(),
         ),
     };
+    let item_evidence_ref = top_item
+        .map(|item| item.evidence_ref.clone())
+        .unwrap_or_default();
+    let item_decision_reason = top_item
+        .map(|item| item.decision_reason.clone())
+        .unwrap_or_else(|| "explicit_user_decision_required".to_string());
 
     Some(AgentActionRequired {
         action: "consistency_review".to_string(),
         detail: format!(
-            "Open quality issues need proactive handling: {} pending (highest severity: {}). Ask max {} quality question in this turn. Start with item {item_id} ({item_severity}) and ask for an explicit decision: approve, decline, or snooze. Summary: {item_summary}. Record the decision by writing event type quality.consistency.review.decided with decision + item_ids + decision_source (optional snooze_until) so cooldown can apply.",
-            inbox.pending_items_total,
+            "Consistency decision required for item {item_id} ({item_severity}; highest severity: {}). Summary: {item_summary}. Evidence: {item_evidence_ref}. Ask max {} quality question in this turn and request one explicit decision: approve, decline, or snooze. Persist decision via event type quality.consistency.review.decided (item_ids + decision + decision_source; optional snooze_until).",
             inbox.highest_severity,
             inbox.prompt_control.max_quality_questions_per_turn,
         ),
+        context: Some(AgentActionRequiredContext {
+            item_id: Some(item_id),
+            severity: Some(item_severity),
+            summary: Some(item_summary),
+            evidence_ref: if item_evidence_ref.is_empty() {
+                None
+            } else {
+                Some(item_evidence_ref)
+            },
+            decision_reason: Some(item_decision_reason),
+        }),
     })
 }
 
@@ -4810,6 +4899,12 @@ fn build_decision_brief(
                     inbox.pending_items_total, inbox.highest_severity
                 ),
             );
+            if inbox.decision_items_total == 0 {
+                push_decision_brief_entry(
+                    &mut likely_true,
+                    "Aktuell sind offene Konsistenzfunde advisory; keine explizite User-Entscheidung erforderlich.",
+                );
+            }
         }
 
         let mut highlighted_items = 0usize;
@@ -4821,9 +4916,7 @@ fn build_decision_brief(
                 &mut recent_person_failures,
                 format!("{}: {}", item.severity.to_uppercase(), item.summary),
             );
-            if inbox.requires_human_decision
-                && matches!(item.severity.as_str(), "critical" | "warning")
-            {
+            if item.decision_ready {
                 push_decision_brief_entry(
                     &mut high_impact_decisions,
                     format!("{}: {}", item.severity.to_uppercase(), item.summary),
@@ -9269,6 +9362,7 @@ mod tests {
         let primary = Some(super::AgentActionRequired {
             action: "onboarding".to_string(),
             detail: "Onboarding zuerst".to_string(),
+            context: None,
         });
         let draft_context = super::AgentObservationsDraftContext {
             schema_version: super::OBSERVATION_DRAFT_CONTEXT_SCHEMA_VERSION.to_string(),
@@ -9293,12 +9387,17 @@ mod tests {
             Utc::now(),
             json!({
                 "pending_items_total": 2,
+                "decision_items_total": 1,
                 "highest_severity": "warning",
+                "highest_decision_severity": "warning",
                 "requires_human_decision": true,
                 "items": [{
                     "item_id": "ci-qh-1",
                     "severity": "warning",
-                    "summary": "Tempo field missing in structured set payload."
+                    "summary": "Tempo field missing in structured set payload.",
+                    "evidence_ref": "quality_health:INV-008:tempo_missing",
+                    "decision_ready": true,
+                    "decision_reason": "explicit_user_decision_required"
                 }],
                 "prompt_control": {
                     "cooldown_active": false,
@@ -9313,6 +9412,21 @@ mod tests {
         assert!(action.detail.contains("Ask max 1 quality question"));
         assert!(action.detail.contains("ci-qh-1"));
         assert!(action.detail.contains("approve, decline, or snooze"));
+        let context = action.context.expect("context should include decision-ready details");
+        assert_eq!(context.item_id.as_deref(), Some("ci-qh-1"));
+        assert_eq!(context.severity.as_deref(), Some("warning"));
+        assert_eq!(
+            context.summary.as_deref(),
+            Some("Tempo field missing in structured set payload.")
+        );
+        assert_eq!(
+            context.evidence_ref.as_deref(),
+            Some("quality_health:INV-008:tempo_missing")
+        );
+        assert_eq!(
+            context.decision_reason.as_deref(),
+            Some("explicit_user_decision_required")
+        );
     }
 
     #[test]
@@ -9323,16 +9437,50 @@ mod tests {
             Utc::now(),
             json!({
                 "pending_items_total": 1,
+                "decision_items_total": 1,
                 "highest_severity": "critical",
+                "highest_decision_severity": "critical",
                 "requires_human_decision": true,
                 "items": [{
                     "item_id": "ci-qh-2",
                     "severity": "critical",
-                    "summary": "Potential contradiction in saved values."
+                    "summary": "Potential contradiction in saved values.",
+                    "evidence_ref": "evt-quality-critical-1",
+                    "decision_ready": true,
+                    "decision_reason": "explicit_user_decision_required"
                 }],
                 "prompt_control": {
                     "cooldown_active": true,
                     "snooze_until": "2026-02-21T20:00:00Z"
+                }
+            }),
+        );
+
+        assert!(super::build_consistency_action_required(Some(&inbox)).is_none());
+    }
+
+    #[test]
+    fn consistency_action_required_contract_skips_advisory_items() {
+        let inbox = make_projection_response(
+            "consistency_inbox",
+            "overview",
+            Utc::now(),
+            json!({
+                "pending_items_total": 1,
+                "decision_items_total": 0,
+                "highest_severity": "info",
+                "highest_decision_severity": "none",
+                "requires_human_decision": false,
+                "items": [{
+                    "item_id": "ci-advisory-1",
+                    "severity": "info",
+                    "summary": "Open quality health issue detected (INV-010:minor_signal).",
+                    "evidence_ref": "quality_health:INV-010:minor_signal",
+                    "decision_ready": false,
+                    "decision_reason": "advisory_only_severity_info"
+                }],
+                "prompt_control": {
+                    "cooldown_active": false
                 }
             }),
         );
@@ -9357,12 +9505,17 @@ mod tests {
             Utc::now(),
             json!({
                 "pending_items_total": 1,
+                "decision_items_total": 1,
                 "highest_severity": "warning",
+                "highest_decision_severity": "warning",
                 "requires_human_decision": true,
                 "items": [{
                     "item_id": "ci-qh-3",
                     "severity": "warning",
-                    "summary": "Open quality health issue."
+                    "summary": "Mismatch between intended and persisted value in latest set.",
+                    "evidence_ref": "evt-123",
+                    "decision_ready": true,
+                    "decision_reason": "explicit_user_decision_required"
                 }],
                 "prompt_control": {
                     "cooldown_active": false
@@ -16443,7 +16596,9 @@ mod tests {
         let inbox = make_inbox_projection(json!({
             "schema_version": 1,
             "pending_items_total": 2,
+            "decision_items_total": 1,
             "highest_severity": "warning",
+            "highest_decision_severity": "warning",
             "requires_human_decision": true,
             "items": [],
             "prompt_control": {}
@@ -16452,7 +16607,9 @@ mod tests {
         assert_eq!(json_val["projection_type"], "consistency_inbox");
         assert_eq!(json_val["key"], "overview");
         assert_eq!(json_val["data"]["requires_human_decision"], true);
+        assert_eq!(json_val["data"]["decision_items_total"], 1);
         assert_eq!(json_val["data"]["highest_severity"], "warning");
+        assert_eq!(json_val["data"]["highest_decision_severity"], "warning");
     }
 
     #[test]
@@ -16463,14 +16620,18 @@ mod tests {
             "schema_version": 1,
             "generated_at": "2026-02-14T12:00:00Z",
             "pending_items_total": 1,
+            "decision_items_total": 1,
             "highest_severity": "critical",
+            "highest_decision_severity": "critical",
             "requires_human_decision": true,
             "items": [{
                 "item_id": "ci-test-approval",
                 "severity": "critical",
+                "decision_ready": true,
+                "decision_reason": "explicit_user_decision_required",
                 "summary": "Values may not match what was intended.",
                 "recommended_action": "Review and confirm.",
-                "evidence_ref": "",
+                "evidence_ref": "evt-999",
                 "first_seen": "2026-02-13T00:00:00Z"
             }],
             "prompt_control": {
@@ -16494,6 +16655,14 @@ mod tests {
             item.get("severity").is_some(),
             "severity required for prioritization"
         );
+        assert_eq!(
+            item["decision_ready"], true,
+            "decision_ready should be explicit for decision path"
+        );
+        assert_eq!(
+            item["decision_reason"], "explicit_user_decision_required",
+            "decision_reason should explain escalation"
+        );
         assert!(
             item.get("summary").is_some(),
             "summary required for user-facing question"
@@ -16511,14 +16680,18 @@ mod tests {
             "schema_version": 1,
             "generated_at": "2026-02-14T12:00:00Z",
             "pending_items_total": 1,
+            "decision_items_total": 1,
             "highest_severity": "warning",
+            "highest_decision_severity": "warning",
             "requires_human_decision": true,
             "items": [{
                 "item_id": "ci-abc123",
                 "severity": "warning",
+                "decision_ready": true,
+                "decision_reason": "explicit_user_decision_required",
                 "summary": "Test finding",
                 "recommended_action": "Review",
-                "evidence_ref": "",
+                "evidence_ref": "evt-abc123",
                 "first_seen": "2026-02-13T10:00:00Z"
             }],
             "prompt_control": {
@@ -16590,7 +16763,9 @@ mod tests {
         let inbox = make_inbox_projection(json!({
             "schema_version": 1,
             "pending_items_total": 0,
+            "decision_items_total": 0,
             "highest_severity": "none",
+            "highest_decision_severity": "none",
             "requires_human_decision": false,
             "items": []
         }));
@@ -16679,12 +16854,17 @@ mod tests {
         let inbox = make_inbox_projection(json!({
             "schema_version": 1,
             "pending_items_total": 1,
+            "decision_items_total": 1,
             "highest_severity": "critical",
+            "highest_decision_severity": "critical",
             "requires_human_decision": true,
             "items": [{
                 "item_id": "ci-critical-1",
                 "severity": "critical",
+                "decision_ready": true,
+                "decision_reason": "explicit_user_decision_required",
                 "summary": "Recent values may not match intended set data.",
+                "evidence_ref": "quality_health:INV-critical-1",
                 "recommended_action": "Review and confirm the values."
             }]
         }));
@@ -16804,12 +16984,17 @@ mod tests {
         let inbox = make_inbox_projection(json!({
             "schema_version": 1,
             "pending_items_total": 1,
+            "decision_items_total": 1,
             "highest_severity": "warning",
+            "highest_decision_severity": "warning",
             "requires_human_decision": true,
             "items": [{
                 "item_id": "ci-warning-1",
                 "severity": "warning",
+                "decision_ready": true,
+                "decision_reason": "explicit_user_decision_required",
                 "summary": "Recent load values may be inconsistent.",
+                "evidence_ref": "quality_health:INV-warning-1",
                 "recommended_action": "Review and confirm."
             }]
         }));
@@ -16885,17 +17070,25 @@ mod tests {
         let inbox = make_inbox_projection(json!({
             "schema_version": 1,
             "pending_items_total": 2,
+            "decision_items_total": 2,
             "highest_severity": "warning",
+            "highest_decision_severity": "warning",
             "requires_human_decision": true,
             "items": [{
                 "item_id": "ci-warning-2",
                 "severity": "warning",
+                "decision_ready": true,
+                "decision_reason": "explicit_user_decision_required",
                 "summary": "Recent load values may be inconsistent.",
+                "evidence_ref": "quality_health:INV-warning-2",
                 "recommended_action": "Review and confirm."
             }, {
                 "item_id": "ci-warning-3",
                 "severity": "warning",
+                "decision_ready": true,
+                "decision_reason": "explicit_user_decision_required",
                 "summary": "Some intensity anchors are missing.",
+                "evidence_ref": "quality_health:INV-warning-3",
                 "recommended_action": "Confirm or correct."
             }]
         }));

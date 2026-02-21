@@ -52,6 +52,8 @@ _QUALITY_HEALTH_TO_INBOX_SEVERITY = {
     "low": "info",
     "info": "info",
 }
+_DECISION_READY_SEVERITIES = {"critical", "warning"}
+_GENERIC_QUALITY_HEALTH_SUMMARY_PREFIX = "open quality health issue detected"
 
 
 def _normalize_inbox_severity(value: Any) -> str:
@@ -97,6 +99,24 @@ def _as_utc_datetime(value: Any) -> datetime | None:
             return parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc)
     return None
+
+
+def _derive_item_decision_state(item: dict[str, Any]) -> tuple[bool, str]:
+    severity = str(item.get("severity") or "info").strip().lower()
+    if severity not in _DECISION_READY_SEVERITIES:
+        return False, "advisory_only_severity_info"
+
+    summary = str(item.get("summary") or "").strip()
+    if not summary:
+        return False, "missing_summary"
+    if summary.lower().startswith(_GENERIC_QUALITY_HEALTH_SUMMARY_PREFIX):
+        return False, "generic_summary_requires_context"
+
+    evidence_ref = str(item.get("evidence_ref") or "").strip()
+    if not evidence_ref:
+        return False, "missing_evidence_ref"
+
+    return True, "explicit_user_decision_required"
 
 
 def _build_cooldown_map(
@@ -334,8 +354,20 @@ def build_consistency_inbox(
     # Sort by severity (critical first).
     items.sort(key=lambda i: -_SEVERITY_ORDER.get(i.get("severity", "info"), 0))
 
-    # Escalate whenever unresolved items remain visible to the agent.
-    requires_human_decision = len(items) > 0
+    enriched_items: list[dict[str, Any]] = []
+    decision_items: list[dict[str, Any]] = []
+    for item in items:
+        decision_ready, decision_reason = _derive_item_decision_state(item)
+        enriched = {
+            **item,
+            "decision_ready": decision_ready,
+            "decision_reason": decision_reason,
+        }
+        enriched_items.append(enriched)
+        if decision_ready:
+            decision_items.append(enriched)
+
+    requires_human_decision = len(decision_items) > 0
 
     prompt_control = _build_prompt_control(
         decisions,
@@ -346,10 +378,12 @@ def build_consistency_inbox(
     return {
         "schema_version": CONSISTENCY_INBOX_SCHEMA_VERSION,
         "generated_at": now.isoformat(),
-        "pending_items_total": len(items),
-        "highest_severity": _highest_severity(items),
+        "pending_items_total": len(enriched_items),
+        "decision_items_total": len(decision_items),
+        "highest_severity": _highest_severity(enriched_items),
+        "highest_decision_severity": _highest_severity(decision_items),
         "requires_human_decision": requires_human_decision,
-        "items": items,
+        "items": enriched_items,
         "prompt_control": prompt_control,
     }
 

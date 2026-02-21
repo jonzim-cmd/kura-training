@@ -68,6 +68,7 @@ const STARTUP_FALLBACK_FIRST_TOOL: &str = "kura_agent_context";
 const STARTUP_GATE_MODE: &str = "context_required_brief_preferred";
 const STARTUP_ONBOARDING_NEXT_ACTION: &str = "Respond with first-contact opening sequence and offer onboarding path fork (Quick/Deep, Deep recommended; allow skip/log-now).";
 const OVERFLOW_ACTION_REQUIRED_DETAIL_MAX_CHARS: usize = 320;
+const OVERFLOW_ACTION_REQUIRED_CONTEXT_TEXT_MAX_CHARS: usize = 200;
 const OVERFLOW_MUST_COVER_INTENTS_MAX_ITEMS: usize = 10;
 const OVERFLOW_COVERAGE_GAPS_MAX_ITEMS: usize = 10;
 const OVERFLOW_SECTION_PREVIEW_MAX_ITEMS: usize = 8;
@@ -5817,6 +5818,35 @@ fn truncate_text_for_overflow(value: &str, max_chars: usize) -> String {
     truncated
 }
 
+fn compact_action_required_context_for_overflow(value: Option<&Value>) -> Option<Value> {
+    let Some(context_obj) = value.and_then(Value::as_object) else {
+        return None;
+    };
+    let mut compact_context = Map::new();
+    for key in [
+        "item_id",
+        "severity",
+        "summary",
+        "evidence_ref",
+        "decision_reason",
+    ] {
+        if let Some(text) = context_obj.get(key).and_then(Value::as_str) {
+            compact_context.insert(
+                key.to_string(),
+                Value::String(truncate_text_for_overflow(
+                    text,
+                    OVERFLOW_ACTION_REQUIRED_CONTEXT_TEXT_MAX_CHARS,
+                )),
+            );
+        }
+    }
+    if compact_context.is_empty() {
+        None
+    } else {
+        Some(Value::Object(compact_context))
+    }
+}
+
 fn compact_action_required_for_overflow(value: &Value) -> Value {
     let Some(obj) = value.as_object() else {
         return Value::Null;
@@ -5834,10 +5864,13 @@ fn compact_action_required_for_overflow(value: &Value) -> Value {
         .and_then(Value::as_str)
         .map(|raw| truncate_text_for_overflow(raw, OVERFLOW_ACTION_REQUIRED_DETAIL_MAX_CHARS))
         .unwrap_or_default();
-    json!({
-        "action": action,
-        "detail": detail
-    })
+    let mut compact = Map::new();
+    compact.insert("action".to_string(), Value::String(action));
+    compact.insert("detail".to_string(), Value::String(detail));
+    if let Some(context) = compact_action_required_context_for_overflow(obj.get("context")) {
+        compact.insert("context".to_string(), context);
+    }
+    Value::Object(compact)
 }
 
 fn compact_agent_brief_for_overflow(value: &Value) -> Value {
@@ -8307,6 +8340,39 @@ mod tests {
     }
 
     #[test]
+    fn compact_action_required_for_overflow_preserves_decision_context() {
+        let large_summary = "x".repeat(OVERFLOW_ACTION_REQUIRED_CONTEXT_TEXT_MAX_CHARS * 3);
+        let compact = compact_action_required_for_overflow(&json!({
+            "action": "consistency_review",
+            "detail": "Consistency decision required.",
+            "context": {
+                "item_id": "ci-be602fdccf87a056",
+                "severity": "warning",
+                "summary": large_summary,
+                "evidence_ref": "quality_health:INV-008:tempo_missing",
+                "decision_reason": "explicit_user_decision_required",
+            }
+        }));
+
+        assert_eq!(compact["action"], "consistency_review");
+        assert_eq!(
+            compact["context"]["item_id"],
+            "ci-be602fdccf87a056"
+        );
+        assert_eq!(compact["context"]["severity"], "warning");
+        assert_eq!(
+            compact["context"]["evidence_ref"],
+            "quality_health:INV-008:tempo_missing"
+        );
+        assert_eq!(
+            compact["context"]["decision_reason"],
+            "explicit_user_decision_required"
+        );
+        let summary = compact["context"]["summary"].as_str().unwrap_or_default();
+        assert!(summary.chars().count() <= OVERFLOW_ACTION_REQUIRED_CONTEXT_TEXT_MAX_CHARS + 3);
+    }
+
+    #[test]
     fn agent_context_overflow_preserves_startup_capsule_without_brief_sections() {
         let huge = "x".repeat(TOOL_ENVELOPE_MAX_BYTES * 2);
         let envelope = json!({
@@ -8382,7 +8448,14 @@ mod tests {
                     "body": {
                         "action_required": {
                             "action": "onboarding",
-                            "detail": huge
+                            "detail": huge,
+                            "context": {
+                                "item_id": "ci-critical-1",
+                                "severity": "critical",
+                                "summary": huge,
+                                "evidence_ref": "quality_health:INV-critical-1",
+                                "decision_reason": "explicit_user_decision_required"
+                            }
                         },
                         "agent_brief": {
                             "schema_version": "agent_brief.v1",
@@ -8434,6 +8507,15 @@ mod tests {
             "onboarding"
         );
         assert_eq!(
+            limited["data"]["response"]["body"]["action_required"]["context"]["item_id"],
+            "ci-critical-1"
+        );
+        assert_eq!(
+            limited["data"]["response"]["body"]["startup_capsule"]["action_required"]["context"]
+                ["item_id"],
+            "ci-critical-1"
+        );
+        assert_eq!(
             limited["data"]["response"]["body"]["agent_brief"]["schema_version"],
             "agent_brief.v1"
         );
@@ -8457,6 +8539,13 @@ mod tests {
             .as_str()
             .unwrap_or_default();
         assert!(detail.chars().count() <= OVERFLOW_ACTION_REQUIRED_DETAIL_MAX_CHARS + 3);
+        let context_summary = limited["data"]["response"]["body"]["action_required"]["context"]
+            ["summary"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            context_summary.chars().count() <= OVERFLOW_ACTION_REQUIRED_CONTEXT_TEXT_MAX_CHARS + 3
+        );
         assert_eq!(
             limited["data"]["response"]["body"]["overflow"]["critical_missing_sections"],
             json!([])

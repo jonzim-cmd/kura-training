@@ -2001,7 +2001,9 @@ def _get_agent_behavior() -> dict[str, Any]:
                 "default_snooze_hours": CONSISTENCY_REVIEW_DEFAULT_SNOOZE_HOURS,
                 "surfacing_rules": [
                     "On next normal chat contact, check consistency_inbox/overview.",
-                    "If requires_human_decision=true, surface highest-severity item first.",
+                    "Only ask approval questions for items with decision_ready=true.",
+                    "If requires_human_decision=true, surface highest-severity decision-ready item first.",
+                    "If decision_ready=false, keep item as advisory and avoid forced user decision.",
                     "Frame as brief observation + one decision question.",
                     "Do not interrupt active training logging for consistency items.",
                 ],
@@ -2050,12 +2052,16 @@ def _get_agent_behavior() -> dict[str, Any]:
                         "schema_version": "int",
                         "generated_at": "ISO 8601 timestamp",
                         "pending_items_total": "int",
+                        "decision_items_total": "int",
                         "highest_severity": "'critical' | 'warning' | 'info' | 'none'",
+                        "highest_decision_severity": "'critical' | 'warning' | 'info' | 'none'",
                         "requires_human_decision": "bool",
                         "items": [
                             {
                                 "item_id": "string (stable, deterministic)",
                                 "severity": "'critical' | 'warning' | 'info'",
+                                "decision_ready": "bool",
+                                "decision_reason": "string",
                                 "summary": "string (1-2 sentences, user-facing)",
                                 "recommended_action": "string",
                                 "evidence_ref": "string (event_id or projection ref)",

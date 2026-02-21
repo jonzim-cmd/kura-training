@@ -26,11 +26,15 @@ def test_consistency_inbox_includes_quality_health_issue_and_marks_action_requir
     )
 
     assert result["pending_items_total"] == 1
+    assert result["decision_items_total"] == 1
     assert result["highest_severity"] == "warning"
+    assert result["highest_decision_severity"] == "warning"
     assert result["requires_human_decision"] is True
     item = result["items"][0]
     assert item["source_type"] == "quality_health_issue"
     assert item["issue_id"] == "INV-008:tempo_missing"
+    assert item["decision_ready"] is True
+    assert item["decision_reason"] == "explicit_user_decision_required"
     assert item["recommended_action"].startswith("Ask for explicit user decision")
 
 
@@ -72,6 +76,7 @@ def test_consistency_inbox_respects_snooze_cooldown_for_quality_health_issue():
     )
 
     assert result["pending_items_total"] == 0
+    assert result["decision_items_total"] == 0
     assert result["requires_human_decision"] is False
     assert result["prompt_control"]["cooldown_active"] is True
 
@@ -96,5 +101,66 @@ def test_consistency_inbox_escalates_low_severity_quality_issue_when_open():
     )
 
     assert result["pending_items_total"] == 1
+    assert result["decision_items_total"] == 0
     assert result["highest_severity"] == "info"
-    assert result["requires_human_decision"] is True
+    assert result["highest_decision_severity"] == "none"
+    assert result["requires_human_decision"] is False
+    item = result["items"][0]
+    assert item["decision_ready"] is False
+    assert item["decision_reason"] == "advisory_only_severity_info"
+
+
+def test_consistency_inbox_keeps_high_severity_without_detail_as_advisory():
+    now = datetime(2026, 2, 21, 12, 0, tzinfo=timezone.utc)
+    result = build_consistency_inbox(
+        quality_events=[],
+        user_id="user-3",
+        decisions=[],
+        quality_health_issues=[
+            {
+                "issue_id": "INV-999:opaque",
+                "severity": "high",
+                "status": "open",
+                "detected_at": "2026-02-21T11:30:00Z",
+            }
+        ],
+        now=now,
+    )
+
+    assert result["pending_items_total"] == 1
+    assert result["decision_items_total"] == 0
+    assert result["highest_severity"] == "critical"
+    assert result["highest_decision_severity"] == "none"
+    assert result["requires_human_decision"] is False
+    assert result["items"][0]["decision_reason"] == "generic_summary_requires_context"
+
+
+def test_consistency_inbox_keeps_info_protocol_mismatch_as_advisory():
+    now = datetime(2026, 2, 21, 12, 0, tzinfo=timezone.utc)
+    result = build_consistency_inbox(
+        quality_events=[
+            {
+                "id": "evt-1",
+                "event_type": "quality.save_claim.checked",
+                "timestamp": now.isoformat(),
+                "data": {
+                    "mismatch_severity": "info",
+                    "mismatch_weight": 0.1,
+                    "mismatch_reason_codes": [
+                        "proof_verification_failed_but_echo_complete"
+                    ],
+                },
+            }
+        ],
+        user_id="user-4",
+        decisions=[],
+        quality_health_issues=[],
+        now=now,
+    )
+
+    assert result["pending_items_total"] == 1
+    assert result["decision_items_total"] == 0
+    assert result["highest_severity"] == "info"
+    assert result["highest_decision_severity"] == "none"
+    assert result["requires_human_decision"] is False
+    assert result["items"][0]["decision_reason"] == "advisory_only_severity_info"
