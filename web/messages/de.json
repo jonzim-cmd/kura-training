@@ -398,7 +398,7 @@
     },
     "openclaw": {
       "title": "OpenClaw",
-      "intro": "OpenClaw ist ein KI-Agent — sag ihm einfach, dass er sich mit Kura verbinden soll.",
+      "intro": "OpenClaw ist ein KI-Agent — sag ihm einfach, dass er sich mit Kura verbinden soll. Danach: „Ich bin neu bei Kura. Erkläre mir, wie es funktioniert und mach das Onboarding mit mir.\u201C",
       "getOpenClaw": "openclaw.ai →",
       "methodMcp": "MCP",
       "methodCli": "CLI",

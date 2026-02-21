@@ -398,7 +398,7 @@
     },
     "openclaw": {
       "title": "OpenClaw",
-      "intro": "OpenClaw is an AI agent — just tell it to connect to Kura.",
+      "intro": "OpenClaw is an AI agent — just tell it to connect to Kura. Then: \"I'm new to Kura. Explain how it works and do the onboarding with me.\"",
       "getOpenClaw": "openclaw.ai →",
       "methodMcp": "MCP",
       "methodCli": "CLI",

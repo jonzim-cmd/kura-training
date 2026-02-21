@@ -398,7 +398,7 @@
     },
     "openclaw": {
       "title": "OpenClaw",
-      "intro": "OpenClawはAIエージェントです。Kuraに接続するよう伝えるだけでOKです。",
+      "intro": "OpenClawはAIエージェントです。Kuraに接続するよう伝えるだけでOK。その後：「Kuraを使いたい。使い方を教えて、オンボーディングをやって。」",
       "getOpenClaw": "openclaw.ai →",
       "methodMcp": "MCP",
       "methodCli": "CLI",
