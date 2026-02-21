@@ -120,11 +120,20 @@ enum Commands {
     /// Diagnose setup: API, auth, worker, system config
     Doctor,
 
-    /// Discover API endpoints (returns OpenAPI spec)
+    /// Discover API surfaces (OpenAPI endpoints or exercise vocabulary)
     Discover {
         /// Show compact endpoint list only (method, path, summary)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "exercises")]
         endpoints: bool,
+        /// Show exercise vocabulary entries from semantic catalog
+        #[arg(long, conflicts_with = "endpoints")]
+        exercises: bool,
+        /// Optional search query (case-insensitive), only with --exercises
+        #[arg(long, requires = "exercises")]
+        query: Option<String>,
+        /// Max number of entries (1..=200), only with --exercises
+        #[arg(long, requires = "exercises", value_parser = clap::value_parser!(u32).range(1..=200))]
+        limit: Option<u32>,
     },
 
     /// Account operations
@@ -240,8 +249,26 @@ async fn main() {
 
         Commands::Doctor => commands::system::doctor(&cli.api_url).await,
 
-        Commands::Discover { endpoints } => {
-            commands::system::discover(&cli.api_url, endpoints).await
+        Commands::Discover {
+            endpoints,
+            exercises,
+            query,
+            limit,
+        } => {
+            let token = if exercises {
+                resolve_or_exit(&cli.api_url, cli.no_auth).await
+            } else {
+                None
+            };
+            commands::system::discover(
+                &cli.api_url,
+                endpoints,
+                exercises,
+                query,
+                limit,
+                token.as_deref(),
+            )
+            .await
         }
 
         Commands::Account { command } => {

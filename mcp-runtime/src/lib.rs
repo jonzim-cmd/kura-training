@@ -1127,6 +1127,7 @@ fn is_tool_call_dedupe_eligible(name: &str) -> bool {
             | "kura_agent_section_index"
             | "kura_agent_section_fetch"
             | "kura_semantic_resolve"
+            | "kura_exercise_vocabulary_discover"
             | "kura_account_api_keys_list"
             | "kura_analysis_job_get"
     )
@@ -2046,6 +2047,9 @@ impl McpServer {
             "kura_agent_section_index" => self.tool_agent_section_index(args).await,
             "kura_agent_section_fetch" => self.tool_agent_section_fetch(args).await,
             "kura_semantic_resolve" => self.tool_semantic_resolve(args).await,
+            "kura_exercise_vocabulary_discover" => {
+                self.tool_exercise_vocabulary_discover(args).await
+            }
             "kura_access_request" => self.tool_access_request(args).await,
             "kura_account_api_keys_list" => self.tool_account_api_keys_list(args).await,
             "kura_account_api_keys_create" => self.tool_account_api_keys_create(args).await,
@@ -3545,6 +3549,53 @@ impl McpServer {
         }))
     }
 
+    async fn tool_exercise_vocabulary_discover(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        let mut query = vec![("domain".to_string(), "exercise".to_string())];
+        let mut request_query = json!({ "domain": "exercise" });
+
+        if let Some(raw_query) = arg_optional_string(args, "query")? {
+            let normalized = raw_query.trim();
+            if !normalized.is_empty() {
+                query.push(("query".to_string(), normalized.to_string()));
+                request_query["query"] = json!(normalized);
+            }
+        }
+
+        if let Some(limit) = arg_optional_u64(args, "limit")? {
+            if !(1..=200).contains(&limit) {
+                return Err(ToolError::new(
+                    "validation_failed",
+                    "'limit' must be between 1 and 200",
+                )
+                .with_field("limit"));
+            }
+            query.push(("limit".to_string(), limit.to_string()));
+            request_query["limit"] = json!(limit);
+        }
+
+        let response = self
+            .send_api_request(
+                Method::GET,
+                "/v1/semantic/catalog",
+                &query,
+                None,
+                true,
+                false,
+            )
+            .await?;
+
+        Ok(json!({
+            "request": {
+                "path": "/v1/semantic/catalog",
+                "query": request_query
+            },
+            "response": response.to_value()
+        }))
+    }
+
     async fn tool_access_request(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
         let email = required_string(args, "email")?;
         let mut body = json!({ "email": email });
@@ -4601,6 +4652,18 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                     "top_k": { "type": "integer", "minimum": 1, "maximum": 10 }
                 },
                 "required": ["queries"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "kura_exercise_vocabulary_discover",
+            description: "Discover exercise vocabulary entries from semantic catalog (canonical ids + variants).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Optional case-insensitive filter over key/label/variants" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                },
                 "additionalProperties": false
             }),
         },
@@ -7511,6 +7574,22 @@ mod tests {
     }
 
     #[test]
+    fn exercise_vocabulary_tool_schema_has_expected_bounds() {
+        let tool = tool_definitions()
+            .into_iter()
+            .find(|tool| tool.name == "kura_exercise_vocabulary_discover")
+            .expect("kura_exercise_vocabulary_discover tool must exist");
+        let props = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("tool schema properties must exist");
+        assert_eq!(props["limit"]["minimum"], 1);
+        assert_eq!(props["limit"]["maximum"], 200);
+        assert!(tool.input_schema.get("required").is_none());
+    }
+
+    #[test]
     fn agent_brief_tool_schema_defaults_to_startup_minimal_bundle() {
         let tool = tool_definitions()
             .into_iter()
@@ -7726,6 +7805,9 @@ mod tests {
     fn dedupe_scope_excludes_write_tools() {
         assert!(is_tool_call_dedupe_eligible("kura_projection_get"));
         assert!(is_tool_call_dedupe_eligible("kura_analysis_job_get"));
+        assert!(is_tool_call_dedupe_eligible(
+            "kura_exercise_vocabulary_discover"
+        ));
         assert!(!is_tool_call_dedupe_eligible("kura_events_write"));
         assert!(!is_tool_call_dedupe_eligible("kura_import_job_create"));
         assert!(!is_tool_call_dedupe_eligible("kura_analysis_job_create"));

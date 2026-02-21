@@ -48,7 +48,26 @@ pub async fn snapshot(api_url: &str, token: Option<&str>) -> i32 {
     .await
 }
 
-pub async fn discover(api_url: &str, endpoints_only: bool) -> i32 {
+pub async fn discover(
+    api_url: &str,
+    endpoints_only: bool,
+    exercises: bool,
+    query: Option<String>,
+    limit: Option<u32>,
+    token: Option<&str>,
+) -> i32 {
+    if exercises {
+        return discover_exercises(api_url, query, limit, token).await;
+    }
+    if query.is_some() || limit.is_some() {
+        let err = json!({
+            "error": "usage_error",
+            "message": "--query/--limit are only supported with --exercises"
+        });
+        eprintln!("{}", serde_json::to_string_pretty(&err).unwrap());
+        return 4;
+    }
+
     let resp = match client()
         .get(format!("{api_url}/api-doc/openapi.json"))
         .send()
@@ -136,6 +155,75 @@ pub async fn discover(api_url: &str, endpoints_only: bool) -> i32 {
     });
 
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    0
+}
+
+async fn discover_exercises(
+    api_url: &str,
+    query: Option<String>,
+    limit: Option<u32>,
+    token: Option<&str>,
+) -> i32 {
+    let mut url = match reqwest::Url::parse(&format!("{api_url}/v1/semantic/catalog")) {
+        Ok(url) => url,
+        Err(e) => {
+            let err = json!({
+                "error": "cli_error",
+                "message": format!("Invalid URL: {api_url}/v1/semantic/catalog: {e}")
+            });
+            eprintln!("{}", serde_json::to_string_pretty(&err).unwrap());
+            return 4;
+        }
+    };
+
+    let normalized_query = query
+        .map(|q| q.trim().to_string())
+        .filter(|q| !q.is_empty());
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.append_pair("domain", "exercise");
+        if let Some(value) = normalized_query.as_deref() {
+            pairs.append_pair("query", value);
+        }
+        if let Some(value) = limit {
+            pairs.append_pair("limit", &value.to_string());
+        }
+    }
+
+    let mut req = client().get(url);
+    if let Some(t) = token {
+        req = req.header("Authorization", format!("Bearer {t}"));
+    }
+
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            let err = json!({
+                "error": "connection_error",
+                "message": format!("{e}"),
+                "docs_hint": "Is the API server running? Check KURA_API_URL."
+            });
+            eprintln!("{}", serde_json::to_string_pretty(&err).unwrap());
+            return 3;
+        }
+    };
+
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let body: serde_json::Value = resp.json().await.unwrap_or(json!({"error": "unknown"}));
+        eprintln!("{}", serde_json::to_string_pretty(&body).unwrap());
+        return if (400..500).contains(&status) { 1 } else { 2 };
+    }
+
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => exit_error(
+            &format!("Failed to parse exercise discovery response: {e}"),
+            None,
+        ),
+    };
+
+    println!("{}", serde_json::to_string_pretty(&body).unwrap());
     0
 }
 

@@ -1,8 +1,8 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-use axum::extract::State;
-use axum::routing::post;
+use axum::extract::{Query, State};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -18,12 +18,16 @@ use crate::state::AppState;
 const DEFAULT_TOP_K: usize = 5;
 const MAX_TOP_K: usize = 10;
 const MAX_QUERIES: usize = 50;
+const DEFAULT_CATALOG_LIMIT: usize = 50;
+const MAX_CATALOG_LIMIT: usize = 200;
 const HIGH_CONFIDENCE_MIN: f64 = 0.86;
 const MEDIUM_CONFIDENCE_MIN: f64 = 0.78;
 const DEFAULT_MIN_SIMILARITY: f64 = 0.72;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/v1/semantic/resolve", post(resolve_semantic_terms))
+    Router::new()
+        .route("/v1/semantic/catalog", get(list_semantic_catalog))
+        .route("/v1/semantic/resolve", post(resolve_semantic_terms))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, utoipa::ToSchema)]
@@ -40,6 +44,51 @@ impl SemanticDomain {
             SemanticDomain::Food => "food",
         }
     }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "exercise" => Some(Self::Exercise),
+            "food" => Some(Self::Food),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, utoipa::IntoParams)]
+pub struct SemanticCatalogParams {
+    #[serde(default)]
+    pub domain: Option<SemanticDomain>,
+    /// Optional case-insensitive filter over key/label/variants
+    #[serde(default)]
+    pub query: Option<String>,
+    /// Maximum number of rows to return (default 50, max 200)
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct SemanticCatalogResponse {
+    pub items: Vec<SemanticCatalogItem>,
+    pub meta: SemanticCatalogMeta,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct SemanticCatalogItem {
+    pub domain: SemanticDomain,
+    pub canonical_key: String,
+    pub canonical_label: String,
+    pub variants: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct SemanticCatalogMeta {
+    pub generated_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<SemanticDomain>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    pub limit: usize,
+    pub total: usize,
 }
 
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
@@ -162,6 +211,14 @@ struct ProjectionDataRow {
 struct CatalogCandidateRow {
     canonical_key: String,
     canonical_label: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct SemanticCatalogRow {
+    domain: String,
+    canonical_key: String,
+    canonical_label: String,
+    variants: Vec<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -347,6 +404,26 @@ fn validate_request(req: &SemanticResolveRequest) -> Result<usize, AppError> {
     }
 
     Ok(req.top_k.unwrap_or(DEFAULT_TOP_K).clamp(1, MAX_TOP_K))
+}
+
+fn normalize_optional_query(value: Option<String>) -> Option<String> {
+    value.map(|q| normalize_term(&q)).filter(|q| !q.is_empty())
+}
+
+fn validate_catalog_params(
+    params: &SemanticCatalogParams,
+) -> Result<(Option<String>, usize), AppError> {
+    let query = normalize_optional_query(params.query.clone());
+    let limit = params.limit.unwrap_or(DEFAULT_CATALOG_LIMIT);
+    if !(1..=MAX_CATALOG_LIMIT).contains(&limit) {
+        return Err(AppError::Validation {
+            message: format!("limit must be between 1 and {MAX_CATALOG_LIMIT}"),
+            field: Some("limit".to_string()),
+            received: Some(serde_json::json!(limit)),
+            docs_hint: None,
+        });
+    }
+    Ok((query, limit))
 }
 
 fn add_candidate(
@@ -593,6 +670,51 @@ fn finalize_candidates(
     out
 }
 
+async fn fetch_catalog_entries(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    domain: Option<SemanticDomain>,
+    query: Option<&str>,
+    limit: usize,
+) -> Result<Vec<SemanticCatalogRow>, AppError> {
+    let rows = sqlx::query_as::<_, SemanticCatalogRow>(
+        r#"
+        SELECT
+            c.domain,
+            c.canonical_key,
+            c.canonical_label,
+            COALESCE(
+                array_agg(DISTINCT v.variant_text ORDER BY v.variant_text)
+                    FILTER (WHERE v.variant_text IS NOT NULL),
+                '{}'::text[]
+            ) AS variants
+        FROM semantic_catalog c
+        LEFT JOIN semantic_variants v ON v.catalog_id = c.id
+        WHERE ($1::text IS NULL OR c.domain = $1::text)
+          AND (
+            $2::text IS NULL
+            OR lower(c.canonical_key) LIKE '%' || lower($2::text) || '%'
+            OR lower(c.canonical_label) LIKE '%' || lower($2::text) || '%'
+            OR EXISTS (
+                SELECT 1
+                FROM semantic_variants sv
+                WHERE sv.catalog_id = c.id
+                  AND lower(sv.variant_text) LIKE '%' || lower($2::text) || '%'
+            )
+          )
+        GROUP BY c.id, c.domain, c.canonical_key, c.canonical_label
+        ORDER BY c.domain, c.canonical_key
+        LIMIT $3
+        "#,
+    )
+    .bind(domain.map(|d| d.as_str().to_string()))
+    .bind(query)
+    .bind(limit as i64)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    Ok(rows)
+}
+
 async fn resolve_query_candidates(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
@@ -693,6 +815,63 @@ async fn resolve_query_candidates(
     Ok(finalize_candidates(candidates, top_k))
 }
 
+/// List semantic catalog entries with optional domain and text filtering.
+#[utoipa::path(
+    get,
+    path = "/v1/semantic/catalog",
+    params(SemanticCatalogParams),
+    responses(
+        (status = 200, description = "Semantic catalog entries", body = SemanticCatalogResponse),
+        (status = 400, description = "Validation failed", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "semantic"
+)]
+pub async fn list_semantic_catalog(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Query(params): Query<SemanticCatalogParams>,
+) -> Result<Json<SemanticCatalogResponse>, AppError> {
+    let user_id = auth.user_id;
+    let (query, limit) = validate_catalog_params(&params)?;
+
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+    let rows = fetch_catalog_entries(&mut tx, params.domain, query.as_deref(), limit).await?;
+    tx.commit().await?;
+
+    let items: Vec<SemanticCatalogItem> = rows
+        .into_iter()
+        .map(|row| {
+            let domain = SemanticDomain::parse(&row.domain).ok_or_else(|| {
+                AppError::Internal(format!("Unknown semantic domain: {}", row.domain))
+            })?;
+            Ok(SemanticCatalogItem {
+                domain,
+                canonical_key: row.canonical_key,
+                canonical_label: row.canonical_label,
+                variants: row.variants,
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+
+    Ok(Json(SemanticCatalogResponse {
+        meta: SemanticCatalogMeta {
+            generated_at: Utc::now(),
+            domain: params.domain,
+            query,
+            limit,
+            total: items.len(),
+        },
+        items,
+    }))
+}
+
 /// Resolve free-text exercise/food terms into ranked canonical candidates.
 ///
 /// Uses semantic_memory projection matches first, then exact catalog matches,
@@ -778,6 +957,39 @@ mod tests {
     #[test]
     fn normalize_term_collapses_whitespace_and_lowercases() {
         assert_eq!(normalize_term("  Knie   Beuge "), "knie beuge");
+    }
+
+    #[test]
+    fn normalize_optional_query_returns_none_for_blank_input() {
+        assert_eq!(normalize_optional_query(Some("   ".to_string())), None);
+        assert_eq!(normalize_optional_query(None), None);
+        assert_eq!(
+            normalize_optional_query(Some("  Hang   Snatch ".to_string())),
+            Some("hang snatch".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_catalog_params_enforces_limit_bounds() {
+        let valid = validate_catalog_params(&SemanticCatalogParams {
+            domain: Some(SemanticDomain::Exercise),
+            query: Some("snatch".to_string()),
+            limit: Some(25),
+        })
+        .expect("valid params should pass");
+        assert_eq!(valid.0.as_deref(), Some("snatch"));
+        assert_eq!(valid.1, 25);
+
+        let err = validate_catalog_params(&SemanticCatalogParams {
+            domain: Some(SemanticDomain::Exercise),
+            query: None,
+            limit: Some(0),
+        })
+        .expect_err("limit=0 must fail");
+        match err {
+            AppError::Validation { field, .. } => assert_eq!(field.as_deref(), Some("limit")),
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[test]
