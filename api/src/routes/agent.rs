@@ -2486,10 +2486,9 @@ fn agent_brief_available_sections(
 const FIRST_CONTACT_OPENING_SCHEMA_FALLBACK: &str = "first_contact_opening.v1";
 const FIRST_CONTACT_RESPONSE_GUARD_SCHEMA_VERSION: &str = "first_contact_response_guard.v1";
 const FIRST_CONTACT_REQUIRED_SCOPE: &str = "first_assistant_turn_after_brief";
-const FIRST_CONTACT_FALLBACK_MANDATORY_SENTENCE: &str =
-    "Kura is a structured training-data system. You write naturally, and I turn that into reliable events and projections so progress, trends, and decisions stay consistent over time.";
-const FIRST_CONTACT_FALLBACK_HOW_TO_USE: &str =
-    "Tell me in natural language what you trained, ate, or measured; I will structure it into events and keep your timeline consistent.";
+const FIRST_CONTACT_BOOTSTRAP_MAX_EVENTS: i64 = 8;
+const FIRST_CONTACT_FALLBACK_MANDATORY_SENTENCE: &str = "Kura is a structured training-data system. You write naturally, and I turn that into reliable events and projections so progress, trends, and decisions stay consistent over time.";
+const FIRST_CONTACT_FALLBACK_HOW_TO_USE: &str = "Tell me in natural language what you trained, ate, or measured; I will structure it into events and keep your timeline consistent.";
 const FIRST_CONTACT_FALLBACK_INTERVIEW_FORMAT: &str = "offer_short_onboarding_interview";
 const FIRST_CONTACT_FALLBACK_INTERVIEW_MAX_MINUTES: i64 = 5;
 const FIRST_CONTACT_DEFAULT_AVOID_BEFORE_COMPLETION: [&str; 3] = [
@@ -2498,11 +2497,47 @@ const FIRST_CONTACT_DEFAULT_AVOID_BEFORE_COMPLETION: [&str; 3] = [
     "planning_or_coaching_without_onboarding_offer",
 ];
 
+fn user_profile_bootstrap_pending(user_profile: &ProjectionResponse) -> bool {
+    let user = user_profile.projection.data.get("user");
+    let profile_missing = user
+        .and_then(|value| value.get("profile"))
+        .map(|value| {
+            value.is_null() || value.as_object().map(|obj| obj.is_empty()).unwrap_or(false)
+        })
+        .unwrap_or(true);
+    let goals_missing = user
+        .and_then(|value| value.get("goals"))
+        .and_then(Value::as_array)
+        .map(|goals| goals.is_empty())
+        .unwrap_or(true);
+    let preferences_missing = user
+        .and_then(|value| value.get("preferences"))
+        .and_then(Value::as_object)
+        .map(|prefs| prefs.is_empty())
+        .unwrap_or(true);
+    let total_events = user
+        .and_then(|value| value.get("total_events"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+
+    profile_missing
+        && goals_missing
+        && preferences_missing
+        && total_events <= FIRST_CONTACT_BOOTSTRAP_MAX_EVENTS
+}
+
 fn first_contact_onboarding_active(
     action_required: Option<&AgentActionRequired>,
     workflow_state: &AgentBriefWorkflowState,
+    user_profile: &ProjectionResponse,
 ) -> bool {
     if workflow_state.onboarding_closed {
+        return false;
+    }
+    if workflow_state.phase.trim().to_lowercase() != "onboarding" {
+        return false;
+    }
+    if !user_profile_bootstrap_pending(user_profile) {
         return false;
     }
     action_required
@@ -2580,7 +2615,8 @@ fn build_agent_brief(
     observations_draft: Option<&AgentObservationsDraftContext>,
 ) -> AgentBrief {
     let workflow_state = agent_brief_workflow_state(user_profile);
-    let first_contact_active = first_contact_onboarding_active(action_required, &workflow_state);
+    let first_contact_active =
+        first_contact_onboarding_active(action_required, &workflow_state, user_profile);
     let mut coverage_gaps = if workflow_state.onboarding_closed {
         Vec::new()
     } else {
@@ -2590,12 +2626,10 @@ fn build_agent_brief(
     coverage_gaps.dedup();
 
     let mut must_cover_intents: Vec<String> = Vec::new();
-    if let Some(action) = action_required {
-        if action.action == "onboarding" {
-            must_cover_intents.push("explain_kura_short".to_string());
-            must_cover_intents.push("offer_onboarding".to_string());
-            must_cover_intents.push("allow_skip_and_log_now".to_string());
-        }
+    if first_contact_active {
+        must_cover_intents.push("explain_kura_short".to_string());
+        must_cover_intents.push("offer_onboarding".to_string());
+        must_cover_intents.push("allow_skip_and_log_now".to_string());
     }
     if !workflow_state.onboarding_closed && !coverage_gaps.is_empty() {
         must_cover_intents.push("micro_onboarding_next_gap".to_string());
@@ -8405,8 +8439,15 @@ mod tests {
             .first_contact_opening
             .as_ref()
             .expect("first contact opening must be present while onboarding is active");
-        assert_eq!(first_contact_opening.schema_version, "first_contact_opening.v1");
-        assert!(first_contact_opening.mandatory_sentence.contains("Kura is a structured"));
+        assert_eq!(
+            first_contact_opening.schema_version,
+            "first_contact_opening.v1"
+        );
+        assert!(
+            first_contact_opening
+                .mandatory_sentence
+                .contains("Kura is a structured")
+        );
         assert_eq!(
             first_contact_opening.interview_offer.max_estimated_minutes,
             5
@@ -8531,6 +8572,50 @@ mod tests {
         assert_eq!(brief.workflow_state.phase, "planning");
         assert!(brief.workflow_state.onboarding_closed);
         assert!(brief.coverage_gaps.is_empty());
+        assert!(brief.first_contact_opening.is_none());
+        assert!(brief.response_guard.is_none());
+        assert!(
+            !brief
+                .must_cover_intents
+                .contains(&"offer_onboarding".to_string())
+        );
+    }
+
+    #[test]
+    fn first_contact_contract_does_not_reactivate_after_bootstrap_progress() {
+        let now = Utc::now();
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            now,
+            json!({
+                "user": {
+                    "workflow_state": {
+                        "phase": "onboarding",
+                        "onboarding_closed": false,
+                        "override_active": false
+                    },
+                    "profile": {
+                        "training_experience_level": "intermediate"
+                    },
+                    "preferences": {
+                        "timezone": "Europe/Berlin"
+                    },
+                    "goals": [{"type": "strength"}],
+                    "total_events": 32
+                },
+                "agenda": [{
+                    "priority": "high",
+                    "type": "onboarding_needed",
+                    "detail": "Onboarding remains open because core dimensions are still missing.",
+                    "dimensions": ["user_profile"]
+                }]
+            }),
+        );
+
+        let action = extract_action_required(&profile);
+        let brief = super::build_agent_brief(action.as_ref(), &profile, None, None);
+
         assert!(brief.first_contact_opening.is_none());
         assert!(brief.response_guard.is_none());
         assert!(

@@ -16,7 +16,8 @@ const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MCP_SERVER_NAME: &str = "kura-mcp";
 const TOOL_ENVELOPE_MAX_BYTES: usize = 28_000;
 const AGENT_CONTEXT_OVERFLOW_SCHEMA_VERSION: &str = "agent_context_overflow.v1";
-const AGENT_CONTEXT_CRITICAL_SECTION_KEYS: [&str; 2] = ["agent_brief", "meta"];
+const AGENT_CONTEXT_CRITICAL_SECTION_KEYS: [&str; 1] = ["startup_capsule"];
+const STARTUP_CAPSULE_SCHEMA_VERSION: &str = "startup_capsule.v1";
 const COMPACT_ENDPOINT_PREVIEW_MAX_ITEMS: usize = 120;
 const CONTEXT_SESSION_TTL_SECS: u64 = 3600;
 const TOOL_CALL_DEDUPE_WINDOW_MS: u64 = 2500;
@@ -36,9 +37,10 @@ const RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK_ENV: &str =
     "KURA_MCP_RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK";
 const RETRIEVAL_OBSERVABILITY_SCHEMA_VERSION: &str = "mcp_retrieval_observability.v1";
 const IMPORT_DEVICE_TOOLS_ENABLED_ENV: &str = "KURA_MCP_ENABLE_IMPORT_PROVIDER_TOOLS";
-const STARTUP_REQUIRED_FIRST_TOOL: &str = "kura_agent_brief";
+const STARTUP_REQUIRED_FIRST_TOOL: &str = "kura_agent_context";
+const STARTUP_PREFERRED_FIRST_TOOL: &str = "kura_agent_brief";
 const STARTUP_FALLBACK_FIRST_TOOL: &str = "kura_agent_context";
-const STARTUP_GATE_MODE: &str = "preferred_brief_with_context_fallback";
+const STARTUP_GATE_MODE: &str = "context_required_brief_preferred";
 const OVERFLOW_ACTION_REQUIRED_DETAIL_MAX_CHARS: usize = 320;
 const OVERFLOW_MUST_COVER_INTENTS_MAX_ITEMS: usize = 10;
 const OVERFLOW_COVERAGE_GAPS_MAX_ITEMS: usize = 10;
@@ -602,18 +604,18 @@ fn should_emit_context_warning(name: &str, context_loaded: bool) -> bool {
     !matches!(name, "kura_agent_context" | "kura_agent_brief") && !context_loaded
 }
 
-fn is_startup_brief_exempt_tool(name: &str) -> bool {
+fn is_startup_context_exempt_tool(name: &str) -> bool {
     matches!(
         name,
         STARTUP_REQUIRED_FIRST_TOOL
-            | STARTUP_FALLBACK_FIRST_TOOL
+            | STARTUP_PREFERRED_FIRST_TOOL
             | "kura_mcp_status"
             | "kura_access_request"
     )
 }
 
-fn should_block_for_startup_brief(name: &str, brief_loaded: bool) -> bool {
-    !brief_loaded && !is_startup_brief_exempt_tool(name)
+fn should_block_for_startup_context(name: &str, context_loaded: bool) -> bool {
+    !context_loaded && !is_startup_context_exempt_tool(name)
 }
 
 fn is_context_write_blocked_tool(name: &str) -> bool {
@@ -1004,7 +1006,7 @@ impl McpServer {
 
     fn initialize_payload(&self) -> Value {
         let instructions = format!(
-            "Start with kura_agent_brief (startup gate, preferred). If kura_agent_brief is unavailable in the client tool surface, call kura_agent_context as startup fallback. If action_required indicates onboarding, reply first with: (1) what Kura is (use first_contact_opening_v1 mandatory sentence), (2) how to use it briefly, (3) propose a short onboarding interview before feature menus or logging steps, and allow skip/log-now. Avoid dashboard/booking claims unless explicitly present in loaded brief/context payloads. After that, call kura_agent_context before personalized planning or write operations. Use kura_discover for lean capability snapshots only after startup brief is loaded; use kura_discover_debug only for deep schema/capability troubleshooting. Prefer kura_events_write with mode=simulate before commit for higher confidence. Capability mode: {}.",
+            "Start with kura_agent_context (startup gate, required). If kura_agent_brief is available, call it after context for deterministic first-contact onboarding phrasing. If action_required indicates onboarding, reply first with: (1) what Kura is (use first_contact_opening_v1 mandatory sentence), (2) how to use it briefly, (3) propose a short onboarding interview before feature menus or logging steps, and allow skip/log-now. Avoid dashboard/booking claims unless explicitly present in loaded brief/context payloads. Use kura_discover for lean capability snapshots only after startup context is loaded; use kura_discover_debug only for deep schema/capability troubleshooting. Prefer kura_events_write with mode=simulate before commit for higher confidence. Capability mode: {}.",
             self.capability_profile.mode.as_str()
         );
         json!({
@@ -1068,8 +1070,8 @@ impl McpServer {
         observe_tool_call_start(&self.session_id, name, context_loaded);
         let retrieval_policy = retrieval_fsm_policy();
 
-        if should_block_for_startup_brief(name, brief_loaded) {
-            record_abort_reason_for_session(&self.session_id, "startup_brief_required");
+        if should_block_for_startup_context(name, context_loaded) {
+            record_abort_reason_for_session(&self.session_id, "startup_context_required");
             let mut envelope = enforce_tool_payload_limit(
                 name,
                 json!({
@@ -1077,12 +1079,13 @@ impl McpServer {
                     "phase": "blocked_precondition",
                     "tool": name,
                     "error": {
-                        "error": "startup_brief_required",
-                        "message": "Call kura_agent_brief first (preferred). If unavailable in your client tool surface, call kura_agent_context as startup fallback.",
+                        "error": "startup_context_required",
+                        "message": "Call kura_agent_context first. You may call kura_agent_brief before it for deterministic first-contact onboarding.",
                         "field": "tool",
-                        "docs_hint": "Load startup state before broad reads/writes so onboarding/action_required contracts are deterministic.",
+                        "docs_hint": "Load startup context before broad reads/writes so onboarding/action_required contracts remain deterministic.",
                         "details": {
                             "required_first_tool": STARTUP_REQUIRED_FIRST_TOOL,
+                            "preferred_first_tool": STARTUP_PREFERRED_FIRST_TOOL,
                             "fallback_first_tool": STARTUP_FALLBACK_FIRST_TOOL,
                             "startup_gate_mode": STARTUP_GATE_MODE,
                             "blocked_tool": name,
@@ -1100,7 +1103,7 @@ impl McpServer {
         // `kura_agent_brief` is also exempt so startup brief calls stay clean.
         let context_warning = if should_emit_context_warning(name, context_loaded) {
             Some(
-                "⚠ Call kura_agent_context before personalized guidance or writes. You may use kura_agent_brief first for deterministic first-contact onboarding.\n\n",
+                "⚠ Call kura_agent_context before personalized guidance or writes. For deterministic first-contact onboarding, load kura_agent_brief afterwards if available.\n\n",
             )
         } else {
             None
@@ -1440,7 +1443,7 @@ impl McpServer {
             "import_provider_tools_exposed": import_device_tools_enabled()
         });
 
-        // Session hint: first enforce startup brief, then load full context.
+        // Session hint: context is required; brief is preferred when available.
         let brief_loaded = is_brief_loaded(&self.session_id);
         let context_loaded = is_context_loaded(&self.session_id);
         payload["session"] = json!({
@@ -1448,12 +1451,13 @@ impl McpServer {
             "brief_loaded": brief_loaded,
             "context_loaded": context_loaded,
             "required_first_tool": STARTUP_REQUIRED_FIRST_TOOL,
+            "preferred_first_tool": STARTUP_PREFERRED_FIRST_TOOL,
             "fallback_first_tool": STARTUP_FALLBACK_FIRST_TOOL,
             "startup_gate_mode": STARTUP_GATE_MODE,
-            "next": if !brief_loaded {
-                "Call kura_agent_brief now (preferred). If unavailable in your client tool surface, call kura_agent_context as startup fallback."
-            } else if !context_loaded {
-                "Startup brief loaded. Call kura_agent_context before personalized guidance or writes."
+            "next": if !context_loaded {
+                "Call kura_agent_context now before broad reads/writes."
+            } else if !brief_loaded {
+                "Context loaded. If available in your client tool surface, call kura_agent_brief for deterministic first-contact onboarding."
             } else {
                 "Brief and context are loaded. You can respond to the user."
             },
@@ -1476,6 +1480,7 @@ impl McpServer {
                 "brief_loaded": is_brief_loaded(&self.session_id),
                 "context_loaded": is_context_loaded(&self.session_id),
                 "required_first_tool": STARTUP_REQUIRED_FIRST_TOOL,
+                "preferred_first_tool": STARTUP_PREFERRED_FIRST_TOOL,
                 "fallback_first_tool": STARTUP_FALLBACK_FIRST_TOOL,
                 "startup_gate_mode": STARTUP_GATE_MODE,
                 "retrieval_observability": retrieval_observability_snapshot(&self.session_id, retrieval_fsm_policy())
@@ -1952,22 +1957,15 @@ impl McpServer {
         }
 
         let mut compatibility_notes = Vec::<String>::new();
-        let preferred_path = self
-            .capability_profile
-            .effective_read_endpoint()
-            .to_string();
+        let preferred_path = self.capability_profile.preferred_read_endpoint.clone();
         let mut effective_path = preferred_path.clone();
-        let mut effective_query = if self.capability_profile.mode
-            == CapabilityMode::PreferredContract
-        {
-            query.clone()
-        } else {
+        let mut effective_query = query.clone();
+        if self.capability_profile.mode != CapabilityMode::PreferredContract {
             compatibility_notes.push(
-                "Agent context contract unavailable; startup brief requires preferred /v1/agent/context shape."
+                "Capability negotiation is in legacy_fallback mode; probing preferred context endpoint once before downgrade."
                     .to_string(),
             );
-            Vec::new()
-        };
+        }
         let mut response = self
             .send_api_request(
                 Method::GET,
@@ -1980,9 +1978,7 @@ impl McpServer {
             .await?;
         let mut fallback_applied = false;
 
-        if self.capability_profile.mode == CapabilityMode::PreferredContract
-            && should_apply_contract_fallback(response.status)
-        {
+        if should_apply_contract_fallback(response.status) {
             fallback_applied = true;
             let unsupported_status = response.status;
             effective_path = self.capability_profile.legacy_read_endpoint.clone();
@@ -2001,6 +1997,11 @@ impl McpServer {
                     false,
                 )
                 .await?;
+        } else if self.capability_profile.mode != CapabilityMode::PreferredContract {
+            compatibility_notes.push(
+                "Preferred context endpoint succeeded despite legacy capability mode; startup brief stayed on contract path."
+                    .to_string(),
+            );
         }
 
         if response.status >= 400 {
@@ -2117,6 +2118,34 @@ impl McpServer {
             .and_then(Value::as_str)
             .map(|value| value == "onboarding")
             .unwrap_or(false);
+        let startup_gate = json!({
+            "required_first_tool": STARTUP_REQUIRED_FIRST_TOOL,
+            "preferred_first_tool": STARTUP_PREFERRED_FIRST_TOOL,
+            "fallback_first_tool": STARTUP_FALLBACK_FIRST_TOOL,
+            "startup_gate_mode": STARTUP_GATE_MODE,
+            "brief_loaded": true,
+            "context_loaded": is_context_loaded(&self.session_id),
+            "onboarding_required": onboarding_required,
+            "next": if onboarding_required {
+                "Respond with first-contact opening sequence and offer onboarding interview (allow skip/log-now)."
+            } else {
+                "Call kura_agent_context before personalized planning or write operations."
+            }
+        });
+        let mut response_body = json!({
+            "action_required": action_required,
+            "agent_brief": agent_brief,
+            "meta": meta
+        });
+        let startup_capsule = compact_startup_capsule_for_overflow(&json!({
+            "data": {
+                "response": {
+                    "body": response_body.clone()
+                },
+                "startup_gate": startup_gate.clone()
+            }
+        }));
+        response_body["startup_capsule"] = startup_capsule;
 
         Ok(json!({
             "request": {
@@ -2126,25 +2155,9 @@ impl McpServer {
             "response": {
                 "ok": true,
                 "status": response.status,
-                "body": {
-                    "action_required": action_required,
-                    "agent_brief": agent_brief,
-                    "meta": meta
-                }
+                "body": response_body
             },
-            "startup_gate": {
-                "required_first_tool": STARTUP_REQUIRED_FIRST_TOOL,
-                "fallback_first_tool": STARTUP_FALLBACK_FIRST_TOOL,
-                "startup_gate_mode": STARTUP_GATE_MODE,
-                "brief_loaded": true,
-                "context_loaded": is_context_loaded(&self.session_id),
-                "onboarding_required": onboarding_required,
-                "next": if onboarding_required {
-                    "Respond with first-contact opening sequence and offer onboarding interview (allow skip/log-now)."
-                } else {
-                    "Call kura_agent_context before personalized planning or write operations."
-                }
-            },
+            "startup_gate": startup_gate,
             "compatibility": {
                 "capability_mode": self.capability_profile.mode.as_str(),
                 "fallback_applied": fallback_applied,
@@ -2176,21 +2189,14 @@ impl McpServer {
             query.push(("include_system".to_string(), "false".to_string()));
         }
         let mut compatibility_notes = Vec::<String>::new();
-        let preferred_path = self
-            .capability_profile
-            .effective_read_endpoint()
-            .to_string();
-        let mut effective_query = if self.capability_profile.mode
-            == CapabilityMode::PreferredContract
-        {
-            query.clone()
-        } else {
+        let preferred_path = self.capability_profile.preferred_read_endpoint.clone();
+        let mut effective_query = query.clone();
+        if self.capability_profile.mode != CapabilityMode::PreferredContract {
             compatibility_notes.push(
-                "Agent context contract unavailable; using legacy /v1/projections snapshot semantics."
+                "Capability negotiation is in legacy_fallback mode; probing preferred context endpoint once before downgrade."
                     .to_string(),
             );
-            Vec::new()
-        };
+        }
         let mut response = self
             .send_api_request(
                 Method::GET,
@@ -2204,9 +2210,7 @@ impl McpServer {
         let mut effective_path = preferred_path.clone();
         let mut fallback_applied = false;
 
-        if self.capability_profile.mode == CapabilityMode::PreferredContract
-            && should_apply_contract_fallback(response.status)
-        {
+        if should_apply_contract_fallback(response.status) {
             let unsupported_status = response.status;
             fallback_applied = true;
             effective_path = self.capability_profile.legacy_read_endpoint.clone();
@@ -2225,9 +2229,14 @@ impl McpServer {
                     false,
                 )
                 .await?;
+        } else if self.capability_profile.mode != CapabilityMode::PreferredContract {
+            compatibility_notes.push(
+                "Preferred context endpoint succeeded despite legacy capability mode; stayed on contract path."
+                    .to_string(),
+            );
         }
 
-        let response_value = response.to_value();
+        let mut response_value = response.to_value();
         let metric_snapshot = derive_agent_context_metric_snapshot(response_value.get("body"));
         let action_required = response_value
             .get("body")
@@ -2239,6 +2248,38 @@ impl McpServer {
             .map(|value| value == "onboarding")
             .unwrap_or(false);
         let brief_loaded_before_call = is_brief_loaded(&self.session_id);
+        let startup_gate = json!({
+            "required_first_tool": STARTUP_REQUIRED_FIRST_TOOL,
+            "preferred_first_tool": STARTUP_PREFERRED_FIRST_TOOL,
+            "fallback_first_tool": STARTUP_FALLBACK_FIRST_TOOL,
+            "startup_gate_mode": STARTUP_GATE_MODE,
+            "brief_loaded_before_call": brief_loaded_before_call,
+            "preferred_brief_loaded_before_call": brief_loaded_before_call,
+            "fallback_used": false,
+            "onboarding_required": onboarding_required,
+            "next": if onboarding_required {
+                "Respond with first-contact opening sequence and offer onboarding interview (allow skip/log-now)."
+            } else {
+                "Startup context loaded. Proceed with user request."
+            }
+        });
+        let startup_capsule = compact_startup_capsule_for_overflow(&json!({
+            "data": {
+                "response": {
+                    "body": response_value
+                        .get("body")
+                        .cloned()
+                        .unwrap_or(Value::Null)
+                },
+                "startup_gate": startup_gate.clone()
+            }
+        }));
+        if let Some(body) = response_value
+            .get_mut("body")
+            .and_then(Value::as_object_mut)
+        {
+            body.insert("startup_capsule".to_string(), startup_capsule);
+        }
 
         Ok(json!({
             "request": {
@@ -2246,19 +2287,7 @@ impl McpServer {
                 "query": pairs_to_json_object(&effective_query)
             },
             "response": response_value,
-            "startup_gate": {
-                "required_first_tool": STARTUP_REQUIRED_FIRST_TOOL,
-                "fallback_first_tool": STARTUP_FALLBACK_FIRST_TOOL,
-                "startup_gate_mode": STARTUP_GATE_MODE,
-                "brief_loaded_before_call": brief_loaded_before_call,
-                "fallback_used": !brief_loaded_before_call,
-                "onboarding_required": onboarding_required,
-                "next": if onboarding_required {
-                    "Respond with first-contact opening sequence and offer onboarding interview (allow skip/log-now)."
-                } else {
-                    "Startup context loaded. Proceed with user request."
-                }
-            },
+            "startup_gate": startup_gate,
             "completion": {
                 "status": if fallback_applied { "complete_with_fallback" } else { "complete" }
             },
@@ -4129,6 +4158,9 @@ fn enforce_agent_context_payload_limit(envelope: Value) -> Value {
         }
     }
 
+    let startup_source = trimmed.clone();
+    copy_agent_context_startup_guidance(&startup_source, &mut trimmed);
+
     if !omitted_sections.is_empty() {
         let critical_missing_sections =
             missing_agent_context_critical_sections(trimmed.pointer("/data/response/body"));
@@ -4257,6 +4289,7 @@ fn enforce_agent_context_payload_limit(envelope: Value) -> Value {
                 }
             }
         });
+        copy_agent_context_startup_guidance(&trimmed, &mut brief_only);
         let brief_critical_missing =
             missing_agent_context_critical_sections(brief_only.pointer("/data/response/body"));
         let brief_integrity_status = if brief_critical_missing.is_empty() {
@@ -4268,7 +4301,6 @@ fn enforce_agent_context_payload_limit(envelope: Value) -> Value {
             json!(brief_integrity_status);
         brief_only["data"]["response"]["body"]["overflow"]["critical_missing_sections"] =
             json!(brief_critical_missing);
-        copy_agent_context_startup_guidance(&trimmed, &mut brief_only);
         brief_only
     }
 }
@@ -4574,6 +4606,152 @@ fn compact_context_meta_for_overflow(value: &Value) -> Value {
     })
 }
 
+fn compact_startup_gate_for_overflow(value: &Value) -> Value {
+    let mut startup_gate = startup_gate_defaults();
+    if let Some(obj) = value.as_object() {
+        if let Some(target) = startup_gate.as_object_mut() {
+            for key in [
+                "brief_loaded",
+                "brief_loaded_before_call",
+                "preferred_brief_loaded_before_call",
+                "context_loaded",
+                "fallback_used",
+                "onboarding_required",
+                "next",
+            ] {
+                if let Some(raw) = obj.get(key).cloned() {
+                    target.insert(key.to_string(), raw);
+                }
+            }
+        }
+    }
+    startup_gate
+}
+
+fn startup_gate_defaults() -> Value {
+    json!({
+        "required_first_tool": STARTUP_REQUIRED_FIRST_TOOL,
+        "preferred_first_tool": STARTUP_PREFERRED_FIRST_TOOL,
+        "fallback_first_tool": STARTUP_FALLBACK_FIRST_TOOL,
+        "startup_gate_mode": STARTUP_GATE_MODE
+    })
+}
+
+fn compact_first_contact_opening_for_overflow(value: &Value) -> Value {
+    let Some(obj) = value.as_object() else {
+        return Value::Null;
+    };
+    let interview_offer = obj
+        .get("interview_offer")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let avoid_before_interview_offer = obj
+        .get("avoid_before_interview_offer")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .take(OVERFLOW_SECTION_PREVIEW_MAX_ITEMS)
+                .filter_map(Value::as_str)
+                .map(|value| Value::String(value.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    json!({
+        "schema_version": obj.get("schema_version").cloned().unwrap_or(Value::Null),
+        "mandatory_sentence": obj
+            .get("mandatory_sentence")
+            .and_then(Value::as_str)
+            .map(|value| truncate_text_for_overflow(value, 240))
+            .unwrap_or_default(),
+        "how_to_use_brief": obj
+            .get("how_to_use_brief")
+            .and_then(Value::as_str)
+            .map(|value| truncate_text_for_overflow(value, 240))
+            .unwrap_or_default(),
+        "interview_offer": {
+            "required": interview_offer.get("required").cloned().unwrap_or(Value::Bool(true)),
+            "format": interview_offer.get("format").cloned().unwrap_or(Value::Null),
+            "max_estimated_minutes": interview_offer
+                .get("max_estimated_minutes")
+                .cloned()
+                .unwrap_or(Value::Null),
+        },
+        "avoid_before_interview_offer": avoid_before_interview_offer
+    })
+}
+
+fn compact_response_guard_for_overflow(value: &Value) -> Value {
+    let Some(obj) = value.as_object() else {
+        return Value::Null;
+    };
+    let list = |key: &str| {
+        obj.get(key)
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .take(OVERFLOW_MUST_COVER_INTENTS_MAX_ITEMS)
+                    .filter_map(Value::as_str)
+                    .map(|value| Value::String(value.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    json!({
+        "schema_version": obj.get("schema_version").cloned().unwrap_or(Value::Null),
+        "scope": obj.get("scope").cloned().unwrap_or(Value::Null),
+        "active": obj.get("active").cloned().unwrap_or(Value::Bool(false)),
+        "must_cover_intents": list("must_cover_intents"),
+        "avoid_before_completion": list("avoid_before_completion"),
+        "deactivate_when": list("deactivate_when"),
+    })
+}
+
+fn compact_startup_capsule_for_overflow(source: &Value) -> Value {
+    let action_required_raw = source
+        .pointer("/data/response/body/action_required")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let action_required = compact_action_required_for_overflow(&action_required_raw);
+    let onboarding_required = action_required
+        .get("action")
+        .and_then(Value::as_str)
+        .map(|action| action == "onboarding")
+        .unwrap_or(false)
+        || source
+            .pointer("/data/startup_gate/onboarding_required")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    let workflow_state = source
+        .pointer("/data/response/body/agent_brief/workflow_state")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let first_contact_opening = source
+        .pointer("/data/response/body/agent_brief/first_contact_opening")
+        .map(compact_first_contact_opening_for_overflow)
+        .unwrap_or(Value::Null);
+    let response_guard = source
+        .pointer("/data/response/body/agent_brief/response_guard")
+        .map(compact_response_guard_for_overflow)
+        .unwrap_or(Value::Null);
+    let startup_gate = source
+        .pointer("/data/startup_gate")
+        .map(compact_startup_gate_for_overflow)
+        .unwrap_or_else(startup_gate_defaults);
+
+    json!({
+        "schema_version": STARTUP_CAPSULE_SCHEMA_VERSION,
+        "onboarding_required": onboarding_required,
+        "action_required": action_required,
+        "workflow_state": workflow_state,
+        "first_contact_opening": first_contact_opening,
+        "response_guard": response_guard,
+        "startup_gate": startup_gate
+    })
+}
+
 fn copy_agent_context_startup_guidance(source: &Value, target: &mut Value) {
     let Some(target_body) = target
         .pointer_mut("/data/response/body")
@@ -4596,9 +4774,14 @@ fn copy_agent_context_startup_guidance(source: &Value, target: &mut Value) {
     if let Some(value) = source.pointer("/data/response/body/meta") {
         target_body.insert("meta".to_string(), compact_context_meta_for_overflow(value));
     }
-    if let Some(value) = source.pointer("/data/startup_gate").cloned() {
-        target["data"]["startup_gate"] = value;
-    }
+    target_body.insert(
+        "startup_capsule".to_string(),
+        compact_startup_capsule_for_overflow(source),
+    );
+    target["data"]["startup_gate"] = source
+        .pointer("/data/startup_gate")
+        .map(compact_startup_gate_for_overflow)
+        .unwrap_or_else(startup_gate_defaults);
 }
 
 fn serialized_json_size_bytes(value: &Value) -> usize {
@@ -5839,7 +6022,7 @@ mod tests {
     }
 
     #[test]
-    fn initialize_instructions_prioritize_startup_brief_and_first_contact_onboarding() {
+    fn initialize_instructions_prioritize_startup_context_and_first_contact_onboarding() {
         let server = McpServer::new(McpRuntimeConfig {
             api_url: "http://127.0.0.1:9".to_string(),
             no_auth: true,
@@ -5855,12 +6038,12 @@ mod tests {
             .and_then(Value::as_str)
             .expect("initialize payload should include instructions");
 
-        assert!(instructions.contains("kura_agent_brief"));
-        assert!(instructions.contains("kura_agent_context as startup fallback"));
+        assert!(instructions.contains("kura_agent_context (startup gate, required)"));
+        assert!(instructions.contains("kura_agent_brief is available"));
         assert!(instructions.contains("first_contact_opening_v1"));
         assert!(instructions.contains("allow skip/log-now"));
         assert!(instructions.contains("Avoid dashboard/booking claims"));
-        assert!(instructions.contains("kura_agent_context"));
+        assert!(instructions.contains("startup context is loaded"));
         assert!(instructions.contains("kura_discover for lean capability snapshots"));
         assert!(
             instructions
@@ -6378,14 +6561,15 @@ mod tests {
             session["next"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("kura_agent_brief"),
-            "session.next must guide agent toward loading startup brief"
+                .contains("kura_agent_context"),
+            "session.next must guide agent toward loading startup context"
         );
-        assert_eq!(session["required_first_tool"], "kura_agent_brief");
+        assert_eq!(session["required_first_tool"], "kura_agent_context");
+        assert_eq!(session["preferred_first_tool"], "kura_agent_brief");
         assert_eq!(session["fallback_first_tool"], "kura_agent_context");
         assert_eq!(
             session["startup_gate_mode"],
-            "preferred_brief_with_context_fallback"
+            "context_required_brief_preferred"
         );
     }
 
@@ -6566,6 +6750,58 @@ mod tests {
     }
 
     #[test]
+    fn agent_context_overflow_preserves_startup_capsule_without_brief_sections() {
+        let huge = "x".repeat(TOOL_ENVELOPE_MAX_BYTES * 2);
+        let envelope = json!({
+            "status": "complete",
+            "phase": "final",
+            "tool": "kura_agent_context",
+            "data": {
+                "startup_gate": {
+                    "required_first_tool": "kura_agent_context",
+                    "preferred_first_tool": "kura_agent_brief",
+                    "fallback_first_tool": "kura_agent_context",
+                    "startup_gate_mode": "context_required_brief_preferred",
+                    "onboarding_required": false
+                },
+                "response": {
+                    "ok": true,
+                    "status": 200,
+                    "body": {
+                        "system": {
+                            "data": {
+                                "blob": huge
+                            }
+                        },
+                        "exercise_progression": [{
+                            "projection": {
+                                "data": {
+                                    "blob": huge
+                                }
+                            }
+                        }]
+                    }
+                }
+            }
+        });
+
+        let limited = enforce_tool_payload_limit("kura_agent_context", envelope);
+        assert_eq!(limited["truncated"], true);
+        assert_eq!(
+            limited["data"]["response"]["body"]["startup_capsule"]["schema_version"],
+            "startup_capsule.v1"
+        );
+        assert_eq!(
+            limited["data"]["response"]["body"]["overflow"]["critical_missing_sections"],
+            json!([])
+        );
+        assert_eq!(
+            limited["data"]["response"]["body"]["overflow"]["integrity_status"],
+            "degraded_optional_sections_omitted"
+        );
+    }
+
+    #[test]
     fn agent_context_overflow_preserves_startup_guidance_signals() {
         let huge = "x".repeat(TOOL_ENVELOPE_MAX_BYTES * 2);
         let sections = (0..600)
@@ -6577,9 +6813,10 @@ mod tests {
             "tool": "kura_agent_context",
             "data": {
                 "startup_gate": {
-                    "required_first_tool": "kura_agent_brief",
+                    "required_first_tool": "kura_agent_context",
+                    "preferred_first_tool": "kura_agent_brief",
                     "fallback_first_tool": "kura_agent_context",
-                    "startup_gate_mode": "preferred_brief_with_context_fallback",
+                    "startup_gate_mode": "context_required_brief_preferred",
                     "onboarding_required": true
                 },
                 "response": {
@@ -6644,7 +6881,15 @@ mod tests {
             "agent_brief.v1"
         );
         assert_eq!(
+            limited["data"]["response"]["body"]["startup_capsule"]["schema_version"],
+            "startup_capsule.v1"
+        );
+        assert_eq!(
             limited["data"]["startup_gate"]["required_first_tool"],
+            "kura_agent_context"
+        );
+        assert_eq!(
+            limited["data"]["startup_gate"]["preferred_first_tool"],
             "kura_agent_brief"
         );
         assert_eq!(
@@ -6655,6 +6900,10 @@ mod tests {
             .as_str()
             .unwrap_or_default();
         assert!(detail.chars().count() <= OVERFLOW_ACTION_REQUIRED_DETAIL_MAX_CHARS + 3);
+        assert_eq!(
+            limited["data"]["response"]["body"]["overflow"]["critical_missing_sections"],
+            json!([])
+        );
         assert!(serialized_json_size_bytes(&limited) <= TOOL_ENVELOPE_MAX_BYTES);
     }
 
@@ -6907,31 +7156,34 @@ mod tests {
     }
 
     #[test]
-    fn startup_brief_gate_blocks_non_exempt_tools_until_loaded() {
-        assert!(!should_block_for_startup_brief("kura_agent_brief", false));
-        assert!(!should_block_for_startup_brief("kura_agent_context", false));
-        assert!(!should_block_for_startup_brief("kura_mcp_status", false));
-        assert!(!should_block_for_startup_brief(
+    fn startup_context_gate_blocks_non_exempt_tools_until_loaded() {
+        assert!(!should_block_for_startup_context("kura_agent_brief", false));
+        assert!(!should_block_for_startup_context(
+            "kura_agent_context",
+            false
+        ));
+        assert!(!should_block_for_startup_context("kura_mcp_status", false));
+        assert!(!should_block_for_startup_context(
             "kura_access_request",
             false
         ));
-        assert!(should_block_for_startup_brief("kura_discover", false));
-        assert!(should_block_for_startup_brief("kura_events_write", false));
+        assert!(should_block_for_startup_context("kura_discover", false));
+        assert!(should_block_for_startup_context("kura_events_write", false));
     }
 
     #[test]
-    fn startup_brief_gate_unlocks_after_brief_load() {
-        let sid = format!("test-brief-gate-{}", Uuid::now_v7());
-        assert!(!is_brief_loaded(&sid));
-        mark_brief_loaded(&sid);
-        assert!(is_brief_loaded(&sid));
-        assert!(!should_block_for_startup_brief(
+    fn startup_context_gate_unlocks_after_context_load() {
+        let sid = format!("test-context-gate-{}", Uuid::now_v7());
+        assert!(!is_context_loaded(&sid));
+        mark_context_loaded(&sid);
+        assert!(is_context_loaded(&sid));
+        assert!(!should_block_for_startup_context(
             "kura_discover",
-            is_brief_loaded(&sid)
+            is_context_loaded(&sid)
         ));
-        assert!(!should_block_for_startup_brief(
+        assert!(!should_block_for_startup_context(
             "kura_agent_context",
-            is_brief_loaded(&sid)
+            is_context_loaded(&sid)
         ));
     }
 

@@ -17,8 +17,7 @@ pub(super) const AGENT_DEFAULT_ASSUMED_TIMEZONE: &str = "UTC";
 pub(super) const AGENT_TIMEZONE_ASSUMPTION_DISCLOSURE: &str =
     "No explicit timezone preference found; using UTC until the user confirms one.";
 pub(super) const AGENT_CHALLENGE_MODE_SCHEMA_VERSION: &str = "challenge_mode.v1";
-pub(super) const AGENT_CHALLENGE_MODE_ONBOARDING_HINT: &str =
-    "Challenge Mode defaults to auto. You can change it anytime by setting preference 'challenge_mode' to on, off, or auto.";
+pub(super) const AGENT_CHALLENGE_MODE_ONBOARDING_HINT: &str = "Challenge Mode defaults to auto. You can change it anytime by setting preference 'challenge_mode' to on, off, or auto.";
 pub(super) const AGENT_MEMORY_TIER_CONTRACT_VERSION: &str = "memory_tier_contract.v1";
 pub(super) const AGENT_SELF_MODEL_SCHEMA_VERSION: &str = "agent_self_model.v1";
 pub(super) const MODEL_TIER_REGISTRY_VERSION: &str = "model_tier_registry_v1";
