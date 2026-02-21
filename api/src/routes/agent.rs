@@ -10,7 +10,7 @@ use hmac::{Hmac, Mac};
 use kura_core::events::{BatchEventWarning, CreateEventRequest, EventMetadata};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -26,6 +26,7 @@ use crate::error::AppError;
 use crate::routes::events::{create_events_batch_internal, enforce_legacy_domain_invariants};
 use crate::routes::system::{
     SystemConfigResponse, build_system_config_handle, build_system_config_manifest_sections_cached,
+    resolve_system_config_section_value,
 };
 use crate::state::AppState;
 
@@ -33,6 +34,14 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/agent/capabilities", get(get_agent_capabilities))
         .route("/v1/agent/context", get(get_agent_context))
+        .route(
+            "/v1/agent/context/section-index",
+            get(get_agent_context_section_index),
+        )
+        .route(
+            "/v1/agent/context/section-fetch",
+            get(get_agent_context_section_fetch),
+        )
         .route("/v1/agent/observation-drafts", get(list_observation_drafts))
         .route(
             "/v1/agent/observation-drafts/{observation_id}",
@@ -81,6 +90,72 @@ pub struct AgentContextParams {
     /// Optional token budget hint for response shaping (min 400, max 12000).
     #[serde(default)]
     pub budget_tokens: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct AgentContextSectionFetchParams {
+    /// Stable section id from GET /v1/agent/context/section-index
+    pub section: String,
+    /// Optional page size for paged sections (default 50, max 200)
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// Opaque cursor for paged sections
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Optional comma-separated top-level fields to project from object payloads
+    #[serde(default)]
+    pub fields: Option<String>,
+    /// Optional task intent for startup section derivation
+    #[serde(default)]
+    pub task_intent: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentStartupGate {
+    pub required_first_tool: String,
+    pub preferred_first_tool: String,
+    pub fallback_first_tool: String,
+    pub startup_gate_mode: String,
+    pub onboarding_required: bool,
+    pub next: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentContextSectionIndexEntry {
+    pub section: String,
+    pub purpose: String,
+    pub criticality: String,
+    pub fetch: AgentBriefSectionFetch,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approx_tokens: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentContextSectionIndexResponse {
+    pub schema_version: String,
+    pub generated_at: DateTime<Utc>,
+    pub context_contract_version: String,
+    pub startup_gate: AgentStartupGate,
+    pub critical_sections: Vec<String>,
+    pub sections: Vec<AgentContextSectionIndexEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentContextSectionFetchResponse {
+    pub schema_version: String,
+    pub section: String,
+    pub critical: bool,
+    pub criticality: String,
+    pub context_contract_version: String,
+    pub generated_at: DateTime<Utc>,
+    pub has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub data: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_action: Option<String>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -2692,6 +2767,183 @@ fn build_agent_brief(
     }
 }
 
+fn onboarding_required_from_action(action_required: Option<&AgentActionRequired>) -> bool {
+    action_required
+        .map(|action| action.action == "onboarding")
+        .unwrap_or(false)
+}
+
+fn build_agent_startup_gate(action_required: Option<&AgentActionRequired>) -> AgentStartupGate {
+    let onboarding_required = onboarding_required_from_action(action_required);
+    AgentStartupGate {
+        required_first_tool: STARTUP_REQUIRED_FIRST_TOOL.to_string(),
+        preferred_first_tool: STARTUP_PREFERRED_FIRST_TOOL.to_string(),
+        fallback_first_tool: STARTUP_FALLBACK_FIRST_TOOL.to_string(),
+        startup_gate_mode: STARTUP_GATE_MODE.to_string(),
+        onboarding_required,
+        next: if onboarding_required {
+            "Respond with first-contact opening sequence and offer onboarding interview (allow skip/log-now).".to_string()
+        } else {
+            "Startup context loaded. Proceed with user request.".to_string()
+        },
+    }
+}
+
+fn build_startup_capsule_value(
+    action_required: Option<&AgentActionRequired>,
+    agent_brief: &AgentBrief,
+    startup_gate: &AgentStartupGate,
+) -> Value {
+    json!({
+        "schema_version": STARTUP_CAPSULE_SCHEMA_VERSION,
+        "onboarding_required": startup_gate.onboarding_required,
+        "action_required": action_required,
+        "workflow_state": agent_brief.workflow_state,
+        "first_contact_opening": agent_brief.first_contact_opening,
+        "response_guard": agent_brief.response_guard,
+        "startup_gate": startup_gate
+    })
+}
+
+fn build_agent_context_section_index(
+    generated_at: DateTime<Utc>,
+    context_contract_version: &str,
+    startup_gate: &AgentStartupGate,
+    agent_brief: &AgentBrief,
+) -> AgentContextSectionIndexResponse {
+    let mut sections: Vec<AgentContextSectionIndexEntry> = AGENT_CONTEXT_CRITICAL_SECTION_IDS
+        .iter()
+        .map(|section| AgentContextSectionIndexEntry {
+            section: (*section).to_string(),
+            purpose: match *section {
+                "startup_capsule" => {
+                    "Compact startup contract required before user-facing generation.".to_string()
+                }
+                "action_required" => {
+                    "Immediate required action before optional reasoning.".to_string()
+                }
+                "agent_brief" => "Must-cover intents and first-contact guardrails.".to_string(),
+                "meta" => "Context contract metadata and temporal grounding.".to_string(),
+                _ => "Critical startup section.".to_string(),
+            },
+            criticality: "core".to_string(),
+            fetch: AgentBriefSectionFetch {
+                method: "GET".to_string(),
+                path: "/v1/agent/context/section-fetch".to_string(),
+                query: Some(format!("section={section}")),
+                resource_uri: Some(format!("kura://agent/context/section?section={section}")),
+            },
+            approx_tokens: None,
+        })
+        .collect();
+
+    sections.extend(agent_brief.available_sections.iter().map(|section| {
+        AgentContextSectionIndexEntry {
+            section: section.section.clone(),
+            purpose: section.purpose.clone(),
+            criticality: section.criticality.clone(),
+            fetch: section.fetch.clone(),
+            approx_tokens: section.approx_tokens,
+        }
+    }));
+
+    sections.sort_by(|a, b| a.section.cmp(&b.section));
+    sections.dedup_by(|a, b| a.section == b.section);
+
+    AgentContextSectionIndexResponse {
+        schema_version: AGENT_CONTEXT_SECTION_INDEX_SCHEMA_VERSION.to_string(),
+        generated_at,
+        context_contract_version: context_contract_version.to_string(),
+        startup_gate: startup_gate.clone(),
+        critical_sections: AGENT_CONTEXT_CRITICAL_SECTION_IDS
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
+        sections,
+    }
+}
+
+fn parse_section_field_projection(raw: Option<&str>) -> Vec<String> {
+    raw.map(|value| {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|field| !field.is_empty())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+    })
+    .unwrap_or_default()
+}
+
+fn project_top_level_fields(value: Value, fields: &[String]) -> Value {
+    if fields.is_empty() {
+        return value;
+    }
+    let Some(obj) = value.as_object() else {
+        return value;
+    };
+    let mut projected = Map::new();
+    for field in fields {
+        if let Some(entry) = obj.get(field).cloned() {
+            projected.insert(field.clone(), entry);
+        }
+    }
+    Value::Object(projected)
+}
+
+fn project_top_level_fields_on_value(value: Value, fields: &[String]) -> Value {
+    if fields.is_empty() {
+        return value;
+    }
+    match value {
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .map(|item| project_top_level_fields(item, fields))
+                .collect(),
+        ),
+        other => project_top_level_fields(other, fields),
+    }
+}
+
+fn encode_agent_context_section_cursor(key: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.as_bytes())
+}
+
+fn decode_agent_context_section_cursor(cursor: &str) -> Result<String, AppError> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| AppError::Validation {
+            message: "Invalid cursor format".to_string(),
+            field: Some("cursor".to_string()),
+            received: Some(Value::String(cursor.to_string())),
+            docs_hint: Some(
+                "Use the next_cursor value from a previous section-fetch response.".to_string(),
+            ),
+        })?;
+    let key = String::from_utf8(bytes).map_err(|_| AppError::Validation {
+        message: "Invalid cursor encoding".to_string(),
+        field: Some("cursor".to_string()),
+        received: None,
+        docs_hint: Some(
+            "Use the next_cursor value from a previous section-fetch response.".to_string(),
+        ),
+    })?;
+    if key.trim().is_empty() {
+        return Err(AppError::Validation {
+            message: "Invalid cursor payload".to_string(),
+            field: Some("cursor".to_string()),
+            received: None,
+            docs_hint: Some(
+                "Use the next_cursor value from a previous section-fetch response.".to_string(),
+            ),
+        });
+    }
+    Ok(key)
+}
+
 fn bootstrap_user_profile(user_id: Uuid) -> ProjectionResponse {
     let now = Utc::now();
     ProjectionResponse {
@@ -3000,6 +3252,48 @@ async fn fetch_projection_list(
     .await?;
 
     Ok(rows.into_iter().map(|r| r.into_response(now)).collect())
+}
+
+async fn fetch_projection_page_by_key(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+    projection_type: &str,
+    limit: i64,
+    cursor: Option<&str>,
+) -> Result<(Vec<ProjectionResponse>, Option<String>, bool), AppError> {
+    let now = Utc::now();
+    let fetch_limit = limit + 1;
+    let rows = sqlx::query_as::<_, ProjectionRow>(
+        r#"
+        SELECT id, user_id, projection_type, key, data, version, last_event_id, updated_at
+        FROM projections
+        WHERE user_id = $1
+          AND projection_type = $2
+          AND ($3::text IS NULL OR key > $3)
+        ORDER BY key ASC
+        LIMIT $4
+        "#,
+    )
+    .bind(user_id)
+    .bind(projection_type)
+    .bind(cursor)
+    .bind(fetch_limit)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let has_more = rows.len() as i64 > limit;
+    let data: Vec<ProjectionResponse> = rows
+        .into_iter()
+        .take(limit as usize)
+        .map(|row| row.into_response(now))
+        .collect();
+    let next_cursor = if has_more {
+        data.last()
+            .map(|item| encode_agent_context_section_cursor(&item.projection.key))
+    } else {
+        None
+    };
+    Ok((data, next_cursor, has_more))
 }
 
 fn draft_topic_from_dimension(dimension: &str) -> String {
@@ -3684,6 +3978,17 @@ const DECISION_BRIEF_BALANCED_ITEMS_PER_BLOCK: usize = 4;
 const DECISION_BRIEF_DETAILED_ITEMS_PER_BLOCK: usize = 5;
 const DECISION_BRIEF_MAX_ITEMS_PER_BLOCK: usize = 6;
 const AGENT_CONTEXT_OVERFLOW_SCHEMA_VERSION: &str = "agent_context_overflow.v1";
+const AGENT_CONTEXT_SECTION_INDEX_SCHEMA_VERSION: &str = "agent_context_section_index.v1";
+const AGENT_CONTEXT_SECTION_FETCH_SCHEMA_VERSION: &str = "agent_context_section_fetch.v1";
+const STARTUP_CAPSULE_SCHEMA_VERSION: &str = "startup_capsule.v1";
+const STARTUP_REQUIRED_FIRST_TOOL: &str = "kura_agent_context";
+const STARTUP_PREFERRED_FIRST_TOOL: &str = "kura_agent_brief";
+const STARTUP_FALLBACK_FIRST_TOOL: &str = "kura_agent_context";
+const STARTUP_GATE_MODE: &str = "context_required_brief_preferred";
+const AGENT_CONTEXT_SECTION_FETCH_DEFAULT_LIMIT: i64 = 50;
+const AGENT_CONTEXT_SECTION_FETCH_MAX_LIMIT: i64 = 200;
+const AGENT_CONTEXT_CRITICAL_SECTION_IDS: [&str; 4] =
+    ["startup_capsule", "action_required", "agent_brief", "meta"];
 const AGENT_CONTEXT_METRIC_SNAPSHOT_SCHEMA_VERSION: &str = "agent_context.metric_snapshot.v1";
 const DECISION_BRIEF_CHAT_TEMPLATE_ID: &str = "decision_brief.chat.context.v1";
 const OBSERVATION_DRAFT_CONTEXT_SCHEMA_VERSION: &str = "observation_draft_context.v1";
@@ -7859,6 +8164,241 @@ pub async fn get_agent_context(
     Ok(Json(response))
 }
 
+async fn load_agent_startup_section_context(
+    state: &AppState,
+    auth: &AuthenticatedUser,
+    task_intent: Option<String>,
+) -> Result<AgentContextResponse, AppError> {
+    let params = AgentContextParams {
+        exercise_limit: Some(1),
+        strength_limit: Some(1),
+        custom_limit: Some(1),
+        task_intent,
+        include_system: Some(false),
+        budget_tokens: Some(1200),
+    };
+    let Json(response) =
+        get_agent_context(State(state.clone()), auth.clone(), Query(params)).await?;
+    Ok(response)
+}
+
+/// Get deterministic section index for startup + targeted follow-up reads.
+#[utoipa::path(
+    get,
+    path = "/v1/agent/context/section-index",
+    params(AgentContextParams),
+    responses(
+        (status = 200, description = "Section index for deterministic follow-up reads", body = AgentContextSectionIndexResponse),
+        (status = 401, description = "Unauthorized", body = ApiError)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "system"
+)]
+pub async fn get_agent_context_section_index(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Query(params): Query<AgentContextParams>,
+) -> Result<Json<AgentContextSectionIndexResponse>, AppError> {
+    require_scopes(
+        &auth,
+        &["agent:read"],
+        "GET /v1/agent/context/section-index",
+    )?;
+    let context = load_agent_startup_section_context(&state, &auth, params.task_intent).await?;
+    let startup_gate = build_agent_startup_gate(context.action_required.as_ref());
+    Ok(Json(build_agent_context_section_index(
+        context.meta.generated_at,
+        &context.meta.context_contract_version,
+        &startup_gate,
+        &context.agent_brief,
+    )))
+}
+
+/// Fetch exactly one context section, optionally paged and field-projected.
+#[utoipa::path(
+    get,
+    path = "/v1/agent/context/section-fetch",
+    params(AgentContextSectionFetchParams),
+    responses(
+        (status = 200, description = "One context section", body = AgentContextSectionFetchResponse),
+        (status = 400, description = "Validation failed", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 404, description = "Unknown section", body = ApiError)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "system"
+)]
+pub async fn get_agent_context_section_fetch(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Query(query): Query<AgentContextSectionFetchParams>,
+) -> Result<Json<AgentContextSectionFetchResponse>, AppError> {
+    require_scopes(
+        &auth,
+        &["agent:read"],
+        "GET /v1/agent/context/section-fetch",
+    )?;
+    let section = query.section.trim();
+    if section.is_empty() {
+        return Err(AppError::Validation {
+            message: "section is required".to_string(),
+            field: Some("section".to_string()),
+            received: Some(Value::String(query.section)),
+            docs_hint: Some(
+                "Use a section id from GET /v1/agent/context/section-index.".to_string(),
+            ),
+        });
+    }
+
+    let projected_fields = parse_section_field_projection(query.fields.as_deref());
+    let limit = query
+        .limit
+        .unwrap_or(AGENT_CONTEXT_SECTION_FETCH_DEFAULT_LIMIT)
+        .clamp(1, AGENT_CONTEXT_SECTION_FETCH_MAX_LIMIT);
+
+    if AGENT_CONTEXT_CRITICAL_SECTION_IDS
+        .iter()
+        .any(|critical| section == *critical)
+    {
+        let context =
+            load_agent_startup_section_context(&state, &auth, query.task_intent.clone()).await?;
+        let startup_gate = build_agent_startup_gate(context.action_required.as_ref());
+        let mut payload = match section {
+            "startup_capsule" => build_startup_capsule_value(
+                context.action_required.as_ref(),
+                &context.agent_brief,
+                &startup_gate,
+            ),
+            "action_required" => serialize_to_value(context.action_required),
+            "agent_brief" => serialize_to_value(context.agent_brief),
+            "meta" => serialize_to_value(context.meta),
+            _ => Value::Null,
+        };
+        payload = project_top_level_fields_on_value(payload, &projected_fields);
+        return Ok(Json(AgentContextSectionFetchResponse {
+            schema_version: AGENT_CONTEXT_SECTION_FETCH_SCHEMA_VERSION.to_string(),
+            section: section.to_string(),
+            critical: true,
+            criticality: "core".to_string(),
+            context_contract_version: AGENT_CONTEXT_CONTRACT_VERSION.to_string(),
+            generated_at: Utc::now(),
+            has_more: false,
+            next_cursor: None,
+            data: payload,
+            reason_code: None,
+            next_action: None,
+        }));
+    }
+
+    if section == "system_config" || section.starts_with("system_config.") {
+        let mut tx = state.db.begin().await?;
+        sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+            .bind(auth.user_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        let system = sqlx::query_as::<_, SystemConfigRow>(
+            "SELECT data, version, updated_at FROM system_config WHERE key = 'global'",
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .map(|row| {
+            redact_system_config_for_agent(SystemConfigResponse {
+                data: row.data,
+                version: row.version,
+                updated_at: row.updated_at,
+            })
+        })
+        .ok_or_else(|| AppError::NotFound {
+            resource: "system_config/global".to_string(),
+        })?;
+        tx.commit().await?;
+        let Some(value) = resolve_system_config_section_value(&system.data, section) else {
+            return Err(AppError::NotFound {
+                resource: format!("agent_context_section/{section}"),
+            });
+        };
+        let data = project_top_level_fields_on_value(value, &projected_fields);
+        return Ok(Json(AgentContextSectionFetchResponse {
+            schema_version: AGENT_CONTEXT_SECTION_FETCH_SCHEMA_VERSION.to_string(),
+            section: section.to_string(),
+            critical: false,
+            criticality: "extended".to_string(),
+            context_contract_version: AGENT_CONTEXT_CONTRACT_VERSION.to_string(),
+            generated_at: Utc::now(),
+            has_more: false,
+            next_cursor: None,
+            data,
+            reason_code: None,
+            next_action: None,
+        }));
+    }
+
+    if section.starts_with("projections.") {
+        let projection_name = section.trim_start_matches("projections.");
+        let mut tx = state.db.begin().await?;
+        sqlx::query("SELECT set_config('kura.current_user_id', $1, true)")
+            .bind(auth.user_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+
+        let now = Utc::now();
+        let (data, next_cursor, has_more) = match projection_name {
+            "objective_state" => {
+                let projection =
+                    fetch_projection(&mut tx, auth.user_id, "objective_state", "active").await?;
+                (serialize_to_value(projection), None, false)
+            }
+            "objective_advisory" => {
+                let projection =
+                    fetch_projection(&mut tx, auth.user_id, "objective_advisory", "overview")
+                        .await?;
+                (serialize_to_value(projection), None, false)
+            }
+            "exercise_progression" | "strength_inference" | "custom" => {
+                let cursor_key = query
+                    .cursor
+                    .as_deref()
+                    .map(decode_agent_context_section_cursor)
+                    .transpose()?;
+                let (page, next, has_more) = fetch_projection_page_by_key(
+                    &mut tx,
+                    auth.user_id,
+                    projection_name,
+                    limit,
+                    cursor_key.as_deref(),
+                )
+                .await?;
+                (serialize_to_value(page), next, has_more)
+            }
+            other => {
+                tx.commit().await?;
+                return Err(AppError::NotFound {
+                    resource: format!("agent_context_section/projections.{other}"),
+                });
+            }
+        };
+        tx.commit().await?;
+        let data = project_top_level_fields_on_value(data, &projected_fields);
+        return Ok(Json(AgentContextSectionFetchResponse {
+            schema_version: AGENT_CONTEXT_SECTION_FETCH_SCHEMA_VERSION.to_string(),
+            section: section.to_string(),
+            critical: false,
+            criticality: "extended".to_string(),
+            context_contract_version: AGENT_CONTEXT_CONTRACT_VERSION.to_string(),
+            generated_at: now,
+            has_more,
+            next_cursor,
+            data,
+            reason_code: None,
+            next_action: None,
+        }));
+    }
+
+    Err(AppError::NotFound {
+        resource: format!("agent_context_section/{section}"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -8494,6 +9034,58 @@ mod tests {
             .expect("system_config_ref should be present");
         assert_eq!(system_ref.version, 7);
         assert_eq!(system_ref.handle, "system_config/global@v7");
+    }
+
+    #[test]
+    fn agent_context_section_index_contract_includes_startup_capsule_and_critical_sections() {
+        let profile = bootstrap_user_profile(Uuid::now_v7());
+        let action = extract_action_required(&profile);
+        let brief = super::build_agent_brief(action.as_ref(), &profile, None, None);
+        let startup_gate = super::build_agent_startup_gate(action.as_ref());
+        let index = super::build_agent_context_section_index(
+            Utc::now(),
+            "agent_context.v12",
+            &startup_gate,
+            &brief,
+        );
+
+        assert_eq!(index.schema_version, "agent_context_section_index.v1");
+        assert!(
+            index
+                .critical_sections
+                .contains(&"startup_capsule".to_string())
+        );
+        assert!(index.sections.iter().any(|section| {
+            section.section == "startup_capsule" && section.criticality == "core"
+        }));
+        assert!(index.sections.iter().any(|section| {
+            section.section == "agent_brief"
+                && section.fetch.path == "/v1/agent/context/section-fetch"
+        }));
+    }
+
+    #[test]
+    fn agent_context_section_fetch_field_projection_contract_projects_top_level_fields() {
+        let projected = super::project_top_level_fields_on_value(
+            json!({
+                "schema_version": "agent_brief.v1",
+                "must_cover_intents": ["offer_onboarding"],
+                "coverage_gaps": ["user_profile_bootstrap_pending"]
+            }),
+            &["must_cover_intents".to_string()],
+        );
+        assert_eq!(
+            projected,
+            json!({"must_cover_intents": ["offer_onboarding"]})
+        );
+    }
+
+    #[test]
+    fn agent_context_section_cursor_contract_roundtrips_base64_key() {
+        let cursor = super::encode_agent_context_section_cursor("bench_press");
+        let decoded =
+            super::decode_agent_context_section_cursor(&cursor).expect("cursor should decode");
+        assert_eq!(decoded, "bench_press");
     }
 
     #[test]

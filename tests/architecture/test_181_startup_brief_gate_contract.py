@@ -21,8 +21,12 @@ MCP_RUNTIME = Path("mcp-runtime/src/lib.rs")
 RUNTIME_TESTS: tuple[str, ...] = (
     "tests::initialize_instructions_prioritize_startup_context_and_first_contact_onboarding",
     "tests::agent_brief_tool_schema_defaults_to_startup_minimal_bundle",
+    "tests::agent_section_tools_are_exposed_with_contract_inputs",
     "tests::startup_context_gate_blocks_non_exempt_tools_until_loaded",
     "tests::startup_context_gate_unlocks_after_context_load",
+    "tests::startup_tool_surface_contract_reports_consistency",
+    "tests::mcp_status_exposes_tool_surface_contract_fields",
+    "tests::startup_context_missing_sections_tracks_capsule_and_critical_overflow_entries",
     "tests::discover_defaults_only_include_capabilities_section",
     "tests::import_and_provider_tools_hidden_by_default_runtime_profile",
 )
@@ -39,6 +43,10 @@ def test_mcp_runtime_declares_startup_brief_gate_and_minimal_tool() -> None:
     assert "should_block_for_startup_context" in src
     assert "mark_brief_loaded" in src
     assert "is_brief_loaded" in src
+    assert "kura_agent_section_index" in src
+    assert "kura_agent_section_fetch" in src
+    assert "tool_surface_consistent" in src
+    assert "KURA_MCP_FAIL_CLOSED_STARTUP" in src
 
 
 def test_mcp_runtime_declares_discovery_hygiene_flag_for_import_provider_tools() -> None:

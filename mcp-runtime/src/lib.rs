@@ -17,6 +17,8 @@ const MCP_SERVER_NAME: &str = "kura-mcp";
 const TOOL_ENVELOPE_MAX_BYTES: usize = 28_000;
 const AGENT_CONTEXT_OVERFLOW_SCHEMA_VERSION: &str = "agent_context_overflow.v1";
 const AGENT_CONTEXT_CRITICAL_SECTION_KEYS: [&str; 1] = ["startup_capsule"];
+const STARTUP_DIAGNOSTIC_REQUIRED_SECTIONS: [&str; 4] =
+    ["startup_capsule", "action_required", "agent_brief", "meta"];
 const STARTUP_CAPSULE_SCHEMA_VERSION: &str = "startup_capsule.v1";
 const COMPACT_ENDPOINT_PREVIEW_MAX_ITEMS: usize = 120;
 const CONTEXT_SESSION_TTL_SECS: u64 = 3600;
@@ -37,6 +39,7 @@ const RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK_ENV: &str =
     "KURA_MCP_RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK";
 const RETRIEVAL_OBSERVABILITY_SCHEMA_VERSION: &str = "mcp_retrieval_observability.v1";
 const IMPORT_DEVICE_TOOLS_ENABLED_ENV: &str = "KURA_MCP_ENABLE_IMPORT_PROVIDER_TOOLS";
+const FAIL_CLOSED_STARTUP_ENV: &str = "KURA_MCP_FAIL_CLOSED_STARTUP";
 const STARTUP_REQUIRED_FIRST_TOOL: &str = "kura_agent_context";
 const STARTUP_PREFERRED_FIRST_TOOL: &str = "kura_agent_brief";
 const STARTUP_FALLBACK_FIRST_TOOL: &str = "kura_agent_context";
@@ -61,6 +64,7 @@ static RETRIEVAL_FSM_POLICY: LazyLock<RetrievalFsmPolicy> =
     LazyLock::new(load_retrieval_fsm_policy_from_env);
 static IMPORT_DEVICE_TOOLS_ENABLED: LazyLock<bool> =
     LazyLock::new(load_import_device_tools_enabled_from_env);
+static FAIL_CLOSED_STARTUP: LazyLock<bool> = LazyLock::new(load_fail_closed_startup_from_env);
 
 #[derive(Clone, Debug)]
 struct RetrievalFsmPolicy {
@@ -103,6 +107,7 @@ struct RetrievalControlState {
     context_loaded_calls: u64,
     context_calls: u64,
     context_overflow_count: u64,
+    context_critical_missing_count: u64,
     projection_page_calls: u64,
     abort_reasons: BTreeMap<String, u64>,
 }
@@ -124,6 +129,7 @@ impl RetrievalControlState {
             context_loaded_calls: 0,
             context_calls: 0,
             context_overflow_count: 0,
+            context_critical_missing_count: 0,
             projection_page_calls: 0,
             abort_reasons: BTreeMap::new(),
         }
@@ -178,6 +184,14 @@ fn load_import_device_tools_enabled_from_env() -> bool {
 
 fn import_device_tools_enabled() -> bool {
     *IMPORT_DEVICE_TOOLS_ENABLED
+}
+
+fn load_fail_closed_startup_from_env() -> bool {
+    parse_env_bool_flag(std::env::var(FAIL_CLOSED_STARTUP_ENV).ok(), true)
+}
+
+fn fail_closed_startup_enabled() -> bool {
+    *FAIL_CLOSED_STARTUP
 }
 
 fn parse_env_u64_with_bounds(raw: Option<String>, min: u64, max: u64, default: u64) -> (u64, bool) {
@@ -276,6 +290,8 @@ fn is_retrieval_guarded_tool(name: &str) -> bool {
     matches!(
         name,
         "kura_agent_context"
+            | "kura_agent_section_index"
+            | "kura_agent_section_fetch"
             | "kura_projection_list"
             | "kura_projection_get"
             | "kura_system_manifest"
@@ -393,6 +409,40 @@ fn envelope_contains_context_overflow(envelope: &Value) -> bool {
         || envelope.pointer("/data/response/body/overflow").is_some()
 }
 
+fn envelope_context_critical_missing_count(envelope: &Value) -> usize {
+    envelope
+        .pointer("/data/response/body/overflow/critical_missing_sections")
+        .and_then(Value::as_array)
+        .map(|items| items.len())
+        .unwrap_or(0)
+}
+
+fn envelope_contains_startup_capsule(envelope: &Value) -> bool {
+    envelope
+        .pointer("/data/response/body/startup_capsule")
+        .is_some_and(|value| !value.is_null())
+}
+
+fn startup_context_missing_sections(envelope: &Value) -> Vec<String> {
+    let mut missing: HashSet<String> = HashSet::new();
+    if !envelope_contains_startup_capsule(envelope) {
+        missing.insert("startup_capsule".to_string());
+    }
+    if let Some(items) = envelope
+        .pointer("/data/response/body/overflow/critical_missing_sections")
+        .and_then(Value::as_array)
+    {
+        for item in items {
+            if let Some(section) = item.as_str() {
+                missing.insert(section.to_string());
+            }
+        }
+    }
+    let mut missing_vec: Vec<String> = missing.into_iter().collect();
+    missing_vec.sort();
+    missing_vec
+}
+
 fn envelope_uses_projection_paging(envelope: &Value) -> bool {
     envelope
         .pointer("/data/request/path")
@@ -407,6 +457,10 @@ fn observe_tool_outcome(session_id: &str, name: &str, envelope: &Value) {
             state.context_calls = state.context_calls.saturating_add(1);
             if envelope_contains_context_overflow(envelope) {
                 state.context_overflow_count = state.context_overflow_count.saturating_add(1);
+            }
+            if envelope_context_critical_missing_count(envelope) > 0 {
+                state.context_critical_missing_count =
+                    state.context_critical_missing_count.saturating_add(1);
             }
         }
         if name == "kura_projection_list" && envelope_uses_projection_paging(envelope) {
@@ -423,6 +477,7 @@ fn observe_tool_error(session_id: &str, payload: &Value) {
 
 fn retrieval_observability_snapshot(session_id: &str, policy: &RetrievalFsmPolicy) -> Value {
     with_retrieval_state_mut(session_id, |state, _| {
+        let blocked_total = state.abort_reasons.values().copied().sum::<u64>();
         json!({
             "schema_version": RETRIEVAL_OBSERVABILITY_SCHEMA_VERSION,
             "fsm": {
@@ -442,8 +497,12 @@ fn retrieval_observability_snapshot(session_id: &str, policy: &RetrievalFsmPolic
                 "context_calls": state.context_calls,
                 "context_overflow_count": state.context_overflow_count,
                 "overflow_rate": saturating_ratio(state.context_overflow_count, state.context_calls),
+                "context_critical_missing_count": state.context_critical_missing_count,
+                "critical_missing_rate": saturating_ratio(state.context_critical_missing_count, state.context_calls),
                 "projection_page_calls": state.projection_page_calls,
                 "avg_reload_depth": saturating_ratio(state.total_reload_depth, state.reload_depth_samples),
+                "blocked_rate": saturating_ratio(blocked_total, state.total_tool_calls),
+                "speculative_answer_rate": 0.0,
                 "abort_reasons": state.abort_reasons.clone()
             }
         })
@@ -517,6 +576,8 @@ fn is_tool_call_dedupe_eligible(name: &str) -> bool {
             | "kura_system_section_get"
             | "kura_agent_brief"
             | "kura_agent_context"
+            | "kura_agent_section_index"
+            | "kura_agent_section_fetch"
             | "kura_semantic_resolve"
             | "kura_account_api_keys_list"
             | "kura_analysis_job_get"
@@ -601,7 +662,13 @@ fn build_tool_call_response(
 }
 
 fn should_emit_context_warning(name: &str, context_loaded: bool) -> bool {
-    !matches!(name, "kura_agent_context" | "kura_agent_brief") && !context_loaded
+    !matches!(
+        name,
+        "kura_agent_context"
+            | "kura_agent_brief"
+            | "kura_agent_section_index"
+            | "kura_agent_section_fetch"
+    ) && !context_loaded
 }
 
 fn is_startup_context_exempt_tool(name: &str) -> bool {
@@ -611,7 +678,57 @@ fn is_startup_context_exempt_tool(name: &str) -> bool {
             | STARTUP_PREFERRED_FIRST_TOOL
             | "kura_mcp_status"
             | "kura_access_request"
+            | "kura_agent_section_index"
+            | "kura_agent_section_fetch"
     )
+}
+
+fn startup_tool_surface_contract() -> Value {
+    let exposed: HashSet<&'static str> = tool_definitions().iter().map(|tool| tool.name).collect();
+    let required_exposed = exposed.contains(STARTUP_REQUIRED_FIRST_TOOL);
+    let preferred_exposed = exposed.contains(STARTUP_PREFERRED_FIRST_TOOL);
+    let fallback_exposed = exposed.contains(STARTUP_FALLBACK_FIRST_TOOL);
+    let effective_required_first_tool = if required_exposed {
+        STARTUP_REQUIRED_FIRST_TOOL
+    } else if fallback_exposed {
+        STARTUP_FALLBACK_FIRST_TOOL
+    } else {
+        STARTUP_REQUIRED_FIRST_TOOL
+    };
+    let tool_surface_consistent = if STARTUP_REQUIRED_FIRST_TOOL == STARTUP_FALLBACK_FIRST_TOOL {
+        required_exposed
+    } else {
+        required_exposed || fallback_exposed
+    };
+    json!({
+        "required_first_tool_exposed": required_exposed,
+        "preferred_first_tool_exposed": preferred_exposed,
+        "fallback_first_tool_exposed": fallback_exposed,
+        "effective_required_first_tool": effective_required_first_tool,
+        "tool_surface_consistent": tool_surface_consistent
+    })
+}
+
+fn diagnostic_api_payload_summary(payload: &Value) -> Value {
+    let request = payload.get("request").cloned().unwrap_or(Value::Null);
+    let response_status = payload
+        .pointer("/response/status")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let response_ok = payload
+        .pointer("/response/ok")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let response_body_summary = payload
+        .pointer("/response/body")
+        .map(summarize_json_shape)
+        .unwrap_or(Value::Null);
+    json!({
+        "request": request,
+        "response_status": response_status,
+        "response_ok": response_ok,
+        "response_body_summary": response_body_summary
+    })
 }
 
 fn should_block_for_startup_context(name: &str, context_loaded: bool) -> bool {
@@ -640,6 +757,8 @@ fn is_context_exempt_tool(name: &str) -> bool {
 pub enum McpCommands {
     /// Run a Kura MCP server over stdio
     Serve(McpServeArgs),
+    /// Run deterministic startup diagnostics (contract, overflow, recovery path)
+    Diagnose(McpDiagnoseArgs),
 }
 
 #[derive(Args, Clone, Debug)]
@@ -661,6 +780,34 @@ pub struct McpServeArgs {
     pub allow_admin: bool,
 }
 
+#[derive(Args, Clone, Debug)]
+pub struct McpDiagnoseArgs {
+    /// Disable auth header injection (useful behind auth proxies)
+    #[arg(long)]
+    pub no_auth: bool,
+    /// Explicit bearer token override (otherwise KURA_API_KEY or OAuth store)
+    #[arg(long, env = "KURA_MCP_TOKEN")]
+    pub token: Option<String>,
+    /// Optional task intent used for startup context ranking
+    #[arg(long)]
+    pub task_intent: Option<String>,
+    /// Max exercise_progression projections for initial context call
+    #[arg(long, default_value_t = 1)]
+    pub exercise_limit: u32,
+    /// Max strength_inference projections for initial context call
+    #[arg(long, default_value_t = 1)]
+    pub strength_limit: u32,
+    /// Max custom projections for initial context call
+    #[arg(long, default_value_t = 1)]
+    pub custom_limit: u32,
+    /// Budget tokens hint for initial context call
+    #[arg(long, default_value_t = 1200)]
+    pub budget_tokens: u32,
+    /// Include system config in initial context call
+    #[arg(long, default_value_t = false)]
+    pub include_system: bool,
+}
+
 pub async fn run(api_url: &str, inherited_no_auth: bool, command: McpCommands) -> i32 {
     match command {
         McpCommands::Serve(args) => {
@@ -678,6 +825,40 @@ pub async fn run(api_url: &str, inherited_no_auth: bool, command: McpCommands) -
                     let payload = json!({
                         "error": "mcp_server_error",
                         "message": err,
+                    });
+                    eprintln!("{}", to_pretty_json(&payload));
+                    1
+                }
+            }
+        }
+        McpCommands::Diagnose(args) => {
+            let mut server = McpServer::new(McpRuntimeConfig {
+                api_url: api_url.to_string(),
+                no_auth: inherited_no_auth || args.no_auth,
+                explicit_token: args.token.clone(),
+                default_source: "mcp".to_string(),
+                default_agent: "kura-mcp".to_string(),
+                allow_admin: false,
+            });
+            server.capability_profile = server.negotiate_capability_profile().await;
+            match server.run_startup_diagnostics(&args).await {
+                Ok(report) => {
+                    println!("{}", to_pretty_json(&report));
+                    if report
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .is_some_and(|status| status == "ready")
+                    {
+                        0
+                    } else {
+                        2
+                    }
+                }
+                Err(err) => {
+                    let payload = json!({
+                        "error": err.code,
+                        "message": err.message,
+                        "docs_hint": err.docs_hint,
                     });
                     eprintln!("{}", to_pretty_json(&payload));
                     1
@@ -1069,6 +1250,7 @@ impl McpServer {
         let brief_loaded = is_brief_loaded(&self.session_id);
         observe_tool_call_start(&self.session_id, name, context_loaded);
         let retrieval_policy = retrieval_fsm_policy();
+        let startup_surface = startup_tool_surface_contract();
 
         if should_block_for_startup_context(name, context_loaded) {
             record_abort_reason_for_session(&self.session_id, "startup_context_required");
@@ -1090,7 +1272,8 @@ impl McpServer {
                             "startup_gate_mode": STARTUP_GATE_MODE,
                             "blocked_tool": name,
                             "brief_loaded": brief_loaded,
-                            "context_loaded": context_loaded
+                            "context_loaded": context_loaded,
+                            "tool_surface": startup_surface
                         }
                     }
                 }),
@@ -1198,10 +1381,6 @@ impl McpServer {
                 {
                     mark_brief_loaded(&self.session_id);
                 }
-                if name == "kura_agent_context" && tool_payload_response_ok(&payload) {
-                    mark_brief_loaded(&self.session_id);
-                    mark_context_loaded(&self.session_id);
-                }
                 let status = tool_completion_status(&payload);
                 let mut envelope = enforce_tool_payload_limit(
                     name,
@@ -1212,10 +1391,37 @@ impl McpServer {
                         "data": payload
                     }),
                 );
+                let mut is_error_response = false;
+                if name == "kura_agent_context" && tool_payload_response_ok(&payload) {
+                    let missing_sections = startup_context_missing_sections(&envelope);
+                    if fail_closed_startup_enabled() && !missing_sections.is_empty() {
+                        record_abort_reason_for_session(
+                            &self.session_id,
+                            "startup_critical_sections_missing",
+                        );
+                        is_error_response = true;
+                        envelope["status"] = json!("error");
+                        envelope["phase"] = json!("blocked_precondition");
+                        envelope["error"] = json!({
+                            "error": "startup_critical_sections_missing",
+                            "message": "Startup context missing critical sections; normal generation is blocked until startup sections are recovered.",
+                            "field": "data.response.body",
+                            "docs_hint": "Call kura_agent_section_index, then kura_agent_section_fetch for each critical section, or retry kura_agent_context with narrower scope.",
+                            "details": {
+                                "reason_code": "startup_critical_sections_missing",
+                                "missing_sections": missing_sections,
+                                "fail_closed_startup_enabled": true
+                            }
+                        });
+                    } else {
+                        mark_brief_loaded(&self.session_id);
+                        mark_context_loaded(&self.session_id);
+                    }
+                }
                 observe_tool_outcome(&self.session_id, name, &envelope);
                 store_tool_call_dedupe_entry(&self.session_id, name, &args, &envelope);
                 attach_runtime_observability(&self.session_id, &mut envelope, retrieval_policy);
-                build_tool_call_response(name, envelope, false, context_warning)
+                build_tool_call_response(name, envelope, is_error_response, context_warning)
             }
             Err(err) => {
                 let payload = err.to_value();
@@ -1253,6 +1459,8 @@ impl McpServer {
             "kura_system_section_get" => self.tool_system_section_get(args).await,
             "kura_agent_brief" => self.tool_agent_brief(args).await,
             "kura_agent_context" => self.tool_agent_context(args).await,
+            "kura_agent_section_index" => self.tool_agent_section_index(args).await,
+            "kura_agent_section_fetch" => self.tool_agent_section_fetch(args).await,
             "kura_semantic_resolve" => self.tool_semantic_resolve(args).await,
             "kura_access_request" => self.tool_access_request(args).await,
             "kura_account_api_keys_list" => self.tool_account_api_keys_list(args).await,
@@ -1446,6 +1654,7 @@ impl McpServer {
         // Session hint: context is required; brief is preferred when available.
         let brief_loaded = is_brief_loaded(&self.session_id);
         let context_loaded = is_context_loaded(&self.session_id);
+        let tool_surface = startup_tool_surface_contract();
         payload["session"] = json!({
             "session_id": self.session_id.clone(),
             "brief_loaded": brief_loaded,
@@ -1454,6 +1663,7 @@ impl McpServer {
             "preferred_first_tool": STARTUP_PREFERRED_FIRST_TOOL,
             "fallback_first_tool": STARTUP_FALLBACK_FIRST_TOOL,
             "startup_gate_mode": STARTUP_GATE_MODE,
+            "tool_surface": tool_surface,
             "next": if !context_loaded {
                 "Call kura_agent_context now before broad reads/writes."
             } else if !brief_loaded {
@@ -1468,6 +1678,7 @@ impl McpServer {
     }
 
     async fn tool_mcp_status(&self, _args: &Map<String, Value>) -> Result<Value, ToolError> {
+        let tool_surface = startup_tool_surface_contract();
         Ok(json!({
             "server": {
                 "name": MCP_SERVER_NAME,
@@ -1483,6 +1694,7 @@ impl McpServer {
                 "preferred_first_tool": STARTUP_PREFERRED_FIRST_TOOL,
                 "fallback_first_tool": STARTUP_FALLBACK_FIRST_TOOL,
                 "startup_gate_mode": STARTUP_GATE_MODE,
+                "tool_surface": tool_surface,
                 "retrieval_observability": retrieval_observability_snapshot(&self.session_id, retrieval_fsm_policy())
             },
             "feature_flags": {
@@ -2300,6 +2512,241 @@ impl McpServer {
         }))
     }
 
+    async fn tool_agent_section_index(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        let mut query = Vec::new();
+        if let Some(limit) = arg_optional_u64(args, "exercise_limit")? {
+            query.push(("exercise_limit".to_string(), limit.to_string()));
+        }
+        if let Some(limit) = arg_optional_u64(args, "strength_limit")? {
+            query.push(("strength_limit".to_string(), limit.to_string()));
+        }
+        if let Some(limit) = arg_optional_u64(args, "custom_limit")? {
+            query.push(("custom_limit".to_string(), limit.to_string()));
+        }
+        if let Some(task_intent) = arg_optional_string(args, "task_intent")? {
+            query.push(("task_intent".to_string(), task_intent));
+        }
+        if let Some(budget_tokens) = arg_optional_u64(args, "budget_tokens")? {
+            query.push(("budget_tokens".to_string(), budget_tokens.to_string()));
+        }
+        if let Some(include_system) = arg_optional_bool(args, "include_system")? {
+            query.push(("include_system".to_string(), include_system.to_string()));
+        }
+        let path = "/v1/agent/context/section-index";
+        let response = self
+            .send_api_request(Method::GET, path, &query, None, true, false)
+            .await?;
+        Ok(json!({
+            "request": {
+                "path": path,
+                "query": pairs_to_json_object(&query)
+            },
+            "response": response.to_value()
+        }))
+    }
+
+    async fn tool_agent_section_fetch(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        let section = required_string(args, "section")?;
+        let mut query = vec![("section".to_string(), section)];
+        if let Some(limit) = arg_optional_u64(args, "limit")? {
+            query.push(("limit".to_string(), limit.to_string()));
+        }
+        if let Some(cursor) = arg_optional_string(args, "cursor")? {
+            query.push(("cursor".to_string(), cursor));
+        }
+        if let Some(fields) = arg_optional_string(args, "fields")? {
+            query.push(("fields".to_string(), fields));
+        }
+        if let Some(task_intent) = arg_optional_string(args, "task_intent")? {
+            query.push(("task_intent".to_string(), task_intent));
+        }
+        let path = "/v1/agent/context/section-fetch";
+        let response = self
+            .send_api_request(Method::GET, path, &query, None, true, false)
+            .await?;
+        Ok(json!({
+            "request": {
+                "path": path,
+                "query": pairs_to_json_object(&query)
+            },
+            "response": response.to_value()
+        }))
+    }
+
+    async fn run_startup_diagnostics(&self, args: &McpDiagnoseArgs) -> Result<Value, ToolError> {
+        let mut trace = Vec::<Value>::new();
+        let tool_surface = startup_tool_surface_contract();
+
+        let mcp_status_payload = self.tool_mcp_status(&Map::new()).await?;
+        trace.push(json!({
+            "step": 1,
+            "tool": "kura_mcp_status",
+            "status": "complete",
+            "session": mcp_status_payload.get("session").cloned().unwrap_or(Value::Null)
+        }));
+
+        let mut context_args = Map::new();
+        context_args.insert(
+            "exercise_limit".to_string(),
+            json!(i64::from(args.exercise_limit.clamp(1, 100))),
+        );
+        context_args.insert(
+            "strength_limit".to_string(),
+            json!(i64::from(args.strength_limit.clamp(1, 100))),
+        );
+        context_args.insert(
+            "custom_limit".to_string(),
+            json!(i64::from(args.custom_limit.clamp(1, 100))),
+        );
+        context_args.insert(
+            "budget_tokens".to_string(),
+            json!(i64::from(args.budget_tokens.clamp(400, 12_000))),
+        );
+        context_args.insert("include_system".to_string(), json!(args.include_system));
+        if let Some(task_intent) = args.task_intent.clone() {
+            context_args.insert("task_intent".to_string(), Value::String(task_intent));
+        }
+
+        let context_payload = self.tool_agent_context(&context_args).await?;
+        let context_status = context_payload
+            .pointer("/response/status")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let context_envelope = json!({ "data": context_payload.clone() });
+        let mut missing_sections = startup_context_missing_sections(&context_envelope);
+        missing_sections.sort();
+        missing_sections.dedup();
+
+        trace.push(json!({
+            "step": 2,
+            "tool": "kura_agent_context",
+            "status": if context_status < 400 { "complete" } else { "error" },
+            "http_status": context_status,
+            "missing_critical_sections": missing_sections
+        }));
+
+        let mut recovered_sections = Vec::<String>::new();
+        let mut fetch_failures = Vec::<Value>::new();
+        let mut section_index_payload = Value::Null;
+
+        if !missing_sections.is_empty() {
+            section_index_payload = self.tool_agent_section_index(&context_args).await?;
+            let index_status = section_index_payload
+                .pointer("/response/status")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            trace.push(json!({
+                "step": 3,
+                "tool": "kura_agent_section_index",
+                "status": if index_status < 400 { "complete" } else { "error" },
+                "http_status": index_status
+            }));
+
+            for (idx, section) in missing_sections.iter().enumerate() {
+                let mut fetch_args = Map::new();
+                fetch_args.insert("section".to_string(), Value::String(section.clone()));
+                match self.tool_agent_section_fetch(&fetch_args).await {
+                    Ok(payload) => {
+                        let http_status = payload
+                            .pointer("/response/status")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0);
+                        let ok = http_status < 400;
+                        if ok {
+                            recovered_sections.push(section.clone());
+                        } else {
+                            fetch_failures.push(json!({
+                                "section": section,
+                                "reason_code": "section_fetch_http_error",
+                                "http_status": http_status
+                            }));
+                        }
+                        trace.push(json!({
+                            "step": 4 + idx,
+                            "tool": "kura_agent_section_fetch",
+                            "section": section,
+                            "status": if ok { "complete" } else { "error" },
+                            "http_status": http_status
+                        }));
+                    }
+                    Err(err) => {
+                        fetch_failures.push(json!({
+                            "section": section,
+                            "reason_code": err.code,
+                            "message": err.message
+                        }));
+                        trace.push(json!({
+                            "step": 4 + idx,
+                            "tool": "kura_agent_section_fetch",
+                            "section": section,
+                            "status": "error",
+                            "reason_code": err.code
+                        }));
+                    }
+                }
+            }
+        }
+
+        let unresolved_sections: Vec<String> = missing_sections
+            .iter()
+            .filter(|section| !recovered_sections.iter().any(|done| done == *section))
+            .cloned()
+            .collect();
+
+        let status = if missing_sections.is_empty() {
+            "ready"
+        } else if unresolved_sections.is_empty() {
+            "recoverable"
+        } else {
+            "blocked"
+        };
+        let next_safe_action = if status == "ready" {
+            "Startup contract satisfied. Proceed with normal task execution."
+        } else if status == "recoverable" {
+            "Use recovered critical sections (startup_capsule, action_required, agent_brief, meta) before user-facing generation."
+        } else {
+            "Do not generate from freestyle. Retry missing critical sections via kura_agent_section_fetch and inspect reason codes."
+        };
+
+        Ok(json!({
+            "schema_version": "mcp_startup_diagnostic.v1",
+            "generated_at": chrono::Utc::now(),
+            "status": status,
+            "next_safe_action": next_safe_action,
+            "startup_contract": {
+                "required_first_tool": STARTUP_REQUIRED_FIRST_TOOL,
+                "preferred_first_tool": STARTUP_PREFERRED_FIRST_TOOL,
+                "fallback_first_tool": STARTUP_FALLBACK_FIRST_TOOL,
+                "startup_gate_mode": STARTUP_GATE_MODE,
+                "tool_surface": tool_surface
+            },
+            "critical_sections": {
+                "expected": STARTUP_DIAGNOSTIC_REQUIRED_SECTIONS,
+                "missing_after_context": missing_sections,
+                "recovered_via_section_fetch": recovered_sections,
+                "unresolved": unresolved_sections
+            },
+            "failures": fetch_failures,
+            "artifacts": {
+                "mcp_status": {
+                    "capability_mode": mcp_status_payload.pointer("/capability_negotiation/mode").cloned().unwrap_or(Value::Null),
+                    "capability_reason": mcp_status_payload.pointer("/capability_negotiation/reason").cloned().unwrap_or(Value::Null),
+                    "session": mcp_status_payload.get("session").cloned().unwrap_or(Value::Null),
+                    "feature_flags": mcp_status_payload.get("feature_flags").cloned().unwrap_or(Value::Null)
+                },
+                "context": diagnostic_api_payload_summary(&context_payload),
+                "section_index": diagnostic_api_payload_summary(&section_index_payload)
+            },
+            "trace": trace
+        }))
+    }
+
     async fn resolve_temporal_basis_for_high_impact_write(
         &self,
         args: &Map<String, Value>,
@@ -2894,6 +3341,10 @@ impl McpServer {
                 .tool_agent_brief(&Map::new())
                 .await
                 .map_err(|e| RpcError::internal(e.message))?,
+            "kura://agent/context/section-index" => self
+                .tool_agent_section_index(&Map::new())
+                .await
+                .map_err(|e| RpcError::internal(e.message))?,
             "kura://system/config" => self
                 .send_api_request(Method::GET, "/v1/system/config", &[], None, true, false)
                 .await
@@ -3436,6 +3887,38 @@ fn tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "kura_agent_section_index",
+            description: "Fetch deterministic section index for startup-critical and optional follow-up reads.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "exercise_limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+                    "strength_limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+                    "custom_limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+                    "task_intent": { "type": "string" },
+                    "budget_tokens": { "type": "integer", "minimum": 400, "maximum": 12000 },
+                    "include_system": { "type": "boolean", "default": false }
+                },
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
+            name: "kura_agent_section_fetch",
+            description: "Fetch one context section by id, with optional paging cursor and top-level field projection.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "section": { "type": "string", "description": "Section id from kura_agent_section_index" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+                    "cursor": { "type": "string" },
+                    "fields": { "type": "string", "description": "Comma-separated top-level fields to project" },
+                    "task_intent": { "type": "string" }
+                },
+                "required": ["section"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
             name: "kura_semantic_resolve",
             description: "Resolve free-text exercise/food terms to canonical keys.",
             input_schema: json!({
@@ -3698,6 +4181,11 @@ fn resource_definitions() -> Vec<ResourceDefinition> {
             uri: "kura://agent/brief",
             name: "Agent Startup Brief",
             description: "Minimal startup brief with action_required + onboarding intents",
+        },
+        ResourceDefinition {
+            uri: "kura://agent/context/section-index",
+            name: "Agent Context Section Index",
+            description: "Deterministic index of startup + optional sections for targeted reload",
         },
         ResourceDefinition {
             uri: "kura://system/config",
@@ -4795,6 +5283,8 @@ fn payload_reload_hint(tool: &str) -> &'static str {
         "For full details, use targeted reads (preferred): kura://openapi, kura://system/config/manifest, kura_system_section_get(section=...), and kura://agent/capabilities. Use kura_discover_debug only for deep troubleshooting."
     } else if tool == "kura_agent_brief" {
         "Retry kura_agent_brief until action_required and agent_brief are present; then continue with kura_agent_context for personalized planning."
+    } else if tool == "kura_agent_section_index" || tool == "kura_agent_section_fetch" {
+        "Follow deterministic startup order: startup_capsule -> action_required -> agent_brief -> meta, then continue with optional sections."
     } else if tool == "kura_agent_context" {
         "Context overflow is section-based: follow overflow.omitted_sections[*].reload_hint, re-fetch only missing sections, and lower budget_tokens when iterative planning needs tighter payloads."
     } else {
@@ -6251,6 +6741,36 @@ mod tests {
     }
 
     #[test]
+    fn agent_section_tools_are_exposed_with_contract_inputs() {
+        let defs = tool_definitions();
+        let index_tool = defs
+            .iter()
+            .find(|tool| tool.name == "kura_agent_section_index")
+            .expect("kura_agent_section_index tool must exist");
+        let index_props = index_tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("index tool schema properties must exist");
+        assert!(index_props.contains_key("task_intent"));
+        assert!(index_props.contains_key("budget_tokens"));
+
+        let fetch_tool = defs
+            .iter()
+            .find(|tool| tool.name == "kura_agent_section_fetch")
+            .expect("kura_agent_section_fetch tool must exist");
+        assert_eq!(fetch_tool.input_schema["required"], json!(["section"]));
+        let fetch_props = fetch_tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("fetch tool schema properties must exist");
+        assert!(fetch_props.contains_key("limit"));
+        assert!(fetch_props.contains_key("cursor"));
+        assert!(fetch_props.contains_key("fields"));
+    }
+
+    #[test]
     fn projection_list_schema_exposes_cursor_inputs() {
         let tool = tool_definitions()
             .into_iter()
@@ -6631,6 +7151,77 @@ mod tests {
                 .contains("kura_discover_debug")
         );
         assert!(serialized_json_size_bytes(&limited) <= TOOL_ENVELOPE_MAX_BYTES);
+    }
+
+    #[test]
+    fn startup_context_missing_sections_tracks_capsule_and_critical_overflow_entries() {
+        let envelope = json!({
+            "data": {
+                "response": {
+                    "body": {
+                        "overflow": {
+                            "critical_missing_sections": ["agent_brief", "meta"]
+                        }
+                    }
+                }
+            }
+        });
+        let missing = startup_context_missing_sections(&envelope);
+        assert!(missing.iter().any(|section| section == "startup_capsule"));
+        assert!(missing.iter().any(|section| section == "agent_brief"));
+        assert!(missing.iter().any(|section| section == "meta"));
+    }
+
+    #[test]
+    fn startup_tool_surface_contract_reports_consistency() {
+        let surface = startup_tool_surface_contract();
+        assert_eq!(surface["required_first_tool_exposed"], json!(true));
+        assert_eq!(surface["fallback_first_tool_exposed"], json!(true));
+        assert_eq!(surface["tool_surface_consistent"], json!(true));
+        assert_eq!(
+            surface["effective_required_first_tool"],
+            json!(STARTUP_REQUIRED_FIRST_TOOL)
+        );
+    }
+
+    #[test]
+    fn diagnostic_api_payload_summary_omits_raw_body_content() {
+        let payload = json!({
+            "request": { "path": "/v1/agent/context" },
+            "response": {
+                "ok": false,
+                "status": 404,
+                "body": {
+                    "html": "<html>huge</html>"
+                }
+            }
+        });
+        let summary = diagnostic_api_payload_summary(&payload);
+        assert_eq!(summary["response_status"], json!(404));
+        assert_eq!(summary["response_ok"], json!(false));
+        assert_eq!(summary["response_body_summary"]["omitted"], json!(true));
+        assert!(summary.get("body").is_none());
+    }
+
+    #[tokio::test]
+    async fn mcp_status_exposes_tool_surface_contract_fields() {
+        let server = McpServer::new(McpRuntimeConfig {
+            api_url: "http://127.0.0.1:9".to_string(),
+            no_auth: true,
+            explicit_token: None,
+            default_source: "mcp".to_string(),
+            default_agent: "kura-mcp".to_string(),
+            allow_admin: false,
+        });
+        let payload = server
+            .tool_mcp_status(&Map::new())
+            .await
+            .expect("kura_mcp_status should return payload");
+        let tool_surface = payload
+            .pointer("/session/tool_surface")
+            .expect("session.tool_surface must be present");
+        assert_eq!(tool_surface["required_first_tool_exposed"], json!(true));
+        assert_eq!(tool_surface["fallback_first_tool_exposed"], json!(true));
     }
 
     #[test]
@@ -7148,6 +7739,8 @@ mod tests {
         assert!(should_warn("kura_write"));
         assert!(!should_warn("kura_agent_brief"));
         assert!(!should_warn("kura_agent_context"));
+        assert!(!should_warn("kura_agent_section_index"));
+        assert!(!should_warn("kura_agent_section_fetch"));
 
         // After context loaded: nobody triggers
         mark_context_loaded(&sid);
@@ -7160,6 +7753,14 @@ mod tests {
         assert!(!should_block_for_startup_context("kura_agent_brief", false));
         assert!(!should_block_for_startup_context(
             "kura_agent_context",
+            false
+        ));
+        assert!(!should_block_for_startup_context(
+            "kura_agent_section_index",
+            false
+        ));
+        assert!(!should_block_for_startup_context(
+            "kura_agent_section_fetch",
             false
         ));
         assert!(!should_block_for_startup_context("kura_mcp_status", false));
