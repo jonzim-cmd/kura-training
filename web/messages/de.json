@@ -293,7 +293,7 @@
       "step5Label": "Gib einen Namen und die MCP-Server-URL ein, dann klicke \"Hinzufügen\"",
       "step6Label": "Klicke auf \"Verbinden\" bei deinem neuen Kura Training Connector",
       "done": "Fertig! Dein Connector ist jetzt eingerichtet.",
-      "doneHint": "Öffne einen neuen Chat und erzähl Claude von deinem Training.",
+      "doneHint": "Öffne einen neuen Chat und sag: „Ich bin neu bei Kura. Erkläre mir, wie es funktioniert und mach das Onboarding mit mir.\u201C",
 
       "next": "Weiter",
       "back": "Zurück",
@@ -352,7 +352,7 @@
       "step5Label": "Klicke auf \"App erstellen\" und gib Name, URL und OAuth-Daten ein",
       "step6Label": "Setze den Haken und klicke \"Erstellen\"",
       "done": "Fertig! Deine MCP-App ist jetzt in ChatGPT eingerichtet.",
-      "doneHint": "Öffne einen neuen Chat und erzähl ChatGPT von deinem Training.",
+      "doneHint": "Öffne einen neuen Chat und sag: „Ich bin neu bei Kura. Erkläre mir, wie es funktioniert und mach das Onboarding mit mir.\u201C",
 
       "next": "Weiter",
       "back": "Zurück",
