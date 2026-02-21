@@ -942,6 +942,24 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "scope": "persistent",
             },
         },
+        "workflow.onboarding.restarted": {
+            "category": "meta",
+            "description": (
+                "Explicit restart marker that re-opens onboarding after closed/aborted "
+                "states. Planning/coaching writes are gated again until onboarding is "
+                "closed or an explicit override is granted."
+            ),
+            "fields": {
+                "reason": "string (optional, restart rationale)",
+                "restarted_by": "string (optional: user_confirmed|agent_confirmed)",
+                "scope": "string (optional: persistent|current_session)",
+            },
+            "example": {
+                "reason": "User wants to run the full onboarding interview now.",
+                "restarted_by": "user_confirmed",
+                "scope": "persistent",
+            },
+        },
         # --- Data corrections ---
         "learning.signal.logged": {
             "category": "system",

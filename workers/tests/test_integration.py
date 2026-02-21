@@ -3946,6 +3946,53 @@ class TestWorkflowGateIntegration:
         inv004_issues = [i for i in qh["data"]["issues"] if i["invariant_id"] == "INV-004"]
         assert len(inv004_issues) == 0
 
+    async def test_restart_reopens_onboarding_and_reenforces_inv004(self, db, test_user_id):
+        """workflow.onboarding.restarted re-opens onboarding and re-enforces INV-004."""
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "set.logged", {
+            "exercise_id": "bench_press", "weight_kg": 80, "reps": 5,
+        }, "TIMESTAMP '2026-02-20 10:00:00+01'")
+        await insert_event(db, test_user_id, "preference.set", {
+            "key": "timezone", "value": "Europe/Berlin",
+        }, "TIMESTAMP '2026-02-20 11:00:00+01'")
+        await insert_event(db, test_user_id, "profile.updated", {
+            "age_deferred": True, "bodyweight_deferred": True,
+        }, "TIMESTAMP '2026-02-20 12:00:00+01'")
+        await insert_event(db, test_user_id, "workflow.onboarding.closed", {
+            "reason": "user_confirmed",
+        }, "TIMESTAMP '2026-02-20 13:00:00+01'")
+        await insert_event(db, test_user_id, "workflow.onboarding.restarted", {
+            "reason": "user_requests_deep_onboarding",
+        }, "TIMESTAMP '2026-02-20 14:00:00+01'")
+        await insert_event(db, test_user_id, "projection_rule.created", {
+            "name": "readiness_by_week",
+            "rule_type": "field_tracking",
+            "source_events": ["set.logged"],
+            "fields": ["weight_kg"],
+        }, "TIMESTAMP '2026-02-20 15:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_user_profile(db, {
+            "user_id": test_user_id, "event_type": "projection_rule.created",
+        })
+        await update_quality_health(db, {
+            "user_id": test_user_id, "event_type": "projection_rule.created",
+        })
+        await db.execute("RESET ROLE")
+
+        profile = await get_projection(db, test_user_id, "user_profile", key="me")
+        assert profile is not None
+        ws = profile["data"]["user"]["workflow_state"]
+        assert ws["phase"] == "onboarding"
+        assert ws["onboarding_closed"] is False
+        assert ws["override_active"] is False
+
+        qh = await get_projection(db, test_user_id, "quality_health")
+        assert qh is not None
+        inv004 = next((i for i in qh["data"]["issues"] if i["invariant_id"] == "INV-004"), None)
+        assert inv004 is not None
+        assert inv004["metrics"]["planning_event_count"] >= 1
+
     async def test_legacy_planning_without_close_is_grandfathered(self, db, test_user_id):
         """Legacy planning history before policy cutoff does not trigger INV-004."""
         await create_test_user(db, test_user_id)

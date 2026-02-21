@@ -170,6 +170,91 @@ class TestEvaluateReadOnlyInvariants:
         assert metrics["planning_event_total"] == 1
         assert metrics["onboarding_override_present"] is True
 
+    def test_onboarding_phase_violation_reopens_after_restart(self):
+        rows = [
+            _event_row(
+                "workflow.onboarding.closed",
+                {"reason": "summary confirmed"},
+                "2026-02-20T08:00:00+00:00",
+            ),
+            _event_row(
+                "workflow.onboarding.restarted",
+                {"reason": "user wants deep onboarding"},
+                "2026-02-20T09:00:00+00:00",
+            ),
+            _event_row(
+                "projection_rule.created",
+                {
+                    "name": "readiness_by_week",
+                    "rule_type": "field_tracking",
+                    "source_events": ["set.logged"],
+                    "fields": ["weight_kg"],
+                },
+                "2026-02-20T09:05:00+00:00",
+            ),
+            _event_row(
+                "preference.set",
+                {"key": "timezone", "value": "Europe/Berlin"},
+                "2026-02-20T09:06:00+00:00",
+            ),
+            _event_row(
+                "profile.updated",
+                {"age_deferred": True, "bodyweight_deferred": True},
+                "2026-02-20T09:07:00+00:00",
+            ),
+        ]
+        issues, metrics = _evaluate_read_only_invariants(rows, alias_map={})
+
+        issue = next((item for item in issues if item["invariant_id"] == "INV-004"), None)
+        assert issue is not None
+        assert issue["metrics"]["planning_event_count"] == 1
+        assert metrics["onboarding_closed"] is False
+        assert metrics["onboarding_override_present"] is False
+
+    def test_onboarding_phase_violation_stays_cleared_with_restart_then_override(self):
+        rows = [
+            _event_row(
+                "workflow.onboarding.closed",
+                {"reason": "summary confirmed"},
+                "2026-02-20T08:00:00+00:00",
+            ),
+            _event_row(
+                "workflow.onboarding.restarted",
+                {"reason": "user wants deep onboarding"},
+                "2026-02-20T09:00:00+00:00",
+            ),
+            _event_row(
+                "workflow.onboarding.override_granted",
+                {"reason": "user requests immediate plan"},
+                "2026-02-20T09:01:00+00:00",
+            ),
+            _event_row(
+                "projection_rule.created",
+                {
+                    "name": "readiness_by_week",
+                    "rule_type": "field_tracking",
+                    "source_events": ["set.logged"],
+                    "fields": ["weight_kg"],
+                },
+                "2026-02-20T09:05:00+00:00",
+            ),
+            _event_row(
+                "preference.set",
+                {"key": "timezone", "value": "Europe/Berlin"},
+                "2026-02-20T09:06:00+00:00",
+            ),
+            _event_row(
+                "profile.updated",
+                {"age_deferred": True, "bodyweight_deferred": True},
+                "2026-02-20T09:07:00+00:00",
+            ),
+        ]
+        issues, metrics = _evaluate_read_only_invariants(rows, alias_map={})
+
+        assert all(item["invariant_id"] != "INV-004" for item in issues)
+        assert metrics["onboarding_closed"] is False
+        assert metrics["onboarding_override_present"] is True
+
     def test_goal_trackability_issue_for_jump_goal_without_path(self):
         rows = [
             _row("goal.set", {"description": "Ich will dunken koennen"}),

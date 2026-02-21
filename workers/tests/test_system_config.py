@@ -584,6 +584,10 @@ class TestConventions:
             "training_plan.updated"
             not in contract["classification"]["always_high_impact_event_types"]
         )
+        assert (
+            "workflow.onboarding.restarted"
+            in contract["classification"]["always_high_impact_event_types"]
+        )
         thresholds = contract["classification"]["training_plan_updated_high_impact_when"][
             "thresholds_abs_gte"
         ]

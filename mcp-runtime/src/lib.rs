@@ -66,6 +66,7 @@ const STARTUP_REQUIRED_FIRST_TOOL: &str = "kura_agent_context";
 const STARTUP_PREFERRED_FIRST_TOOL: &str = "kura_agent_brief";
 const STARTUP_FALLBACK_FIRST_TOOL: &str = "kura_agent_context";
 const STARTUP_GATE_MODE: &str = "context_required_brief_preferred";
+const STARTUP_ONBOARDING_NEXT_ACTION: &str = "Respond with first-contact opening sequence and offer onboarding path fork (Quick/Deep, Deep recommended; allow skip/log-now).";
 const OVERFLOW_ACTION_REQUIRED_DETAIL_MAX_CHARS: usize = 320;
 const OVERFLOW_MUST_COVER_INTENTS_MAX_ITEMS: usize = 10;
 const OVERFLOW_COVERAGE_GAPS_MAX_ITEMS: usize = 10;
@@ -2937,7 +2938,7 @@ impl McpServer {
             "context_loaded": is_context_loaded(&self.session_id),
             "onboarding_required": onboarding_required,
             "next": if onboarding_required {
-                "Respond with first-contact opening sequence and offer onboarding path fork (Quick/Deep, Deep recommended; allow skip/log-now)."
+                STARTUP_ONBOARDING_NEXT_ACTION
             } else {
                 "Call kura_agent_context before personalized planning or write operations."
             }
@@ -3068,7 +3069,7 @@ impl McpServer {
             "fallback_used": false,
             "onboarding_required": onboarding_required,
             "next": if onboarding_required {
-                "Respond with first-contact opening sequence and offer onboarding path fork (Quick/Deep, Deep recommended; allow skip/log-now)."
+                STARTUP_ONBOARDING_NEXT_ACTION
             } else {
                 "Startup context loaded. Proceed with user request."
             }
@@ -6668,6 +6669,7 @@ fn is_always_high_impact_event_type(event_type: &str) -> bool {
             | "workflow.onboarding.closed"
             | "workflow.onboarding.override_granted"
             | "workflow.onboarding.aborted"
+            | "workflow.onboarding.restarted"
     )
 }
 

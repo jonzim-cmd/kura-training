@@ -66,6 +66,7 @@ _INVARIANT_SOURCE_EVENT_TYPES = (
     "workflow.onboarding.closed",
     "workflow.onboarding.override_granted",
     "workflow.onboarding.aborted",
+    "workflow.onboarding.restarted",
     "external.activity_imported",
     "observation.logged",
     "event.retracted",
@@ -2247,24 +2248,43 @@ def _evaluate_read_only_invariants(
     inv004_cutoff = _resolve_inv004_policy_cutoff()
     inv004_legacy_rows: list[dict[str, Any]] = []
     inv004_enforced_rows: list[dict[str, Any]] = []
-    for row in planning_rows:
-        ts = _coerce_datetime_utc(row.get("timestamp"))
-        if ts is not None and ts < inv004_cutoff:
-            inv004_legacy_rows.append(row)
-            continue
-        inv004_enforced_rows.append(row)
-    onboarding_closed = any(
-        row.get("event_type") == "workflow.onboarding.closed" for row in event_rows
-    )
-    onboarding_override = any(
-        row.get("event_type") == "workflow.onboarding.override_granted"
-        for row in event_rows
-    )
-    if inv004_enforced_rows and not onboarding_closed and not onboarding_override:
+    inv004_enforced_with_index: list[tuple[int, dict[str, Any]]] = []
+    onboarding_closed = False
+    onboarding_override = False
+    last_restart_index: int | None = None
+    for index, row in enumerate(event_rows):
+        event_type = str(row.get("event_type") or "")
+        if event_type in planning_event_types:
+            ts = _coerce_datetime_utc(row.get("timestamp"))
+            if ts is not None and ts < inv004_cutoff:
+                inv004_legacy_rows.append(row)
+            else:
+                inv004_enforced_rows.append(row)
+                inv004_enforced_with_index.append((index, row))
+
+        if event_type == "workflow.onboarding.closed":
+            onboarding_closed = True
+            onboarding_override = False
+        elif event_type == "workflow.onboarding.override_granted":
+            if not onboarding_closed:
+                onboarding_override = True
+        elif event_type == "workflow.onboarding.restarted":
+            onboarding_closed = False
+            onboarding_override = False
+            last_restart_index = index
+
+    inv004_violation_rows: list[dict[str, Any]] = []
+    if not onboarding_closed and not onboarding_override:
+        for planning_index, planning_row in inv004_enforced_with_index:
+            if last_restart_index is not None and planning_index <= last_restart_index:
+                continue
+            inv004_violation_rows.append(planning_row)
+
+    if inv004_violation_rows:
         sample_types = sorted(
             {
                 str(row.get("event_type") or "")
-                for row in inv004_enforced_rows
+                for row in inv004_violation_rows
                 if row.get("event_type")
             }
         )
@@ -2275,7 +2295,7 @@ def _evaluate_read_only_invariants(
                 "medium",
                 "Planning/coaching events were recorded before onboarding close without explicit override.",
                 metrics={
-                    "planning_event_count": len(inv004_enforced_rows),
+                    "planning_event_count": len(inv004_violation_rows),
                     "planning_event_total": len(planning_rows),
                     "legacy_grandfathered_count": len(inv004_legacy_rows),
                     "legacy_policy_applied": bool(inv004_legacy_rows),

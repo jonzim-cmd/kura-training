@@ -1153,6 +1153,7 @@ fn validate_projection_rule_archived_invariants(data: &serde_json::Value) -> Res
 const WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE: &str = "workflow.onboarding.closed";
 const WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE: &str = "workflow.onboarding.override_granted";
 const WORKFLOW_ONBOARDING_ABORTED_EVENT_TYPE: &str = "workflow.onboarding.aborted";
+const WORKFLOW_ONBOARDING_RESTARTED_EVENT_TYPE: &str = "workflow.onboarding.restarted";
 const LEGACY_PLANNING_OR_COACHING_EVENT_TYPES: [&str; 8] = [
     "training_plan.created",
     "training_plan.updated",
@@ -1291,12 +1292,26 @@ fn evaluate_legacy_domain_invariants(
     let requested_override = normalized_event_types
         .iter()
         .any(|event_type| event_type == WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE);
-    let onboarding_closed = user_profile
+    let requested_restart = normalized_event_types
+        .iter()
+        .any(|event_type| event_type == WORKFLOW_ONBOARDING_RESTARTED_EVENT_TYPE);
+    let mut onboarding_closed = user_profile
         .map(onboarding_closed_in_user_profile)
         .unwrap_or(false);
-    let override_active = user_profile
+    let mut override_active = user_profile
         .map(onboarding_override_active_in_user_profile)
         .unwrap_or(false);
+    if requested_restart {
+        onboarding_closed = false;
+        override_active = false;
+    }
+    if requested_close {
+        onboarding_closed = true;
+        override_active = false;
+    }
+    if requested_override && !onboarding_closed {
+        override_active = true;
+    }
 
     if !planning_event_types.is_empty()
         && !(onboarding_closed || override_active || requested_close || requested_override)
@@ -1309,9 +1324,10 @@ fn evaluate_legacy_domain_invariants(
                 "planning_event_types": planning_event_types,
                 "onboarding_closed": onboarding_closed,
                 "override_active": override_active,
+                "requested_restart": requested_restart,
             })),
             Some(
-                "Emit workflow.onboarding.closed (or workflow.onboarding.override_granted) before planning/coaching writes.",
+                "Emit workflow.onboarding.closed (or workflow.onboarding.override_granted) before planning/coaching writes. After workflow.onboarding.restarted, planning requires re-close or explicit override.",
             ),
         ));
     }
@@ -1911,6 +1927,7 @@ fn user_profile_handles_event(event_type: &str) -> bool {
             | WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE
             | WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE
             | WORKFLOW_ONBOARDING_ABORTED_EVENT_TYPE
+            | WORKFLOW_ONBOARDING_RESTARTED_EVENT_TYPE
     )
 }
 
@@ -4092,6 +4109,54 @@ mod tests {
             ),
         ];
         let profile = make_user_profile(false, false, Some("Europe/Berlin"));
+        assert!(evaluate_legacy_domain_invariants(&events, Some(&profile)).is_ok());
+    }
+
+    #[test]
+    fn test_legacy_domain_invariants_block_planning_after_restart_without_reclose_or_override() {
+        let events = vec![
+            make_request(
+                "workflow.onboarding.restarted",
+                json!({"reason": "user requested full onboarding restart"}),
+            ),
+            make_request(
+                "projection_rule.created",
+                json!({
+                    "name": "readiness_by_week",
+                    "rule_type": "field_tracking",
+                    "source_events": ["set.logged"],
+                    "fields": ["weight_kg"]
+                }),
+            ),
+        ];
+        let profile = make_user_profile(true, false, Some("Europe/Berlin"));
+        let err = evaluate_legacy_domain_invariants(&events, Some(&profile))
+            .expect_err("expected policy violation");
+        assert_policy_violation(err, "inv_workflow_phase_required", "events");
+    }
+
+    #[test]
+    fn test_legacy_domain_invariants_allow_planning_after_restart_with_override() {
+        let events = vec![
+            make_request(
+                "workflow.onboarding.restarted",
+                json!({"reason": "user requested full onboarding restart"}),
+            ),
+            make_request(
+                "workflow.onboarding.override_granted",
+                json!({"reason": "user wants plan before re-closing onboarding"}),
+            ),
+            make_request(
+                "projection_rule.created",
+                json!({
+                    "name": "readiness_by_week",
+                    "rule_type": "field_tracking",
+                    "source_events": ["set.logged"],
+                    "fields": ["weight_kg"]
+                }),
+            ),
+        ];
+        let profile = make_user_profile(true, false, Some("Europe/Berlin"));
         assert!(evaluate_legacy_domain_invariants(&events, Some(&profile)).is_ok());
     }
 

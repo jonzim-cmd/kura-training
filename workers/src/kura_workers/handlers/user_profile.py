@@ -980,6 +980,7 @@ def _build_agenda(
     "workflow.onboarding.closed",
     "workflow.onboarding.override_granted",
     "workflow.onboarding.aborted",
+    "workflow.onboarding.restarted",
 )
 async def update_user_profile(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
@@ -1002,9 +1003,9 @@ async def update_user_profile(
                   'bodyweight.logged', 'session.completed', 'recovery.daily_checkin',
                   'advisory.override.recorded',
                   'workflow.onboarding.closed', 'workflow.onboarding.override_granted',
-                  'workflow.onboarding.aborted'
+                  'workflow.onboarding.aborted', 'workflow.onboarding.restarted'
               )
-            ORDER BY timestamp ASC
+            ORDER BY timestamp ASC, id ASC
             """,
             (user_id,),
         )
@@ -1041,6 +1042,7 @@ async def update_user_profile(
     latest_bodyweight_kg: Any = None
     workflow_onboarding_closed = False
     workflow_onboarding_aborted = False
+    workflow_override_active = False
     workflow_override_count = 0
     advisory_override_rationale_count = 0
     workflow_last_transition_at: str | None = None
@@ -1182,14 +1184,24 @@ async def update_user_profile(
         elif event_type == "workflow.onboarding.closed":
             workflow_onboarding_closed = True
             workflow_onboarding_aborted = False
+            workflow_override_active = False
             workflow_last_transition_at = row["timestamp"].isoformat()
 
         elif event_type == "workflow.onboarding.override_granted":
             workflow_override_count += 1
+            if not workflow_onboarding_closed:
+                workflow_override_active = True
             workflow_last_transition_at = row["timestamp"].isoformat()
 
         elif event_type == "workflow.onboarding.aborted":
-            workflow_onboarding_aborted = True
+            if not workflow_onboarding_closed:
+                workflow_onboarding_aborted = True
+            workflow_last_transition_at = row["timestamp"].isoformat()
+
+        elif event_type == "workflow.onboarding.restarted":
+            workflow_onboarding_closed = False
+            workflow_onboarding_aborted = False
+            workflow_override_active = False
             workflow_last_transition_at = row["timestamp"].isoformat()
 
     # Resolve exercises through alias map
@@ -1203,7 +1215,7 @@ async def update_user_profile(
         "phase": "planning" if workflow_onboarding_closed else "onboarding",
         "onboarding_closed": workflow_onboarding_closed,
         "onboarding_aborted": workflow_onboarding_aborted,
-        "override_active": (not workflow_onboarding_closed) and workflow_override_count > 0,
+        "override_active": workflow_override_active,
         "override_count": workflow_override_count,
         "advisory_override_rationale_count": advisory_override_rationale_count,
         "last_transition_at": workflow_last_transition_at,

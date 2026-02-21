@@ -4,6 +4,8 @@ pub(super) const WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE: &str = "workflow.onboard
 pub(super) const WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE: &str =
     "workflow.onboarding.override_granted";
 pub(super) const WORKFLOW_ONBOARDING_ABORTED_EVENT_TYPE: &str = "workflow.onboarding.aborted";
+pub(super) const WORKFLOW_ONBOARDING_RESTARTED_EVENT_TYPE: &str =
+    "workflow.onboarding.restarted";
 pub(super) const WORKFLOW_INVARIANT_ID: &str = "INV-004";
 pub(super) const ONBOARDING_REQUIRED_AREAS: [&str; 3] = [
     "training_background",
@@ -802,20 +804,32 @@ pub(super) fn workflow_gate_from_request(
             .trim()
             .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE)
     });
+    let requested_restart = events.iter().any(|event| {
+        event
+            .event_type
+            .trim()
+            .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_RESTARTED_EVENT_TYPE)
+    });
+    let effective_onboarding_closed = state.onboarding_closed && !requested_restart;
+    let effective_override_active = state.override_active && !requested_restart;
+    let effective_legacy_planning_history = state.legacy_planning_history && !requested_restart;
 
     if !contains_planning_action {
         return AgentWorkflowGate {
-            phase: if state.onboarding_closed {
+            phase: if effective_onboarding_closed {
                 "planning".to_string()
             } else {
                 "onboarding".to_string()
             },
             status: "allowed".to_string(),
             transition: "none".to_string(),
-            onboarding_closed: state.onboarding_closed,
+            onboarding_closed: effective_onboarding_closed,
             override_used: false,
-            message: if state.onboarding_closed {
+            message: if effective_onboarding_closed {
                 "Onboarding is closed; planning/coaching actions are available.".to_string()
+            } else if requested_restart {
+                "Onboarding restart requested; planning/coaching payload must be re-gated after onboarding is closed or overridden."
+                    .to_string()
             } else if state.onboarding_aborted {
                 "Onboarding interview prompts are marked aborted by user; no planning/coaching payload detected."
                     .to_string()
@@ -827,7 +841,7 @@ pub(super) fn workflow_gate_from_request(
         };
     }
 
-    if state.onboarding_closed {
+    if effective_onboarding_closed {
         return AgentWorkflowGate {
             phase: "planning".to_string(),
             status: "allowed".to_string(),
@@ -856,7 +870,7 @@ pub(super) fn workflow_gate_from_request(
         };
     }
 
-    if requested_override || state.override_active {
+    if requested_override || effective_override_active {
         return AgentWorkflowGate {
             phase: "onboarding".to_string(),
             status: "allowed".to_string(),
@@ -870,7 +884,7 @@ pub(super) fn workflow_gate_from_request(
         };
     }
 
-    if state.legacy_planning_history && state.missing_close_requirements.is_empty() {
+    if effective_legacy_planning_history && state.missing_close_requirements.is_empty() {
         return AgentWorkflowGate {
             phase: "planning".to_string(),
             status: "allowed".to_string(),

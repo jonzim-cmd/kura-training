@@ -1516,6 +1516,7 @@ struct ExistingWriteReceiptRow {
 #[derive(sqlx::FromRow)]
 struct WorkflowMarkerEventRow {
     id: Uuid,
+    timestamp: DateTime<Utc>,
     event_type: String,
 }
 
@@ -2444,28 +2445,39 @@ fn select_action_required(
     primary.or_else(|| build_draft_review_action_required(observations_draft, quality_health))
 }
 
-fn agent_brief_workflow_state(user_profile: &ProjectionResponse) -> AgentBriefWorkflowState {
+fn default_open_workflow_state() -> AgentBriefWorkflowState {
+    AgentBriefWorkflowState {
+        phase: "onboarding".to_string(),
+        onboarding_closed: false,
+        onboarding_aborted: false,
+        override_active: false,
+    }
+}
+
+fn workflow_state_from_user_profile_projection(
+    user_profile: &ProjectionResponse,
+) -> Option<AgentBriefWorkflowState> {
     let workflow = user_profile
         .projection
         .data
         .get("user")
         .and_then(|value| value.get("workflow_state"))
-        .and_then(Value::as_object);
+        .and_then(Value::as_object)?;
 
     let onboarding_closed = workflow
-        .and_then(|state| state.get("onboarding_closed"))
+        .get("onboarding_closed")
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let onboarding_aborted = workflow
-        .and_then(|state| state.get("onboarding_aborted"))
+        .get("onboarding_aborted")
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let override_active = workflow
-        .and_then(|state| state.get("override_active"))
+        .get("override_active")
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let phase = workflow
-        .and_then(|state| state.get("phase"))
+        .get("phase")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -2478,12 +2490,75 @@ fn agent_brief_workflow_state(user_profile: &ProjectionResponse) -> AgentBriefWo
             }
         });
 
-    AgentBriefWorkflowState {
+    Some(AgentBriefWorkflowState {
         phase,
         onboarding_closed,
         onboarding_aborted: !onboarding_closed && onboarding_aborted,
-        override_active,
+        override_active: !onboarding_closed && override_active,
+    })
+}
+
+fn apply_workflow_marker_transition(
+    workflow_state: &mut AgentBriefWorkflowState,
+    event_type: &str,
+) {
+    let normalized = event_type.trim().to_lowercase();
+    match normalized.as_str() {
+        WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE => {
+            workflow_state.phase = "planning".to_string();
+            workflow_state.onboarding_closed = true;
+            workflow_state.onboarding_aborted = false;
+            workflow_state.override_active = false;
+        }
+        WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE => {
+            if !workflow_state.onboarding_closed {
+                workflow_state.override_active = true;
+            }
+        }
+        WORKFLOW_ONBOARDING_ABORTED_EVENT_TYPE => {
+            if !workflow_state.onboarding_closed {
+                workflow_state.onboarding_aborted = true;
+            }
+        }
+        WORKFLOW_ONBOARDING_RESTARTED_EVENT_TYPE => {
+            workflow_state.phase = "onboarding".to_string();
+            workflow_state.onboarding_closed = false;
+            workflow_state.onboarding_aborted = false;
+            workflow_state.override_active = false;
+        }
+        _ => {}
     }
+}
+
+fn derive_marker_workflow_state(marker_rows: &[&WorkflowMarkerEventRow]) -> AgentBriefWorkflowState {
+    let mut workflow_state = default_open_workflow_state();
+    for marker in marker_rows {
+        apply_workflow_marker_transition(&mut workflow_state, &marker.event_type);
+    }
+    workflow_state
+}
+
+fn derive_effective_workflow_state(
+    user_profile: Option<&ProjectionResponse>,
+    marker_rows: &[&WorkflowMarkerEventRow],
+) -> AgentBriefWorkflowState {
+    if let Some(profile) = user_profile {
+        if let Some(mut workflow_state) = workflow_state_from_user_profile_projection(profile) {
+            for marker in marker_rows {
+                if marker.timestamp > profile.projection.updated_at {
+                    apply_workflow_marker_transition(&mut workflow_state, &marker.event_type);
+                }
+            }
+            return workflow_state;
+        }
+    }
+
+    derive_marker_workflow_state(marker_rows)
+}
+
+fn agent_brief_workflow_state(user_profile: &ProjectionResponse) -> AgentBriefWorkflowState {
+    workflow_state_from_user_profile_projection(user_profile)
+        .unwrap_or_else(default_open_workflow_state)
 }
 
 fn agent_brief_projection_section(
@@ -2853,7 +2928,6 @@ fn build_agent_brief(
                 "workflow.onboarding.closed".to_string(),
                 "workflow.onboarding.override_granted".to_string(),
                 "workflow.onboarding.aborted".to_string(),
-                "onboarding_skipped_by_user".to_string(),
             ],
         })
     } else {
@@ -2888,9 +2962,9 @@ fn build_agent_startup_gate(action_required: Option<&AgentActionRequired>) -> Ag
         startup_gate_mode: STARTUP_GATE_MODE.to_string(),
         onboarding_required,
         next: if onboarding_required {
-            "Respond with first-contact opening sequence and offer onboarding path fork (Quick/Deep, Deep recommended; allow skip/log-now).".to_string()
+            STARTUP_ONBOARDING_REQUIRED_NEXT_ACTION.to_string()
         } else {
-            "Startup context loaded. Proceed with user request.".to_string()
+            STARTUP_CONTEXT_READY_NEXT_ACTION.to_string()
         },
     }
 }
@@ -3250,10 +3324,10 @@ async fn fetch_workflow_state(
 
     let marker_rows = sqlx::query_as::<_, WorkflowMarkerEventRow>(
         r#"
-        SELECT id, event_type
+        SELECT id, timestamp, event_type
         FROM events
         WHERE user_id = $1
-          AND event_type IN ($2, $3, $4)
+          AND event_type IN ($2, $3, $4, $5)
         ORDER BY timestamp ASC, id ASC
         "#,
     )
@@ -3261,6 +3335,7 @@ async fn fetch_workflow_state(
     .bind(WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE)
     .bind(WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE)
     .bind(WORKFLOW_ONBOARDING_ABORTED_EVENT_TYPE)
+    .bind(WORKFLOW_ONBOARDING_RESTARTED_EVENT_TYPE)
     .fetch_all(&mut *tx)
     .await?;
 
@@ -3315,25 +3390,14 @@ async fn fetch_workflow_state(
         .iter()
         .filter(|row| !retracted_ids.contains(&row.id.to_string()))
         .collect();
-    let onboarding_closed = active_markers.iter().any(|row| {
-        row.event_type
-            .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE)
-    });
-    let override_active = active_markers.iter().any(|row| {
-        row.event_type
-            .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE)
-    });
-    let onboarding_aborted = active_markers.iter().any(|row| {
-        row.event_type
-            .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_ABORTED_EVENT_TYPE)
-    });
+    let workflow_state = derive_effective_workflow_state(user_profile, &active_markers);
 
     Ok(AgentWorkflowState {
-        onboarding_closed,
-        onboarding_aborted: !onboarding_closed && onboarding_aborted,
-        override_active,
+        onboarding_closed: workflow_state.onboarding_closed,
+        onboarding_aborted: workflow_state.onboarding_aborted,
+        override_active: workflow_state.override_active,
         legacy_planning_history,
-        missing_close_requirements: if onboarding_closed {
+        missing_close_requirements: if workflow_state.onboarding_closed {
             Vec::new()
         } else {
             missing_onboarding_close_requirements(user_profile)
@@ -4097,6 +4161,8 @@ const STARTUP_REQUIRED_FIRST_TOOL: &str = "kura_agent_context";
 const STARTUP_PREFERRED_FIRST_TOOL: &str = "kura_agent_brief";
 const STARTUP_FALLBACK_FIRST_TOOL: &str = "kura_agent_context";
 const STARTUP_GATE_MODE: &str = "context_required_brief_preferred";
+const STARTUP_ONBOARDING_REQUIRED_NEXT_ACTION: &str = "Respond with first-contact opening sequence and offer onboarding path fork (Quick/Deep, Deep recommended; allow skip/log-now).";
+const STARTUP_CONTEXT_READY_NEXT_ACTION: &str = "Startup context loaded. Proceed with user request.";
 const AGENT_CONTEXT_SECTION_FETCH_DEFAULT_LIMIT: i64 = 50;
 const AGENT_CONTEXT_SECTION_FETCH_MAX_LIMIT: i64 = 200;
 const AGENT_CONTEXT_CRITICAL_SECTION_IDS: [&str; 4] =
@@ -8519,13 +8585,15 @@ mod tests {
         AgentVisualizationDataSource, AgentVisualizationResolvedSource, AgentVisualizationSpec,
         AgentVisualizationTimezoneContext, AgentWorkflowGate, AgentWorkflowState,
         AgentWriteReceipt, AgentWriteVerificationSummary, IntentClass, ProjectionResponse,
-        RankingContext, WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE,
-        WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE, bind_visualization_source, bootstrap_user_profile,
-        build_agent_capabilities, build_auto_onboarding_close_event, build_claim_guard,
-        build_evidence_claim_events, build_reliability_ux, build_repair_feedback,
+        RankingContext, WorkflowMarkerEventRow, WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE,
+        WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE, WORKFLOW_ONBOARDING_RESTARTED_EVENT_TYPE,
+        bind_visualization_source, bootstrap_user_profile, build_agent_capabilities,
+        build_auto_onboarding_close_event, build_claim_guard, build_evidence_claim_events,
+        build_reliability_ux, build_repair_feedback,
         build_save_handshake_learning_signal_events, build_session_audit_artifacts,
         build_visualization_outputs, clamp_limit, clamp_verify_timeout_ms,
         collect_reliability_inferred_facts, default_autonomy_gate, default_autonomy_policy,
+        derive_effective_workflow_state,
         extract_action_required, extract_evidence_claim_drafts,
         extract_set_context_mentions_from_text, missing_onboarding_close_requirements,
         normalize_read_after_write_targets, normalize_set_type, normalize_visualization_spec,
@@ -9688,6 +9756,75 @@ mod tests {
         assert_eq!(gate.transition, "override");
         assert!(gate.override_used);
         assert_eq!(gate.phase, "onboarding");
+    }
+
+    #[test]
+    fn workflow_gate_blocks_planning_after_restart_until_reclosed_or_overridden() {
+        let state = AgentWorkflowState {
+            onboarding_closed: true,
+            onboarding_aborted: false,
+            override_active: false,
+            missing_close_requirements: Vec::new(),
+            legacy_planning_history: true,
+        };
+        let events = vec![
+            make_event(
+                WORKFLOW_ONBOARDING_RESTARTED_EVENT_TYPE,
+                json!({"reason": "user wants to resume onboarding"}),
+                "wf-restart-k-1",
+            ),
+            make_event(
+                "training_plan.updated",
+                json!({"name": "Plan after restart"}),
+                "plan-after-restart-k-1",
+            ),
+        ];
+
+        let gate = workflow_gate_from_request(&events, &state);
+        assert_eq!(gate.status, "blocked");
+        assert_eq!(gate.phase, "onboarding");
+        assert_eq!(gate.transition, "none");
+        assert!(!gate.onboarding_closed);
+    }
+
+    #[test]
+    fn effective_workflow_state_applies_marker_deltas_after_projection_timestamp() {
+        let projection_updated_at = Utc::now();
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            projection_updated_at,
+            json!({
+                "user": {
+                    "workflow_state": {
+                        "phase": "planning",
+                        "onboarding_closed": true,
+                        "onboarding_aborted": false,
+                        "override_active": false
+                    }
+                }
+            }),
+        );
+
+        let marker_rows = vec![
+            WorkflowMarkerEventRow {
+                id: Uuid::now_v7(),
+                timestamp: projection_updated_at - Duration::minutes(1),
+                event_type: WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE.to_string(),
+            },
+            WorkflowMarkerEventRow {
+                id: Uuid::now_v7(),
+                timestamp: projection_updated_at + Duration::minutes(1),
+                event_type: WORKFLOW_ONBOARDING_RESTARTED_EVENT_TYPE.to_string(),
+            },
+        ];
+        let marker_refs: Vec<&WorkflowMarkerEventRow> = marker_rows.iter().collect();
+        let effective = derive_effective_workflow_state(Some(&profile), &marker_refs);
+
+        assert_eq!(effective.phase, "onboarding");
+        assert!(!effective.onboarding_closed);
+        assert!(!effective.onboarding_aborted);
+        assert!(!effective.override_active);
     }
 
     #[test]

@@ -958,6 +958,7 @@ def _get_conventions() -> dict[str, Any]:
                     "workflow.onboarding.closed",
                     "workflow.onboarding.override_granted",
                     "workflow.onboarding.aborted",
+                    "workflow.onboarding.restarted",
                 ],
                 "training_plan_updated_high_impact_when": {
                     "change_scope_values": [
