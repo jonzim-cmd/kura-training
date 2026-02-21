@@ -32,7 +32,9 @@ def test_mcp_runtime_declares_startup_brief_gate_and_minimal_tool() -> None:
     src = MCP_RUNTIME.read_text(encoding="utf-8")
     assert "kura_agent_brief" in src
     assert "startup_brief_required" in src
-    assert "required_first_tool\": \"kura_agent_brief\"" in src
+    assert 'STARTUP_REQUIRED_FIRST_TOOL: &str = "kura_agent_brief"' in src
+    assert 'STARTUP_FALLBACK_FIRST_TOOL: &str = "kura_agent_context"' in src
+    assert "preferred_brief_with_context_fallback" in src
     assert "should_block_for_startup_brief" in src
     assert "mark_brief_loaded" in src
     assert "is_brief_loaded" in src

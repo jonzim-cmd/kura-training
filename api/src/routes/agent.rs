@@ -336,6 +336,38 @@ pub struct AgentBriefSystemConfigRef {
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentBriefFirstContactInterviewOffer {
+    pub required: bool,
+    pub format: String,
+    pub max_estimated_minutes: i64,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentBriefFirstContactOpening {
+    /// first_contact_opening.v1
+    pub schema_version: String,
+    pub mandatory_sentence: String,
+    pub how_to_use_brief: String,
+    pub interview_offer: AgentBriefFirstContactInterviewOffer,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub avoid_before_interview_offer: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentBriefResponseGuard {
+    /// first_contact_response_guard.v1
+    pub schema_version: String,
+    /// first_assistant_turn_after_brief
+    pub scope: String,
+    pub active: bool,
+    pub must_cover_intents: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub avoid_before_completion: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub deactivate_when: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AgentBrief {
     pub schema_version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -343,6 +375,10 @@ pub struct AgentBrief {
     pub must_cover_intents: Vec<String>,
     pub coverage_gaps: Vec<String>,
     pub workflow_state: AgentBriefWorkflowState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_contact_opening: Option<AgentBriefFirstContactOpening>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_guard: Option<AgentBriefResponseGuard>,
     pub available_sections: Vec<AgentBriefSectionRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_config_ref: Option<AgentBriefSystemConfigRef>,
@@ -2447,6 +2483,96 @@ fn agent_brief_available_sections(
     sections
 }
 
+const FIRST_CONTACT_OPENING_SCHEMA_FALLBACK: &str = "first_contact_opening.v1";
+const FIRST_CONTACT_RESPONSE_GUARD_SCHEMA_VERSION: &str = "first_contact_response_guard.v1";
+const FIRST_CONTACT_REQUIRED_SCOPE: &str = "first_assistant_turn_after_brief";
+const FIRST_CONTACT_FALLBACK_MANDATORY_SENTENCE: &str =
+    "Kura is a structured training-data system. You write naturally, and I turn that into reliable events and projections so progress, trends, and decisions stay consistent over time.";
+const FIRST_CONTACT_FALLBACK_HOW_TO_USE: &str =
+    "Tell me in natural language what you trained, ate, or measured; I will structure it into events and keep your timeline consistent.";
+const FIRST_CONTACT_FALLBACK_INTERVIEW_FORMAT: &str = "offer_short_onboarding_interview";
+const FIRST_CONTACT_FALLBACK_INTERVIEW_MAX_MINUTES: i64 = 5;
+const FIRST_CONTACT_DEFAULT_AVOID_BEFORE_COMPLETION: [&str; 3] = [
+    "feature_menu_dump",
+    "immediate_logging_checklist",
+    "planning_or_coaching_without_onboarding_offer",
+];
+
+fn first_contact_onboarding_active(
+    action_required: Option<&AgentActionRequired>,
+    workflow_state: &AgentBriefWorkflowState,
+) -> bool {
+    if workflow_state.onboarding_closed {
+        return false;
+    }
+    action_required
+        .map(|action| action.action == "onboarding")
+        .unwrap_or(false)
+}
+
+fn first_contact_contract_value(system: Option<&SystemConfigResponse>) -> Option<&Value> {
+    system.and_then(|sys| sys.data.pointer("/conventions/first_contact_opening_v1"))
+}
+
+fn build_first_contact_opening_payload(
+    system: Option<&SystemConfigResponse>,
+) -> AgentBriefFirstContactOpening {
+    let contract = first_contact_contract_value(system).and_then(Value::as_object);
+    let interview_offer = contract
+        .and_then(|value| value.get("interview_offer"))
+        .and_then(Value::as_object);
+    let avoid_before_interview_offer = contract
+        .and_then(|value| value.get("avoid_before_interview_offer"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            FIRST_CONTACT_DEFAULT_AVOID_BEFORE_COMPLETION
+                .iter()
+                .map(|value| value.to_string())
+                .collect()
+        });
+
+    AgentBriefFirstContactOpening {
+        schema_version: contract
+            .and_then(|value| value.get("schema_version"))
+            .and_then(Value::as_str)
+            .unwrap_or(FIRST_CONTACT_OPENING_SCHEMA_FALLBACK)
+            .to_string(),
+        mandatory_sentence: contract
+            .and_then(|value| value.get("mandatory_sentence"))
+            .and_then(Value::as_str)
+            .unwrap_or(FIRST_CONTACT_FALLBACK_MANDATORY_SENTENCE)
+            .to_string(),
+        how_to_use_brief: contract
+            .and_then(|value| value.get("how_to_use_brief"))
+            .and_then(Value::as_str)
+            .unwrap_or(FIRST_CONTACT_FALLBACK_HOW_TO_USE)
+            .to_string(),
+        interview_offer: AgentBriefFirstContactInterviewOffer {
+            required: interview_offer
+                .and_then(|value| value.get("required"))
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+            format: interview_offer
+                .and_then(|value| value.get("format"))
+                .and_then(Value::as_str)
+                .unwrap_or(FIRST_CONTACT_FALLBACK_INTERVIEW_FORMAT)
+                .to_string(),
+            max_estimated_minutes: interview_offer
+                .and_then(|value| value.get("max_estimated_minutes"))
+                .and_then(Value::as_i64)
+                .unwrap_or(FIRST_CONTACT_FALLBACK_INTERVIEW_MAX_MINUTES),
+        },
+        avoid_before_interview_offer,
+    }
+}
+
 fn build_agent_brief(
     action_required: Option<&AgentActionRequired>,
     user_profile: &ProjectionResponse,
@@ -2454,6 +2580,7 @@ fn build_agent_brief(
     observations_draft: Option<&AgentObservationsDraftContext>,
 ) -> AgentBrief {
     let workflow_state = agent_brief_workflow_state(user_profile);
+    let first_contact_active = first_contact_onboarding_active(action_required, &workflow_state);
     let mut coverage_gaps = if workflow_state.onboarding_closed {
         Vec::new()
     } else {
@@ -2489,6 +2616,34 @@ fn build_agent_brief(
         version: value.version,
         updated_at: value.updated_at,
     });
+    let first_contact_opening = if first_contact_active {
+        Some(build_first_contact_opening_payload(system))
+    } else {
+        None
+    };
+    let response_guard = if first_contact_active {
+        Some(AgentBriefResponseGuard {
+            schema_version: FIRST_CONTACT_RESPONSE_GUARD_SCHEMA_VERSION.to_string(),
+            scope: FIRST_CONTACT_REQUIRED_SCOPE.to_string(),
+            active: true,
+            must_cover_intents: vec![
+                "explain_kura_short".to_string(),
+                "offer_onboarding".to_string(),
+                "allow_skip_and_log_now".to_string(),
+            ],
+            avoid_before_completion: first_contact_opening
+                .as_ref()
+                .map(|opening| opening.avoid_before_interview_offer.clone())
+                .unwrap_or_default(),
+            deactivate_when: vec![
+                "workflow.onboarding.closed".to_string(),
+                "workflow.onboarding.override_granted".to_string(),
+                "onboarding_skipped_by_user".to_string(),
+            ],
+        })
+    } else {
+        None
+    };
 
     AgentBrief {
         schema_version: AGENT_BRIEF_SCHEMA_VERSION.to_string(),
@@ -2496,6 +2651,8 @@ fn build_agent_brief(
         must_cover_intents,
         coverage_gaps,
         workflow_state,
+        first_contact_opening,
+        response_guard,
         available_sections: agent_brief_available_sections(system),
         system_config_ref,
     }
@@ -8244,6 +8401,31 @@ mod tests {
                 .must_cover_intents
                 .contains(&"allow_skip_and_log_now".to_string())
         );
+        let first_contact_opening = brief
+            .first_contact_opening
+            .as_ref()
+            .expect("first contact opening must be present while onboarding is active");
+        assert_eq!(first_contact_opening.schema_version, "first_contact_opening.v1");
+        assert!(first_contact_opening.mandatory_sentence.contains("Kura is a structured"));
+        assert_eq!(
+            first_contact_opening.interview_offer.max_estimated_minutes,
+            5
+        );
+        let response_guard = brief
+            .response_guard
+            .as_ref()
+            .expect("response guard must be present while onboarding is active");
+        assert_eq!(
+            response_guard.schema_version,
+            "first_contact_response_guard.v1"
+        );
+        assert_eq!(response_guard.scope, "first_assistant_turn_after_brief");
+        assert!(response_guard.active);
+        assert!(
+            response_guard
+                .must_cover_intents
+                .contains(&"offer_onboarding".to_string())
+        );
         assert!(!brief.coverage_gaps.is_empty());
         assert!(brief.available_sections.iter().any(|section| {
             section.section == "system_config.conventions::first_contact_opening_v1"
@@ -8349,6 +8531,8 @@ mod tests {
         assert_eq!(brief.workflow_state.phase, "planning");
         assert!(brief.workflow_state.onboarding_closed);
         assert!(brief.coverage_gaps.is_empty());
+        assert!(brief.first_contact_opening.is_none());
+        assert!(brief.response_guard.is_none());
         assert!(
             !brief
                 .must_cover_intents
@@ -11922,6 +12106,32 @@ mod tests {
         let mode = super::resolve_challenge_mode(Some(&profile));
         assert_eq!(mode.mode, "off");
         assert_eq!(mode.source, "user_profile.preference");
+        assert!(!mode.onboarding_hint_required);
+        assert!(mode.onboarding_hint.is_none());
+    }
+
+    #[test]
+    fn challenge_mode_hint_is_suppressed_after_onboarding_is_closed() {
+        let profile = make_projection_response(
+            "user_profile",
+            "me",
+            Utc::now(),
+            json!({
+                "user": {
+                    "workflow_state": {
+                        "phase": "planning",
+                        "onboarding_closed": true,
+                        "override_active": false
+                    },
+                    "preferences": {
+                        "challenge_mode": "auto",
+                        "challenge_mode_intro_seen": false
+                    }
+                }
+            }),
+        );
+        let mode = super::resolve_challenge_mode(Some(&profile));
+        assert_eq!(mode.mode, "auto");
         assert!(!mode.onboarding_hint_required);
         assert!(mode.onboarding_hint.is_none());
     }

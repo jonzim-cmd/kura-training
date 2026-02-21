@@ -36,6 +36,9 @@ const RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK_ENV: &str =
     "KURA_MCP_RETRIEVAL_FSM_MAX_REPEAT_SIGNATURE_STREAK";
 const RETRIEVAL_OBSERVABILITY_SCHEMA_VERSION: &str = "mcp_retrieval_observability.v1";
 const IMPORT_DEVICE_TOOLS_ENABLED_ENV: &str = "KURA_MCP_ENABLE_IMPORT_PROVIDER_TOOLS";
+const STARTUP_REQUIRED_FIRST_TOOL: &str = "kura_agent_brief";
+const STARTUP_FALLBACK_FIRST_TOOL: &str = "kura_agent_context";
+const STARTUP_GATE_MODE: &str = "preferred_brief_with_context_fallback";
 
 /// Tracks which sessions have loaded agent context. Shared across HTTP requests
 /// (where each request creates a new McpServer) and stdio (single long-lived server).
@@ -598,7 +601,10 @@ fn should_emit_context_warning(name: &str, context_loaded: bool) -> bool {
 fn is_startup_brief_exempt_tool(name: &str) -> bool {
     matches!(
         name,
-        "kura_agent_brief" | "kura_mcp_status" | "kura_access_request"
+        STARTUP_REQUIRED_FIRST_TOOL
+            | STARTUP_FALLBACK_FIRST_TOOL
+            | "kura_mcp_status"
+            | "kura_access_request"
     )
 }
 
@@ -994,7 +1000,7 @@ impl McpServer {
 
     fn initialize_payload(&self) -> Value {
         let instructions = format!(
-            "Start with kura_agent_brief (startup gate). If action_required indicates onboarding, reply first with: (1) what Kura is (use first_contact_opening_v1 mandatory sentence), (2) how to use it briefly, (3) propose a short onboarding interview before feature menus or logging steps, and allow skip/log-now. After that, call kura_agent_context before personalized planning or write operations. Use kura_discover for lean capability snapshots only after startup brief is loaded; use kura_discover_debug only for deep schema/capability troubleshooting. Prefer kura_events_write with mode=simulate before commit for higher confidence. Capability mode: {}.",
+            "Start with kura_agent_brief (startup gate, preferred). If kura_agent_brief is unavailable in the client tool surface, call kura_agent_context as startup fallback. If action_required indicates onboarding, reply first with: (1) what Kura is (use first_contact_opening_v1 mandatory sentence), (2) how to use it briefly, (3) propose a short onboarding interview before feature menus or logging steps, and allow skip/log-now. Avoid dashboard/booking claims unless explicitly present in loaded brief/context payloads. After that, call kura_agent_context before personalized planning or write operations. Use kura_discover for lean capability snapshots only after startup brief is loaded; use kura_discover_debug only for deep schema/capability troubleshooting. Prefer kura_events_write with mode=simulate before commit for higher confidence. Capability mode: {}.",
             self.capability_profile.mode.as_str()
         );
         json!({
@@ -1068,11 +1074,13 @@ impl McpServer {
                     "tool": name,
                     "error": {
                         "error": "startup_brief_required",
-                        "message": "Call kura_agent_brief before other tools in a fresh session.",
+                        "message": "Call kura_agent_brief first (preferred). If unavailable in your client tool surface, call kura_agent_context as startup fallback.",
                         "field": "tool",
-                        "docs_hint": "Load the minimal startup brief first so onboarding/action_required contracts are deterministic.",
+                        "docs_hint": "Load startup state before broad reads/writes so onboarding/action_required contracts are deterministic.",
                         "details": {
-                            "required_first_tool": "kura_agent_brief",
+                            "required_first_tool": STARTUP_REQUIRED_FIRST_TOOL,
+                            "fallback_first_tool": STARTUP_FALLBACK_FIRST_TOOL,
+                            "startup_gate_mode": STARTUP_GATE_MODE,
                             "blocked_tool": name,
                             "brief_loaded": brief_loaded,
                             "context_loaded": context_loaded
@@ -1435,9 +1443,11 @@ impl McpServer {
             "session_id": self.session_id.clone(),
             "brief_loaded": brief_loaded,
             "context_loaded": context_loaded,
-            "required_first_tool": "kura_agent_brief",
+            "required_first_tool": STARTUP_REQUIRED_FIRST_TOOL,
+            "fallback_first_tool": STARTUP_FALLBACK_FIRST_TOOL,
+            "startup_gate_mode": STARTUP_GATE_MODE,
             "next": if !brief_loaded {
-                "Call kura_agent_brief now before using other tools."
+                "Call kura_agent_brief now (preferred). If unavailable in your client tool surface, call kura_agent_context as startup fallback."
             } else if !context_loaded {
                 "Startup brief loaded. Call kura_agent_context before personalized guidance or writes."
             } else {
@@ -1461,7 +1471,9 @@ impl McpServer {
                 "session_id": self.session_id.clone(),
                 "brief_loaded": is_brief_loaded(&self.session_id),
                 "context_loaded": is_context_loaded(&self.session_id),
-                "required_first_tool": "kura_agent_brief",
+                "required_first_tool": STARTUP_REQUIRED_FIRST_TOOL,
+                "fallback_first_tool": STARTUP_FALLBACK_FIRST_TOOL,
+                "startup_gate_mode": STARTUP_GATE_MODE,
                 "retrieval_observability": retrieval_observability_snapshot(&self.session_id, retrieval_fsm_policy())
             },
             "feature_flags": {
@@ -2057,6 +2069,14 @@ impl McpServer {
                 .cloned()
                 .unwrap_or_else(|| json!([])),
             "workflow_state": workflow_state,
+            "first_contact_opening": agent_brief_raw
+                .get("first_contact_opening")
+                .cloned()
+                .unwrap_or(Value::Null),
+            "response_guard": agent_brief_raw
+                .get("response_guard")
+                .cloned()
+                .unwrap_or(Value::Null),
             "available_sections_preview": available_sections_preview,
             "available_sections_total": available_sections_total
         });
@@ -2109,7 +2129,9 @@ impl McpServer {
                 }
             },
             "startup_gate": {
-                "required_first_tool": "kura_agent_brief",
+                "required_first_tool": STARTUP_REQUIRED_FIRST_TOOL,
+                "fallback_first_tool": STARTUP_FALLBACK_FIRST_TOOL,
+                "startup_gate_mode": STARTUP_GATE_MODE,
                 "brief_loaded": true,
                 "context_loaded": is_context_loaded(&self.session_id),
                 "onboarding_required": onboarding_required,
@@ -5635,8 +5657,10 @@ mod tests {
             .expect("initialize payload should include instructions");
 
         assert!(instructions.contains("kura_agent_brief"));
+        assert!(instructions.contains("kura_agent_context as startup fallback"));
         assert!(instructions.contains("first_contact_opening_v1"));
         assert!(instructions.contains("allow skip/log-now"));
+        assert!(instructions.contains("Avoid dashboard/booking claims"));
         assert!(instructions.contains("kura_agent_context"));
         assert!(instructions.contains("kura_discover for lean capability snapshots"));
         assert!(
@@ -6159,6 +6183,11 @@ mod tests {
             "session.next must guide agent toward loading startup brief"
         );
         assert_eq!(session["required_first_tool"], "kura_agent_brief");
+        assert_eq!(session["fallback_first_tool"], "kura_agent_context");
+        assert_eq!(
+            session["startup_gate_mode"],
+            "preferred_brief_with_context_fallback"
+        );
     }
 
     #[test]
@@ -6588,13 +6617,13 @@ mod tests {
     #[test]
     fn startup_brief_gate_blocks_non_exempt_tools_until_loaded() {
         assert!(!should_block_for_startup_brief("kura_agent_brief", false));
+        assert!(!should_block_for_startup_brief("kura_agent_context", false));
         assert!(!should_block_for_startup_brief("kura_mcp_status", false));
         assert!(!should_block_for_startup_brief(
             "kura_access_request",
             false
         ));
         assert!(should_block_for_startup_brief("kura_discover", false));
-        assert!(should_block_for_startup_brief("kura_agent_context", false));
         assert!(should_block_for_startup_brief("kura_events_write", false));
     }
 

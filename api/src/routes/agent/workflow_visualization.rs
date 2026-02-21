@@ -116,6 +116,16 @@ pub(super) fn user_preference_bool(
     preferences.get(key).and_then(Value::as_bool)
 }
 
+fn onboarding_open(user_profile: Option<&ProjectionResponse>) -> bool {
+    let onboarding_closed = user_profile
+        .and_then(|profile| profile.projection.data.get("user"))
+        .and_then(|user| user.get("workflow_state"))
+        .and_then(|state| state.get("onboarding_closed"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    !onboarding_closed
+}
+
 pub(super) fn normalize_challenge_mode(value: Option<&str>) -> String {
     match value.unwrap_or("auto").trim().to_lowercase().as_str() {
         "on" | "always" => "on".to_string(),
@@ -131,6 +141,7 @@ pub(super) fn resolve_challenge_mode(
     let mode = normalize_challenge_mode(raw.as_deref());
     let intro_seen =
         user_preference_bool(user_profile, "challenge_mode_intro_seen").unwrap_or(false);
+    let onboarding_hint_required = !intro_seen && onboarding_open(user_profile);
     let source = if raw.is_some() {
         "user_profile.preference"
     } else {
@@ -142,11 +153,11 @@ pub(super) fn resolve_challenge_mode(
         schema_version: AGENT_CHALLENGE_MODE_SCHEMA_VERSION.to_string(),
         mode,
         source,
-        onboarding_hint_required: !intro_seen,
-        onboarding_hint: if intro_seen {
-            None
-        } else {
+        onboarding_hint_required,
+        onboarding_hint: if onboarding_hint_required {
             Some(AGENT_CHALLENGE_MODE_ONBOARDING_HINT.to_string())
+        } else {
+            None
         },
     }
 }
