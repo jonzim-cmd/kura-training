@@ -405,7 +405,7 @@
       "mcpHint": "OpenClawエージェントに伝えてください：",
       "mcpPrompt": "Connect to my Kura account. MCP server URL: https://api.withkura.com/mcp — Use OAuth for authentication.",
       "cliHint": "OpenClawエージェントに伝えてください：",
-      "cliPrompt": "Install the Kura CLI (cargo install --git https://github.com/jonzim-cmd/kura-training --locked --package kura-cli --bin kura) and connect my account with KURA_API_URL=https://api.withkura.com kura login."
+      "cliPrompt": "Install the Kura CLI (cargo install --git https://github.com/jonzim-cmd/kura-training --locked kura-cli --bin kura) and connect my account with KURA_API_URL=https://api.withkura.com kura login."
     },
     "expert": {
       "toggle": "Claude Desktop、Claude Code、Gemini CLI、Codex、その他のMCPまたはCLI対応ツールを使っていますか？",
@@ -414,8 +414,8 @@
       "mcpPrompt": "Connect to my Kura account. MCP server URL: https://api.withkura.com/mcp — Use OAuth for authentication.",
       "cliTitle": "MCPの代わりにCLI",
       "cliDescription": "CLIを使いたい場合、AIがKura CLIをインストール・設定できます。AIに伝えてください：",
-      "cliInstall": "cargo install --git https://github.com/jonzim-cmd/kura-training --locked --package kura-cli --bin kura",
-      "cliPrompt": "Install the Kura CLI (cargo install --git https://github.com/jonzim-cmd/kura-training --locked --package kura-cli --bin kura) and connect my account with KURA_API_URL=https://api.withkura.com kura login."
+      "cliInstall": "cargo install --git https://github.com/jonzim-cmd/kura-training --locked kura-cli --bin kura",
+      "cliPrompt": "Install the Kura CLI (cargo install --git https://github.com/jonzim-cmd/kura-training --locked kura-cli --bin kura) and connect my account with KURA_API_URL=https://api.withkura.com kura login."
     }
   },
   "footer": {
