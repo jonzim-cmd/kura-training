@@ -3138,12 +3138,25 @@ impl McpServer {
         let response = self
             .send_api_request(Method::GET, path, &query, None, true, false)
             .await?;
+        let response_value = response.to_value();
+        let task_intent = query
+            .iter()
+            .find(|(key, _)| key == "task_intent")
+            .map(|(_, value)| value.as_str());
+        let critical_fetch_order = ordered_startup_sections_from_index(response_value.get("body"));
+        let critical_fetch_calls =
+            build_section_fetch_calls_from_order(&critical_fetch_order, task_intent);
         Ok(json!({
             "request": {
                 "path": path,
                 "query": pairs_to_json_object(&query)
             },
-            "response": response.to_value()
+            "response": response_value,
+            "deterministic_recovery": {
+                "critical_fetch_order": critical_fetch_order,
+                "critical_fetch_calls": critical_fetch_calls,
+                "next_safe_action": "Fetch critical sections in order before user-facing generation."
+            }
         }))
     }
 
@@ -3152,29 +3165,74 @@ impl McpServer {
         args: &Map<String, Value>,
     ) -> Result<Value, ToolError> {
         let section = required_string(args, "section")?;
+        let limit = arg_optional_u64(args, "limit")?;
+        let cursor = arg_optional_string(args, "cursor")?;
+        let fields = arg_optional_string(args, "fields")?;
+        let task_intent = arg_optional_string(args, "task_intent")?;
         let mut query = vec![("section".to_string(), section)];
-        if let Some(limit) = arg_optional_u64(args, "limit")? {
+        if let Some(limit) = limit {
             query.push(("limit".to_string(), limit.to_string()));
         }
-        if let Some(cursor) = arg_optional_string(args, "cursor")? {
+        if let Some(cursor) = cursor.clone() {
             query.push(("cursor".to_string(), cursor));
         }
-        if let Some(fields) = arg_optional_string(args, "fields")? {
+        if let Some(fields) = fields.clone() {
             query.push(("fields".to_string(), fields));
         }
-        if let Some(task_intent) = arg_optional_string(args, "task_intent")? {
+        if let Some(task_intent) = task_intent.clone() {
             query.push(("task_intent".to_string(), task_intent));
         }
         let path = "/v1/agent/context/section-fetch";
         let response = self
             .send_api_request(Method::GET, path, &query, None, true, false)
             .await?;
+        let response_value = response.to_value();
+        let response_body = response_value.get("body").cloned().unwrap_or(Value::Null);
+        let resolved_section = response_body
+            .get("section")
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .unwrap_or_else(|| {
+                query
+                    .iter()
+                    .find(|(key, _)| key == "section")
+                    .map(|(_, value)| value.clone())
+                    .unwrap_or_default()
+            });
+        let has_more = response_body
+            .get("has_more")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let next_cursor = response_body
+            .get("next_cursor")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+        let next_call = build_section_fetch_pagination_next_call(
+            &resolved_section,
+            limit,
+            fields.as_deref(),
+            task_intent.as_deref(),
+            has_more,
+            next_cursor.as_deref(),
+        );
         Ok(json!({
             "request": {
                 "path": path,
                 "query": pairs_to_json_object(&query)
             },
-            "response": response.to_value()
+            "response": response_value,
+            "section_contract": {
+                "section": resolved_section,
+                "critical": response_body.get("critical").cloned().unwrap_or(Value::Null),
+                "criticality": response_body.get("criticality").cloned().unwrap_or(Value::Null),
+                "reason_code": response_body.get("reason_code").cloned().unwrap_or(Value::Null),
+                "next_action": response_body.get("next_action").cloned().unwrap_or(Value::Null)
+            },
+            "pagination": {
+                "has_more": has_more,
+                "next_cursor": next_cursor,
+                "next_call": next_call
+            }
         }))
     }
 
@@ -5458,6 +5516,83 @@ fn missing_agent_context_critical_sections(body: Option<&Value>) -> Vec<&'static
     missing
 }
 
+fn ordered_startup_sections_from_index(body: Option<&Value>) -> Vec<String> {
+    let mut desired: Vec<String> = STARTUP_DIAGNOSTIC_REQUIRED_SECTIONS
+        .iter()
+        .map(|section| (*section).to_string())
+        .collect();
+    let indexed: Vec<String> = body
+        .and_then(|value| value.get("critical_sections"))
+        .and_then(Value::as_array)
+        .map(|sections| {
+            sections
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if indexed.is_empty() {
+        return desired;
+    }
+
+    for section in indexed {
+        if !desired.iter().any(|existing| existing == &section) {
+            desired.push(section);
+        }
+    }
+    desired
+}
+
+fn build_section_fetch_calls_from_order(order: &[String], task_intent: Option<&str>) -> Vec<Value> {
+    order
+        .iter()
+        .map(|section| {
+            let mut args = json!({ "section": section });
+            if let Some(intent) = task_intent {
+                args["task_intent"] = Value::String(intent.to_string());
+            }
+            json!({
+                "tool": "kura_agent_section_fetch",
+                "arguments": args
+            })
+        })
+        .collect()
+}
+
+fn build_section_fetch_pagination_next_call(
+    section: &str,
+    limit: Option<u64>,
+    fields: Option<&str>,
+    task_intent: Option<&str>,
+    has_more: bool,
+    next_cursor: Option<&str>,
+) -> Value {
+    if !has_more {
+        return Value::Null;
+    }
+    let Some(cursor) = next_cursor else {
+        return Value::Null;
+    };
+    let mut arguments = json!({
+        "section": section,
+        "cursor": cursor
+    });
+    if let Some(value) = limit {
+        arguments["limit"] = json!(value);
+    }
+    if let Some(value) = fields {
+        arguments["fields"] = Value::String(value.to_string());
+    }
+    if let Some(value) = task_intent {
+        arguments["task_intent"] = Value::String(value.to_string());
+    }
+    json!({
+        "tool": "kura_agent_section_fetch",
+        "arguments": arguments
+    })
+}
+
 fn agent_context_section_reload_hint(section: &str) -> &'static str {
     match section {
         "system" => {
@@ -7422,6 +7557,54 @@ mod tests {
         assert!(fetch_props.contains_key("limit"));
         assert!(fetch_props.contains_key("cursor"));
         assert!(fetch_props.contains_key("fields"));
+    }
+
+    #[test]
+    fn section_index_recovery_contract_prefers_startup_order_and_expands_unknown_sections() {
+        let order = ordered_startup_sections_from_index(Some(&json!({
+            "critical_sections": ["action_required", "meta", "custom_runtime_gate"]
+        })));
+        assert_eq!(order[0], "startup_capsule");
+        assert_eq!(order[1], "action_required");
+        assert_eq!(order[2], "agent_brief");
+        assert_eq!(order[3], "meta");
+        assert!(order.iter().any(|section| section == "custom_runtime_gate"));
+
+        let calls = build_section_fetch_calls_from_order(&order, Some("startup"));
+        assert_eq!(calls[0]["tool"], "kura_agent_section_fetch");
+        assert_eq!(calls[0]["arguments"]["section"], "startup_capsule");
+        assert_eq!(calls[0]["arguments"]["task_intent"], "startup");
+    }
+
+    #[test]
+    fn section_fetch_pagination_contract_exposes_next_call_when_cursor_exists() {
+        let next_call = build_section_fetch_pagination_next_call(
+            "projections.exercise_progression",
+            Some(50),
+            Some("projection,data"),
+            Some("bench plateau"),
+            true,
+            Some("next-cursor"),
+        );
+        assert_eq!(next_call["tool"], "kura_agent_section_fetch");
+        assert_eq!(
+            next_call["arguments"]["section"],
+            "projections.exercise_progression"
+        );
+        assert_eq!(next_call["arguments"]["limit"], 50);
+        assert_eq!(next_call["arguments"]["cursor"], "next-cursor");
+        assert_eq!(next_call["arguments"]["fields"], "projection,data");
+        assert_eq!(next_call["arguments"]["task_intent"], "bench plateau");
+
+        let none_when_done = build_section_fetch_pagination_next_call(
+            "meta",
+            None,
+            None,
+            None,
+            false,
+            Some("ignored"),
+        );
+        assert!(none_when_done.is_null());
     }
 
     #[test]

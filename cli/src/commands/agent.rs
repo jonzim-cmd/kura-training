@@ -26,6 +26,33 @@ pub enum AgentCommands {
         /// Include deployment-static system config in response payload (default: API default=true)
         #[arg(long)]
         include_system: Option<bool>,
+        /// Optional response token budget hint (min 400, max 12000)
+        #[arg(long)]
+        budget_tokens: Option<u32>,
+    },
+    /// Get deterministic section index for startup + targeted follow-up reads
+    SectionIndex {
+        /// Optional task intent used for startup section derivation
+        #[arg(long)]
+        task_intent: Option<String>,
+    },
+    /// Fetch exactly one context section (optionally paged and field-projected)
+    SectionFetch {
+        /// Stable section id from section-index
+        #[arg(long)]
+        section: String,
+        /// Optional page size for paged sections (1..200)
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Optional opaque cursor for paged sections
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Optional comma-separated top-level fields to project
+        #[arg(long)]
+        fields: Option<String>,
+        /// Optional task intent for startup section derivation
+        #[arg(long)]
+        task_intent: Option<String>,
     },
     /// Write events with receipts + read-after-write verification
     WriteWithProof(WriteWithProofArgs),
@@ -173,6 +200,7 @@ pub async fn run(api_url: &str, token: Option<&str>, command: AgentCommands) -> 
             custom_limit,
             task_intent,
             include_system,
+            budget_tokens,
         } => {
             context(
                 api_url,
@@ -182,9 +210,20 @@ pub async fn run(api_url: &str, token: Option<&str>, command: AgentCommands) -> 
                 custom_limit,
                 task_intent,
                 include_system,
+                budget_tokens,
             )
             .await
         }
+        AgentCommands::SectionIndex { task_intent } => {
+            section_index(api_url, token, task_intent).await
+        }
+        AgentCommands::SectionFetch {
+            section,
+            limit,
+            cursor,
+            fields,
+            task_intent,
+        } => section_fetch(api_url, token, section, limit, cursor, fields, task_intent).await,
         AgentCommands::WriteWithProof(args) => write_with_proof(api_url, token, args).await,
         AgentCommands::Evidence { command } => match command {
             AgentEvidenceCommands::Event { event_id } => {
@@ -224,28 +263,61 @@ pub async fn context(
     custom_limit: Option<u32>,
     task_intent: Option<String>,
     include_system: Option<bool>,
+    budget_tokens: Option<u32>,
 ) -> i32 {
-    let mut query = Vec::new();
-    if let Some(v) = exercise_limit {
-        query.push(("exercise_limit".to_string(), v.to_string()));
-    }
-    if let Some(v) = strength_limit {
-        query.push(("strength_limit".to_string(), v.to_string()));
-    }
-    if let Some(v) = custom_limit {
-        query.push(("custom_limit".to_string(), v.to_string()));
-    }
-    if let Some(v) = task_intent {
-        query.push(("task_intent".to_string(), v));
-    }
-    if let Some(v) = include_system {
-        query.push(("include_system".to_string(), v.to_string()));
-    }
+    let query = build_context_query(
+        exercise_limit,
+        strength_limit,
+        custom_limit,
+        task_intent,
+        include_system,
+        budget_tokens,
+    );
 
     api_request(
         api_url,
         reqwest::Method::GET,
         "/v1/agent/context",
+        token,
+        None,
+        &query,
+        &[],
+        false,
+        false,
+    )
+    .await
+}
+
+async fn section_index(api_url: &str, token: Option<&str>, task_intent: Option<String>) -> i32 {
+    let query = build_section_index_query(task_intent);
+    api_request(
+        api_url,
+        reqwest::Method::GET,
+        "/v1/agent/context/section-index",
+        token,
+        None,
+        &query,
+        &[],
+        false,
+        false,
+    )
+    .await
+}
+
+async fn section_fetch(
+    api_url: &str,
+    token: Option<&str>,
+    section: String,
+    limit: Option<u32>,
+    cursor: Option<String>,
+    fields: Option<String>,
+    task_intent: Option<String>,
+) -> i32 {
+    let query = build_section_fetch_query(section, limit, cursor, fields, task_intent);
+    api_request(
+        api_url,
+        reqwest::Method::GET,
+        "/v1/agent/context/section-fetch",
         token,
         None,
         &query,
@@ -468,6 +540,74 @@ fn parse_query_pairs(raw: &[String]) -> Vec<(String, String)> {
         .collect()
 }
 
+fn build_context_query(
+    exercise_limit: Option<u32>,
+    strength_limit: Option<u32>,
+    custom_limit: Option<u32>,
+    task_intent: Option<String>,
+    include_system: Option<bool>,
+    budget_tokens: Option<u32>,
+) -> Vec<(String, String)> {
+    let mut query = Vec::new();
+    if let Some(v) = exercise_limit {
+        query.push(("exercise_limit".to_string(), v.to_string()));
+    }
+    if let Some(v) = strength_limit {
+        query.push(("strength_limit".to_string(), v.to_string()));
+    }
+    if let Some(v) = custom_limit {
+        query.push(("custom_limit".to_string(), v.to_string()));
+    }
+    if let Some(v) = task_intent {
+        query.push(("task_intent".to_string(), v));
+    }
+    if let Some(v) = include_system {
+        query.push(("include_system".to_string(), v.to_string()));
+    }
+    if let Some(v) = budget_tokens {
+        query.push(("budget_tokens".to_string(), v.to_string()));
+    }
+    query
+}
+
+fn build_section_index_query(task_intent: Option<String>) -> Vec<(String, String)> {
+    let mut query = Vec::new();
+    if let Some(v) = task_intent {
+        query.push(("task_intent".to_string(), v));
+    }
+    query
+}
+
+fn build_section_fetch_query(
+    section: String,
+    limit: Option<u32>,
+    cursor: Option<String>,
+    fields: Option<String>,
+    task_intent: Option<String>,
+) -> Vec<(String, String)> {
+    let section = section.trim();
+    if section.is_empty() {
+        exit_error(
+            "section must not be empty",
+            Some("Provide --section using an id from /v1/agent/context/section-index"),
+        );
+    }
+    let mut query = vec![("section".to_string(), section.to_string())];
+    if let Some(v) = limit {
+        query.push(("limit".to_string(), v.to_string()));
+    }
+    if let Some(v) = cursor {
+        query.push(("cursor".to_string(), v));
+    }
+    if let Some(v) = fields {
+        query.push(("fields".to_string(), v));
+    }
+    if let Some(v) = task_intent {
+        query.push(("task_intent".to_string(), v));
+    }
+    query
+}
+
 fn parse_headers(raw: &[String]) -> Vec<(String, String)> {
     raw.iter()
         .map(|entry| {
@@ -625,7 +765,8 @@ fn build_write_with_proof_request(
 #[cfg(test)]
 mod tests {
     use super::{
-        SaveConfirmationMode, build_write_with_proof_request, extract_events_array,
+        SaveConfirmationMode, build_context_query, build_section_fetch_query,
+        build_section_index_query, build_write_with_proof_request, extract_events_array,
         normalize_agent_path, parse_method, parse_targets,
     };
     use serde_json::json;
@@ -708,5 +849,56 @@ mod tests {
         assert_eq!(SaveConfirmationMode::Auto.as_str(), "auto");
         assert_eq!(SaveConfirmationMode::Always.as_str(), "always");
         assert_eq!(SaveConfirmationMode::Never.as_str(), "never");
+    }
+
+    #[test]
+    fn build_context_query_includes_budget_tokens_when_present() {
+        let query = build_context_query(
+            Some(3),
+            Some(2),
+            Some(1),
+            Some("readiness check".to_string()),
+            Some(false),
+            Some(900),
+        );
+        assert!(query.contains(&("exercise_limit".to_string(), "3".to_string())));
+        assert!(query.contains(&("strength_limit".to_string(), "2".to_string())));
+        assert!(query.contains(&("custom_limit".to_string(), "1".to_string())));
+        assert!(query.contains(&("task_intent".to_string(), "readiness check".to_string())));
+        assert!(query.contains(&("include_system".to_string(), "false".to_string())));
+        assert!(query.contains(&("budget_tokens".to_string(), "900".to_string())));
+    }
+
+    #[test]
+    fn build_section_index_query_passes_task_intent() {
+        let query = build_section_index_query(Some("startup".to_string()));
+        assert_eq!(
+            query,
+            vec![("task_intent".to_string(), "startup".to_string())]
+        );
+    }
+
+    #[test]
+    fn build_section_fetch_query_serializes_optional_params() {
+        let query = build_section_fetch_query(
+            "projections.exercise_progression".to_string(),
+            Some(50),
+            Some("abc123".to_string()),
+            Some("data,meta".to_string()),
+            Some("bench plateau".to_string()),
+        );
+        assert_eq!(
+            query,
+            vec![
+                (
+                    "section".to_string(),
+                    "projections.exercise_progression".to_string(),
+                ),
+                ("limit".to_string(), "50".to_string()),
+                ("cursor".to_string(), "abc123".to_string()),
+                ("fields".to_string(), "data,meta".to_string()),
+                ("task_intent".to_string(), "bench plateau".to_string()),
+            ]
+        );
     }
 }

@@ -108,6 +108,9 @@ enum Commands {
         /// Include deployment-static system config in response payload
         #[arg(long)]
         include_system: Option<bool>,
+        /// Optional response token budget hint (min 400, max 12000)
+        #[arg(long)]
+        budget_tokens: Option<u32>,
     },
 
     /// Legacy alias for `kura agent write-with-proof`
@@ -214,6 +217,7 @@ async fn main() {
             custom_limit,
             task_intent,
             include_system,
+            budget_tokens,
         } => {
             let token = resolve_or_exit(&cli.api_url, cli.no_auth).await;
             commands::agent::context(
@@ -224,6 +228,7 @@ async fn main() {
                 custom_limit,
                 task_intent,
                 include_system,
+                budget_tokens,
             )
             .await
         }
