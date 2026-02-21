@@ -2460,12 +2460,88 @@ formal domain event => POST /v1/agent/observation-drafts/{{observation_id}}/prom
     })
 }
 
+fn consistency_item_severity_rank(severity: &str) -> i32 {
+    match severity {
+        "critical" => 3,
+        "warning" => 2,
+        "info" => 1,
+        _ => 0,
+    }
+}
+
+fn build_consistency_action_required(
+    consistency_inbox: Option<&ProjectionResponse>,
+) -> Option<AgentActionRequired> {
+    let inbox = consistency_inbox?;
+    let inbox_data = &inbox.projection.data;
+    if !read_value_bool(inbox_data.get("requires_human_decision")).unwrap_or(false) {
+        return None;
+    }
+
+    let prompt_control = inbox_data.get("prompt_control");
+    let cooldown_active = read_value_bool(
+        prompt_control.and_then(|value| value.get("cooldown_active")),
+    )
+    .unwrap_or(false);
+    if cooldown_active {
+        return None;
+    }
+
+    let pending_items_total = read_value_usize(inbox_data.get("pending_items_total")).unwrap_or(0);
+    if pending_items_total == 0 {
+        return None;
+    }
+
+    let highest_severity = read_value_string(inbox_data.get("highest_severity"))
+        .unwrap_or_else(|| "info".to_string());
+    let max_questions = read_value_usize(
+        prompt_control.and_then(|value| value.get("max_quality_questions_per_turn")),
+    )
+    .unwrap_or(1)
+    .max(1);
+
+    let top_item = inbox_data
+        .get("items")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items.iter().max_by_key(|item| {
+                let severity = read_value_string(item.get("severity"))
+                    .unwrap_or_else(|| "info".to_string());
+                consistency_item_severity_rank(severity.as_str())
+            })
+        });
+
+    let (item_id, item_severity, item_summary) = match top_item {
+        Some(item) => (
+            read_value_string(item.get("item_id")).unwrap_or_else(|| "unknown".to_string()),
+            read_value_string(item.get("severity")).unwrap_or_else(|| "info".to_string()),
+            read_value_string(item.get("summary"))
+                .unwrap_or_else(|| "Open consistency issue.".to_string()),
+        ),
+        None => (
+            "unknown".to_string(),
+            highest_severity.clone(),
+            "Open consistency issue.".to_string(),
+        ),
+    };
+
+    Some(AgentActionRequired {
+        action: "consistency_review".to_string(),
+        detail: format!(
+            "Open quality issues need proactive handling: {pending_items_total} pending (highest severity: {highest_severity}). Ask max {max_questions} quality question in this turn. Start with item {item_id} ({item_severity}) and ask for an explicit decision: approve, decline, or snooze. Summary: {item_summary}. Record the decision via POST /v1/quality/consistency/review/decision with decision + item_ids; use snooze to activate cooldown.",
+        ),
+    })
+}
+
 fn select_action_required(
     primary: Option<AgentActionRequired>,
     observations_draft: &AgentObservationsDraftContext,
     quality_health: Option<&ProjectionResponse>,
+    consistency_inbox: Option<&ProjectionResponse>,
 ) -> Option<AgentActionRequired> {
-    primary.or_else(|| build_draft_review_action_required(observations_draft, quality_health))
+    primary
+        .or_else(|| build_consistency_action_required(consistency_inbox))
+        .or_else(|| build_draft_review_action_required(observations_draft, quality_health))
 }
 
 fn default_open_workflow_state() -> AgentBriefWorkflowState {
@@ -8289,6 +8365,7 @@ pub async fn get_agent_context(
         profile_action_required,
         &observations_draft,
         quality_health.as_ref(),
+        consistency_inbox.as_ref(),
     );
     let challenge_mode = resolve_challenge_mode(Some(&user_profile));
     let temporal_context =
@@ -9147,9 +9224,100 @@ mod tests {
             recent_drafts: Vec::new(),
         };
 
-        let selected = super::select_action_required(primary, &draft_context, None)
+        let selected = super::select_action_required(primary, &draft_context, None, None)
             .expect("primary action should stay active");
         assert_eq!(selected.action, "onboarding");
+    }
+
+    #[test]
+    fn consistency_action_required_contract_triggers_for_open_items_without_cooldown() {
+        let inbox = make_projection_response(
+            "consistency_inbox",
+            "overview",
+            Utc::now(),
+            json!({
+                "pending_items_total": 2,
+                "highest_severity": "warning",
+                "requires_human_decision": true,
+                "items": [{
+                    "item_id": "ci-qh-1",
+                    "severity": "warning",
+                    "summary": "Tempo field missing in structured set payload."
+                }],
+                "prompt_control": {
+                    "cooldown_active": false,
+                    "max_quality_questions_per_turn": 1
+                }
+            }),
+        );
+
+        let action = super::build_consistency_action_required(Some(&inbox))
+            .expect("consistency action should be present");
+        assert_eq!(action.action, "consistency_review");
+        assert!(action.detail.contains("Ask max 1 quality question"));
+        assert!(action.detail.contains("ci-qh-1"));
+        assert!(action.detail.contains("approve, decline, or snooze"));
+    }
+
+    #[test]
+    fn consistency_action_required_contract_respects_cooldown() {
+        let inbox = make_projection_response(
+            "consistency_inbox",
+            "overview",
+            Utc::now(),
+            json!({
+                "pending_items_total": 1,
+                "highest_severity": "critical",
+                "requires_human_decision": true,
+                "items": [{
+                    "item_id": "ci-qh-2",
+                    "severity": "critical",
+                    "summary": "Potential contradiction in saved values."
+                }],
+                "prompt_control": {
+                    "cooldown_active": true,
+                    "snooze_until": "2026-02-21T20:00:00Z"
+                }
+            }),
+        );
+
+        assert!(super::build_consistency_action_required(Some(&inbox)).is_none());
+    }
+
+    #[test]
+    fn select_action_required_prefers_consistency_over_draft_review() {
+        let draft_context = super::AgentObservationsDraftContext {
+            schema_version: super::OBSERVATION_DRAFT_CONTEXT_SCHEMA_VERSION.to_string(),
+            open_count: 4,
+            oldest_draft_age_hours: Some(24.0),
+            review_status: "degraded".to_string(),
+            review_loop_required: true,
+            next_action_hint: Some("review now".to_string()),
+            recent_drafts: Vec::new(),
+        };
+        let consistency_inbox = make_projection_response(
+            "consistency_inbox",
+            "overview",
+            Utc::now(),
+            json!({
+                "pending_items_total": 1,
+                "highest_severity": "warning",
+                "requires_human_decision": true,
+                "items": [{
+                    "item_id": "ci-qh-3",
+                    "severity": "warning",
+                    "summary": "Open quality health issue."
+                }],
+                "prompt_control": {
+                    "cooldown_active": false
+                }
+            }),
+        );
+
+        let selected =
+            super::select_action_required(None, &draft_context, None, Some(&consistency_inbox))
+                .expect("consistency action should be prioritized");
+        assert_eq!(selected.action, "consistency_review");
     }
 
     #[test]

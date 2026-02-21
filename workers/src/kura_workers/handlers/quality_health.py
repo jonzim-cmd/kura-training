@@ -22,6 +22,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from ..consistency_inbox import refresh_consistency_inbox_for_user
 from ..external_import_error_taxonomy import (
     classify_import_error_code,
     is_import_parse_quality_failure,
@@ -3264,6 +3265,12 @@ async def update_quality_health(
             """,
             (user_id, json.dumps(projection_data), last_event_id),
         )
+
+    await refresh_consistency_inbox_for_user(
+        conn,
+        str(user_id),
+        anchor_event_id=last_event_id,
+    )
 
     logger.info(
         "Updated quality_health for user=%s (status=%s score=%.3f issues=%d applied=%d rejected=%d)",

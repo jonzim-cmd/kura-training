@@ -1,10 +1,10 @@
 """Consistency Inbox — aggregates per-user data quality findings for chat surfacing.
 
 This module builds the ``consistency_inbox/overview`` projection from
-``quality.save_claim.checked`` signals plus prior
-``quality.consistency.review.decided`` decisions. The projection is read by
-the agent context endpoint so that the agent can proactively surface findings
-and request explicit user decisions before applying fixes.
+``quality.save_claim.checked`` signals, open ``quality_health`` issues, plus
+prior ``quality.consistency.review.decided`` decisions. The projection is read
+by the agent context endpoint so that the agent can proactively surface
+findings and request explicit user decisions before applying fixes.
 
 **Safety invariant**: No fix is executed without a prior ``approve`` decision
 recorded via ``quality.consistency.review.decided``.
@@ -40,6 +40,19 @@ _COOLDOWN_AFTER_DECLINE_DAYS = 7
 _DEFAULT_SNOOZE_HOURS = 72
 
 _QUALITY_EVENT_TYPES = ("quality.save_claim.checked",)
+_QUALITY_HEALTH_TO_INBOX_SEVERITY = {
+    "high": "critical",
+    "medium": "warning",
+    "low": "info",
+    "info": "info",
+}
+
+
+def _normalize_inbox_severity(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in _SEVERITY_ORDER:
+        return text
+    return _QUALITY_HEALTH_TO_INBOX_SEVERITY.get(text, "warning")
 
 
 def _stable_item_id(user_id: str, signal_type: str, detail: str) -> str:
@@ -84,6 +97,7 @@ def build_consistency_inbox(
     quality_events: list[dict[str, Any]],
     user_id: str,
     decisions: list[dict[str, Any]] | None = None,
+    quality_health_issues: list[dict[str, Any]] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Build the consistency_inbox/overview projection data.
@@ -108,6 +122,8 @@ def build_consistency_inbox(
         now = datetime.now(tz=timezone.utc)
     if decisions is None:
         decisions = []
+    if quality_health_issues is None:
+        quality_health_issues = []
 
     window_start = now - timedelta(days=_SCAN_WINDOW_DAYS)
 
@@ -176,14 +192,70 @@ def build_consistency_inbox(
                 "recommended_action": "Review and confirm the affected values.",
                 "evidence_ref": str(row.get("id", "")),
                 "first_seen": ts.isoformat(),
+                "source_type": "save_claim_mismatch",
             })
+
+    # Aggregate open quality_health issues so every unresolved health issue can
+    # be surfaced proactively to the agent.
+    for issue in quality_health_issues:
+        issue_id = str(issue.get("issue_id") or "").strip()
+        if not issue_id:
+            continue
+
+        item_id = _stable_item_id(user_id, "quality_health_issue", issue_id)
+        if item_id in seen_item_ids:
+            continue
+        seen_item_ids.add(item_id)
+
+        if item_id in cooldown_map and cooldown_map[item_id] > now:
+            continue
+
+        issue_severity = _normalize_inbox_severity(issue.get("severity"))
+        issue_detail = str(issue.get("detail") or "").strip()
+        summary = (
+            issue_detail
+            if issue_detail
+            else f"Open quality health issue detected ({issue_id})."
+        )
+        issue_type = str(issue.get("type") or "").strip()
+        proposal_state = str(issue.get("proposal_state") or "").strip().lower()
+        detected_at = (
+            _as_utc_datetime(issue.get("detected_at"))
+            or _as_utc_datetime(issue.get("first_seen"))
+            or now
+        )
+
+        if proposal_state == "simulated_safe":
+            recommended_action = (
+                "Offer deterministic repair approval or snooze if user wants to defer."
+            )
+        elif proposal_state == "simulated_risky":
+            recommended_action = (
+                "Ask for explicit user decision before any risky correction."
+            )
+        else:
+            recommended_action = (
+                "Ask for explicit decision (approve, decline, or snooze)."
+            )
+
+        items.append({
+            "item_id": item_id,
+            "severity": issue_severity,
+            "summary": summary,
+            "recommended_action": recommended_action,
+            "evidence_ref": f"quality_health:{issue_id}",
+            "first_seen": detected_at.isoformat(),
+            "source_type": "quality_health_issue",
+            "issue_id": issue_id,
+            "issue_type": issue_type or None,
+            "proposal_state": proposal_state or None,
+        })
 
     # Sort by severity (critical first).
     items.sort(key=lambda i: -_SEVERITY_ORDER.get(i.get("severity", "info"), 0))
 
-    requires_human_decision = any(
-        i["severity"] in ("critical", "warning") for i in items
-    )
+    # Escalate whenever unresolved items remain visible to the agent.
+    requires_human_decision = len(items) > 0
 
     # Determine prompt_control.
     last_prompted_at: str | None = None
@@ -220,6 +292,8 @@ def build_consistency_inbox(
             "last_prompted_at": last_prompted_at,
             "snooze_until": snooze_until_dt.isoformat() if snooze_until_dt else None,
             "cooldown_active": cooldown_active,
+            "max_quality_questions_per_turn": 1,
+            "default_snooze_hours": _DEFAULT_SNOOZE_HOURS,
         },
     }
 
@@ -288,6 +362,50 @@ async def _load_decision_events(
     return [dict(row) for row in rows]
 
 
+async def _load_quality_health_issues(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+) -> tuple[list[dict[str, Any]], str | None]:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT data, last_event_id
+            FROM projections
+            WHERE user_id = %s
+              AND projection_type = 'quality_health'
+              AND key = 'overview'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = await cur.fetchone()
+
+    if not row:
+        return [], None
+
+    data = row.get("data")
+    if not isinstance(data, dict):
+        return [], str(row.get("last_event_id") or "").strip() or None
+
+    issues_raw = data.get("issues")
+    if not isinstance(issues_raw, list):
+        return [], str(row.get("last_event_id") or "").strip() or None
+
+    issues: list[dict[str, Any]] = []
+    for issue in issues_raw:
+        if not isinstance(issue, dict):
+            continue
+        status = str(issue.get("status") or "open").strip().lower()
+        if status not in {"", "open"}:
+            continue
+        if not str(issue.get("issue_id") or "").strip():
+            continue
+        issues.append(issue)
+
+    return issues, str(row.get("last_event_id") or "").strip() or None
+
+
 def _non_retracted(
     rows: list[dict[str, Any]],
     retracted_ids: set[str],
@@ -313,8 +431,12 @@ async def refresh_consistency_inbox_for_user(
     retracted_ids = await get_retracted_event_ids(conn, user_id)
     quality_rows = _non_retracted(await _load_quality_events(conn, user_id), retracted_ids)
     decision_rows = _non_retracted(await _load_decision_events(conn, user_id), retracted_ids)
+    quality_health_issues, quality_health_last_event_id = await _load_quality_health_issues(
+        conn,
+        user_id,
+    )
 
-    if not quality_rows and not decision_rows:
+    if not quality_rows and not decision_rows and not quality_health_issues:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
@@ -336,6 +458,7 @@ async def refresh_consistency_inbox_for_user(
         quality_rows,
         user_id,
         decisions=decision_rows,
+        quality_health_issues=quality_health_issues,
         now=now,
     )
     latest_seen_id: Any = None
@@ -343,6 +466,8 @@ async def refresh_consistency_inbox_for_user(
         latest_seen_id = anchor_event_id
     elif quality_rows:
         latest_seen_id = quality_rows[0].get("id")
+    elif quality_health_last_event_id:
+        latest_seen_id = quality_health_last_event_id
     elif decision_rows:
         latest_seen_id = decision_rows[0].get("id")
 
@@ -382,9 +507,17 @@ async def refresh_all_consistency_inboxes(
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
-            SELECT DISTINCT user_id
-            FROM events
-            WHERE event_type = ANY(%s)
+            SELECT user_id
+            FROM (
+                SELECT DISTINCT user_id
+                FROM events
+                WHERE event_type = ANY(%s)
+                UNION
+                SELECT DISTINCT user_id
+                FROM projections
+                WHERE projection_type = 'quality_health'
+                  AND key = 'overview'
+            ) AS users
             ORDER BY user_id
             """,
             (
