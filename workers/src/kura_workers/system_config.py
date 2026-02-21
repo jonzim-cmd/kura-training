@@ -23,6 +23,13 @@ from .registry import get_dimension_metadata
 from .causal_estimand_registry_v2 import causal_estimand_registry_v2
 from .capability_estimation_v1 import capability_estimation_contract_v1
 from .capability_eval_gate_v1 import capability_eval_gate_contract_v1
+from .consistency_inbox_protocol import (
+    CONSISTENCY_REVIEW_ALLOWED_DECISIONS,
+    CONSISTENCY_REVIEW_DECLINE_COOLDOWN_DAYS,
+    CONSISTENCY_REVIEW_DECISION_EVENT_TYPE,
+    CONSISTENCY_REVIEW_DEFAULT_SNOOZE_HOURS,
+    CONSISTENCY_REVIEW_MAX_QUESTIONS_PER_TURN,
+)
 from .objective_contract_v1 import objective_contract_v1
 from .objective_advisory_v1 import objective_advisory_contract_v1
 from .objective_statistical_contract_v1 import objective_statistical_method_contract_v1
@@ -1989,9 +1996,9 @@ def _get_agent_behavior() -> dict[str, Any]:
                     "any fixes are executed. V1 is safe: no silent auto-fixing."
                 ),
                 "approval_required_before_fix": True,
-                "max_questions_per_turn": 1,
-                "allowed_user_decisions": ["approve", "decline", "snooze"],
-                "default_snooze_hours": 72,
+                "max_questions_per_turn": CONSISTENCY_REVIEW_MAX_QUESTIONS_PER_TURN,
+                "allowed_user_decisions": list(CONSISTENCY_REVIEW_ALLOWED_DECISIONS),
+                "default_snooze_hours": CONSISTENCY_REVIEW_DEFAULT_SNOOZE_HOURS,
                 "surfacing_rules": [
                     "On next normal chat contact, check consistency_inbox/overview.",
                     "If requires_human_decision=true, surface highest-severity item first.",
@@ -2017,16 +2024,18 @@ def _get_agent_behavior() -> dict[str, Any]:
                     ),
                 },
                 "cooldown_rules": {
-                    "after_decline": "Same item_id not re-prompted for 7 days.",
+                    "after_decline": (
+                        f"Same item_id not re-prompted for {CONSISTENCY_REVIEW_DECLINE_COOLDOWN_DAYS} days."
+                    ),
                     "after_snooze": "Re-prompt after snooze_until timestamp.",
                     "after_approve": "Item removed from inbox after fix applied.",
                     "nagging_protection": (
-                        "Max 1 consistency question per chat session. "
+                        f"Max {CONSISTENCY_REVIEW_MAX_QUESTIONS_PER_TURN} consistency question per chat session. "
                         "If user declines, do not re-ask in the same session."
                     ),
                 },
                 "decision_event": {
-                    "event_type": "quality.consistency.review.decided",
+                    "event_type": CONSISTENCY_REVIEW_DECISION_EVENT_TYPE,
                     "required_fields": [
                         "item_ids",
                         "decision",

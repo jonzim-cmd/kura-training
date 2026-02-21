@@ -2460,6 +2460,99 @@ formal domain event => POST /v1/agent/observation-drafts/{{observation_id}}/prom
     })
 }
 
+#[derive(Debug, Clone)]
+struct ConsistencyInboxItemView {
+    item_id: String,
+    severity: String,
+    summary: String,
+}
+
+#[derive(Debug, Clone)]
+struct ConsistencyInboxPromptControlView {
+    cooldown_active: bool,
+    max_quality_questions_per_turn: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ConsistencyInboxView {
+    pending_items_total: usize,
+    highest_severity: String,
+    requires_human_decision: bool,
+    items: Vec<ConsistencyInboxItemView>,
+    prompt_control: ConsistencyInboxPromptControlView,
+}
+
+fn normalize_consistency_item_severity(value: Option<&Value>) -> String {
+    match read_value_string(value)
+        .unwrap_or_else(|| "info".to_string())
+        .to_lowercase()
+        .as_str()
+    {
+        "critical" => "critical".to_string(),
+        "warning" => "warning".to_string(),
+        "info" => "info".to_string(),
+        _ => "info".to_string(),
+    }
+}
+
+fn normalize_consistency_highest_severity(value: Option<&Value>) -> String {
+    match read_value_string(value)
+        .unwrap_or_else(|| "none".to_string())
+        .to_lowercase()
+        .as_str()
+    {
+        "critical" => "critical".to_string(),
+        "warning" => "warning".to_string(),
+        "info" => "info".to_string(),
+        "none" => "none".to_string(),
+        _ => "none".to_string(),
+    }
+}
+
+fn parse_consistency_inbox_item_view(item: &Value) -> ConsistencyInboxItemView {
+    ConsistencyInboxItemView {
+        item_id: read_value_string(item.get("item_id")).unwrap_or_else(|| "unknown".to_string()),
+        severity: normalize_consistency_item_severity(item.get("severity")),
+        summary: read_value_string(item.get("summary"))
+            .unwrap_or_else(|| "Offener Konsistenzfund".to_string()),
+    }
+}
+
+fn parse_consistency_inbox_view(
+    consistency_inbox: Option<&ProjectionResponse>,
+) -> Option<ConsistencyInboxView> {
+    let inbox_data = &consistency_inbox?.projection.data;
+    let prompt_control = inbox_data.get("prompt_control");
+    let items = inbox_data
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .map(parse_consistency_inbox_item_view)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Some(ConsistencyInboxView {
+        pending_items_total: read_value_usize(inbox_data.get("pending_items_total")).unwrap_or(0),
+        highest_severity: normalize_consistency_highest_severity(inbox_data.get("highest_severity")),
+        requires_human_decision: read_value_bool(inbox_data.get("requires_human_decision"))
+            .unwrap_or(false),
+        items,
+        prompt_control: ConsistencyInboxPromptControlView {
+            cooldown_active: read_value_bool(
+                prompt_control.and_then(|value| value.get("cooldown_active")),
+            )
+            .unwrap_or(false),
+            max_quality_questions_per_turn: read_value_usize(
+                prompt_control.and_then(|value| value.get("max_quality_questions_per_turn")),
+            )
+            .unwrap_or(1)
+            .max(1),
+        },
+    })
+}
+
 fn consistency_item_severity_rank(severity: &str) -> i32 {
     match severity {
         "critical" => 3,
@@ -2472,55 +2565,30 @@ fn consistency_item_severity_rank(severity: &str) -> i32 {
 fn build_consistency_action_required(
     consistency_inbox: Option<&ProjectionResponse>,
 ) -> Option<AgentActionRequired> {
-    let inbox = consistency_inbox?;
-    let inbox_data = &inbox.projection.data;
-    if !read_value_bool(inbox_data.get("requires_human_decision")).unwrap_or(false) {
+    let inbox = parse_consistency_inbox_view(consistency_inbox)?;
+    if !inbox.requires_human_decision {
+        return None;
+    }
+    if inbox.prompt_control.cooldown_active {
+        return None;
+    }
+    if inbox.pending_items_total == 0 {
         return None;
     }
 
-    let prompt_control = inbox_data.get("prompt_control");
-    let cooldown_active = read_value_bool(
-        prompt_control.and_then(|value| value.get("cooldown_active")),
-    )
-    .unwrap_or(false);
-    if cooldown_active {
-        return None;
-    }
-
-    let pending_items_total = read_value_usize(inbox_data.get("pending_items_total")).unwrap_or(0);
-    if pending_items_total == 0 {
-        return None;
-    }
-
-    let highest_severity = read_value_string(inbox_data.get("highest_severity"))
-        .unwrap_or_else(|| "info".to_string());
-    let max_questions = read_value_usize(
-        prompt_control.and_then(|value| value.get("max_quality_questions_per_turn")),
-    )
-    .unwrap_or(1)
-    .max(1);
-
-    let top_item = inbox_data
-        .get("items")
-        .and_then(Value::as_array)
-        .and_then(|items| {
-            items.iter().max_by_key(|item| {
-                let severity = read_value_string(item.get("severity"))
-                    .unwrap_or_else(|| "info".to_string());
-                consistency_item_severity_rank(severity.as_str())
-            })
-        });
+    let top_item = inbox.items.iter().max_by_key(|item| {
+        consistency_item_severity_rank(item.severity.as_str())
+    });
 
     let (item_id, item_severity, item_summary) = match top_item {
         Some(item) => (
-            read_value_string(item.get("item_id")).unwrap_or_else(|| "unknown".to_string()),
-            read_value_string(item.get("severity")).unwrap_or_else(|| "info".to_string()),
-            read_value_string(item.get("summary"))
-                .unwrap_or_else(|| "Open consistency issue.".to_string()),
+            item.item_id.clone(),
+            item.severity.clone(),
+            item.summary.clone(),
         ),
         None => (
             "unknown".to_string(),
-            highest_severity.clone(),
+            inbox.highest_severity.clone(),
             "Open consistency issue.".to_string(),
         ),
     };
@@ -2528,7 +2596,10 @@ fn build_consistency_action_required(
     Some(AgentActionRequired {
         action: "consistency_review".to_string(),
         detail: format!(
-            "Open quality issues need proactive handling: {pending_items_total} pending (highest severity: {highest_severity}). Ask max {max_questions} quality question in this turn. Start with item {item_id} ({item_severity}) and ask for an explicit decision: approve, decline, or snooze. Summary: {item_summary}. Record the decision via POST /v1/quality/consistency/review/decision with decision + item_ids; use snooze to activate cooldown.",
+            "Open quality issues need proactive handling: {} pending (highest severity: {}). Ask max {} quality question in this turn. Start with item {item_id} ({item_severity}) and ask for an explicit decision: approve, decline, or snooze. Summary: {item_summary}. Record the decision by writing event type quality.consistency.review.decided with decision + item_ids + decision_source (optional snooze_until) so cooldown can apply.",
+            inbox.pending_items_total,
+            inbox.highest_severity,
+            inbox.prompt_control.max_quality_questions_per_turn,
         ),
     })
 }
@@ -4725,16 +4796,8 @@ fn build_decision_brief(
         }
     }
 
-    if let Some(inbox) = consistency_inbox {
-        let inbox_data = &inbox.projection.data;
-        let pending_items_total =
-            read_value_usize(inbox_data.get("pending_items_total")).unwrap_or(0);
-        let requires_human_decision =
-            read_value_bool(inbox_data.get("requires_human_decision")).unwrap_or(false);
-        let highest_severity = read_value_string(inbox_data.get("highest_severity"))
-            .unwrap_or_else(|| "none".to_string());
-
-        if pending_items_total == 0 {
+    if let Some(inbox) = parse_consistency_inbox_view(consistency_inbox) {
+        if inbox.pending_items_total == 0 {
             push_decision_brief_entry(
                 &mut likely_true,
                 "Keine offenen Konsistenzfunde mit Entscheidungsbedarf.",
@@ -4744,39 +4807,32 @@ fn build_decision_brief(
                 &mut unclear,
                 format!(
                     "Es gibt {} offene Konsistenzfunde (highest_severity={}).",
-                    pending_items_total, highest_severity
+                    inbox.pending_items_total, inbox.highest_severity
                 ),
             );
         }
 
         let mut highlighted_items = 0usize;
-        for item in inbox_data
-            .get("items")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
+        for item in &inbox.items {
             if highlighted_items >= DECISION_BRIEF_MAX_ITEMS_PER_BLOCK {
                 break;
             }
-            let severity =
-                read_value_string(item.get("severity")).unwrap_or_else(|| "info".to_string());
-            let summary = read_value_string(item.get("summary"))
-                .unwrap_or_else(|| "Offener Konsistenzfund".to_string());
             push_decision_brief_entry(
                 &mut recent_person_failures,
-                format!("{}: {}", severity.to_uppercase(), summary),
+                format!("{}: {}", item.severity.to_uppercase(), item.summary),
             );
-            if requires_human_decision && matches!(severity.as_str(), "critical" | "warning") {
+            if inbox.requires_human_decision
+                && matches!(item.severity.as_str(), "critical" | "warning")
+            {
                 push_decision_brief_entry(
                     &mut high_impact_decisions,
-                    format!("{}: {}", severity.to_uppercase(), summary),
+                    format!("{}: {}", item.severity.to_uppercase(), item.summary),
                 );
             }
             highlighted_items += 1;
         }
 
-        if requires_human_decision && high_impact_decisions.is_empty() {
+        if inbox.requires_human_decision && high_impact_decisions.is_empty() {
             push_decision_brief_entry(
                 &mut high_impact_decisions,
                 "Explizite Entscheidung zu offenen Konsistenzfunden erforderlich (approve|decline|snooze).",

@@ -21,6 +21,12 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from .consistency_inbox_protocol import (
+    CONSISTENCY_REVIEW_DECISION_EVENT_TYPE,
+    CONSISTENCY_REVIEW_DECLINE_COOLDOWN_DAYS,
+    CONSISTENCY_REVIEW_DEFAULT_SNOOZE_HOURS,
+    CONSISTENCY_REVIEW_MAX_QUESTIONS_PER_TURN,
+)
 from .utils import get_retracted_event_ids
 
 logger = logging.getLogger(__name__)
@@ -36,8 +42,8 @@ _SCAN_WINDOW_DAYS = 30
 _SEVERITY_ORDER = {"critical": 3, "warning": 2, "info": 1, "none": 0}
 
 # Cooldown durations (applied server-side via prompt_control).
-_COOLDOWN_AFTER_DECLINE_DAYS = 7
-_DEFAULT_SNOOZE_HOURS = 72
+_COOLDOWN_AFTER_DECLINE_DAYS = CONSISTENCY_REVIEW_DECLINE_COOLDOWN_DAYS
+_DEFAULT_SNOOZE_HOURS = CONSISTENCY_REVIEW_DEFAULT_SNOOZE_HOURS
 
 _QUALITY_EVENT_TYPES = ("quality.save_claim.checked",)
 _QUALITY_HEALTH_TO_INBOX_SEVERITY = {
@@ -93,6 +99,184 @@ def _as_utc_datetime(value: Any) -> datetime | None:
     return None
 
 
+def _build_cooldown_map(
+    decisions: list[dict[str, Any]],
+) -> dict[str, datetime]:
+    cooldown_map: dict[str, datetime] = {}
+    for dec_event in decisions:
+        data = dec_event.get("data") or {}
+        decision = data.get("decision", "")
+        item_ids = data.get("item_ids") or []
+        ts = _as_utc_datetime(dec_event.get("timestamp"))
+        if ts is None:
+            continue
+        for item_id in item_ids:
+            item_id_text = str(item_id).strip()
+            if not item_id_text:
+                continue
+            if decision == "decline":
+                cooldown_map[item_id_text] = ts + timedelta(days=_COOLDOWN_AFTER_DECLINE_DAYS)
+            elif decision == "snooze":
+                snooze_str = data.get("snooze_until")
+                if snooze_str:
+                    parsed_snooze = _as_utc_datetime(snooze_str)
+                    if parsed_snooze is None:
+                        parsed_snooze = ts + timedelta(hours=_DEFAULT_SNOOZE_HOURS)
+                    cooldown_map[item_id_text] = parsed_snooze
+                else:
+                    cooldown_map[item_id_text] = ts + timedelta(hours=_DEFAULT_SNOOZE_HOURS)
+            elif decision == "approve":
+                cooldown_map.pop(item_id_text, None)
+    return cooldown_map
+
+
+def _collect_save_claim_mismatch_items(
+    quality_events: list[dict[str, Any]],
+    *,
+    user_id: str,
+    window_start: datetime,
+    now: datetime,
+    cooldown_map: dict[str, datetime],
+    seen_item_ids: set[str],
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for row in quality_events:
+        ts = _as_utc_datetime(row.get("timestamp"))
+        if ts is None or ts < window_start:
+            continue
+        data = row.get("data") or {}
+        event_type = row.get("event_type", "")
+        if event_type != "quality.save_claim.checked":
+            continue
+
+        severity = data.get("mismatch_severity", "none")
+        if severity in ("none",):
+            continue
+        weight = data.get("mismatch_weight", 0.0)
+        if weight <= 0:
+            continue
+        reason_codes = data.get("mismatch_reason_codes") or []
+        detail = "|".join(sorted(reason_codes)) if reason_codes else severity
+        item_id = _stable_item_id(user_id, "save_claim_mismatch", detail)
+        if item_id in seen_item_ids:
+            continue
+        seen_item_ids.add(item_id)
+
+        if item_id in cooldown_map and cooldown_map[item_id] > now:
+            continue
+
+        summary = _build_mismatch_summary(severity, reason_codes)
+        items.append({
+            "item_id": item_id,
+            "severity": severity,
+            "summary": summary,
+            "recommended_action": "Review and confirm the affected values.",
+            "evidence_ref": str(row.get("id", "")),
+            "first_seen": ts.isoformat(),
+            "source_type": "save_claim_mismatch",
+        })
+
+    return items
+
+
+def _quality_health_recommended_action(proposal_state: str) -> str:
+    if proposal_state == "simulated_safe":
+        return "Offer deterministic repair approval or snooze if user wants to defer."
+    if proposal_state == "simulated_risky":
+        return "Ask for explicit user decision before any risky correction."
+    return "Ask for explicit decision (approve, decline, or snooze)."
+
+
+def _collect_quality_health_items(
+    quality_health_issues: list[dict[str, Any]],
+    *,
+    user_id: str,
+    now: datetime,
+    cooldown_map: dict[str, datetime],
+    seen_item_ids: set[str],
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for issue in quality_health_issues:
+        issue_id = str(issue.get("issue_id") or "").strip()
+        if not issue_id:
+            continue
+
+        item_id = _stable_item_id(user_id, "quality_health_issue", issue_id)
+        if item_id in seen_item_ids:
+            continue
+        seen_item_ids.add(item_id)
+
+        if item_id in cooldown_map and cooldown_map[item_id] > now:
+            continue
+
+        issue_severity = _normalize_inbox_severity(issue.get("severity"))
+        issue_detail = str(issue.get("detail") or "").strip()
+        summary = (
+            issue_detail
+            if issue_detail
+            else f"Open quality health issue detected ({issue_id})."
+        )
+        issue_type = str(issue.get("type") or "").strip()
+        proposal_state = str(issue.get("proposal_state") or "").strip().lower()
+        detected_at = (
+            _as_utc_datetime(issue.get("detected_at"))
+            or _as_utc_datetime(issue.get("first_seen"))
+            or now
+        )
+
+        items.append({
+            "item_id": item_id,
+            "severity": issue_severity,
+            "summary": summary,
+            "recommended_action": _quality_health_recommended_action(proposal_state),
+            "evidence_ref": f"quality_health:{issue_id}",
+            "first_seen": detected_at.isoformat(),
+            "source_type": "quality_health_issue",
+            "issue_id": issue_id,
+            "issue_type": issue_type or None,
+            "proposal_state": proposal_state or None,
+        })
+    return items
+
+
+def _build_prompt_control(
+    decisions: list[dict[str, Any]],
+    *,
+    now: datetime,
+    cooldown_map: dict[str, datetime],
+) -> dict[str, Any]:
+    last_prompted_at: str | None = None
+    cooldown_active = any(until > now for until in cooldown_map.values())
+    snooze_until_dt: datetime | None = None
+    sorted_decisions = sorted(
+        decisions,
+        key=lambda event: _as_utc_datetime(event.get("timestamp"))
+        or datetime.min.replace(tzinfo=timezone.utc),
+    )
+    for dec_event in sorted_decisions:
+        dec_ts = _as_utc_datetime(dec_event.get("timestamp"))
+        if dec_ts is not None:
+            last_prompted_at = dec_ts.isoformat()
+        dec_data = dec_event.get("data") or {}
+        if dec_data.get("decision") == "snooze":
+            snooze_dt = _as_utc_datetime(dec_data.get("snooze_until"))
+            if snooze_dt is None and dec_ts is not None:
+                snooze_dt = dec_ts + timedelta(hours=_DEFAULT_SNOOZE_HOURS)
+            if snooze_dt is not None and (snooze_until_dt is None or snooze_dt > snooze_until_dt):
+                snooze_until_dt = snooze_dt
+
+    if snooze_until_dt is not None and snooze_until_dt > now:
+        cooldown_active = True
+
+    return {
+        "last_prompted_at": last_prompted_at,
+        "snooze_until": snooze_until_dt.isoformat() if snooze_until_dt else None,
+        "cooldown_active": cooldown_active,
+        "max_quality_questions_per_turn": CONSISTENCY_REVIEW_MAX_QUESTIONS_PER_TURN,
+        "default_snooze_hours": _DEFAULT_SNOOZE_HOURS,
+    }
+
+
 def build_consistency_inbox(
     quality_events: list[dict[str, Any]],
     user_id: str,
@@ -126,130 +310,26 @@ def build_consistency_inbox(
         quality_health_issues = []
 
     window_start = now - timedelta(days=_SCAN_WINDOW_DAYS)
+    cooldown_map = _build_cooldown_map(decisions)
 
-    # Build a set of declined/snoozed item_ids with their cooldown-until timestamps.
-    cooldown_map: dict[str, datetime] = {}
-    for dec_event in decisions:
-        data = dec_event.get("data") or {}
-        decision = data.get("decision", "")
-        item_ids = data.get("item_ids") or []
-        ts = _as_utc_datetime(dec_event.get("timestamp"))
-        if ts is None:
-            continue
-        for item_id in item_ids:
-            item_id_text = str(item_id).strip()
-            if not item_id_text:
-                continue
-            if decision == "decline":
-                cooldown_map[item_id_text] = ts + timedelta(days=_COOLDOWN_AFTER_DECLINE_DAYS)
-            elif decision == "snooze":
-                snooze_str = data.get("snooze_until")
-                if snooze_str:
-                    parsed_snooze = _as_utc_datetime(snooze_str)
-                    if parsed_snooze is None:
-                        parsed_snooze = ts + timedelta(hours=_DEFAULT_SNOOZE_HOURS)
-                    cooldown_map[item_id_text] = parsed_snooze
-                else:
-                    cooldown_map[item_id_text] = ts + timedelta(hours=_DEFAULT_SNOOZE_HOURS)
-            elif decision == "approve":
-                # Approved items are removed from cooldown (fix was applied).
-                cooldown_map.pop(item_id_text, None)
-
-    # Aggregate findings from save_claim mismatches.
-    items: list[dict[str, Any]] = []
     seen_item_ids: set[str] = set()
-
-    for row in quality_events:
-        ts = _as_utc_datetime(row.get("timestamp"))
-        if ts is None or ts < window_start:
-            continue
-        data = row.get("data") or {}
-        event_type = row.get("event_type", "")
-
-        if event_type == "quality.save_claim.checked":
-            severity = data.get("mismatch_severity", "none")
-            if severity in ("none",):
-                continue
-            weight = data.get("mismatch_weight", 0.0)
-            if weight <= 0:
-                continue
-            reason_codes = data.get("mismatch_reason_codes") or []
-            detail = "|".join(sorted(reason_codes)) if reason_codes else severity
-            item_id = _stable_item_id(user_id, "save_claim_mismatch", detail)
-            if item_id in seen_item_ids:
-                continue
-            seen_item_ids.add(item_id)
-
-            # Check cooldown.
-            if item_id in cooldown_map and cooldown_map[item_id] > now:
-                continue
-
-            summary = _build_mismatch_summary(severity, reason_codes)
-            items.append({
-                "item_id": item_id,
-                "severity": severity,
-                "summary": summary,
-                "recommended_action": "Review and confirm the affected values.",
-                "evidence_ref": str(row.get("id", "")),
-                "first_seen": ts.isoformat(),
-                "source_type": "save_claim_mismatch",
-            })
-
-    # Aggregate open quality_health issues so every unresolved health issue can
-    # be surfaced proactively to the agent.
-    for issue in quality_health_issues:
-        issue_id = str(issue.get("issue_id") or "").strip()
-        if not issue_id:
-            continue
-
-        item_id = _stable_item_id(user_id, "quality_health_issue", issue_id)
-        if item_id in seen_item_ids:
-            continue
-        seen_item_ids.add(item_id)
-
-        if item_id in cooldown_map and cooldown_map[item_id] > now:
-            continue
-
-        issue_severity = _normalize_inbox_severity(issue.get("severity"))
-        issue_detail = str(issue.get("detail") or "").strip()
-        summary = (
-            issue_detail
-            if issue_detail
-            else f"Open quality health issue detected ({issue_id})."
+    items = _collect_save_claim_mismatch_items(
+        quality_events,
+        user_id=user_id,
+        window_start=window_start,
+        now=now,
+        cooldown_map=cooldown_map,
+        seen_item_ids=seen_item_ids,
+    )
+    items.extend(
+        _collect_quality_health_items(
+            quality_health_issues,
+            user_id=user_id,
+            now=now,
+            cooldown_map=cooldown_map,
+            seen_item_ids=seen_item_ids,
         )
-        issue_type = str(issue.get("type") or "").strip()
-        proposal_state = str(issue.get("proposal_state") or "").strip().lower()
-        detected_at = (
-            _as_utc_datetime(issue.get("detected_at"))
-            or _as_utc_datetime(issue.get("first_seen"))
-            or now
-        )
-
-        if proposal_state == "simulated_safe":
-            recommended_action = (
-                "Offer deterministic repair approval or snooze if user wants to defer."
-            )
-        elif proposal_state == "simulated_risky":
-            recommended_action = (
-                "Ask for explicit user decision before any risky correction."
-            )
-        else:
-            recommended_action = (
-                "Ask for explicit decision (approve, decline, or snooze)."
-            )
-
-        items.append({
-            "item_id": item_id,
-            "severity": issue_severity,
-            "summary": summary,
-            "recommended_action": recommended_action,
-            "evidence_ref": f"quality_health:{issue_id}",
-            "first_seen": detected_at.isoformat(),
-            "source_type": "quality_health_issue",
-            "issue_id": issue_id,
-            "issue_type": issue_type or None,
-            "proposal_state": proposal_state or None,
-        })
+    )
 
     # Sort by severity (critical first).
     items.sort(key=lambda i: -_SEVERITY_ORDER.get(i.get("severity", "info"), 0))
@@ -257,29 +337,11 @@ def build_consistency_inbox(
     # Escalate whenever unresolved items remain visible to the agent.
     requires_human_decision = len(items) > 0
 
-    # Determine prompt_control.
-    last_prompted_at: str | None = None
-    cooldown_active = any(until > now for until in cooldown_map.values())
-    snooze_until_dt: datetime | None = None
-    sorted_decisions = sorted(
+    prompt_control = _build_prompt_control(
         decisions,
-        key=lambda event: _as_utc_datetime(event.get("timestamp"))
-        or datetime.min.replace(tzinfo=timezone.utc),
+        now=now,
+        cooldown_map=cooldown_map,
     )
-    for dec_event in sorted_decisions:
-        dec_ts = _as_utc_datetime(dec_event.get("timestamp"))
-        if dec_ts is not None:
-            last_prompted_at = dec_ts.isoformat()
-        dec_data = dec_event.get("data") or {}
-        if dec_data.get("decision") == "snooze":
-            snooze_dt = _as_utc_datetime(dec_data.get("snooze_until"))
-            if snooze_dt is None and dec_ts is not None:
-                snooze_dt = dec_ts + timedelta(hours=_DEFAULT_SNOOZE_HOURS)
-            if snooze_dt is not None and (snooze_until_dt is None or snooze_dt > snooze_until_dt):
-                snooze_until_dt = snooze_dt
-
-    if snooze_until_dt is not None and snooze_until_dt > now:
-        cooldown_active = True
 
     return {
         "schema_version": CONSISTENCY_INBOX_SCHEMA_VERSION,
@@ -288,13 +350,7 @@ def build_consistency_inbox(
         "highest_severity": _highest_severity(items),
         "requires_human_decision": requires_human_decision,
         "items": items,
-        "prompt_control": {
-            "last_prompted_at": last_prompted_at,
-            "snooze_until": snooze_until_dt.isoformat() if snooze_until_dt else None,
-            "cooldown_active": cooldown_active,
-            "max_quality_questions_per_turn": 1,
-            "default_snooze_hours": _DEFAULT_SNOOZE_HOURS,
-        },
+        "prompt_control": prompt_control,
     }
 
 
@@ -353,10 +409,10 @@ async def _load_decision_events(
             SELECT id, event_type, timestamp, data
             FROM events
             WHERE user_id = %s
-              AND event_type = 'quality.consistency.review.decided'
+              AND event_type = %s
             ORDER BY timestamp DESC, id DESC
             """,
-            (user_id,),
+            (user_id, CONSISTENCY_REVIEW_DECISION_EVENT_TYPE),
         )
         rows = await cur.fetchall()
     return [dict(row) for row in rows]
@@ -522,7 +578,7 @@ async def refresh_all_consistency_inboxes(
             """,
             (
                 list(_QUALITY_EVENT_TYPES)
-                + ["quality.consistency.review.decided"],
+                + [CONSISTENCY_REVIEW_DECISION_EVENT_TYPE],
             ),
         )
         user_rows = await cur.fetchall()
