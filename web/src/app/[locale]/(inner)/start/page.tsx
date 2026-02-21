@@ -80,6 +80,7 @@ export default function StartPage() {
             <span className={styles.stepNum}>1</span>
             <h3 className={styles.stepTitle}>{t('how.step1Title')}</h3>
             <p className={styles.stepDesc}>{t('how.step1Desc')}</p>
+            <Link href="/request-access" className={styles.stepBtn}>{tn('requestAccess')}</Link>
           </div>
           <div className={styles.step}>
             <span className={styles.stepNum}>2</span>
@@ -90,7 +91,7 @@ export default function StartPage() {
               <span className={styles.agent}>ChatGPT</span>
               <span className={styles.agent}>OpenClaw</span>
             </div>
-            <Link href="/setup" className={styles.stepLink}>{t('how.step2SetupLink')}</Link>
+            <Link href="/setup" className={styles.stepBtn}>{t('how.step2SetupLink')}</Link>
           </div>
           <div className={styles.step}>
             <span className={styles.stepNum}>3</span>
@@ -102,11 +103,6 @@ export default function StartPage() {
         </div>
       </section>
 
-      {/* CTA */}
-      <section className={styles.cta}>
-        <Link href="/request-access" className="kura-btn kura-btn--primary">{tn('requestAccess')}</Link>
-        <p className={styles.tagline}>{t('tagline')}</p>
-      </section>
     </div>
   );
 }
