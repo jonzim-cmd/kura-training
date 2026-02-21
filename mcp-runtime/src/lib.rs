@@ -44,6 +44,8 @@ const FAIL_CLOSED_STARTUP_ENV: &str = "KURA_MCP_FAIL_CLOSED_STARTUP";
 const DETERMINISM_ROLLOUT_MODE_ENV: &str = "KURA_MCP_DETERMINISM_ROLLOUT_MODE";
 const DETERMINISM_CANARY_PERCENT_ENV: &str = "KURA_MCP_DETERMINISM_CANARY_PERCENT";
 const DETERMINISM_CANARY_ALLOWLIST_ENV: &str = "KURA_MCP_DETERMINISM_CANARY_ALLOWLIST";
+const DETERMINISM_CANARY_USER_ALLOWLIST_ENV: &str = "KURA_MCP_DETERMINISM_CANARY_USER_ALLOWLIST";
+const DETERMINISM_CANARY_EMAIL_ALLOWLIST_ENV: &str = "KURA_MCP_DETERMINISM_CANARY_EMAIL_ALLOWLIST";
 const DETERMINISM_ABORT_ON_BREACH_ENV: &str = "KURA_MCP_DETERMINISM_ABORT_ON_BREACH";
 const DETERMINISM_ABORT_OVERFLOW_RATE_MAX_ENV: &str = "KURA_MCP_ROLLOUT_ABORT_OVERFLOW_RATE_MAX";
 const DETERMINISM_ABORT_CRITICAL_MISSING_RATE_MAX_ENV: &str =
@@ -84,6 +86,8 @@ static RETRIEVAL_FSM_POLICY: LazyLock<RetrievalFsmPolicy> =
     LazyLock::new(load_retrieval_fsm_policy_from_env);
 static DETERMINISM_ROLLOUT_POLICY: LazyLock<DeterminismRolloutPolicy> =
     LazyLock::new(load_determinism_rollout_policy_from_env);
+static SESSION_IDENTITY_CACHE: LazyLock<Mutex<HashMap<String, SessionIdentityCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 static IMPORT_DEVICE_TOOLS_ENABLED: LazyLock<bool> =
     LazyLock::new(load_import_device_tools_enabled_from_env);
 static FAIL_CLOSED_STARTUP: LazyLock<bool> = LazyLock::new(load_fail_closed_startup_from_env);
@@ -128,11 +132,20 @@ struct DeterminismRolloutPolicy {
     mode: DeterminismRolloutMode,
     canary_percent: u8,
     canary_allowlist: HashSet<String>,
+    canary_user_allowlist: HashSet<String>,
+    canary_email_allowlist: HashSet<String>,
     abort_on_breach: bool,
     min_context_calls: u64,
     min_total_tool_calls: u64,
     thresholds: RolloutAbortThresholds,
     configured_via_env: bool,
+}
+
+#[derive(Clone, Debug)]
+struct SessionIdentityCacheEntry {
+    last_seen: Instant,
+    user_id: Option<String>,
+    email: Option<String>,
 }
 
 impl RetrievalFsmPolicy {
@@ -170,6 +183,8 @@ struct RetrievalControlState {
     context_overflow_count: u64,
     context_critical_missing_count: u64,
     speculative_answer_signal_count: u64,
+    session_identity_user_id: Option<String>,
+    session_identity_email: Option<String>,
     projection_page_calls: u64,
     abort_reasons: BTreeMap<String, u64>,
 }
@@ -193,6 +208,8 @@ impl RetrievalControlState {
             context_overflow_count: 0,
             context_critical_missing_count: 0,
             speculative_answer_signal_count: 0,
+            session_identity_user_id: None,
+            session_identity_email: None,
             projection_page_calls: 0,
             abort_reasons: BTreeMap::new(),
         }
@@ -281,6 +298,57 @@ fn parse_env_f64_with_bounds(raw: Option<String>, min: f64, max: f64, default: f
     }
 }
 
+fn parse_allowlist_entries(raw: Option<String>) -> (HashSet<String>, bool) {
+    match raw {
+        Some(value) => {
+            let configured = !value.trim().is_empty();
+            let entries = value
+                .split([',', ';'])
+                .flat_map(|chunk| chunk.split_whitespace())
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(ToString::to_string)
+                .collect::<HashSet<_>>();
+            (entries, configured)
+        }
+        None => (HashSet::new(), false),
+    }
+}
+
+fn normalize_user_id_for_allowlist(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_ascii_lowercase())
+}
+
+fn normalize_email_for_allowlist(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_ascii_lowercase())
+}
+
+fn parse_user_allowlist(raw: Option<String>) -> (HashSet<String>, bool) {
+    let (entries, configured) = parse_allowlist_entries(raw);
+    let normalized = entries
+        .into_iter()
+        .filter_map(|entry| normalize_user_id_for_allowlist(&entry))
+        .collect::<HashSet<_>>();
+    (normalized, configured)
+}
+
+fn parse_email_allowlist(raw: Option<String>) -> (HashSet<String>, bool) {
+    let (entries, configured) = parse_allowlist_entries(raw);
+    let normalized = entries
+        .into_iter()
+        .filter_map(|entry| normalize_email_for_allowlist(&entry))
+        .collect::<HashSet<_>>();
+    (normalized, configured)
+}
+
 fn parse_determinism_rollout_mode(raw: Option<String>) -> (DeterminismRolloutMode, bool) {
     match raw {
         Some(value) => {
@@ -302,26 +370,15 @@ fn parse_determinism_rollout_mode(raw: Option<String>) -> (DeterminismRolloutMod
 }
 
 fn parse_determinism_canary_allowlist(raw: Option<String>) -> (HashSet<String>, bool) {
-    match raw {
-        Some(value) => {
-            let configured = !value.trim().is_empty();
-            let items = value
-                .split([',', ';'])
-                .flat_map(|chunk| chunk.split_whitespace())
-                .map(str::trim)
-                .filter(|entry| !entry.is_empty())
-                .map(ToString::to_string)
-                .collect::<HashSet<_>>();
-            (items, configured)
-        }
-        None => (HashSet::new(), false),
-    }
+    parse_allowlist_entries(raw)
 }
 
 fn parse_determinism_rollout_policy_from_raw(
     mode_raw: Option<String>,
     canary_percent_raw: Option<String>,
     canary_allowlist_raw: Option<String>,
+    canary_user_allowlist_raw: Option<String>,
+    canary_email_allowlist_raw: Option<String>,
     abort_on_breach_raw: Option<String>,
     overflow_rate_max_raw: Option<String>,
     critical_missing_rate_max_raw: Option<String>,
@@ -341,6 +398,10 @@ fn parse_determinism_rollout_policy_from_raw(
         u8::try_from(canary_percent_raw).unwrap_or(DETERMINISM_DEFAULT_CANARY_PERCENT);
     let (canary_allowlist, canary_allowlist_set) =
         parse_determinism_canary_allowlist(canary_allowlist_raw);
+    let (canary_user_allowlist, canary_user_allowlist_set) =
+        parse_user_allowlist(canary_user_allowlist_raw);
+    let (canary_email_allowlist, canary_email_allowlist_set) =
+        parse_email_allowlist(canary_email_allowlist_raw);
     let abort_on_breach = parse_env_bool_flag(abort_on_breach_raw.clone(), false);
     let abort_on_breach_set = abort_on_breach_raw.is_some();
     let (overflow_rate_max, overflow_rate_set) = parse_env_f64_with_bounds(
@@ -384,6 +445,8 @@ fn parse_determinism_rollout_policy_from_raw(
         mode,
         canary_percent,
         canary_allowlist,
+        canary_user_allowlist,
+        canary_email_allowlist,
         abort_on_breach,
         min_context_calls,
         min_total_tool_calls,
@@ -396,6 +459,8 @@ fn parse_determinism_rollout_policy_from_raw(
         configured_via_env: mode_set
             || canary_percent_set
             || canary_allowlist_set
+            || canary_user_allowlist_set
+            || canary_email_allowlist_set
             || abort_on_breach_set
             || overflow_rate_set
             || critical_missing_set
@@ -411,6 +476,8 @@ fn load_determinism_rollout_policy_from_env() -> DeterminismRolloutPolicy {
         std::env::var(DETERMINISM_ROLLOUT_MODE_ENV).ok(),
         std::env::var(DETERMINISM_CANARY_PERCENT_ENV).ok(),
         std::env::var(DETERMINISM_CANARY_ALLOWLIST_ENV).ok(),
+        std::env::var(DETERMINISM_CANARY_USER_ALLOWLIST_ENV).ok(),
+        std::env::var(DETERMINISM_CANARY_EMAIL_ALLOWLIST_ENV).ok(),
         std::env::var(DETERMINISM_ABORT_ON_BREACH_ENV).ok(),
         std::env::var(DETERMINISM_ABORT_OVERFLOW_RATE_MAX_ENV).ok(),
         std::env::var(DETERMINISM_ABORT_CRITICAL_MISSING_RATE_MAX_ENV).ok(),
@@ -550,6 +617,50 @@ fn record_speculative_answer_signal_for_session(session_id: &str) {
     });
 }
 
+fn record_session_identity_for_rollout(
+    session_id: &str,
+    user_id: Option<String>,
+    email: Option<String>,
+) {
+    with_retrieval_state_mut(session_id, |state, _| {
+        state.session_identity_user_id = user_id;
+        state.session_identity_email = email;
+    });
+}
+
+fn get_cached_session_identity(session_id: &str) -> Option<(Option<String>, Option<String>)> {
+    let mut cache = SESSION_IDENTITY_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let cutoff = Instant::now() - Duration::from_secs(CONTEXT_SESSION_TTL_SECS);
+    cache.retain(|_, entry| entry.last_seen > cutoff);
+    cache.get(session_id).map(|entry| {
+        (
+            entry.user_id.clone(),
+            entry.email.clone().map(|value| value.to_ascii_lowercase()),
+        )
+    })
+}
+
+fn cache_session_identity(session_id: &str, user_id: Option<String>, email: Option<String>) {
+    let mut cache = SESSION_IDENTITY_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    cache.insert(
+        session_id.to_string(),
+        SessionIdentityCacheEntry {
+            last_seen: Instant::now(),
+            user_id,
+            email: email.map(|value| value.to_ascii_lowercase()),
+        },
+    );
+}
+
+fn rollout_policy_requires_identity(policy: &DeterminismRolloutPolicy) -> bool {
+    policy.mode == DeterminismRolloutMode::Canary
+        && (!policy.canary_user_allowlist.is_empty() || !policy.canary_email_allowlist.is_empty())
+}
+
 fn rollout_bucket_for_session(session_id: &str) -> u8 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -557,17 +668,42 @@ fn rollout_bucket_for_session(session_id: &str) -> u8 {
     (hasher.finish() % 100) as u8
 }
 
-fn session_in_rollout_canary(policy: &DeterminismRolloutPolicy, session_id: &str) -> bool {
+fn session_in_rollout_canary(
+    policy: &DeterminismRolloutPolicy,
+    session_id: &str,
+    state: &RetrievalControlState,
+) -> (bool, &'static str) {
     if policy.canary_allowlist.contains(session_id) {
-        return true;
+        return (true, "session_allowlist");
     }
-    rollout_bucket_for_session(session_id) < policy.canary_percent
+    if state
+        .session_identity_user_id
+        .as_deref()
+        .is_some_and(|value| policy.canary_user_allowlist.contains(value))
+    {
+        return (true, "user_allowlist");
+    }
+    if state
+        .session_identity_email
+        .as_deref()
+        .is_some_and(|value| policy.canary_email_allowlist.contains(value))
+    {
+        return (true, "email_allowlist");
+    }
+    if rollout_bucket_for_session(session_id) < policy.canary_percent {
+        return (true, "bucket");
+    }
+    (false, "excluded")
 }
 
-fn rollout_enforced_for_session(policy: &DeterminismRolloutPolicy, session_id: &str) -> bool {
+fn rollout_enforced_for_session(
+    policy: &DeterminismRolloutPolicy,
+    session_id: &str,
+    state: &RetrievalControlState,
+) -> bool {
     match policy.mode {
         DeterminismRolloutMode::Off | DeterminismRolloutMode::Shadow => false,
-        DeterminismRolloutMode::Canary => session_in_rollout_canary(policy, session_id),
+        DeterminismRolloutMode::Canary => session_in_rollout_canary(policy, session_id, state).0,
         DeterminismRolloutMode::Full => true,
     }
 }
@@ -582,8 +718,9 @@ fn build_rollout_guard_payload_for_policy(
     state: &RetrievalControlState,
 ) -> Value {
     let session_bucket = rollout_bucket_for_session(session_id);
-    let session_in_canary = session_in_rollout_canary(policy, session_id);
-    let enforced_for_session = rollout_enforced_for_session(policy, session_id);
+    let (session_in_canary, canary_match_source) =
+        session_in_rollout_canary(policy, session_id, state);
+    let enforced_for_session = rollout_enforced_for_session(policy, session_id, state);
     let blocked_total = blocked_total_for_state(state);
     let overflow_rate = saturating_ratio(state.context_overflow_count, state.context_calls);
     let critical_missing_rate =
@@ -649,7 +786,17 @@ fn build_rollout_guard_payload_for_policy(
         "configured_via_env": policy.configured_via_env,
         "session_bucket": session_bucket,
         "session_in_canary": session_in_canary,
+        "canary_match_source": canary_match_source,
         "enforced_for_session": enforced_for_session,
+        "identity": {
+            "resolved_user_id": state.session_identity_user_id.is_some(),
+            "resolved_email": state.session_identity_email.is_some(),
+            "allowlist_sizes": {
+                "session": policy.canary_allowlist.len(),
+                "user": policy.canary_user_allowlist.len(),
+                "email": policy.canary_email_allowlist.len()
+            }
+        },
         "abort_on_breach": policy.abort_on_breach,
         "abort_required": abort_required,
         "sample_requirements": {
@@ -1685,6 +1832,10 @@ impl McpServer {
             );
             attach_runtime_observability(&self.session_id, &mut envelope, retrieval_policy);
             return Ok(build_tool_call_response(name, envelope, true, None));
+        }
+
+        if rollout_policy_requires_identity(determinism_rollout_policy()) {
+            self.resolve_session_identity_for_rollout().await;
         }
 
         if let Some(rollout_guard) = maybe_rollout_abort_guard_block(&self.session_id, name) {
@@ -3856,6 +4007,24 @@ impl McpServer {
         }))
     }
 
+    async fn resolve_session_identity_for_rollout(&self) {
+        if let Some((user_id, email)) = get_cached_session_identity(&self.session_id) {
+            record_session_identity_for_rollout(&self.session_id, user_id, email);
+            return;
+        }
+
+        let (user_id, email) = match self
+            .send_api_request(Method::GET, "/v1/auth/me", &[], None, true, false)
+            .await
+        {
+            Ok(result) if result.status < 400 => extract_auth_me_identity(&result.body),
+            _ => (None, None),
+        };
+
+        cache_session_identity(&self.session_id, user_id.clone(), email.clone());
+        record_session_identity_for_rollout(&self.session_id, user_id, email);
+    }
+
     async fn send_api_request(
         &self,
         method: Method,
@@ -4717,6 +4886,18 @@ fn read_json_string(value: Option<&Value>) -> Option<String> {
         .map(str::trim)
         .filter(|raw| !raw.is_empty())
         .map(ToString::to_string)
+}
+
+fn extract_auth_me_identity(body: &Value) -> (Option<String>, Option<String>) {
+    let user_id = body
+        .get("user_id")
+        .and_then(Value::as_str)
+        .and_then(normalize_user_id_for_allowlist);
+    let email = body
+        .get("email")
+        .and_then(Value::as_str)
+        .and_then(normalize_email_for_allowlist);
+    (user_id, email)
 }
 
 fn normalize_readiness_state_compat(
@@ -8618,7 +8799,7 @@ mod tests {
     #[test]
     fn determinism_rollout_policy_parser_uses_defaults_when_unset() {
         let policy = parse_determinism_rollout_policy_from_raw(
-            None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None,
         );
         assert_eq!(policy.mode, DeterminismRolloutMode::Full);
         assert_eq!(policy.canary_percent, DETERMINISM_DEFAULT_CANARY_PERCENT);
@@ -8644,6 +8825,8 @@ mod tests {
             Some("canary".to_string()),
             Some("25".to_string()),
             Some("sid-a,sid-b".to_string()),
+            None,
+            None,
             Some("true".to_string()),
             Some("0.35".to_string()),
             Some("0.1".to_string()),
@@ -8667,6 +8850,31 @@ mod tests {
     }
 
     #[test]
+    fn determinism_rollout_policy_parser_normalizes_user_and_email_allowlists() {
+        let policy = parse_determinism_rollout_policy_from_raw(
+            Some("canary".to_string()),
+            Some("5".to_string()),
+            None,
+            Some(" 8B5F8CB8-58AF-4C79-8472-BC68D7CF4366 ".to_string()),
+            Some(" Alice@WithKura.com ; BOB@withkura.com ".to_string()),
+            Some("false".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            policy
+                .canary_user_allowlist
+                .contains("8b5f8cb8-58af-4c79-8472-bc68d7cf4366")
+        );
+        assert!(policy.canary_email_allowlist.contains("alice@withkura.com"));
+        assert!(policy.canary_email_allowlist.contains("bob@withkura.com"));
+    }
+
+    #[test]
     fn determinism_rollout_canary_bucket_is_stable() {
         let sid = "session-canary-stability";
         let first = rollout_bucket_for_session(sid);
@@ -8680,6 +8888,8 @@ mod tests {
         let policy = parse_determinism_rollout_policy_from_raw(
             Some("full".to_string()),
             Some("100".to_string()),
+            None,
+            None,
             None,
             Some("false".to_string()),
             Some("0.3".to_string()),
@@ -8718,6 +8928,8 @@ mod tests {
             Some("canary".to_string()),
             Some("0".to_string()),
             Some("sid-canary".to_string()),
+            None,
+            None,
             Some("true".to_string()),
             Some("0.2".to_string()),
             Some("0.2".to_string()),
@@ -8767,5 +8979,39 @@ mod tests {
             non_canary.is_none(),
             "non-canary cohort must not be blocked when mode=canary"
         );
+    }
+
+    #[test]
+    fn rollout_guard_matches_user_or_email_allowlists_before_bucket() {
+        let policy = parse_determinism_rollout_policy_from_raw(
+            Some("canary".to_string()),
+            Some("0".to_string()),
+            None,
+            Some("f64fc3a3-1ed6-40ec-bf64-cde32ea26ea9".to_string()),
+            Some("antonia@example.com".to_string()),
+            Some("false".to_string()),
+            Some("0.9".to_string()),
+            Some("0.9".to_string()),
+            Some("0.9".to_string()),
+            Some("0.9".to_string()),
+            Some("1".to_string()),
+            Some("1".to_string()),
+        );
+
+        let mut state = RetrievalControlState::new(Instant::now());
+        state.total_tool_calls = 4;
+        state.context_calls = 2;
+        state.session_identity_user_id = Some("f64fc3a3-1ed6-40ec-bf64-cde32ea26ea9".to_string());
+        let by_user = build_rollout_guard_payload_for_policy(&policy, "sid-outside", &state);
+        assert_eq!(by_user["session_in_canary"], json!(true));
+        assert_eq!(by_user["canary_match_source"], "user_allowlist");
+
+        let mut state_email = RetrievalControlState::new(Instant::now());
+        state_email.total_tool_calls = 4;
+        state_email.context_calls = 2;
+        state_email.session_identity_email = Some("antonia@example.com".to_string());
+        let by_email = build_rollout_guard_payload_for_policy(&policy, "sid-outside", &state_email);
+        assert_eq!(by_email["session_in_canary"], json!(true));
+        assert_eq!(by_email["canary_match_source"], "email_allowlist");
     }
 }
