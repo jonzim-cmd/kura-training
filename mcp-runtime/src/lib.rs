@@ -39,6 +39,10 @@ const IMPORT_DEVICE_TOOLS_ENABLED_ENV: &str = "KURA_MCP_ENABLE_IMPORT_PROVIDER_T
 const STARTUP_REQUIRED_FIRST_TOOL: &str = "kura_agent_brief";
 const STARTUP_FALLBACK_FIRST_TOOL: &str = "kura_agent_context";
 const STARTUP_GATE_MODE: &str = "preferred_brief_with_context_fallback";
+const OVERFLOW_ACTION_REQUIRED_DETAIL_MAX_CHARS: usize = 320;
+const OVERFLOW_MUST_COVER_INTENTS_MAX_ITEMS: usize = 10;
+const OVERFLOW_COVERAGE_GAPS_MAX_ITEMS: usize = 10;
+const OVERFLOW_SECTION_PREVIEW_MAX_ITEMS: usize = 8;
 
 /// Tracks which sessions have loaded agent context. Shared across HTTP requests
 /// (where each request creates a new McpServer) and stdio (single long-lived server).
@@ -2225,6 +2229,16 @@ impl McpServer {
 
         let response_value = response.to_value();
         let metric_snapshot = derive_agent_context_metric_snapshot(response_value.get("body"));
+        let action_required = response_value
+            .get("body")
+            .and_then(extract_action_required_from_context_body);
+        let onboarding_required = action_required
+            .as_ref()
+            .and_then(|value| value.get("action"))
+            .and_then(Value::as_str)
+            .map(|value| value == "onboarding")
+            .unwrap_or(false);
+        let brief_loaded_before_call = is_brief_loaded(&self.session_id);
 
         Ok(json!({
             "request": {
@@ -2232,6 +2246,19 @@ impl McpServer {
                 "query": pairs_to_json_object(&effective_query)
             },
             "response": response_value,
+            "startup_gate": {
+                "required_first_tool": STARTUP_REQUIRED_FIRST_TOOL,
+                "fallback_first_tool": STARTUP_FALLBACK_FIRST_TOOL,
+                "startup_gate_mode": STARTUP_GATE_MODE,
+                "brief_loaded_before_call": brief_loaded_before_call,
+                "fallback_used": !brief_loaded_before_call,
+                "onboarding_required": onboarding_required,
+                "next": if onboarding_required {
+                    "Respond with first-contact opening sequence and offer onboarding interview (allow skip/log-now)."
+                } else {
+                    "Startup context loaded. Proceed with user request."
+                }
+            },
             "completion": {
                 "status": if fallback_applied { "complete_with_fallback" } else { "complete" }
             },
@@ -4180,15 +4207,7 @@ fn enforce_agent_context_payload_limit(envelope: Value) -> Value {
         }
     });
 
-    if let Some(value) = trimmed.pointer("/data/response/body/action_required") {
-        fallback["data"]["response"]["body"]["action_required"] = value.clone();
-    }
-    if let Some(value) = trimmed.pointer("/data/response/body/agent_brief") {
-        fallback["data"]["response"]["body"]["agent_brief"] = value.clone();
-    }
-    if let Some(value) = trimmed.pointer("/data/response/body/meta") {
-        fallback["data"]["response"]["body"]["meta"] = value.clone();
-    }
+    copy_agent_context_startup_guidance(&trimmed, &mut fallback);
     let fallback_critical_missing =
         missing_agent_context_critical_sections(fallback.pointer("/data/response/body"));
     let fallback_integrity_status = if fallback_critical_missing.is_empty() {
@@ -4249,6 +4268,7 @@ fn enforce_agent_context_payload_limit(envelope: Value) -> Value {
             json!(brief_integrity_status);
         brief_only["data"]["response"]["body"]["overflow"]["critical_missing_sections"] =
             json!(brief_critical_missing);
+        copy_agent_context_startup_guidance(&trimmed, &mut brief_only);
         brief_only
     }
 }
@@ -4399,6 +4419,185 @@ fn summarize_json_shape(value: &Value) -> Value {
             "omitted": true,
             "type": "null"
         }),
+    }
+}
+
+fn truncate_text_for_overflow(value: &str, max_chars: usize) -> String {
+    let char_count = value.chars().count();
+    if char_count <= max_chars {
+        return value.to_string();
+    }
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+fn compact_action_required_for_overflow(value: &Value) -> Value {
+    let Some(obj) = value.as_object() else {
+        return Value::Null;
+    };
+    let action = obj
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if action.is_empty() {
+        return Value::Null;
+    }
+    let detail = obj
+        .get("detail")
+        .and_then(Value::as_str)
+        .map(|raw| truncate_text_for_overflow(raw, OVERFLOW_ACTION_REQUIRED_DETAIL_MAX_CHARS))
+        .unwrap_or_default();
+    json!({
+        "action": action,
+        "detail": detail
+    })
+}
+
+fn compact_agent_brief_for_overflow(value: &Value) -> Value {
+    let Some(obj) = value.as_object() else {
+        return Value::Null;
+    };
+    let must_cover_intents = obj
+        .get("must_cover_intents")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .take(OVERFLOW_MUST_COVER_INTENTS_MAX_ITEMS)
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let coverage_gaps = obj
+        .get("coverage_gaps")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .take(OVERFLOW_COVERAGE_GAPS_MAX_ITEMS)
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let available_sections_preview = if let Some(preview) = obj.get("available_sections_preview") {
+        preview
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .take(OVERFLOW_SECTION_PREVIEW_MAX_ITEMS)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    } else {
+        obj.get("available_sections")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|section| {
+                        section
+                            .get("section")
+                            .and_then(Value::as_str)
+                            .map(|value| Value::String(value.to_string()))
+                    })
+                    .take(OVERFLOW_SECTION_PREVIEW_MAX_ITEMS)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let available_sections_total = obj
+        .get("available_sections_total")
+        .cloned()
+        .or_else(|| {
+            obj.get("available_sections")
+                .and_then(Value::as_array)
+                .map(|items| json!(items.len()))
+        })
+        .unwrap_or_else(|| json!(0));
+    let mut compact = json!({
+        "schema_version": obj
+            .get("schema_version")
+            .cloned()
+            .unwrap_or_else(|| json!("agent_brief.v1")),
+        "action_required": obj
+            .get("action_required")
+            .map(compact_action_required_for_overflow)
+            .unwrap_or(Value::Null),
+        "must_cover_intents": must_cover_intents,
+        "coverage_gaps": coverage_gaps,
+        "workflow_state": obj
+            .get("workflow_state")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "first_contact_opening": obj
+            .get("first_contact_opening")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "response_guard": obj
+            .get("response_guard")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "available_sections_preview": available_sections_preview,
+        "available_sections_total": available_sections_total
+    });
+    if let Some(value) = obj.get("system_config_ref").cloned() {
+        compact["system_config_ref"] = value;
+    }
+    compact
+}
+
+fn compact_context_meta_for_overflow(value: &Value) -> Value {
+    let Some(obj) = value.as_object() else {
+        return Value::Null;
+    };
+    json!({
+        "context_contract_version": obj
+            .get("context_contract_version")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "temporal_basis": obj
+            .get("temporal_basis")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "challenge_mode": obj
+            .get("challenge_mode")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "metric_snapshot": obj
+            .get("metric_snapshot")
+            .cloned()
+            .unwrap_or(Value::Null),
+    })
+}
+
+fn copy_agent_context_startup_guidance(source: &Value, target: &mut Value) {
+    let Some(target_body) = target
+        .pointer_mut("/data/response/body")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    if let Some(value) = source.pointer("/data/response/body/action_required") {
+        target_body.insert(
+            "action_required".to_string(),
+            compact_action_required_for_overflow(value),
+        );
+    }
+    if let Some(value) = source.pointer("/data/response/body/agent_brief") {
+        target_body.insert(
+            "agent_brief".to_string(),
+            compact_agent_brief_for_overflow(value),
+        );
+    }
+    if let Some(value) = source.pointer("/data/response/body/meta") {
+        target_body.insert("meta".to_string(), compact_context_meta_for_overflow(value));
+    }
+    if let Some(value) = source.pointer("/data/startup_gate").cloned() {
+        target["data"]["startup_gate"] = value;
     }
 }
 
@@ -6364,6 +6563,99 @@ mod tests {
             limited["data"]["response"]["body"]["overflow"]["critical_missing_sections"],
             json!([])
         );
+    }
+
+    #[test]
+    fn agent_context_overflow_preserves_startup_guidance_signals() {
+        let huge = "x".repeat(TOOL_ENVELOPE_MAX_BYTES * 2);
+        let sections = (0..600)
+            .map(|idx| json!({"section": format!("section-{idx}")}))
+            .collect::<Vec<_>>();
+        let envelope = json!({
+            "status": "complete",
+            "phase": "final",
+            "tool": "kura_agent_context",
+            "data": {
+                "startup_gate": {
+                    "required_first_tool": "kura_agent_brief",
+                    "fallback_first_tool": "kura_agent_context",
+                    "startup_gate_mode": "preferred_brief_with_context_fallback",
+                    "onboarding_required": true
+                },
+                "response": {
+                    "ok": true,
+                    "status": 200,
+                    "body": {
+                        "action_required": {
+                            "action": "onboarding",
+                            "detail": huge
+                        },
+                        "agent_brief": {
+                            "schema_version": "agent_brief.v1",
+                            "must_cover_intents": ["offer_onboarding", "allow_skip_and_log_now"],
+                            "workflow_state": {
+                                "phase": "onboarding",
+                                "onboarding_closed": false,
+                                "override_active": false
+                            },
+                            "first_contact_opening": {
+                                "schema_version": "first_contact_opening.v1",
+                                "mandatory_sentence": "Kura is a structured training-data system."
+                            },
+                            "response_guard": {
+                                "schema_version": "first_contact_response_guard.v1",
+                                "scope": "first_assistant_turn_after_brief",
+                                "active": true,
+                                "must_cover_intents": ["offer_onboarding"]
+                            },
+                            "available_sections": sections
+                        },
+                        "meta": {
+                            "context_contract_version": "agent_context.v12",
+                            "metric_snapshot": {"schema_version": "agent_context.metric_snapshot.v1"},
+                            "temporal_basis": {"schema_version": "temporal_basis.v1"},
+                            "challenge_mode": {"schema_version": "challenge_mode.v1"}
+                        },
+                        "system": {
+                            "data": {
+                                "blob": huge
+                            }
+                        },
+                        "exercise_progression": [{
+                            "projection": {
+                                "data": {
+                                    "blob": huge
+                                }
+                            }
+                        }]
+                    }
+                }
+            }
+        });
+
+        let limited = enforce_tool_payload_limit("kura_agent_context", envelope);
+        assert_eq!(limited["truncated"], true);
+        assert_eq!(
+            limited["data"]["response"]["body"]["action_required"]["action"],
+            "onboarding"
+        );
+        assert_eq!(
+            limited["data"]["response"]["body"]["agent_brief"]["schema_version"],
+            "agent_brief.v1"
+        );
+        assert_eq!(
+            limited["data"]["startup_gate"]["required_first_tool"],
+            "kura_agent_brief"
+        );
+        assert_eq!(
+            limited["data"]["startup_gate"]["fallback_first_tool"],
+            "kura_agent_context"
+        );
+        let detail = limited["data"]["response"]["body"]["action_required"]["detail"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(detail.chars().count() <= OVERFLOW_ACTION_REQUIRED_DETAIL_MAX_CHARS + 3);
+        assert!(serialized_json_size_bytes(&limited) <= TOOL_ENVELOPE_MAX_BYTES);
     }
 
     #[test]
