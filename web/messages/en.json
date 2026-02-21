@@ -134,7 +134,9 @@
       "step2Desc": "Pick your agent and follow the setup guide.",
       "step2SetupLink": "Setup guide →",
       "step3Title": "Start talking",
-      "step3Desc": "Open your AI's chat — Claude, ChatGPT, whatever — and talk about your training. The agent does the rest."
+      "step3Desc": "Your AI agent does a lot more than just training — so it needs a quick nudge at the start. Open your chat and say something like:",
+      "step3Example": "\"I'm new to Kura. Explain how it works and do the onboarding with me.\"",
+      "step3After": "After that, just talk about your training. The agent knows what to log. If it doesn't, a quick \"Save this in Kura\" does the trick."
     },
     "tagline": ""
   },

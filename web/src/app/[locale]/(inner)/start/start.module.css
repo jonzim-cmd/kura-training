@@ -209,6 +209,15 @@
   margin-bottom: var(--space-md);
 }
 
+.stepExample {
+  font-family: var(--font-body);
+  font-size: var(--text-md);
+  font-style: italic;
+  line-height: 1.65;
+  color: var(--ink-high);
+  margin-bottom: var(--space-md);
+}
+
 .agents {
   display: flex;
   flex-wrap: wrap;

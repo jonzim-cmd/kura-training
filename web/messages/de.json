@@ -134,7 +134,9 @@
       "step2Desc": "Agent auswählen und der Einrichtung folgen.",
       "step2SetupLink": "Zur Einrichtung →",
       "step3Title": "Losreden",
-      "step3Desc": "Öffne den Chat deiner KI – Claude, ChatGPT, egal welche – und rede über dein Training. Der Agent macht den Rest."
+      "step3Desc": "Dein AI-Agent kann viel mehr als nur Training — deshalb braucht er am Anfang einen kurzen Hinweis. Öffne deinen Chat und sag zum Beispiel:",
+      "step3Example": "„Ich bin neu bei Kura. Erkläre mir, wie es funktioniert und mach das Onboarding mit mir.\u201C",
+      "step3After": "Ab da reicht es, einfach über dein Training zu reden. Der Agent erkennt, was zu loggen ist. Falls nicht, hilft ein kurzes „Speicher das in Kura\u201C."
     },
     "tagline": ""
   },

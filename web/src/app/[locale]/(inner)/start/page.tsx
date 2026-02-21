@@ -96,6 +96,8 @@ export default function StartPage() {
             <span className={styles.stepNum}>3</span>
             <h3 className={styles.stepTitle}>{t('how.step3Title')}</h3>
             <p className={styles.stepDesc}>{t('how.step3Desc')}</p>
+            <p className={styles.stepExample}>{t('how.step3Example')}</p>
+            <p className={styles.stepDesc}>{t('how.step3After')}</p>
           </div>
         </div>
       </section>
