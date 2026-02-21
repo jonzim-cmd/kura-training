@@ -287,7 +287,7 @@
       "openclawSub": "openclaw.ai"
     },
     "claude": {
-      "intro": "Öffne <link>claude.ai</link> und folge der Bilder-Anleitung unten.",
+      "intro": "Öffne <link>claude.ai</link> und folge der Bilder-Anleitung unten. Hinweis: Custom Connectors erfordern einen bezahlten Claude-Plan (Pro, Max, Team oder Enterprise).",
       "step1Label": "Klicke auf deinen Profilnamen unten links in der Seitenleiste",
       "step2Label": "Klicke auf \"Einstellungen\" im aufklappenden Menü",
       "step3Label": "Klicke auf \"Konnektoren\" in der Einstellungs-Seitenleiste",
@@ -405,7 +405,7 @@
       "mcpHint": "Sag deinem OpenClaw-Agent:",
       "mcpPrompt": "Verbinde dich mit meinem Kura-Konto. MCP-Server-URL: https://api.withkura.com/mcp — Nutze OAuth zur Authentifizierung.",
       "cliHint": "Sag deinem OpenClaw-Agent:",
-      "cliPrompt": "Installiere die Kura CLI (cargo install kura-cli) und verbinde mein Konto mit kura login. Kura API: https://api.withkura.com"
+      "cliPrompt": "Installiere die Kura CLI (cargo install --git https://github.com/jonzim-cmd/kura-training --locked --package kura-cli --bin kura) und verbinde mein Konto mit KURA_API_URL=https://api.withkura.com kura login."
     },
     "expert": {
       "toggle": "Du nutzt Claude Desktop, Claude Code, Gemini CLI, Codex oder ein anderes Tool mit MCP- oder CLI-Unterstützung?",
@@ -414,8 +414,8 @@
       "mcpPrompt": "Verbinde dich mit meinem Kura-Konto. MCP-Server-URL: https://api.withkura.com/mcp — Nutze OAuth zur Authentifizierung.",
       "cliTitle": "CLI statt MCP",
       "cliDescription": "Wenn du lieber CLI nutzen möchtest, kann deine KI die Kura CLI installieren und einrichten. Sag deiner KI:",
-      "cliInstall": "cargo install kura-cli",
-      "cliPrompt": "Installiere die Kura CLI (cargo install kura-cli) und verbinde mein Konto mit kura login. Kura API: https://api.withkura.com"
+      "cliInstall": "cargo install --git https://github.com/jonzim-cmd/kura-training --locked --package kura-cli --bin kura",
+      "cliPrompt": "Installiere die Kura CLI (cargo install --git https://github.com/jonzim-cmd/kura-training --locked --package kura-cli --bin kura) und verbinde mein Konto mit KURA_API_URL=https://api.withkura.com kura login."
     }
   },
   "footer": {

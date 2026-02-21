@@ -287,7 +287,7 @@
       "openclawSub": "openclaw.ai"
     },
     "claude": {
-      "intro": "Open <link>claude.ai</link> and follow the visual guide below.",
+      "intro": "Open <link>claude.ai</link> and follow the visual guide below. Note: Custom connectors require a paid Claude plan (Pro, Max, Team, or Enterprise).",
       "step1Label": "Click your profile name at the bottom-left of the sidebar",
       "step2Label": "Click \"Settings\" in the pop-up menu",
       "step3Label": "Click \"Connectors\" in the Settings sidebar",
@@ -405,7 +405,7 @@
       "mcpHint": "Tell your OpenClaw agent:",
       "mcpPrompt": "Connect to my Kura account. MCP server URL: https://api.withkura.com/mcp — Use OAuth for authentication.",
       "cliHint": "Tell your OpenClaw agent:",
-      "cliPrompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with kura login. Kura API: https://api.withkura.com"
+      "cliPrompt": "Install the Kura CLI (cargo install --git https://github.com/jonzim-cmd/kura-training --locked --package kura-cli --bin kura) and connect my account with KURA_API_URL=https://api.withkura.com kura login."
     },
     "expert": {
       "toggle": "You use Claude Desktop, Claude Code, Gemini CLI, Codex, or another tool with MCP or CLI support?",
@@ -414,8 +414,8 @@
       "mcpPrompt": "Connect to my Kura account. MCP server URL: https://api.withkura.com/mcp — Use OAuth for authentication.",
       "cliTitle": "CLI instead of MCP",
       "cliDescription": "If you prefer CLI, your AI can install and set up the Kura CLI. Tell your AI:",
-      "cliInstall": "cargo install kura-cli",
-      "cliPrompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with kura login. Kura API: https://api.withkura.com"
+      "cliInstall": "cargo install --git https://github.com/jonzim-cmd/kura-training --locked --package kura-cli --bin kura",
+      "cliPrompt": "Install the Kura CLI (cargo install --git https://github.com/jonzim-cmd/kura-training --locked --package kura-cli --bin kura) and connect my account with KURA_API_URL=https://api.withkura.com kura login."
     }
   },
   "footer": {
