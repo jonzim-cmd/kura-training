@@ -741,12 +741,13 @@ def _should_suggest_onboarding(
     coverage: list[dict[str, Any]],
     *,
     onboarding_closed: bool = False,
+    onboarding_aborted: bool = False,
 ) -> bool:
     """Check if onboarding interview should be suggested.
 
     True while onboarding phase is open and key coverage remains unresolved.
     """
-    if onboarding_closed:
+    if onboarding_closed or onboarding_aborted:
         return False
 
     unresolved_status = {"uncovered", "needs_depth"}
@@ -795,6 +796,7 @@ def _build_agenda(
     interview_coverage: list[dict[str, Any]] | None = None,
     total_events: int = 0,
     workflow_onboarding_closed: bool = False,
+    workflow_onboarding_aborted: bool = False,
     has_goals: bool = False,
     has_preferences: bool = False,
     observed_patterns: dict[str, Any] | None = None,
@@ -814,11 +816,16 @@ def _build_agenda(
             total_events,
             interview_coverage,
             onboarding_closed=workflow_onboarding_closed,
+            onboarding_aborted=workflow_onboarding_aborted,
         ):
             agenda.append({
                 "priority": "high",
                 "type": "onboarding_needed",
-                "detail": "First contact with minimal data. Briefly explain Kura and how to use it, then offer a short onboarding interview to bootstrap profile.",
+                "detail": (
+                    "First contact with minimal data. Briefly explain Kura and how to "
+                    "use it, then offer onboarding with Quick or Deep path "
+                    "(Deep recommended) to bootstrap profile."
+                ),
                 "dimensions": ["user_profile"],
             })
         elif _should_suggest_refresh(total_events, interview_coverage, has_goals, has_preferences):
@@ -972,6 +979,7 @@ def _build_agenda(
     "advisory.override.recorded",
     "workflow.onboarding.closed",
     "workflow.onboarding.override_granted",
+    "workflow.onboarding.aborted",
 )
 async def update_user_profile(
     conn: psycopg.AsyncConnection[Any], payload: dict[str, Any]
@@ -993,7 +1001,8 @@ async def update_user_profile(
                   'profile.updated', 'program.started', 'injury.reported',
                   'bodyweight.logged', 'session.completed', 'recovery.daily_checkin',
                   'advisory.override.recorded',
-                  'workflow.onboarding.closed', 'workflow.onboarding.override_granted'
+                  'workflow.onboarding.closed', 'workflow.onboarding.override_granted',
+                  'workflow.onboarding.aborted'
               )
             ORDER BY timestamp ASC
             """,
@@ -1031,6 +1040,7 @@ async def update_user_profile(
     bodyweight_event_count = 0
     latest_bodyweight_kg: Any = None
     workflow_onboarding_closed = False
+    workflow_onboarding_aborted = False
     workflow_override_count = 0
     advisory_override_rationale_count = 0
     workflow_last_transition_at: str | None = None
@@ -1171,10 +1181,15 @@ async def update_user_profile(
 
         elif event_type == "workflow.onboarding.closed":
             workflow_onboarding_closed = True
+            workflow_onboarding_aborted = False
             workflow_last_transition_at = row["timestamp"].isoformat()
 
         elif event_type == "workflow.onboarding.override_granted":
             workflow_override_count += 1
+            workflow_last_transition_at = row["timestamp"].isoformat()
+
+        elif event_type == "workflow.onboarding.aborted":
+            workflow_onboarding_aborted = True
             workflow_last_transition_at = row["timestamp"].isoformat()
 
     # Resolve exercises through alias map
@@ -1187,6 +1202,7 @@ async def update_user_profile(
     workflow_state = {
         "phase": "planning" if workflow_onboarding_closed else "onboarding",
         "onboarding_closed": workflow_onboarding_closed,
+        "onboarding_aborted": workflow_onboarding_aborted,
         "override_active": (not workflow_onboarding_closed) and workflow_override_count > 0,
         "override_count": workflow_override_count,
         "advisory_override_rationale_count": advisory_override_rationale_count,
@@ -1396,6 +1412,7 @@ async def update_user_profile(
         interview_coverage=interview_coverage,
         total_events=total_events,
         workflow_onboarding_closed=workflow_onboarding_closed,
+        workflow_onboarding_aborted=workflow_onboarding_aborted,
         has_goals=bool(goals),
         has_preferences=bool(preferences),
         observed_patterns=observed_patterns,

@@ -1738,7 +1738,7 @@ impl McpServer {
 
     fn initialize_payload(&self) -> Value {
         let instructions = format!(
-            "Start with kura_agent_context (startup gate, required). If kura_agent_brief is available, call it after context for deterministic first-contact onboarding phrasing. If action_required indicates onboarding, reply first with: (1) what Kura is (use first_contact_opening_v1 mandatory sentence), (2) how to use it briefly, (3) propose a short onboarding interview before feature menus or logging steps, and allow skip/log-now. Avoid dashboard/booking claims unless explicitly present in loaded brief/context payloads. Use kura_discover for lean capability snapshots only after startup context is loaded; use kura_discover_debug only for deep schema/capability troubleshooting. Prefer kura_events_write with mode=simulate before commit for higher confidence. Capability mode: {}.",
+            "Start with kura_agent_context (startup gate, required). If kura_agent_brief is available, call it after context for deterministic first-contact onboarding phrasing. If action_required indicates onboarding, reply first with: (1) what Kura is (use first_contact_opening_v1 mandatory sentence), (2) how to use it briefly, (3) offer onboarding path fork (Quick or Deep, Deep recommended/default) before feature menus or logging steps, and allow skip/log-now. Avoid dashboard/booking claims unless explicitly present in loaded brief/context payloads. Use kura_discover for lean capability snapshots only after startup context is loaded; use kura_discover_debug only for deep schema/capability troubleshooting. Prefer kura_events_write with mode=simulate before commit for higher confidence. Capability mode: {}.",
             self.capability_profile.mode.as_str()
         );
         json!({
@@ -2865,6 +2865,7 @@ impl McpServer {
                 json!({
                     "phase": "onboarding",
                     "onboarding_closed": false,
+                    "onboarding_aborted": false,
                     "override_active": false
                 })
             });
@@ -2936,7 +2937,7 @@ impl McpServer {
             "context_loaded": is_context_loaded(&self.session_id),
             "onboarding_required": onboarding_required,
             "next": if onboarding_required {
-                "Respond with first-contact opening sequence and offer onboarding interview (allow skip/log-now)."
+                "Respond with first-contact opening sequence and offer onboarding path fork (Quick/Deep, Deep recommended; allow skip/log-now)."
             } else {
                 "Call kura_agent_context before personalized planning or write operations."
             }
@@ -3067,7 +3068,7 @@ impl McpServer {
             "fallback_used": false,
             "onboarding_required": onboarding_required,
             "next": if onboarding_required {
-                "Respond with first-contact opening sequence and offer onboarding interview (allow skip/log-now)."
+                "Respond with first-contact opening sequence and offer onboarding path fork (Quick/Deep, Deep recommended; allow skip/log-now)."
             } else {
                 "Startup context loaded. Proceed with user request."
             }
@@ -5118,7 +5119,7 @@ fn extract_action_required_from_context_body(body: &Value) -> Option<Value> {
                 .get("detail")
                 .and_then(Value::as_str)
                 .unwrap_or(
-                    "First contact. Briefly explain Kura and how to use it, then offer a short onboarding interview.",
+                    "First contact. Briefly explain Kura and how to use it, then offer onboarding with Quick or Deep path (Deep recommended).",
                 );
             return Some(json!({
                 "action": "onboarding",
@@ -6666,6 +6667,7 @@ fn is_always_high_impact_event_type(event_type: &str) -> bool {
             | "nutrition_target.set"
             | "workflow.onboarding.closed"
             | "workflow.onboarding.override_granted"
+            | "workflow.onboarding.aborted"
     )
 }
 

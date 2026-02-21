@@ -226,6 +226,9 @@ class TestConventions:
             "onboarding_interview_offer",
         ]
         assert opening["interview_offer"]["required"] is True
+        assert opening["interview_offer"]["format"] == "offer_onboarding_fork_quick_or_deep"
+        assert opening["interview_offer"]["default_path"] == "deep"
+        assert opening["interview_offer"]["recommended_path"] == "deep"
         assert "Kura is a structured training-data system." in opening["mandatory_sentence"]
 
     def test_has_exercise_normalization(self):

@@ -65,6 +65,7 @@ _INVARIANT_SOURCE_EVENT_TYPES = (
     "nutrition_target.set",
     "workflow.onboarding.closed",
     "workflow.onboarding.override_granted",
+    "workflow.onboarding.aborted",
     "external.activity_imported",
     "observation.logged",
     "event.retracted",

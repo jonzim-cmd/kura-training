@@ -181,6 +181,7 @@ class TestEventConventions:
             "session.completed", "learning.signal.logged",
             "event.retracted",
             "workflow.onboarding.closed", "workflow.onboarding.override_granted",
+            "workflow.onboarding.aborted",
             "projection_rule.created", "projection_rule.archived",
             "external.activity_imported",
             "observation.logged",

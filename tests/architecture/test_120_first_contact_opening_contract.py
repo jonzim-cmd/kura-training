@@ -18,7 +18,13 @@ def test_first_contact_opening_contract_is_declared_in_system_conventions() -> N
         "onboarding_interview_offer",
     ]
     assert contract["interview_offer"]["required"] is True
-    assert contract["interview_offer"]["max_estimated_minutes"] == 5
+    assert contract["interview_offer"]["format"] == "offer_onboarding_fork_quick_or_deep"
+    assert contract["interview_offer"]["max_estimated_minutes"] == 10
+    assert contract["interview_offer"]["default_path"] == "deep"
+    assert contract["interview_offer"]["recommended_path"] == "deep"
+    options = contract["interview_offer"]["options"]
+    assert isinstance(options, list) and len(options) >= 2
+    assert {item["path"] for item in options} >= {"quick", "deep"}
     assert (
         "Kura is a structured training-data system."
         in contract["mandatory_sentence"]
@@ -28,6 +34,6 @@ def test_first_contact_opening_contract_is_declared_in_system_conventions() -> N
 def test_bootstrap_onboarding_agenda_requires_intro_then_interview_offer() -> None:
     agent_route = AGENT_ROUTE.read_text(encoding="utf-8")
     assert (
-        "First contact. Briefly explain Kura and how to use it, then offer a short onboarding interview to bootstrap profile."
+        "First contact. Briefly explain Kura and how to use it, then offer onboarding with Quick or Deep path (Deep recommended) to bootstrap profile."
         in agent_route
     )

@@ -17,6 +17,7 @@ def test_agent_brief_includes_first_contact_contract_and_response_guard() -> Non
     assert "first_assistant_turn_after_brief" in src
     assert "first_contact_response_guard.v1" in src
     assert "onboarding_skipped_by_user" in src
+    assert "workflow.onboarding.aborted" in src
 
 
 def test_mcp_startup_gate_exposes_context_fallback_and_anti_hallucination_hint() -> None:

@@ -924,6 +924,24 @@ def get_event_conventions() -> dict[str, dict[str, Any]]:
                 "scope": "current_session",
             },
         },
+        "workflow.onboarding.aborted": {
+            "category": "meta",
+            "description": (
+                "Explicit user decision to stop onboarding prompts. The system keeps "
+                "working, but first-contact onboarding offers should no longer be "
+                "auto-suggested until onboarding is restarted explicitly."
+            ),
+            "fields": {
+                "reason": "string (optional, user-facing rationale)",
+                "aborted_by": "string (optional: user_confirmed|agent_confirmed)",
+                "scope": "string (optional: persistent|current_session)",
+            },
+            "example": {
+                "reason": "User does not want onboarding interview prompts anymore.",
+                "aborted_by": "user_confirmed",
+                "scope": "persistent",
+            },
+        },
         # --- Data corrections ---
         "learning.signal.logged": {
             "category": "system",

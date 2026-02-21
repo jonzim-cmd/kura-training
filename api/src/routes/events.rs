@@ -1152,6 +1152,7 @@ fn validate_projection_rule_archived_invariants(data: &serde_json::Value) -> Res
 
 const WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE: &str = "workflow.onboarding.closed";
 const WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE: &str = "workflow.onboarding.override_granted";
+const WORKFLOW_ONBOARDING_ABORTED_EVENT_TYPE: &str = "workflow.onboarding.aborted";
 const LEGACY_PLANNING_OR_COACHING_EVENT_TYPES: [&str; 8] = [
     "training_plan.created",
     "training_plan.updated",
@@ -1907,6 +1908,9 @@ fn user_profile_handles_event(event_type: &str) -> bool {
             | "sleep_target.set"
             | "weight_target.set"
             | "session.completed"
+            | WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE
+            | WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE
+            | WORKFLOW_ONBOARDING_ABORTED_EVENT_TYPE
     )
 }
 

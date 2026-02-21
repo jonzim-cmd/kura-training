@@ -69,8 +69,30 @@ def _get_conventions() -> dict[str, Any]:
             ),
             "interview_offer": {
                 "required": True,
-                "format": "offer_short_onboarding_interview",
-                "max_estimated_minutes": 5,
+                "format": "offer_onboarding_fork_quick_or_deep",
+                "max_estimated_minutes": 10,
+                "default_path": "deep",
+                "recommended_path": "deep",
+                "options": [
+                    {
+                        "path": "quick",
+                        "label": "Quick",
+                        "estimated_minutes": 3,
+                        "description": (
+                            "Fast bootstrap for minimal profile setup with option "
+                            "to deepen later."
+                        ),
+                    },
+                    {
+                        "path": "deep",
+                        "label": "Deep",
+                        "estimated_minutes": 10,
+                        "description": (
+                            "Extended intake for stronger personalization and "
+                            "better coaching context."
+                        ),
+                    },
+                ],
             },
             "avoid_before_interview_offer": [
                 "feature_menu_dump",
@@ -935,6 +957,7 @@ def _get_conventions() -> dict[str, Any]:
                     "nutrition_target.set",
                     "workflow.onboarding.closed",
                     "workflow.onboarding.override_granted",
+                    "workflow.onboarding.aborted",
                 ],
                 "training_plan_updated_high_impact_when": {
                     "change_scope_values": [

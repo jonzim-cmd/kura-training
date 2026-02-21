@@ -375,6 +375,7 @@ pub struct AgentBriefWorkflowState {
     /// onboarding | planning
     pub phase: String,
     pub onboarding_closed: bool,
+    pub onboarding_aborted: bool,
     pub override_active: bool,
 }
 
@@ -411,10 +412,25 @@ pub struct AgentBriefSystemConfigRef {
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AgentBriefFirstContactInterviewOption {
+    pub path: String,
+    pub label: String,
+    pub estimated_minutes: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AgentBriefFirstContactInterviewOffer {
     pub required: bool,
     pub format: String,
     pub max_estimated_minutes: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recommended_path: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<AgentBriefFirstContactInterviewOption>,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -1539,6 +1555,7 @@ struct SessionAuditUnresolved {
 #[derive(Debug, Clone)]
 struct AgentWorkflowState {
     onboarding_closed: bool,
+    onboarding_aborted: bool,
     override_active: bool,
     missing_close_requirements: Vec<String>,
     legacy_planning_history: bool,
@@ -2324,7 +2341,7 @@ fn extract_action_required(user_profile: &ProjectionResponse) -> Option<AgentAct
                     .get("detail")
                     .and_then(Value::as_str)
                     .unwrap_or(
-                        "New user. Introduce Kura and propose onboarding interview before anything else.",
+                        "New user. Introduce Kura and offer onboarding fork (Quick or Deep, Deep recommended) before anything else.",
                     )
                     .to_string(),
             });
@@ -2439,6 +2456,10 @@ fn agent_brief_workflow_state(user_profile: &ProjectionResponse) -> AgentBriefWo
         .and_then(|state| state.get("onboarding_closed"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let onboarding_aborted = workflow
+        .and_then(|state| state.get("onboarding_aborted"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let override_active = workflow
         .and_then(|state| state.get("override_active"))
         .and_then(Value::as_bool)
@@ -2460,6 +2481,7 @@ fn agent_brief_workflow_state(user_profile: &ProjectionResponse) -> AgentBriefWo
     AgentBriefWorkflowState {
         phase,
         onboarding_closed,
+        onboarding_aborted: !onboarding_closed && onboarding_aborted,
         override_active,
     }
 }
@@ -2564,13 +2586,38 @@ const FIRST_CONTACT_REQUIRED_SCOPE: &str = "first_assistant_turn_after_brief";
 const FIRST_CONTACT_BOOTSTRAP_MAX_EVENTS: i64 = 8;
 const FIRST_CONTACT_FALLBACK_MANDATORY_SENTENCE: &str = "Kura is a structured training-data system. You write naturally, and I turn that into reliable events and projections so progress, trends, and decisions stay consistent over time.";
 const FIRST_CONTACT_FALLBACK_HOW_TO_USE: &str = "Tell me in natural language what you trained, ate, or measured; I will structure it into events and keep your timeline consistent.";
-const FIRST_CONTACT_FALLBACK_INTERVIEW_FORMAT: &str = "offer_short_onboarding_interview";
-const FIRST_CONTACT_FALLBACK_INTERVIEW_MAX_MINUTES: i64 = 5;
+const FIRST_CONTACT_FALLBACK_INTERVIEW_FORMAT: &str = "offer_onboarding_fork_quick_or_deep";
+const FIRST_CONTACT_FALLBACK_INTERVIEW_MAX_MINUTES: i64 = 10;
+const FIRST_CONTACT_FALLBACK_INTERVIEW_DEFAULT_PATH: &str = "deep";
+const FIRST_CONTACT_FALLBACK_INTERVIEW_RECOMMENDED_PATH: &str = "deep";
 const FIRST_CONTACT_DEFAULT_AVOID_BEFORE_COMPLETION: [&str; 3] = [
     "feature_menu_dump",
     "immediate_logging_checklist",
     "planning_or_coaching_without_onboarding_offer",
 ];
+
+fn first_contact_fallback_interview_options() -> Vec<AgentBriefFirstContactInterviewOption> {
+    vec![
+        AgentBriefFirstContactInterviewOption {
+            path: "quick".to_string(),
+            label: "Quick".to_string(),
+            estimated_minutes: 3,
+            description: Some(
+                "Fast bootstrap for minimal profile setup with option to deepen later."
+                    .to_string(),
+            ),
+        },
+        AgentBriefFirstContactInterviewOption {
+            path: "deep".to_string(),
+            label: "Deep".to_string(),
+            estimated_minutes: 10,
+            description: Some(
+                "Extended intake for stronger personalization and better coaching context."
+                    .to_string(),
+            ),
+        },
+    ]
+}
 
 fn user_profile_bootstrap_pending(user_profile: &ProjectionResponse) -> bool {
     let user = user_profile.projection.data.get("user");
@@ -2606,7 +2653,7 @@ fn first_contact_onboarding_active(
     workflow_state: &AgentBriefWorkflowState,
     user_profile: &ProjectionResponse,
 ) -> bool {
-    if workflow_state.onboarding_closed {
+    if workflow_state.onboarding_closed || workflow_state.onboarding_aborted {
         return false;
     }
     if workflow_state.phase.trim().to_lowercase() != "onboarding" {
@@ -2631,6 +2678,42 @@ fn build_first_contact_opening_payload(
     let interview_offer = contract
         .and_then(|value| value.get("interview_offer"))
         .and_then(Value::as_object);
+    let interview_options = interview_offer
+        .and_then(|offer| offer.get("options"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let option = item.as_object()?;
+                    let path = option.get("path")?.as_str()?.trim();
+                    if path.is_empty() {
+                        return None;
+                    }
+                    let estimated_minutes = option.get("estimated_minutes").and_then(Value::as_i64)?;
+                    if estimated_minutes <= 0 {
+                        return None;
+                    }
+                    let label = option
+                        .get("label")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or(path);
+                    Some(AgentBriefFirstContactInterviewOption {
+                        path: path.to_string(),
+                        label: label.to_string(),
+                        estimated_minutes,
+                        description: option
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|options| !options.is_empty())
+        .unwrap_or_else(first_contact_fallback_interview_options);
     let avoid_before_interview_offer = contract
         .and_then(|value| value.get("avoid_before_interview_offer"))
         .and_then(Value::as_array)
@@ -2678,6 +2761,25 @@ fn build_first_contact_opening_payload(
                 .and_then(|value| value.get("max_estimated_minutes"))
                 .and_then(Value::as_i64)
                 .unwrap_or(FIRST_CONTACT_FALLBACK_INTERVIEW_MAX_MINUTES),
+            default_path: Some(
+                interview_offer
+                    .and_then(|value| value.get("default_path"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(FIRST_CONTACT_FALLBACK_INTERVIEW_DEFAULT_PATH)
+                    .to_string(),
+            ),
+            recommended_path: Some(
+                interview_offer
+                    .and_then(|value| value.get("recommended_path"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(FIRST_CONTACT_FALLBACK_INTERVIEW_RECOMMENDED_PATH)
+                    .to_string(),
+            ),
+            options: interview_options,
         },
         avoid_before_interview_offer,
     }
@@ -2706,7 +2808,10 @@ fn build_agent_brief(
         must_cover_intents.push("offer_onboarding".to_string());
         must_cover_intents.push("allow_skip_and_log_now".to_string());
     }
-    if !workflow_state.onboarding_closed && !coverage_gaps.is_empty() {
+    if !workflow_state.onboarding_closed
+        && !workflow_state.onboarding_aborted
+        && !coverage_gaps.is_empty()
+    {
         must_cover_intents.push("micro_onboarding_next_gap".to_string());
     }
     if observations_draft
@@ -2747,6 +2852,7 @@ fn build_agent_brief(
             deactivate_when: vec![
                 "workflow.onboarding.closed".to_string(),
                 "workflow.onboarding.override_granted".to_string(),
+                "workflow.onboarding.aborted".to_string(),
                 "onboarding_skipped_by_user".to_string(),
             ],
         })
@@ -2782,7 +2888,7 @@ fn build_agent_startup_gate(action_required: Option<&AgentActionRequired>) -> Ag
         startup_gate_mode: STARTUP_GATE_MODE.to_string(),
         onboarding_required,
         next: if onboarding_required {
-            "Respond with first-contact opening sequence and offer onboarding interview (allow skip/log-now).".to_string()
+            "Respond with first-contact opening sequence and offer onboarding path fork (Quick/Deep, Deep recommended; allow skip/log-now).".to_string()
         } else {
             "Startup context loaded. Proceed with user request.".to_string()
         },
@@ -2957,7 +3063,7 @@ fn bootstrap_user_profile(user_id: Uuid) -> ProjectionResponse {
                 "agenda": [{
                     "priority": "high",
                     "type": "onboarding_needed",
-                    "detail": "First contact. Briefly explain Kura and how to use it, then offer a short onboarding interview to bootstrap profile.",
+                    "detail": "First contact. Briefly explain Kura and how to use it, then offer onboarding with Quick or Deep path (Deep recommended) to bootstrap profile.",
                     "dimensions": ["user_profile"]
                 }]
             }),
@@ -3147,13 +3253,14 @@ async fn fetch_workflow_state(
         SELECT id, event_type
         FROM events
         WHERE user_id = $1
-          AND event_type IN ($2, $3)
+          AND event_type IN ($2, $3, $4)
         ORDER BY timestamp ASC, id ASC
         "#,
     )
     .bind(user_id)
     .bind(WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE)
     .bind(WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE)
+    .bind(WORKFLOW_ONBOARDING_ABORTED_EVENT_TYPE)
     .fetch_all(&mut *tx)
     .await?;
 
@@ -3216,9 +3323,14 @@ async fn fetch_workflow_state(
         row.event_type
             .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE)
     });
+    let onboarding_aborted = active_markers.iter().any(|row| {
+        row.event_type
+            .eq_ignore_ascii_case(WORKFLOW_ONBOARDING_ABORTED_EVENT_TYPE)
+    });
 
     Ok(AgentWorkflowState {
         onboarding_closed,
+        onboarding_aborted: !onboarding_closed && onboarding_aborted,
         override_active,
         legacy_planning_history,
         missing_close_requirements: if onboarding_closed {
@@ -8965,6 +9077,7 @@ mod tests {
         assert_eq!(brief.schema_version, "agent_brief.v1");
         assert_eq!(brief.workflow_state.phase, "onboarding");
         assert!(!brief.workflow_state.onboarding_closed);
+        assert!(!brief.workflow_state.onboarding_aborted);
         assert!(
             brief
                 .must_cover_intents
@@ -8990,7 +9103,35 @@ mod tests {
         );
         assert_eq!(
             first_contact_opening.interview_offer.max_estimated_minutes,
-            5
+            10
+        );
+        assert_eq!(
+            first_contact_opening
+                .interview_offer
+                .default_path
+                .as_deref(),
+            Some("deep")
+        );
+        assert_eq!(
+            first_contact_opening
+                .interview_offer
+                .recommended_path
+                .as_deref(),
+            Some("deep")
+        );
+        assert!(
+            first_contact_opening
+                .interview_offer
+                .options
+                .iter()
+                .any(|option| option.path == "quick")
+        );
+        assert!(
+            first_contact_opening
+                .interview_offer
+                .options
+                .iter()
+                .any(|option| option.path == "deep")
         );
         let response_guard = brief
             .response_guard
@@ -9472,6 +9613,7 @@ mod tests {
     fn workflow_gate_blocks_planning_drift_before_phase_close() {
         let state = AgentWorkflowState {
             onboarding_closed: false,
+            onboarding_aborted: false,
             override_active: false,
             missing_close_requirements: vec!["coverage.baseline_profile.uncovered".to_string()],
             legacy_planning_history: false,
@@ -9496,6 +9638,7 @@ mod tests {
     fn workflow_gate_allows_valid_onboarding_close_transition() {
         let state = AgentWorkflowState {
             onboarding_closed: false,
+            onboarding_aborted: false,
             override_active: false,
             missing_close_requirements: Vec::new(),
             legacy_planning_history: false,
@@ -9523,6 +9666,7 @@ mod tests {
     fn workflow_gate_allows_explicit_override_path() {
         let state = AgentWorkflowState {
             onboarding_closed: false,
+            onboarding_aborted: false,
             override_active: false,
             missing_close_requirements: vec!["coverage.unit_preferences.uncovered".to_string()],
             legacy_planning_history: false,
@@ -9550,6 +9694,7 @@ mod tests {
     fn scenario_library_onboarding_logging_saved() {
         let state = AgentWorkflowState {
             onboarding_closed: false,
+            onboarding_aborted: false,
             override_active: false,
             missing_close_requirements: vec![],
             legacy_planning_history: false,
@@ -9605,6 +9750,7 @@ mod tests {
     fn scenario_library_planning_override_confirm_first() {
         let state = AgentWorkflowState {
             onboarding_closed: false,
+            onboarding_aborted: false,
             override_active: false,
             missing_close_requirements: vec!["coverage.unit_preferences.uncovered".to_string()],
             legacy_planning_history: false,
@@ -9642,6 +9788,7 @@ mod tests {
     fn workflow_gate_allows_legacy_compatibility_transition_when_requirements_met() {
         let state = AgentWorkflowState {
             onboarding_closed: false,
+            onboarding_aborted: false,
             override_active: false,
             missing_close_requirements: Vec::new(),
             legacy_planning_history: true,

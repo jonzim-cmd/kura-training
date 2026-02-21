@@ -3,6 +3,7 @@ use super::*;
 pub(super) const WORKFLOW_ONBOARDING_CLOSED_EVENT_TYPE: &str = "workflow.onboarding.closed";
 pub(super) const WORKFLOW_ONBOARDING_OVERRIDE_EVENT_TYPE: &str =
     "workflow.onboarding.override_granted";
+pub(super) const WORKFLOW_ONBOARDING_ABORTED_EVENT_TYPE: &str = "workflow.onboarding.aborted";
 pub(super) const WORKFLOW_INVARIANT_ID: &str = "INV-004";
 pub(super) const ONBOARDING_REQUIRED_AREAS: [&str; 3] = [
     "training_background",
@@ -815,6 +816,9 @@ pub(super) fn workflow_gate_from_request(
             override_used: false,
             message: if state.onboarding_closed {
                 "Onboarding is closed; planning/coaching actions are available.".to_string()
+            } else if state.onboarding_aborted {
+                "Onboarding interview prompts are marked aborted by user; no planning/coaching payload detected."
+                    .to_string()
             } else {
                 "Onboarding remains active; no planning/coaching payload detected.".to_string()
             },

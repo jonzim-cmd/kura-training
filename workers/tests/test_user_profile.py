@@ -701,6 +701,16 @@ class TestOnboardingTrigger:
             is False
         )
 
+    def test_onboarding_aborted_disables_onboarding_prompt(self):
+        assert (
+            _should_suggest_onboarding(
+                0,
+                self._all_uncovered(),
+                onboarding_aborted=True,
+            )
+            is False
+        )
+
     def test_refresh_with_many_events_and_gaps(self):
         coverage = [{"area": f"a{i}", "status": "uncovered"} for i in range(4)]
         assert _should_suggest_refresh(25, coverage, has_goals=False, has_preferences=True) is True
@@ -732,7 +742,7 @@ class TestBuildAgendaWithInterview:
         assert "onboarding_needed" in types
         item = next(a for a in result if a["type"] == "onboarding_needed")
         assert item["priority"] == "high"
-        assert "offer a short onboarding interview" in item["detail"]
+        assert "offer onboarding with Quick or Deep path" in item["detail"]
 
     def test_refresh_in_agenda(self):
         coverage = [{"area": f"a{i}", "status": "uncovered"} for i in range(4)]
