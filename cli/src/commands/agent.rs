@@ -32,9 +32,24 @@ pub enum AgentCommands {
     },
     /// Get deterministic section index for startup + targeted follow-up reads
     SectionIndex {
+        /// Max exercise_progression projections to include (default: 5)
+        #[arg(long)]
+        exercise_limit: Option<u32>,
+        /// Max strength_inference projections to include (default: 5)
+        #[arg(long)]
+        strength_limit: Option<u32>,
+        /// Max custom projections to include (default: 10)
+        #[arg(long)]
+        custom_limit: Option<u32>,
         /// Optional task intent used for startup section derivation
         #[arg(long)]
         task_intent: Option<String>,
+        /// Include deployment-static system config in response payload (default: API default=true)
+        #[arg(long)]
+        include_system: Option<bool>,
+        /// Optional response token budget hint (min 400, max 12000)
+        #[arg(long)]
+        budget_tokens: Option<u32>,
     },
     /// Fetch exactly one context section (optionally paged and field-projected)
     SectionFetch {
@@ -214,8 +229,25 @@ pub async fn run(api_url: &str, token: Option<&str>, command: AgentCommands) -> 
             )
             .await
         }
-        AgentCommands::SectionIndex { task_intent } => {
-            section_index(api_url, token, task_intent).await
+        AgentCommands::SectionIndex {
+            exercise_limit,
+            strength_limit,
+            custom_limit,
+            task_intent,
+            include_system,
+            budget_tokens,
+        } => {
+            section_index(
+                api_url,
+                token,
+                exercise_limit,
+                strength_limit,
+                custom_limit,
+                task_intent,
+                include_system,
+                budget_tokens,
+            )
+            .await
         }
         AgentCommands::SectionFetch {
             section,
@@ -288,8 +320,24 @@ pub async fn context(
     .await
 }
 
-async fn section_index(api_url: &str, token: Option<&str>, task_intent: Option<String>) -> i32 {
-    let query = build_section_index_query(task_intent);
+async fn section_index(
+    api_url: &str,
+    token: Option<&str>,
+    exercise_limit: Option<u32>,
+    strength_limit: Option<u32>,
+    custom_limit: Option<u32>,
+    task_intent: Option<String>,
+    include_system: Option<bool>,
+    budget_tokens: Option<u32>,
+) -> i32 {
+    let query = build_context_query(
+        exercise_limit,
+        strength_limit,
+        custom_limit,
+        task_intent,
+        include_system,
+        budget_tokens,
+    );
     api_request(
         api_url,
         reqwest::Method::GET,
@@ -570,14 +618,6 @@ fn build_context_query(
     query
 }
 
-fn build_section_index_query(task_intent: Option<String>) -> Vec<(String, String)> {
-    let mut query = Vec::new();
-    if let Some(v) = task_intent {
-        query.push(("task_intent".to_string(), v));
-    }
-    query
-}
-
 fn build_section_fetch_query(
     section: String,
     limit: Option<u32>,
@@ -766,8 +806,8 @@ fn build_write_with_proof_request(
 mod tests {
     use super::{
         SaveConfirmationMode, build_context_query, build_section_fetch_query,
-        build_section_index_query, build_write_with_proof_request, extract_events_array,
-        normalize_agent_path, parse_method, parse_targets,
+        build_write_with_proof_request, extract_events_array, normalize_agent_path, parse_method,
+        parse_targets,
     };
     use serde_json::json;
 
@@ -870,12 +910,21 @@ mod tests {
     }
 
     #[test]
-    fn build_section_index_query_passes_task_intent() {
-        let query = build_section_index_query(Some("startup".to_string()));
-        assert_eq!(
-            query,
-            vec![("task_intent".to_string(), "startup".to_string())]
+    fn build_context_query_supports_section_index_parity_params() {
+        let query = build_context_query(
+            Some(5),
+            Some(5),
+            Some(10),
+            Some("startup".to_string()),
+            Some(false),
+            Some(1200),
         );
+        assert!(query.contains(&("exercise_limit".to_string(), "5".to_string())));
+        assert!(query.contains(&("strength_limit".to_string(), "5".to_string())));
+        assert!(query.contains(&("custom_limit".to_string(), "10".to_string())));
+        assert!(query.contains(&("task_intent".to_string(), "startup".to_string())));
+        assert!(query.contains(&("include_system".to_string(), "false".to_string())));
+        assert!(query.contains(&("budget_tokens".to_string(), "1200".to_string())));
     }
 
     #[test]

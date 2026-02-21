@@ -22,7 +22,7 @@ MCP_RUNTIME = Path("mcp-runtime/src/lib.rs")
 
 CLI_TESTS: tuple[str, ...] = (
     "commands::agent::tests::build_context_query_includes_budget_tokens_when_present",
-    "commands::agent::tests::build_section_index_query_passes_task_intent",
+    "commands::agent::tests::build_context_query_supports_section_index_parity_params",
     "commands::agent::tests::build_section_fetch_query_serializes_optional_params",
 )
 
@@ -36,10 +36,9 @@ def test_cli_declares_first_class_section_tools_and_budget_hint() -> None:
     src = CLI_AGENT.read_text(encoding="utf-8")
     assert "SectionIndex {" in src
     assert "SectionFetch {" in src
+    assert "budget_tokens: Option<u32>" in src
     assert "\"/v1/agent/context/section-index\"" in src
     assert "\"/v1/agent/context/section-fetch\"" in src
-    assert "\"budget_tokens\".to_string()" in src
-    assert "build_context_query(" in src
 
 
 def test_cli_legacy_context_alias_supports_budget_tokens() -> None:
@@ -56,8 +55,8 @@ def test_mcp_declares_recovery_metadata_for_section_tools() -> None:
     assert "\"section_contract\"" in src
     assert "\"pagination\"" in src
     assert "\"next_call\"" in src
-    assert "ordered_startup_sections_from_index" in src
-    assert "build_section_fetch_pagination_next_call" in src
+    assert "\"reason_code\"" in src
+    assert "\"next_action\"" in src
 
 
 def test_cli_runtime_contracts_pass() -> None:

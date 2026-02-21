@@ -2978,27 +2978,8 @@ impl McpServer {
     }
 
     async fn tool_agent_context(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
-        let mut query = Vec::new();
-        if let Some(limit) = arg_optional_u64(args, "exercise_limit")? {
-            query.push(("exercise_limit".to_string(), limit.to_string()));
-        }
-        if let Some(limit) = arg_optional_u64(args, "strength_limit")? {
-            query.push(("strength_limit".to_string(), limit.to_string()));
-        }
-        if let Some(limit) = arg_optional_u64(args, "custom_limit")? {
-            query.push(("custom_limit".to_string(), limit.to_string()));
-        }
-        if let Some(task_intent) = arg_optional_string(args, "task_intent")? {
-            query.push(("task_intent".to_string(), task_intent));
-        }
-        if let Some(budget_tokens) = arg_optional_u64(args, "budget_tokens")? {
-            query.push(("budget_tokens".to_string(), budget_tokens.to_string()));
-        }
-        if let Some(include_system) = arg_optional_bool(args, "include_system")? {
-            query.push(("include_system".to_string(), include_system.to_string()));
-        } else {
-            query.push(("include_system".to_string(), "false".to_string()));
-        }
+        let task_intent = arg_optional_string(args, "task_intent")?;
+        let query = build_agent_context_query_from_args(args, Some(false), task_intent)?;
         let mut compatibility_notes = Vec::<String>::new();
         let preferred_path = self.capability_profile.preferred_read_endpoint.clone();
         let mut effective_query = query.clone();
@@ -3115,37 +3096,16 @@ impl McpServer {
         &self,
         args: &Map<String, Value>,
     ) -> Result<Value, ToolError> {
-        let mut query = Vec::new();
-        if let Some(limit) = arg_optional_u64(args, "exercise_limit")? {
-            query.push(("exercise_limit".to_string(), limit.to_string()));
-        }
-        if let Some(limit) = arg_optional_u64(args, "strength_limit")? {
-            query.push(("strength_limit".to_string(), limit.to_string()));
-        }
-        if let Some(limit) = arg_optional_u64(args, "custom_limit")? {
-            query.push(("custom_limit".to_string(), limit.to_string()));
-        }
-        if let Some(task_intent) = arg_optional_string(args, "task_intent")? {
-            query.push(("task_intent".to_string(), task_intent));
-        }
-        if let Some(budget_tokens) = arg_optional_u64(args, "budget_tokens")? {
-            query.push(("budget_tokens".to_string(), budget_tokens.to_string()));
-        }
-        if let Some(include_system) = arg_optional_bool(args, "include_system")? {
-            query.push(("include_system".to_string(), include_system.to_string()));
-        }
+        let task_intent = arg_optional_string(args, "task_intent")?;
+        let query = build_agent_context_query_from_args(args, None, task_intent.clone())?;
         let path = "/v1/agent/context/section-index";
         let response = self
             .send_api_request(Method::GET, path, &query, None, true, false)
             .await?;
         let response_value = response.to_value();
-        let task_intent = query
-            .iter()
-            .find(|(key, _)| key == "task_intent")
-            .map(|(_, value)| value.as_str());
         let critical_fetch_order = ordered_startup_sections_from_index(response_value.get("body"));
         let critical_fetch_calls =
-            build_section_fetch_calls_from_order(&critical_fetch_order, task_intent);
+            build_section_fetch_calls_from_order(&critical_fetch_order, task_intent.as_deref());
         Ok(json!({
             "request": {
                 "path": path,
@@ -3164,12 +3124,12 @@ impl McpServer {
         &self,
         args: &Map<String, Value>,
     ) -> Result<Value, ToolError> {
-        let section = required_string(args, "section")?;
+        let requested_section = required_string(args, "section")?;
         let limit = arg_optional_u64(args, "limit")?;
         let cursor = arg_optional_string(args, "cursor")?;
         let fields = arg_optional_string(args, "fields")?;
         let task_intent = arg_optional_string(args, "task_intent")?;
-        let mut query = vec![("section".to_string(), section)];
+        let mut query = vec![("section".to_string(), requested_section.clone())];
         if let Some(limit) = limit {
             query.push(("limit".to_string(), limit.to_string()));
         }
@@ -3192,13 +3152,7 @@ impl McpServer {
             .get("section")
             .and_then(Value::as_str)
             .map(ToString::to_string)
-            .unwrap_or_else(|| {
-                query
-                    .iter()
-                    .find(|(key, _)| key == "section")
-                    .map(|(_, value)| value.clone())
-                    .unwrap_or_default()
-            });
+            .unwrap_or(requested_section);
         let has_more = response_body
             .get("has_more")
             .and_then(Value::as_bool)
@@ -3212,6 +3166,13 @@ impl McpServer {
             limit,
             fields.as_deref(),
             task_intent.as_deref(),
+            has_more,
+            next_cursor.as_deref(),
+        );
+        let pagination_reason_code =
+            section_fetch_pagination_reason_code(has_more, next_cursor.as_deref());
+        let pagination_next_action = section_fetch_pagination_next_action(
+            &resolved_section,
             has_more,
             next_cursor.as_deref(),
         );
@@ -3231,7 +3192,9 @@ impl McpServer {
             "pagination": {
                 "has_more": has_more,
                 "next_cursor": next_cursor,
-                "next_call": next_call
+                "next_call": next_call,
+                "reason_code": pagination_reason_code,
+                "next_action": pagination_next_action
             }
         }))
     }
@@ -5516,6 +5479,35 @@ fn missing_agent_context_critical_sections(body: Option<&Value>) -> Vec<&'static
     missing
 }
 
+fn build_agent_context_query_from_args(
+    args: &Map<String, Value>,
+    include_system_default: Option<bool>,
+    task_intent: Option<String>,
+) -> Result<Vec<(String, String)>, ToolError> {
+    let mut query = Vec::new();
+    if let Some(limit) = arg_optional_u64(args, "exercise_limit")? {
+        query.push(("exercise_limit".to_string(), limit.to_string()));
+    }
+    if let Some(limit) = arg_optional_u64(args, "strength_limit")? {
+        query.push(("strength_limit".to_string(), limit.to_string()));
+    }
+    if let Some(limit) = arg_optional_u64(args, "custom_limit")? {
+        query.push(("custom_limit".to_string(), limit.to_string()));
+    }
+    if let Some(value) = task_intent {
+        query.push(("task_intent".to_string(), value));
+    }
+    if let Some(budget_tokens) = arg_optional_u64(args, "budget_tokens")? {
+        query.push(("budget_tokens".to_string(), budget_tokens.to_string()));
+    }
+    if let Some(include_system) = arg_optional_bool(args, "include_system")? {
+        query.push(("include_system".to_string(), include_system.to_string()));
+    } else if let Some(default_value) = include_system_default {
+        query.push(("include_system".to_string(), default_value.to_string()));
+    }
+    Ok(query)
+}
+
 fn ordered_startup_sections_from_index(body: Option<&Value>) -> Vec<String> {
     let mut desired: Vec<String> = STARTUP_DIAGNOSTIC_REQUIRED_SECTIONS
         .iter()
@@ -5591,6 +5583,29 @@ fn build_section_fetch_pagination_next_call(
         "tool": "kura_agent_section_fetch",
         "arguments": arguments
     })
+}
+
+fn section_fetch_pagination_reason_code(
+    has_more: bool,
+    next_cursor: Option<&str>,
+) -> Option<&'static str> {
+    if has_more && next_cursor.is_none() {
+        return Some("pagination_cursor_missing");
+    }
+    None
+}
+
+fn section_fetch_pagination_next_action(
+    section: &str,
+    has_more: bool,
+    next_cursor: Option<&str>,
+) -> Option<String> {
+    if has_more && next_cursor.is_none() {
+        return Some(format!(
+            "Retry kura_agent_section_fetch(section={section}) or refresh kura_agent_section_index; API indicated has_more=true but next_cursor was missing."
+        ));
+    }
+    None
 }
 
 fn agent_context_section_reload_hint(section: &str) -> &'static str {
@@ -7605,6 +7620,38 @@ mod tests {
             Some("ignored"),
         );
         assert!(none_when_done.is_null());
+    }
+
+    #[test]
+    fn section_fetch_pagination_contract_flags_missing_cursor_when_has_more() {
+        assert_eq!(
+            section_fetch_pagination_reason_code(true, None),
+            Some("pagination_cursor_missing")
+        );
+        let action = section_fetch_pagination_next_action("projections.custom", true, None)
+            .expect("next action should be present when cursor is missing");
+        assert!(action.contains("kura_agent_section_fetch"));
+        assert!(action.contains("kura_agent_section_index"));
+        assert_eq!(section_fetch_pagination_reason_code(false, None), None);
+    }
+
+    #[test]
+    fn build_agent_context_query_from_args_applies_default_include_system_only_when_missing() {
+        let mut args = Map::new();
+        args.insert("exercise_limit".to_string(), json!(3));
+        args.insert("budget_tokens".to_string(), json!(900));
+        let with_default =
+            build_agent_context_query_from_args(&args, Some(false), Some("startup".to_string()))
+                .expect("query should build");
+        assert!(with_default.contains(&("exercise_limit".to_string(), "3".to_string())));
+        assert!(with_default.contains(&("budget_tokens".to_string(), "900".to_string())));
+        assert!(with_default.contains(&("task_intent".to_string(), "startup".to_string())));
+        assert!(with_default.contains(&("include_system".to_string(), "false".to_string())));
+
+        args.insert("include_system".to_string(), json!(true));
+        let explicit = build_agent_context_query_from_args(&args, Some(false), None)
+            .expect("query should build");
+        assert!(explicit.contains(&("include_system".to_string(), "true".to_string())));
     }
 
     #[test]
