@@ -4,7 +4,9 @@ from datetime import datetime
 
 from kura_workers.handlers.training_plan import _manifest_contribution
 from kura_workers.handlers.training_plan import (
+    _compute_plan_detail_signals,
     _compute_rir_target_summary,
+    _merge_plan_payload,
     _normalize_plan_sessions_with_rir,
     _resolve_optional_plan_name,
     _resolve_plan_name,
@@ -84,6 +86,31 @@ class TestManifestContribution:
         result = _manifest_contribution(rows)
         assert result["sessions_per_week"] == 0
 
+    def test_manifest_contribution_prefers_overview_when_details_row_exists(self):
+        rows = [
+            {
+                "key": "details",
+                "data": {
+                    "active_plan_id": "plan-xyz",
+                },
+            },
+            {
+                "key": "overview",
+                "data": {
+                    "active_plan": {
+                        "plan_id": "plan-xyz",
+                        "name": "Jump Block",
+                        "sessions": [{"name": "Jump Focus"}],
+                    },
+                    "total_plans": 1,
+                },
+            },
+        ]
+        result = _manifest_contribution(rows)
+        assert result["plan_name"] == "Jump Block"
+        assert result["sessions_per_week"] == 1
+        assert result["total_plans"] == 1
+
 
 class TestRirNormalization:
     def test_normalize_plan_sessions_preserves_explicit_target_rir(self):
@@ -153,3 +180,50 @@ class TestPlanNaming:
     def test_resolve_optional_plan_name_ignores_blank_values(self):
         assert _resolve_optional_plan_name("   ") is None
         assert _resolve_optional_plan_name("Deload") == "Deload"
+
+
+class TestPlanDetailSignals:
+    def test_merge_plan_payload_preserves_unknown_update_keys(self):
+        merged = _merge_plan_payload(
+            {
+                "name": "Keller Block",
+                "sessions": [{"name": "Jump Focus", "exercises": [{"exercise_id": "depth_jump"}]}],
+            },
+            {
+                "monday_plan": {
+                    "focus": "jump",
+                    "blocks": [{"name": "Depth Jumps", "sets": 4, "reps": "5"}],
+                }
+            },
+        )
+        assert merged["name"] == "Keller Block"
+        assert merged["monday_plan"]["blocks"][0]["sets"] == 4
+        assert merged["sessions"][0]["name"] == "Jump Focus"
+
+    def test_compute_plan_detail_signals_marks_header_only_plan(self):
+        signals = _compute_plan_detail_signals(
+            {
+                "sessions": [
+                    {
+                        "name": "Jump Focus",
+                        "exercises": [{"exercise_id": "depth_jump"}],
+                    }
+                ]
+            }
+        )
+        assert signals["detail_level"] == "header_only"
+        assert signals["exercises_with_prescription_detail"] == 0
+
+    def test_compute_plan_detail_signals_marks_structured_when_prescriptions_exist(self):
+        signals = _compute_plan_detail_signals(
+            {
+                "sessions": [
+                    {
+                        "name": "Jump Focus",
+                        "exercises": [{"name": "Depth Jumps", "sets": 4, "reps": 5}],
+                    }
+                ]
+            }
+        )
+        assert signals["detail_level"] == "structured"
+        assert signals["exercises_with_prescription_detail"] == 1

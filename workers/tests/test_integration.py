@@ -2604,6 +2604,8 @@ class TestTrainingPlanIntegration:
         data = proj["data"]
         assert data["active_plan"]["name"] == "Hypertrophy Block"
         assert len(data["active_plan"]["sessions"]) == 2
+        assert data["detail_locator"]["projection_key"] == "details"
+        assert data["detail_locator"]["detail_level"] in {"header_only", "structured"}
 
     async def test_plan_archive(self, db, test_user_id):
         await create_test_user(db, test_user_id)
@@ -2624,6 +2626,53 @@ class TestTrainingPlanIntegration:
         data = proj["data"]
         assert data["active_plan"] is None
         assert len(data["plan_history"]) == 1
+
+    async def test_plan_details_projection_preserves_unknown_update_payload(self, db, test_user_id):
+        await create_test_user(db, test_user_id)
+        await insert_event(db, test_user_id, "training_plan.created", {
+            "plan_id": "plan-001",
+            "name": "Keller Block 1",
+            "sessions": [
+                {
+                    "day": "monday",
+                    "name": "Jump Focus",
+                    "exercises": [{"exercise_id": "depth_jump"}],
+                }
+            ],
+        }, "TIMESTAMP '2026-02-20 08:00:00+01'")
+        detail_event_id = await insert_event(db, test_user_id, "training_plan.updated", {
+            "plan_id": "plan-001",
+            "monday_plan": {
+                "focus": "jump",
+                "blocks": [
+                    {"name": "Depth Jumps", "sets": 4, "reps": 5},
+                    {"name": "Rim Jumps", "sets": 6, "reps": "3-5"},
+                ],
+            },
+        }, "TIMESTAMP '2026-02-20 09:00:00+01'")
+
+        await db.execute("SET ROLE app_worker")
+        await update_training_plan(db, {
+            "user_id": test_user_id, "event_type": "training_plan.updated",
+        })
+        await db.execute("RESET ROLE")
+
+        overview = await get_projection(db, test_user_id, "training_plan", key="overview")
+        assert overview is not None
+        locator = overview["data"]["detail_locator"]
+        assert locator["projection_key"] == "details"
+        assert locator["detail_level"] == "structured"
+        assert locator["source_event"]["event_type"] == "training_plan.updated"
+        assert locator["source_event"]["event_id"] == detail_event_id
+
+        details = await get_projection(db, test_user_id, "training_plan", key="details")
+        assert details is not None
+        details_data = details["data"]
+        assert details_data["schema_version"] == "training_plan.details.v1"
+        assert details_data["active_plan_id"] == "plan-001"
+        assert details_data["detail_level"] == "structured"
+        assert details_data["plan_payload"]["monday_plan"]["blocks"][0]["name"] == "Depth Jumps"
+        assert details_data["plan_payload"]["monday_plan"]["blocks"][0]["sets"] == 4
 
 
 # ---------------------------------------------------------------------------
