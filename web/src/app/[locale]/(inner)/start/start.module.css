@@ -59,6 +59,21 @@
   height: 100% !important;
 }
 
+.mockupLayer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1a1a1e;
+  object-fit: unset;
+}
+
+.mockupLayer > div {
+  width: 100%;
+  max-width: none;
+  border-radius: 0;
+  font-size: 0.85rem;
+}
+
 .dots {
   display: flex;
   justify-content: center;
