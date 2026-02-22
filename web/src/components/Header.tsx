@@ -35,6 +35,7 @@ export function Header({ variant = 'default' }: HeaderProps) {
   const navLinks = isLoggedIn ? (
     <>
       <Link href="/start" className={styles.link} onClick={closeMenu}>{t('home')}</Link>
+      <Link href="/how-i-use-it" className={styles.link} onClick={closeMenu}>{t('howIUseIt')}</Link>
       <Link href="/setup" className={styles.link} onClick={closeMenu}>{t('setup')}</Link>
       <Link href="/settings" className={styles.link} onClick={closeMenu}>{t('settings')}</Link>
       <button
@@ -48,6 +49,7 @@ export function Header({ variant = 'default' }: HeaderProps) {
   ) : (
     <>
       <Link href="/start" className={styles.link} onClick={closeMenu}>{t('home')}</Link>
+      <Link href="/how-i-use-it" className={styles.link} onClick={closeMenu}>{t('howIUseIt')}</Link>
       <Link href="/setup" className={styles.link} onClick={closeMenu}>{t('setup')}</Link>
       <Link href="/login" className={styles.link} onClick={closeMenu}>{t('login')}</Link>
       <Link href="/request-access" className={styles.link} onClick={closeMenu}>{t('requestAccess')}</Link>

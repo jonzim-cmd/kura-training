@@ -48,6 +48,17 @@
   font-size: var(--text-md);
 }
 
+.seeInAction {
+  color: var(--ink-faint);
+  text-decoration: underline;
+  text-decoration-color: var(--border);
+  text-underline-offset: 3px;
+  transition: color 0.15s;
+}
+.seeInAction:hover {
+  color: var(--ink);
+}
+
 /* --- AI Cards --- */
 .aiCards {
   display: flex;

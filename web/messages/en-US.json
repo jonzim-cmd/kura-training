@@ -5,6 +5,7 @@
   },
   "nav": {
     "home": "Why KURA?",
+    "howIUseIt": "How I Use It",
     "setup": "Setup",
     "login": "Log in",
     "signup": "Create account",
@@ -138,7 +139,8 @@
       "step3Title": "Start talking",
       "step3Desc": "Your AI agent does a lot more than just training — so it needs a quick nudge at the start. Open your chat and say something like:",
       "step3Example": "\"I'm new to Kura. Explain how it works and do the onboarding with me.\"",
-      "step3After": "After that, just talk about your training. The agent knows what to log. If it doesn't, a quick \"Save this in Kura\" does the trick."
+      "step3After": "After that, just talk about your training. The agent knows what to log. If it doesn't, a quick \"Save this in Kura\" does the trick.",
+      "step3SeeIt": "What that looks like →"
     },
     "tagline": ""
   },
@@ -282,6 +284,7 @@
     "welcomeSubtitle": "Connect your AI to Kura next. Once set up, tell your agent: \"I'm new to Kura. Explain how it works and do the onboarding with me.\"",
     "title": "Connect your AI",
     "subtitle": "Most find it works best with OpenClaw or Claude.",
+    "seeInAction": "See what that looks like →",
     "cards": {
       "claude": "Claude",
       "claudeSub": "claude.ai",

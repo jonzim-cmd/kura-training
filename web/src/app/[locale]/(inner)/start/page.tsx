@@ -99,6 +99,7 @@ export default function StartPage() {
             <p className={styles.stepDesc}>{t('how.step3Desc')}</p>
             <p className={styles.stepExample}>{t('how.step3Example')}</p>
             <p className={styles.stepDesc}>{t('how.step3After')}</p>
+            <Link href="/how-i-use-it" className={styles.stepBtn}>{t('how.step3SeeIt')}</Link>
           </div>
         </div>
       </section>

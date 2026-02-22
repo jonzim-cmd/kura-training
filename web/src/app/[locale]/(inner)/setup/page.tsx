@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
+import { Link } from '@/i18n/routing';
 import { useAuth } from '@/lib/auth-context';
 import { SETUP_SEEN_STORAGE_KEY } from '@/lib/onboarding';
 import { ClaudeGuide } from './ClaudeGuide';
@@ -67,7 +68,10 @@ export default function SetupPage() {
             </div>
           )}
           <h2 className={styles.title}>{t('title')}</h2>
-          <p className={styles.subtitle}>{t('subtitle')}</p>
+          <p className={styles.subtitle}>
+            {t('subtitle')}{' '}
+            <Link href="/how-i-use-it" className={styles.seeInAction}>{t('seeInAction')}</Link>
+          </p>
         </div>
 
         {/* AI Cards */}

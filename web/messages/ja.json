@@ -5,6 +5,7 @@
   },
   "nav": {
     "home": "KURAとは?",
+    "howIUseIt": "How I Use It",
     "setup": "設定ガイド",
     "login": "ログイン",
     "signup": "アカウント作成",
@@ -138,7 +139,8 @@
       "step3Title": "話し始める",
       "step3Desc": "AIエージェントはトレーニング以外にも色々できる — だから最初にひと言伝える必要がある。チャットを開いて、こう言ってみて：",
       "step3Example": "「Kuraを使いたい。使い方を教えて、オンボーディングをやって。」",
-      "step3After": "あとはトレーニングについて話すだけ。エージェントが何を記録すべきか分かってくれる。うまくいかない時は「Kuraに保存して」と言えばOK。"
+      "step3After": "あとはトレーニングについて話すだけ。エージェントが何を記録すべきか分かってくれる。うまくいかない時は「Kuraに保存して」と言えばOK。",
+      "step3SeeIt": "実際の会話を見る →"
     },
     "tagline": ""
   },
@@ -282,6 +284,7 @@
     "welcomeSubtitle": "次にAIをKuraに接続しましょう。設定が完了したら、エージェントにこう言ってみて：「Kuraを使いたい。使い方を教えて、オンボーディングをやって。」",
     "title": "AIを接続",
     "subtitle": "OpenClawまたはClaudeとの組み合わせが人気です。",
+    "seeInAction": "実際の使い方を見る →",
     "cards": {
       "claude": "Claude",
       "claudeSub": "claude.ai",
