@@ -38,7 +38,7 @@ const JSON_LD = {
       '@type': 'WebSite',
       name: 'Kura',
       url: BASE_URL,
-      description: 'AI training diary and workout logger',
+      description: 'AI training diary for OpenClaw, Claude, ChatGPT, and other AI agents',
       inLanguage: [...LOCALES],
     },
     {
@@ -49,7 +49,7 @@ const JSON_LD = {
       operatingSystem: 'Web',
       url: BASE_URL,
       description:
-        'AI-powered training diary that structures, stores, and analyzes your workout data. Works with Claude, ChatGPT, and any AI agent.',
+        'AI-powered training diary that structures, stores, and analyzes your workout data. Works with OpenClaw, Claude, ChatGPT, and other AI agents via MCP or CLI.',
       offers: {
         '@type': 'Offer',
         price: '0',
@@ -57,10 +57,10 @@ const JSON_LD = {
         availability: 'https://schema.org/LimitedAvailability',
       },
       featureList: [
-        'AI training log',
+        'AI training log for OpenClaw, Claude, and ChatGPT',
         'Workout tracking via natural language',
+        'MCP and CLI agent integrations',
         'Training data analysis',
-        'Works with Claude and ChatGPT',
         'Structured training data storage',
       ],
     },

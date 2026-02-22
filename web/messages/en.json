@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "Kura — AI Training Diary & Workout Logger",
-    "description": "Log your training by talking to AI. Kura structures, stores, and analyzes your workout data — sets, reps, runs, rides. Your AI training diary that works with Claude, ChatGPT, and any AI agent."
+    "title": "Kura - AI Training Diary for OpenClaw, Claude & ChatGPT",
+    "description": "Log your training with an AI agent. Kura structures, stores, and analyzes your workout data - sets, reps, runs, rides. Your AI training diary for OpenClaw, Claude, ChatGPT, and other AI tools."
   },
   "nav": {
     "home": "Why KURA?",
@@ -14,7 +14,7 @@
     "logout": "Log out"
   },
   "landing": {
-    "subtitle": "AI Training Diary & Workout Logger",
+    "subtitle": "AI Training Diary for OpenClaw, Claude & ChatGPT",
     "sportTabs": {
       "strength": "Strength",
       "running": "Running",
@@ -74,10 +74,10 @@
   },
   "requestAccess": {
     "title": "Request access",
-    "subtitle": "Kura is in early access. Leave your email and we'll get back to you.",
+    "subtitle": "Kura is in early access for AI-first athletes. Leave your email and we'll get back to you.",
     "pitch": {
       "free": "Early access is free. No trial, no hidden costs.",
-      "full": "Full access to everything: API, CLI, all dimensions.",
+      "full": "Full access to everything: API, CLI, MCP, and OpenClaw/Claude/ChatGPT workflows.",
       "help": "Your usage helps us improve Kura. Anonymized data feeds population-level statistics that benefit all users."
     },
     "email": "Email",
@@ -134,10 +134,10 @@
       "step1Title": "Request access",
       "step1Desc": "Early access is free. Requests are approved quickly.",
       "step2Title": "Connect an AI",
-      "step2Desc": "Pick your agent and follow the setup guide.",
+      "step2Desc": "Connect OpenClaw, Claude, ChatGPT, or any other AI agent and follow the setup guide.",
       "step2SetupLink": "Setup guide →",
       "step3Title": "Start talking",
-      "step3Desc": "Your AI agent does a lot more than just training — so it needs a quick nudge at the start. Open your chat and say something like:",
+      "step3Desc": "Your AI agent does much more than training, so give it a quick nudge at the start. Open OpenClaw, Claude, or ChatGPT and say something like:",
       "step3Example": "\"I'm new to Kura. Explain how it works and do the onboarding with me.\"",
       "step3After": "After that, just talk about your training. The agent knows what to log. If it doesn't, a quick \"Save this in Kura\" does the trick.",
       "step3SeeIt": "What that looks like →"
@@ -277,7 +277,7 @@
   },
   "howIUseIt": {
     "title": "How I Use It",
-    "subtitle": "Real conversations between me and my agent.",
+    "subtitle": "Real conversations between me and OpenClaw, Claude, and ChatGPT.",
     "tipsTitle": "What I've learned",
     "tips": [
       "Your agent is an intelligent entity — sounds weird, I know. But treat it as a partner, not a tool. The results will be way better.",
@@ -295,7 +295,7 @@
     "welcome": "Great to have you!",
     "welcomeSubtitle": "Connect your AI to Kura next. Once set up, tell your agent: \"I'm new to Kura. Explain how it works and do the onboarding with me.\"",
     "title": "Connect your AI",
-    "subtitle": "Most find it works best with OpenClaw or Claude.",
+    "subtitle": "OpenClaw-first, and equally strong with Claude and ChatGPT.",
     "seeInAction": "See what that looks like →",
     "cards": {
       "claude": "Claude",
@@ -315,7 +315,6 @@
       "step6Label": "Click \"Connect\" on your new Kura Training connector",
       "done": "Done! Your connector is now set up.",
       "doneHint": "Open a new chat and say: \"I'm new to Kura. Explain how it works and do the onboarding with me.\"",
-
       "next": "Next",
       "back": "Back",
       "restart": "Restart",
@@ -374,7 +373,6 @@
       "step6Label": "Check the agreement box and click \"Create\"",
       "done": "Done! Your MCP app is now set up in ChatGPT.",
       "doneHint": "Open a new chat and say: \"I'm new to Kura. Explain how it works and do the onboarding with me.\"",
-
       "next": "Next",
       "back": "Back",
       "restart": "Restart",

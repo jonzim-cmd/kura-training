@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "Kura — KI-Trainingstagebuch & Workout-Logger",
-    "description": "Logge dein Training per KI. Kura strukturiert, speichert und analysiert deine Trainingsdaten — Sätze, Wiederholungen, Läufe, Fahrten. Dein KI-Trainingstagebuch für Claude, ChatGPT und jede KI."
+    "title": "Kura - KI-Trainingstagebuch für OpenClaw, Claude & ChatGPT",
+    "description": "Logge dein Training per KI-Agent. Kura strukturiert, speichert und analysiert deine Trainingsdaten - Sätze, Wiederholungen, Läufe, Fahrten. Dein KI-Trainingstagebuch für OpenClaw, Claude, ChatGPT und andere KI-Tools."
   },
   "nav": {
     "home": "Warum KURA?",
@@ -14,7 +14,7 @@
     "logout": "Abmelden"
   },
   "landing": {
-    "subtitle": "KI-Trainingstagebuch & Workout-Logger",
+    "subtitle": "KI-Trainingstagebuch für OpenClaw, Claude & ChatGPT",
     "sportTabs": {
       "strength": "Kraft",
       "running": "Laufen",
@@ -74,10 +74,10 @@
   },
   "requestAccess": {
     "title": "Zugang anfragen",
-    "subtitle": "Kura ist in Early Access. Hinterlasse deine E-Mail und wir melden uns.",
+    "subtitle": "Kura ist im Early Access für KI-Athlet:innen. Hinterlasse deine E-Mail und wir melden uns.",
     "pitch": {
       "free": "Early Access ist kostenlos. Kein Trial, keine versteckten Kosten.",
-      "full": "Voller Zugang zu allem: API, CLI, alle Dimensionen.",
+      "full": "Voller Zugang zu allem: API, CLI, MCP und OpenClaw-/Claude-/ChatGPT-Workflows.",
       "help": "Deine Nutzung hilft uns, Kura zu verbessern. Anonymisierte Daten fließen in populationsbasierte Statistiken, von denen alle Nutzer profitieren."
     },
     "email": "E-Mail",
@@ -134,12 +134,12 @@
       "step1Title": "Zugang anfragen",
       "step1Desc": "Early Access ist kostenlos. Anfragen werden kurzfristig freigeschaltet.",
       "step2Title": "KI verbinden",
-      "step2Desc": "Agent auswählen und der Einrichtung folgen.",
+      "step2Desc": "OpenClaw, Claude, ChatGPT oder jeden anderen KI-Agenten verbinden und Einrichtung starten.",
       "step2SetupLink": "Zur Einrichtung →",
       "step3Title": "Losreden",
-      "step3Desc": "Dein AI-Agent kann viel mehr als nur Training — deshalb braucht er am Anfang einen kurzen Hinweis. Öffne deinen Chat und sag zum Beispiel:",
-      "step3Example": "„Ich bin neu bei Kura. Erkläre mir, wie es funktioniert und mach das Onboarding mit mir.\u201C",
-      "step3After": "Ab da reicht es, einfach über dein Training zu reden. Der Agent erkennt, was zu loggen ist. Falls nicht, hilft ein kurzes „Speicher das in Kura\u201C.",
+      "step3Desc": "Dein KI-Agent kann viel mehr als nur Training. Gib ihm am Anfang einen kurzen Hinweis. Öffne z. B. OpenClaw, Claude oder ChatGPT und sag:",
+      "step3Example": "„Ich bin neu bei Kura. Erkläre mir, wie es funktioniert und mach das Onboarding mit mir.“",
+      "step3After": "Ab da reicht es, einfach über dein Training zu reden. Der Agent erkennt, was zu loggen ist. Falls nicht, hilft ein kurzes „Speicher das in Kura“.",
       "step3SeeIt": "Wie das dann aussieht →"
     },
     "tagline": ""
@@ -277,7 +277,7 @@
   },
   "howIUseIt": {
     "title": "So nutze ich es",
-    "subtitle": "Echte Gespräche zwischen mir und meinem Agenten.",
+    "subtitle": "Echte Gespräche zwischen mir und OpenClaw, Claude und ChatGPT.",
     "tipsTitle": "Was ich gelernt habe",
     "tips": [
       "Dein Agent ist eine intelligente Entität — klingt komisch, ich weiß. Aber behandle ihn als Partner, nicht als Werkzeug. Die Ergebnisse werden deutlich besser.",
@@ -293,9 +293,9 @@
   },
   "setup": {
     "welcome": "Cool, dass du dabei bist!",
-    "welcomeSubtitle": "Verbinde als Nächstes deine KI mit Kura. Wenn alles eingerichtet ist, sag deinem Agent: „Ich bin neu bei Kura. Erkläre mir, wie es funktioniert und mach das Onboarding mit mir.\u201C",
+    "welcomeSubtitle": "Verbinde als Nächstes deine KI mit Kura. Wenn alles eingerichtet ist, sag deinem Agent: „Ich bin neu bei Kura. Erkläre mir, wie es funktioniert und mach das Onboarding mit mir.“",
     "title": "Verbinde deine KI",
-    "subtitle": "Die meisten nutzen OpenClaw oder Claude.",
+    "subtitle": "OpenClaw-first, genauso stark mit Claude und ChatGPT.",
     "seeInAction": "So sieht das im Alltag aus →",
     "cards": {
       "claude": "Claude",
@@ -314,8 +314,7 @@
       "step5Label": "Gib einen Namen und die MCP-Server-URL ein, dann klicke \"Hinzufügen\"",
       "step6Label": "Klicke auf \"Verbinden\" bei deinem neuen Kura Training Connector",
       "done": "Fertig! Dein Connector ist jetzt eingerichtet.",
-      "doneHint": "Öffne einen neuen Chat und sag: „Ich bin neu bei Kura. Erkläre mir, wie es funktioniert und mach das Onboarding mit mir.\u201C",
-
+      "doneHint": "Öffne einen neuen Chat und sag: „Ich bin neu bei Kura. Erkläre mir, wie es funktioniert und mach das Onboarding mit mir.“",
       "next": "Weiter",
       "back": "Zurück",
       "restart": "Neustart",
@@ -373,8 +372,7 @@
       "step5Label": "Klicke auf \"App erstellen\" und gib Name, URL und OAuth-Daten ein",
       "step6Label": "Setze den Haken und klicke \"Erstellen\"",
       "done": "Fertig! Deine MCP-App ist jetzt in ChatGPT eingerichtet.",
-      "doneHint": "Öffne einen neuen Chat und sag: „Ich bin neu bei Kura. Erkläre mir, wie es funktioniert und mach das Onboarding mit mir.\u201C",
-
+      "doneHint": "Öffne einen neuen Chat und sag: „Ich bin neu bei Kura. Erkläre mir, wie es funktioniert und mach das Onboarding mit mir.“",
       "next": "Weiter",
       "back": "Zurück",
       "restart": "Neustart",
@@ -417,7 +415,7 @@
     },
     "openclaw": {
       "title": "OpenClaw",
-      "intro": "OpenClaw ist ein KI-Agent — sag ihm einfach, dass er sich mit Kura verbinden soll. Danach: „Ich bin neu bei Kura. Erkläre mir, wie es funktioniert und mach das Onboarding mit mir.\u201C",
+      "intro": "OpenClaw ist ein KI-Agent — sag ihm einfach, dass er sich mit Kura verbinden soll. Danach: „Ich bin neu bei Kura. Erkläre mir, wie es funktioniert und mach das Onboarding mit mir.“",
       "getOpenClaw": "openclaw.ai →",
       "methodMcp": "MCP",
       "methodCli": "CLI",

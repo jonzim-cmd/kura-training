@@ -9,6 +9,7 @@ const PAGES: ReadonlyArray<{
 }> = [
   { path: '/', changeFrequency: 'weekly', priority: 1.0 },
   { path: '/start', changeFrequency: 'monthly', priority: 0.9 },
+  { path: '/how-i-use-it', changeFrequency: 'monthly', priority: 0.85 },
   { path: '/request-access', changeFrequency: 'monthly', priority: 0.8 },
   { path: '/setup', changeFrequency: 'monthly', priority: 0.7 },
   { path: '/datenschutz', changeFrequency: 'yearly', priority: 0.3 },
