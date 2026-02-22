@@ -127,6 +127,50 @@
   color: var(--ink-faint);
 }
 
+/* --- Tips --- */
+
+.tips {
+  width: 100%;
+  max-width: 580px;
+  margin-top: var(--space-4xl);
+}
+
+.tipsTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: 700;
+  margin-bottom: var(--space-xl);
+}
+
+.tipsList {
+  list-style: none;
+  counter-reset: tip;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+}
+
+.tip {
+  counter-increment: tip;
+  font-family: var(--font-body);
+  font-size: var(--text-md);
+  line-height: 1.7;
+  color: var(--ink-mid);
+  padding-left: 2rem;
+  position: relative;
+}
+
+.tip::before {
+  content: counter(tip);
+  position: absolute;
+  left: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--ink-faint);
+  font-weight: 300;
+}
+
 /* --- Responsive --- */
 
 @media (max-width: 480px) {

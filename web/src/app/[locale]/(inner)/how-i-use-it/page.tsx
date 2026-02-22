@@ -77,6 +77,15 @@ export default function HowIUseItPage() {
             </div>
           )}
         </div>
+
+        <div className={styles.tips}>
+          <h2 className={styles.tipsTitle}>{t('tipsTitle')}</h2>
+          <ol className={styles.tipsList}>
+            {(t.raw('tips') as string[]).map((tip, i) => (
+              <li key={i} className={styles.tip}>{tip}</li>
+            ))}
+          </ol>
+        </div>
       </div>
     </div>
   );

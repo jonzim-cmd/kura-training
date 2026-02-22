@@ -277,7 +277,19 @@
   },
   "howIUseIt": {
     "title": "So nutze ich es",
-    "subtitle": "Echte Gespräche zwischen mir und meinem Agenten."
+    "subtitle": "Echte Gespräche zwischen mir und meinem Agenten.",
+    "tipsTitle": "Was ich gelernt habe",
+    "tips": [
+      "Dein Agent ist eine intelligente Entität — klingt komisch, ich weiß. Aber behandle ihn als Partner, nicht als Werkzeug. Die Ergebnisse werden deutlich besser.",
+      "Wenn etwas unklar ist, frag nach. Wenn er was falsch macht, korrigier ihn. Er lernt mit dir.",
+      "Gib Kontext. Je mehr dein Agent versteht, desto besser kann er mit Kura arbeiten.",
+      "Du und dein Agent seid gemeinsam dafür verantwortlich, dass die Daten in Kura stimmen. Lass ihn ab und zu die Daten reviewen.",
+      "Kura ist nur so gut wie die Daten. Kein Zaubertrick, weder von Kura noch vom Agent. Arbeite damit wie mit einem Trainingspartner oder Coach — wenn du nicht ordentlich kommunizierst, werden die Ergebnisse schlechter.",
+      "Agents nehmen manchmal den einfachsten Weg oder finden eine bestimmte Funktion in Kura nicht sofort. Das kann zu Halluzinationen oder generischen Antworten führen. Wenn du das Gefühl hast, mach deinen Agent darauf aufmerksam.",
+      "Wenn du ein schwächeres Modell nutzt, merk dir: die Ergebnisse können spürbar schlechter sein. Kura funktioniert am besten mit den stärkeren Modellen.",
+      "Frag deinen Agent, was er im Umgang mit Kura besser machen könnte.",
+      "Lass ihn reflektieren, wie er mit Kura arbeitet — und schick mir das Feedback, wenn du willst."
+    ]
   },
   "setup": {
     "welcome": "Cool, dass du dabei bist!",

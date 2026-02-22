@@ -277,7 +277,19 @@
   },
   "howIUseIt": {
     "title": "How I Use It",
-    "subtitle": "Real conversations between me and my agent."
+    "subtitle": "Real conversations between me and my agent.",
+    "tipsTitle": "What I've learned",
+    "tips": [
+      "Your agent is an intelligent entity — sounds weird, I know. But treat it as a partner, not a tool. The results will be way better.",
+      "If something is unclear, ask. If it gets something wrong, correct it. It learns with you.",
+      "Give context. The more your agent understands, the better it can work with Kura.",
+      "You and your agent are both responsible for keeping the data in Kura clean. Ask it to review your data from time to time.",
+      "Kura is only as good as the data. No magic tricks, not from Kura, not from your agent. Work with it like a training partner or coach — if you don't communicate properly, the results will be worse.",
+      "Agents sometimes take the easy way or don't find a specific function in Kura right away. This can lead to hallucinations or generic answers. If you get that sense, make your agent aware of it.",
+      "If you're using a less capable model, be aware that the results can be noticeably worse. Kura works best with the stronger models.",
+      "Ask your agent what it could do better in working with Kura.",
+      "Let it reflect on how it works with Kura — and send me the feedback if you want."
+    ]
   },
   "setup": {
     "welcome": "Great to have you!",
