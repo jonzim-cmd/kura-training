@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useTranslations, useLocale } from 'next-intl';
 import { SignalMockup } from '@/components/SignalMockup';
 import { getConversations } from './conversations';
@@ -15,6 +15,19 @@ export default function HowIUseItPage() {
 
   const prev = useCallback(() => setCurrent((c) => Math.max(0, c - 1)), []);
   const next = useCallback(() => setCurrent((c) => Math.min(total - 1, c + 1)), [total]);
+
+  /* Click-to-advance: only if no text was selected (drag vs click) */
+  const mouseDown = useRef<{ x: number; y: number } | null>(null);
+  const onSlideDown = useCallback((e: React.MouseEvent) => {
+    mouseDown.current = { x: e.clientX, y: e.clientY };
+  }, []);
+  const onSlideUp = useCallback((e: React.MouseEvent) => {
+    if (!mouseDown.current) return;
+    const dx = Math.abs(e.clientX - mouseDown.current.x);
+    const dy = Math.abs(e.clientY - mouseDown.current.y);
+    mouseDown.current = null;
+    if (dx < 5 && dy < 5 && !window.getSelection()?.toString()) next();
+  }, [next]);
 
   /* Keyboard navigation */
   useEffect(() => {
@@ -52,7 +65,7 @@ export default function HowIUseItPage() {
         </div>
 
         <div className={styles.carousel}>
-          <div className={styles.slide}>
+          <div className={styles.slide} onMouseDown={onSlideDown} onMouseUp={onSlideUp} style={{ cursor: current < total - 1 ? 'pointer' : undefined }}>
             <SignalMockup messages={conversations[current]} />
           </div>
 
