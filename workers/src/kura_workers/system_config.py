@@ -33,6 +33,7 @@ from .consistency_inbox_protocol import (
 from .objective_contract_v1 import objective_contract_v1
 from .objective_advisory_v1 import objective_advisory_contract_v1
 from .objective_statistical_contract_v1 import objective_statistical_method_contract_v1
+from .unknown_field_advisory import unknown_field_advisory_contract_v1
 from .strength_gold_model_v1 import strength_gold_model_contract_v1
 from .training_hardening_gate_v1 import hardening_gate_contract_v1
 from .training_legacy_compat import legacy_compat_contract_v1
@@ -131,6 +132,14 @@ def _get_conventions() -> dict[str, Any]:
                 "Safety invariants remain active even when advisory warnings are overridden.",
             ],
             "contract": objective_advisory_contract_v1(),
+        },
+        "unknown_field_advisory_v1": {
+            "rules": [
+                "Unknown fields must never hard-block writes for agent-originated event logs.",
+                "Warnings should be explicit that values are stored but may not affect projections.",
+                "When known, suggest canonical mapped fields to reduce schema drift.",
+            ],
+            "contract": unknown_field_advisory_contract_v1(),
         },
         "causal_estimand_registry_v2": {
             "rules": [
@@ -2473,6 +2482,7 @@ def _default_manifest_section_criticality(section: str) -> str:
         "system_config.dimensions",
         "system_config.projection_schemas",
         "system_config.conventions::formal_event_type_policy_v1",
+        "system_config.conventions::unknown_field_advisory_v1",
         "system_config.conventions::write_preflight_v1",
     }
     if section in core_sections:

@@ -1426,26 +1426,56 @@ async def update_user_profile(
     observed_field_first_seen: dict[str, dict[str, str]] = {}
     observed_field_last_seen: dict[str, dict[str, str]] = {}
     if observed_patterns and "observed_fields" in observed_patterns:
-        for et, fields in observed_patterns["observed_fields"].items():
-            field_names = list(fields.keys())
+        observed_fields = observed_patterns["observed_fields"]
+        observed_event_types = sorted(observed_fields.keys())
+        observed_field_names = sorted(
+            {
+                str(field).strip()
+                for fields in observed_fields.values()
+                for field in fields.keys()
+                if str(field).strip()
+            }
+        )
+        observed_field_allowlist: dict[str, set[str]] = {
+            event_type: {str(field).strip() for field in fields.keys() if str(field).strip()}
+            for event_type, fields in observed_fields.items()
+        }
+
+        if observed_event_types and observed_field_names:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
-                    SELECT k AS field, MIN(e.timestamp) AS first_seen, MAX(e.timestamp) AS last_seen
-                    FROM events e,
-                         jsonb_object_keys(e.data) AS k
+                    SELECT e.event_type, k AS field,
+                           MIN(e.timestamp) AS first_seen,
+                           MAX(e.timestamp) AS last_seen
+                    FROM events e
+                    CROSS JOIN LATERAL jsonb_object_keys(
+                        CASE
+                            WHEN jsonb_typeof(e.data) = 'object' THEN e.data
+                            ELSE '{}'::jsonb
+                        END
+                    ) AS k
                     WHERE e.user_id = %s
-                      AND e.event_type = %s
+                      AND e.event_type = ANY(%s)
                       AND k = ANY(%s)
-                    GROUP BY k
+                    GROUP BY e.event_type, k
                     """,
-                    (user_id, et, field_names),
+                    (user_id, observed_event_types, observed_field_names),
                 )
                 for r in await cur.fetchall():
+                    event_type = str(r.get("event_type") or "")
+                    field_name = str(r.get("field") or "")
+                    allowed_fields = observed_field_allowlist.get(event_type)
+                    if not allowed_fields or field_name not in allowed_fields:
+                        continue
                     if r.get("first_seen") is not None:
-                        observed_field_first_seen.setdefault(et, {})[r["field"]] = r["first_seen"].isoformat()
+                        observed_field_first_seen.setdefault(event_type, {})[
+                            field_name
+                        ] = r["first_seen"].isoformat()
                     if r.get("last_seen") is not None:
-                        observed_field_last_seen.setdefault(et, {})[r["field"]] = r["last_seen"].isoformat()
+                        observed_field_last_seen.setdefault(event_type, {})[
+                            field_name
+                        ] = r["last_seen"].isoformat()
 
     # Rebuild with seen-timestamp enrichment if we have any
     if observed_field_first_seen or observed_field_last_seen:

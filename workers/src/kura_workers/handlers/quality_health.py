@@ -44,6 +44,7 @@ from ..training_session_completeness import (
     MISSING_ANCHOR_ERROR_CODES,
     evaluate_session_completeness,
 )
+from ..unknown_field_advisory import unknown_field_mapping_hint
 from ..utils import get_alias_map, get_retracted_event_ids
 
 logger = logging.getLogger(__name__)
@@ -111,14 +112,6 @@ _UNKNOWN_FIELD_RECENT_WINDOW_DAYS = 14
 _UNKNOWN_FIELD_MEDIUM_OCCURRENCES = 6
 _UNKNOWN_FIELD_MEDIUM_EVENT_TYPES = 2
 _UNKNOWN_FIELD_TOP_LIMIT = 5
-_UNKNOWN_FIELD_HINTS: dict[tuple[str, str], str] = {
-    ("session.completed", "overall_feeling"): "enjoyment",
-    ("session.completed", "feeling"): "enjoyment",
-    ("soreness.logged", "overall_level"): "severity",
-    ("soreness.logged", "soreness_level"): "severity",
-    ("energy.logged", "energy_level"): "level",
-    ("set.logged", "notes"): "load_context",
-}
 
 _REPAIR_STATE_PROPOSED = "proposed"
 _REPAIR_STATE_SIMULATED_SAFE = "simulated_safe"
@@ -2215,9 +2208,7 @@ _EVENT_CONVENTION_FIELD_REGISTRY = _build_event_convention_field_registry()
 
 
 def _unknown_field_mapping_hint(event_type: str, field: str) -> str | None:
-    return _UNKNOWN_FIELD_HINTS.get(
-        (event_type.strip().lower(), field.strip().lower())
-    )
+    return unknown_field_mapping_hint(event_type, field)
 
 
 def _compute_unknown_field_drift_metrics(

@@ -208,6 +208,10 @@ class TestBuildSystemConfig:
             sections["system_config.event_conventions::set.logged"]["purpose"]
             == "Formal event schema contract for writes and corrections."
         )
+        assert (
+            sections["system_config.conventions::unknown_field_advisory_v1"]["criticality"]
+            == "core"
+        )
         assert sections["system_config.section_metadata"]["criticality"] == "extended"
 
 
@@ -234,6 +238,21 @@ class TestConventions:
     def test_has_exercise_normalization(self):
         result = _get_conventions()
         assert "exercise_normalization" in result
+
+    def test_has_unknown_field_advisory_v1(self):
+        result = _get_conventions()
+        assert "unknown_field_advisory_v1" in result
+        advisory = result["unknown_field_advisory_v1"]["contract"]
+        assert advisory["schema_version"] == "unknown_field_advisory.v1"
+        assert advisory["policy_role"] == "advisory_only"
+        assert advisory["write_policy"]["mode"] == "warn_only"
+        assert advisory["write_policy"]["block_unknown_fields"] is False
+        hints = {
+            (item["event_type"], item["field"]): item["mapped_field"]
+            for item in advisory["mapping_hints"]
+        }
+        assert hints[("energy.logged", "energy_level")] == "level"
+        assert hints[("set.logged", "notes")] == "load_context"
 
     def test_exercise_normalization_has_rules(self):
         result = _get_conventions()

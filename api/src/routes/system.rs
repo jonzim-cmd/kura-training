@@ -562,6 +562,7 @@ fn section_criticality(section: &str) -> &'static str {
         | "system_config.dimensions"
         | "system_config.projection_schemas"
         | "system_config.conventions::formal_event_type_policy_v1"
+        | "system_config.conventions::unknown_field_advisory_v1"
         | "system_config.conventions::write_preflight_v1" => "core",
         _ => "extended",
     }
