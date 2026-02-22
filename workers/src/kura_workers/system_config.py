@@ -997,7 +997,7 @@ def _get_conventions() -> dict[str, Any]:
             "rules": [
                 "Never claim plan details are missing before checking both training_plan/overview and training_plan/details.",
                 "Use training_plan/overview.detail_locator as deterministic source-of-truth for where detailed prescriptions live.",
-                "If detail_level=header_only, use source_event_ref from detail_locator for fallback event inspection.",
+                "If detail_level=header_only, use source_event from detail_locator for fallback event inspection.",
                 "When detail_level=structured, answer from training_plan/details.plan_payload first.",
             ],
             "primary_projection": {

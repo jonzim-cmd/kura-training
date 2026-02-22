@@ -30,7 +30,9 @@ TRAINING_PLAN_OVERVIEW_KEY = "overview"
 TRAINING_PLAN_DETAILS_KEY = "details"
 TRAINING_PLAN_DETAILS_SCHEMA_VERSION = "training_plan.details.v1"
 TRAINING_PLAN_DETAIL_LOCATOR_SCHEMA_VERSION = "training_plan.detail_locator.v1"
-_PLAN_METADATA_KEYS = {"name", "sessions", "cycle_weeks", "notes"}
+_PLAN_BASE_METADATA_KEYS = {"name", "cycle_weeks", "notes"}
+_PLAN_METADATA_KEYS = _PLAN_BASE_METADATA_KEYS | {"sessions"}
+_PLAN_UPDATE_NON_DETAIL_KEYS = _PLAN_BASE_METADATA_KEYS | {"plan_id"}
 _HEADER_EXERCISE_KEYS = {
     "exercise_id",
     "name",
@@ -96,9 +98,7 @@ def _event_contains_plan_detail_delta(data: Any) -> bool:
         return False
     if "sessions" in data:
         return True
-    return any(
-        key not in {"plan_id", "name", "cycle_weeks", "notes"} for key in data.keys()
-    )
+    return any(key not in _PLAN_UPDATE_NON_DETAIL_KEYS for key in data.keys())
 
 
 def _compute_plan_detail_signals(payload: Any) -> dict[str, Any]:
@@ -318,6 +318,196 @@ def _manifest_contribution(projection_rows: list[dict[str, Any]]) -> dict[str, A
     return result
 
 
+async def _load_training_plan_rows(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+    retracted_ids: set[str],
+) -> list[dict[str, Any]]:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT id, timestamp, event_type, data
+            FROM events
+            WHERE user_id = %s
+              AND event_type IN (
+                  'training_plan.created',
+                  'training_plan.updated',
+                  'training_plan.archived'
+              )
+            ORDER BY timestamp ASC
+            """,
+            (user_id,),
+        )
+        rows = await cur.fetchall()
+    return [row for row in rows if str(row["id"]) not in retracted_ids]
+
+
+async def _delete_training_plan_projections(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+) -> None:
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            DELETE FROM projections
+            WHERE user_id = %s
+              AND projection_type = 'training_plan'
+              AND key IN (%s, %s)
+            """,
+            (user_id, TRAINING_PLAN_OVERVIEW_KEY, TRAINING_PLAN_DETAILS_KEY),
+        )
+
+
+def _select_active_plan(plans: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    if not plans:
+        return None
+    sorted_plans = sorted(plans.values(), key=lambda plan: plan["created_at"])
+    for plan in sorted_plans[:-1]:
+        plan["status"] = "inactive"
+    return sorted_plans[-1]
+
+
+def _replay_training_plan_state(
+    rows: list[dict[str, Any]],
+) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, str]],
+    list[dict[str, Any]],
+]:
+    plans: dict[str, dict[str, Any]] = {}
+    plan_payloads: dict[str, dict[str, Any]] = {}
+    plan_detail_sources: dict[str, dict[str, str]] = {}
+    archived_plans: list[dict[str, Any]] = []
+
+    for row in rows:
+        data = row["data"]
+        ts = row["timestamp"]
+        event_type = row["event_type"]
+        plan_id = _normalized_plan_id(data.get("plan_id"))
+
+        if event_type == "training_plan.created":
+            normalized_sessions = _normalize_plan_sessions_with_rir(data.get("sessions", []))
+            plans[plan_id] = {
+                "plan_id": plan_id,
+                "name": _resolve_plan_name(data.get("name"), plan_id=plan_id, timestamp=ts),
+                "created_at": ts.isoformat(),
+                "updated_at": ts.isoformat(),
+                "status": "active",
+                "sessions": normalized_sessions,
+                "cycle_weeks": data.get("cycle_weeks"),
+                "notes": data.get("notes"),
+                "rir_targets": _compute_rir_target_summary(normalized_sessions),
+            }
+            plan_payloads[plan_id] = _merge_plan_payload(None, data)
+            plan_detail_sources[plan_id] = _build_event_ref(row)
+            continue
+
+        if event_type == "training_plan.updated":
+            if plan_id not in plans:
+                continue
+            plan = plans[plan_id]
+            plan["updated_at"] = ts.isoformat()
+            if "name" in data:
+                normalized_name = _resolve_optional_plan_name(data.get("name"))
+                if normalized_name is not None:
+                    plan["name"] = normalized_name
+            if "sessions" in data:
+                normalized_sessions = _normalize_plan_sessions_with_rir(data["sessions"])
+                plan["sessions"] = normalized_sessions
+                plan["rir_targets"] = _compute_rir_target_summary(normalized_sessions)
+            if "cycle_weeks" in data:
+                plan["cycle_weeks"] = data["cycle_weeks"]
+            if "notes" in data:
+                plan["notes"] = data["notes"]
+            plan_payloads[plan_id] = _merge_plan_payload(plan_payloads.get(plan_id), data)
+            if _event_contains_plan_detail_delta(data):
+                plan_detail_sources[plan_id] = _build_event_ref(row)
+            continue
+
+        if event_type == "training_plan.archived" and plan_id in plans:
+            plan = plans.pop(plan_id)
+            plan["status"] = "archived"
+            plan["archived_at"] = ts.isoformat()
+            if "reason" in data:
+                plan["archive_reason"] = data["reason"]
+            archived_plans.append(plan)
+            plan_payloads.pop(plan_id, None)
+            plan_detail_sources.pop(plan_id, None)
+
+    return plans, plan_payloads, plan_detail_sources, archived_plans
+
+
+def _build_training_plan_projection_payloads(
+    plans: dict[str, dict[str, Any]],
+    plan_payloads: dict[str, dict[str, Any]],
+    plan_detail_sources: dict[str, dict[str, str]],
+    archived_plans: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    active_plan = _select_active_plan(plans)
+    active_plan_id = active_plan["plan_id"] if active_plan else None
+    active_payload = (
+        copy.deepcopy(plan_payloads.get(active_plan_id, {})) if active_plan_id else {}
+    )
+    detail_signals = _compute_plan_detail_signals(active_payload)
+    source_event = (
+        copy.deepcopy(plan_detail_sources.get(active_plan_id)) if active_plan_id else None
+    )
+    detail_locator = {
+        "schema_version": TRAINING_PLAN_DETAIL_LOCATOR_SCHEMA_VERSION,
+        "projection_type": "training_plan",
+        "projection_key": TRAINING_PLAN_DETAILS_KEY,
+        "detail_level": detail_signals["detail_level"],
+        "detail_available": detail_signals["detail_available"],
+        "source_event": source_event,
+    }
+
+    if active_plan is not None:
+        active_plan["detail_presence"] = copy.deepcopy(detail_signals)
+
+    overview_payload: dict[str, Any] = {
+        "active_plan": active_plan,
+        "total_plans": len(plans) + len(archived_plans),
+        "plan_history": archived_plans[-5:],
+        "detail_locator": detail_locator,
+    }
+    details_payload: dict[str, Any] = {
+        "schema_version": TRAINING_PLAN_DETAILS_SCHEMA_VERSION,
+        "active_plan_id": active_plan_id,
+        "plan_name": active_plan.get("name") if active_plan else None,
+        "detail_level": detail_signals["detail_level"],
+        "detail_available": detail_signals["detail_available"],
+        "detail_signals": detail_signals,
+        "source_event": source_event,
+        "plan_payload": active_payload if active_plan else None,
+    }
+    plan_name = active_plan["name"] if active_plan else "none"
+    return overview_payload, details_payload, plan_name
+
+
+async def _upsert_training_plan_projection(
+    conn: psycopg.AsyncConnection[Any],
+    user_id: str,
+    *,
+    key: str,
+    data: dict[str, Any],
+    last_event_id: str,
+) -> None:
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            INSERT INTO projections (user_id, projection_type, key, data, version, last_event_id, updated_at)
+            VALUES (%s, 'training_plan', %s, %s, 1, %s, NOW())
+            ON CONFLICT (user_id, projection_type, key) DO UPDATE SET
+                data = EXCLUDED.data,
+                version = projections.version + 1,
+                last_event_id = EXCLUDED.last_event_id,
+                updated_at = NOW()
+            """,
+            (user_id, key, json.dumps(data), last_event_id),
+        )
+
+
 @projection_handler(
     "training_plan.created",
     "training_plan.updated",
@@ -393,197 +583,43 @@ async def update_training_plan(
     user_id = payload["user_id"]
     retracted_ids = await get_retracted_event_ids(conn, user_id)
 
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            """
-            SELECT id, timestamp, event_type, data
-            FROM events
-            WHERE user_id = %s
-              AND event_type IN (
-                  'training_plan.created',
-                  'training_plan.updated',
-                  'training_plan.archived'
-              )
-            ORDER BY timestamp ASC
-            """,
-            (user_id,),
-        )
-        rows = await cur.fetchall()
-
-    # Filter retracted events
-    rows = [r for r in rows if str(r["id"]) not in retracted_ids]
+    rows = await _load_training_plan_rows(conn, user_id, retracted_ids)
 
     if not rows:
-        # Clean up: delete any existing projection (all events retracted)
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                DELETE FROM projections
-                WHERE user_id = %s
-                  AND projection_type = 'training_plan'
-                  AND key IN (%s, %s)
-                """,
-                (user_id, TRAINING_PLAN_OVERVIEW_KEY, TRAINING_PLAN_DETAILS_KEY),
-            )
+        await _delete_training_plan_projections(conn, user_id)
         return
 
-    last_event_id = rows[-1]["id"]
-
-    # Replay plan events to reconstruct current state
-    # Plans are identified by plan_id. Latest created plan becomes active.
-    plans: dict[str, dict[str, Any]] = {}
-    plan_payloads: dict[str, dict[str, Any]] = {}
-    plan_detail_sources: dict[str, dict[str, str]] = {}
-    archived_plans: list[dict[str, Any]] = []
-
-    for row in rows:
-        data = row["data"]
-        ts = row["timestamp"]
-        event_type = row["event_type"]
-        plan_id = _normalized_plan_id(data.get("plan_id"))
-
-        if event_type == "training_plan.created":
-            normalized_sessions = _normalize_plan_sessions_with_rir(
-                data.get("sessions", [])
-            )
-            plans[plan_id] = {
-                "plan_id": plan_id,
-                "name": _resolve_plan_name(data.get("name"), plan_id=plan_id, timestamp=ts),
-                "created_at": ts.isoformat(),
-                "updated_at": ts.isoformat(),
-                "status": "active",
-                "sessions": normalized_sessions,
-                "cycle_weeks": data.get("cycle_weeks"),
-                "notes": data.get("notes"),
-                "rir_targets": _compute_rir_target_summary(normalized_sessions),
-            }
-            plan_payloads[plan_id] = _merge_plan_payload(None, data)
-            plan_detail_sources[plan_id] = _build_event_ref(row)
-
-        elif event_type == "training_plan.updated":
-            if plan_id in plans:
-                plan = plans[plan_id]
-                plan["updated_at"] = ts.isoformat()
-                # Delta merge: update provided fields
-                if "name" in data:
-                    normalized_name = _resolve_optional_plan_name(data.get("name"))
-                    if normalized_name is not None:
-                        plan["name"] = normalized_name
-                if "sessions" in data:
-                    normalized_sessions = _normalize_plan_sessions_with_rir(
-                        data["sessions"]
-                    )
-                    plan["sessions"] = normalized_sessions
-                    plan["rir_targets"] = _compute_rir_target_summary(
-                        normalized_sessions
-                    )
-                if "cycle_weeks" in data:
-                    plan["cycle_weeks"] = data["cycle_weeks"]
-                if "notes" in data:
-                    plan["notes"] = data["notes"]
-                plan_payloads[plan_id] = _merge_plan_payload(
-                    plan_payloads.get(plan_id),
-                    data,
-                )
-                if _event_contains_plan_detail_delta(data):
-                    plan_detail_sources[plan_id] = _build_event_ref(row)
-
-        elif event_type == "training_plan.archived":
-            if plan_id in plans:
-                plan = plans.pop(plan_id)
-                plan["status"] = "archived"
-                plan["archived_at"] = ts.isoformat()
-                if "reason" in data:
-                    plan["archive_reason"] = data["reason"]
-                archived_plans.append(plan)
-                plan_payloads.pop(plan_id, None)
-                plan_detail_sources.pop(plan_id, None)
-
-    # The most recently created non-archived plan is active
-    active_plan = None
-    if plans:
-        # Sort by created_at, take the latest
-        sorted_plans = sorted(plans.values(), key=lambda p: p["created_at"])
-        # Mark all as inactive except the latest
-        for plan in sorted_plans[:-1]:
-            plan["status"] = "inactive"
-        active_plan = sorted_plans[-1]
-
-    active_plan_id = active_plan["plan_id"] if active_plan else None
-    active_payload = (
-        copy.deepcopy(plan_payloads.get(active_plan_id, {})) if active_plan_id else {}
+    last_event_id = str(rows[-1]["id"])
+    plans, plan_payloads, plan_detail_sources, archived_plans = (
+        _replay_training_plan_state(rows)
     )
-    detail_signals = _compute_plan_detail_signals(active_payload)
-    source_event = (
-        copy.deepcopy(plan_detail_sources.get(active_plan_id)) if active_plan_id else None
+    projection_data, details_projection_data, plan_name = (
+        _build_training_plan_projection_payloads(
+            plans,
+            plan_payloads,
+            plan_detail_sources,
+            archived_plans,
+        )
     )
-    detail_locator = {
-        "schema_version": TRAINING_PLAN_DETAIL_LOCATOR_SCHEMA_VERSION,
-        "projection_type": "training_plan",
-        "projection_key": TRAINING_PLAN_DETAILS_KEY,
-        "detail_level": detail_signals["detail_level"],
-        "detail_available": detail_signals["detail_available"],
-        "source_event": source_event,
-    }
 
-    if active_plan is not None:
-        active_plan["detail_presence"] = copy.deepcopy(detail_signals)
+    await _upsert_training_plan_projection(
+        conn,
+        user_id,
+        key=TRAINING_PLAN_OVERVIEW_KEY,
+        data=projection_data,
+        last_event_id=last_event_id,
+    )
+    await _upsert_training_plan_projection(
+        conn,
+        user_id,
+        key=TRAINING_PLAN_DETAILS_KEY,
+        data=details_projection_data,
+        last_event_id=last_event_id,
+    )
 
-    projection_data: dict[str, Any] = {
-        "active_plan": active_plan,
-        "total_plans": len(plans) + len(archived_plans),
-        "plan_history": archived_plans[-5:],  # Last 5 archived plans
-        "detail_locator": detail_locator,
-    }
-    details_projection_data: dict[str, Any] = {
-        "schema_version": TRAINING_PLAN_DETAILS_SCHEMA_VERSION,
-        "active_plan_id": active_plan_id,
-        "plan_name": active_plan.get("name") if active_plan else None,
-        "detail_level": detail_signals["detail_level"],
-        "detail_available": detail_signals["detail_available"],
-        "detail_signals": detail_signals,
-        "source_event": source_event,
-        "plan_payload": active_payload if active_plan else None,
-    }
-
-    async with conn.cursor() as cur:
-        await cur.execute(
-            """
-            INSERT INTO projections (user_id, projection_type, key, data, version, last_event_id, updated_at)
-            VALUES (%s, 'training_plan', %s, %s, 1, %s, NOW())
-            ON CONFLICT (user_id, projection_type, key) DO UPDATE SET
-                data = EXCLUDED.data,
-                version = projections.version + 1,
-                last_event_id = EXCLUDED.last_event_id,
-                updated_at = NOW()
-            """,
-            (
-                user_id,
-                TRAINING_PLAN_OVERVIEW_KEY,
-                json.dumps(projection_data),
-                str(last_event_id),
-            ),
-        )
-        await cur.execute(
-            """
-            INSERT INTO projections (user_id, projection_type, key, data, version, last_event_id, updated_at)
-            VALUES (%s, 'training_plan', %s, %s, 1, %s, NOW())
-            ON CONFLICT (user_id, projection_type, key) DO UPDATE SET
-                data = EXCLUDED.data,
-                version = projections.version + 1,
-                last_event_id = EXCLUDED.last_event_id,
-                updated_at = NOW()
-            """,
-            (
-                user_id,
-                TRAINING_PLAN_DETAILS_KEY,
-                json.dumps(details_projection_data),
-                str(last_event_id),
-            ),
-        )
-
-    plan_name = active_plan["name"] if active_plan else "none"
     logger.info(
         "Updated training_plan for user=%s (active=%s, total=%d)",
-        user_id, plan_name, projection_data["total_plans"],
+        user_id,
+        plan_name,
+        projection_data["total_plans"],
     )
