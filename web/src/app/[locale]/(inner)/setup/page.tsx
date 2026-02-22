@@ -72,7 +72,7 @@ export default function SetupPage() {
 
         {/* AI Cards */}
         <div className={styles.aiCards}>
-          {(['claude', 'chatgpt', 'openclaw'] as const).map((ai) => (
+          {(['openclaw', 'claude', 'chatgpt'] as const).map((ai) => (
             <button
               key={ai}
               className={`${styles.aiCard} ${selectedAI === ai ? styles.aiCardActive : ''}`}

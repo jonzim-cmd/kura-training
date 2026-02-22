@@ -273,11 +273,15 @@
       "deleteError": "Could not schedule account deletion. Please try again."
     }
   },
+  "howIUseIt": {
+    "title": "How I Use It",
+    "subtitle": "Real conversations between me and my agent."
+  },
   "setup": {
     "welcome": "Great to have you!",
     "welcomeSubtitle": "Connect your AI to Kura next. Once set up, tell your agent: \"I'm new to Kura. Explain how it works and do the onboarding with me.\"",
     "title": "Connect your AI",
-    "subtitle": "Choose your AI — we'll show you step by step how to set it up.",
+    "subtitle": "Most find it works best with OpenClaw or Claude.",
     "cards": {
       "claude": "Claude",
       "claudeSub": "claude.ai",
@@ -405,7 +409,7 @@
       "mcpHint": "Tell your OpenClaw agent:",
       "mcpPrompt": "Connect to my Kura account. MCP server URL: https://api.withkura.com/mcp — Use OAuth for authentication.",
       "cliHint": "Tell your OpenClaw agent:",
-      "cliPrompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with KURA_API_URL=https://api.withkura.com kura login."
+      "cliPrompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with KURA_API_URL=https://api.withkura.com kura login. If you're running on a server without a browser, use kura login --device instead of kura login."
     },
     "expert": {
       "toggle": "You use Claude Desktop, Claude Code, Gemini CLI, Codex, or another tool with MCP or CLI support?",
@@ -415,7 +419,7 @@
       "cliTitle": "CLI instead of MCP",
       "cliDescription": "If you prefer CLI, your AI can install and set up the Kura CLI. Tell your AI:",
       "cliInstall": "cargo install kura-cli",
-      "cliPrompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with KURA_API_URL=https://api.withkura.com kura login."
+      "cliPrompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with KURA_API_URL=https://api.withkura.com kura login. If you're running on a server without a browser, use kura login --device instead of kura login."
     }
   },
   "footer": {

@@ -273,11 +273,15 @@
       "deleteError": "アカウント削除を予約できませんでした。もう一度お試しください。"
     }
   },
+  "howIUseIt": {
+    "title": "How I Use It",
+    "subtitle": "エージェントとの実際の会話。"
+  },
   "setup": {
     "welcome": "ようこそ！",
     "welcomeSubtitle": "次にAIをKuraに接続しましょう。設定が完了したら、エージェントにこう言ってみて：「Kuraを使いたい。使い方を教えて、オンボーディングをやって。」",
     "title": "AIを接続",
-    "subtitle": "AIを選んでください。ステップごとにご案内します。",
+    "subtitle": "OpenClawまたはClaudeとの組み合わせが人気です。",
     "cards": {
       "claude": "Claude",
       "claudeSub": "claude.ai",
@@ -405,7 +409,7 @@
       "mcpHint": "OpenClawエージェントに伝えてください：",
       "mcpPrompt": "Connect to my Kura account. MCP server URL: https://api.withkura.com/mcp — Use OAuth for authentication.",
       "cliHint": "OpenClawエージェントに伝えてください：",
-      "cliPrompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with KURA_API_URL=https://api.withkura.com kura login."
+      "cliPrompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with KURA_API_URL=https://api.withkura.com kura login. If you're running on a server without a browser, use kura login --device instead of kura login."
     },
     "expert": {
       "toggle": "Claude Desktop、Claude Code、Gemini CLI、Codex、その他のMCPまたはCLI対応ツールを使っていますか？",
@@ -415,7 +419,7 @@
       "cliTitle": "MCPの代わりにCLI",
       "cliDescription": "CLIを使いたい場合、AIがKura CLIをインストール・設定できます。AIに伝えてください：",
       "cliInstall": "cargo install kura-cli",
-      "cliPrompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with KURA_API_URL=https://api.withkura.com kura login."
+      "cliPrompt": "Install the Kura CLI (cargo install kura-cli) and connect my account with KURA_API_URL=https://api.withkura.com kura login. If you're running on a server without a browser, use kura login --device instead of kura login."
     }
   },
   "footer": {

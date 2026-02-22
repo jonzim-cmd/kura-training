@@ -273,11 +273,15 @@
       "deleteError": "Konto-Löschung konnte nicht geplant werden. Bitte versuche es erneut."
     }
   },
+  "howIUseIt": {
+    "title": "How I Use It",
+    "subtitle": "Echte Gespräche zwischen mir und meinem Agenten."
+  },
   "setup": {
     "welcome": "Cool, dass du dabei bist!",
     "welcomeSubtitle": "Verbinde als Nächstes deine KI mit Kura. Wenn alles eingerichtet ist, sag deinem Agent: „Ich bin neu bei Kura. Erkläre mir, wie es funktioniert und mach das Onboarding mit mir.\u201C",
     "title": "Verbinde deine KI",
-    "subtitle": "Wähle deine KI — wir zeigen dir Schritt für Schritt, wie es geht.",
+    "subtitle": "Die meisten nutzen OpenClaw oder Claude.",
     "cards": {
       "claude": "Claude",
       "claudeSub": "claude.ai",
@@ -405,7 +409,7 @@
       "mcpHint": "Sag deinem OpenClaw-Agent:",
       "mcpPrompt": "Verbinde dich mit meinem Kura-Konto. MCP-Server-URL: https://api.withkura.com/mcp — Nutze OAuth zur Authentifizierung.",
       "cliHint": "Sag deinem OpenClaw-Agent:",
-      "cliPrompt": "Installiere die Kura CLI (cargo install kura-cli) und verbinde mein Konto mit KURA_API_URL=https://api.withkura.com kura login."
+      "cliPrompt": "Installiere die Kura CLI (cargo install kura-cli) und verbinde mein Konto mit KURA_API_URL=https://api.withkura.com kura login. Falls du auf einem Server ohne Browser läufst, nutze kura login --device statt kura login."
     },
     "expert": {
       "toggle": "Du nutzt Claude Desktop, Claude Code, Gemini CLI, Codex oder ein anderes Tool mit MCP- oder CLI-Unterstützung?",
@@ -415,7 +419,7 @@
       "cliTitle": "CLI statt MCP",
       "cliDescription": "Wenn du lieber CLI nutzen möchtest, kann deine KI die Kura CLI installieren und einrichten. Sag deiner KI:",
       "cliInstall": "cargo install kura-cli",
-      "cliPrompt": "Installiere die Kura CLI (cargo install kura-cli) und verbinde mein Konto mit KURA_API_URL=https://api.withkura.com kura login."
+      "cliPrompt": "Installiere die Kura CLI (cargo install kura-cli) und verbinde mein Konto mit KURA_API_URL=https://api.withkura.com kura login. Falls du auf einem Server ohne Browser läufst, nutze kura login --device statt kura login."
     }
   },
   "footer": {
