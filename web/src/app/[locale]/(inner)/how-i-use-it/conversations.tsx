@@ -229,6 +229,52 @@ const de: LocaleConversations = [
       },
     },
   ],
+
+  /* ── 7. Datenqualität reviewen ── */
+  [
+    {
+      from: 'user',
+      text: 'Kannst du mal die Eintragungen in Kura reviewen, alles sauber angelegt oder müssen wir was besprechen?',
+      time: '20:14',
+    },
+    {
+      from: 'agent',
+      card: {
+        emoji: '🔍',
+        title: 'Kura Daten-Review',
+        body: (
+          <>
+            <p>Ich habe deine Kura-Daten gerade gründlich gereviewt. Im Großen und Ganzen sieht das System sehr gesund aus (&quot;Quality Status: Healthy&quot;), aber es gibt 3-4 Punkte, die wir glattziehen sollten, damit deine Statistiken (besonders für das Dunk-Ziel) präzise bleiben.</p>
+            <div className={s.sectionTitle}>1. &quot;Orphaned Fields&quot; (Unbekannte Datenfelder) ⚠️</div>
+            <p>Das System hat in deinen Logs ein paar Felder entdeckt, mit denen es (noch) nichts anfangen kann, weil sie in keinen Standard-Schnittstellen landen. Das bläht deine &quot;Agenda&quot; auf.</p>
+            <p><strong>Warum das wichtig ist:</strong> Wenn du &quot;Overall Feeling: 7&quot; schreibst, Kura aber nur <strong>enjoyment (1-10)</strong> versteht, geht diese Info statistisch verloren.</p>
+            <p><strong>Action:</strong> Ich werde beim nächsten Loggen darauf achten, diese Begriffe auf die Kura-Standardbegriffe zu mappen.</p>
+          </>
+        ),
+      },
+    },
+    {
+      from: 'user',
+      text: "Bzgl. 'Orphaned Fields' (Unbekannte Datenfelder): Sollten wir hier was korrigieren?",
+      time: '20:16',
+    },
+    {
+      from: 'agent',
+      card: {
+        emoji: '🦊',
+        title: 'Empfehlung: Alte Daten lassen',
+        body: (
+          <>
+            <p>Meine Empfehlung ist: <strong>Lass uns die alten Einträge so stehen lassen.</strong> 🦊</p>
+            <ul className={s.bulletList}>
+              <li><strong>Kosten-Nutzen-Faktor:</strong> Das manuell glattzuziehen, wäre eine riesige Menge an Events, ohne dass sich an deinen e1RM-Werten etwas ändert.</li>
+              <li><strong>Die Agenda säubert sich von selbst:</strong> Die Agenda in Kura zeigt nur Felder an, die &quot;kürzlich&quot; oder &quot;häufig&quot; beobachtet wurden. Wenn wir ab heute sauber loggen, verschwinden diese Warnungen nach und nach aus deinem aktiven Profil.</li>
+            </ul>
+          </>
+        ),
+      },
+    },
+  ],
 ];
 
 /* ═══════════════════════════════════════════════════════════
@@ -442,6 +488,52 @@ const en: LocaleConversations = [
               <li>Yesterday (Fri): <strong>Load Score 45.2</strong> (Front Squat 5x80kg, Clean 4x72.5kg)</li>
               <li>Today (Sat): <strong>Load Score 40.9</strong> (Split Squats 6x50kg, Push Press Eccentric 5x60kg)</li>
               <li>That&apos;s two very high-volume days back to back. The &quot;Jump Focus&quot; on Monday needs freshness, so really use Sunday to recharge.</li>
+            </ul>
+          </>
+        ),
+      },
+    },
+  ],
+
+  /* ── 7. Data quality review ── */
+  [
+    {
+      from: 'user',
+      text: 'Can you review the entries in Kura — everything clean or do we need to discuss anything?',
+      time: '20:14',
+    },
+    {
+      from: 'agent',
+      card: {
+        emoji: '🔍',
+        title: 'Kura Data Review',
+        body: (
+          <>
+            <p>I just thoroughly reviewed your Kura data. Overall the system looks very healthy (&quot;Quality Status: Healthy&quot;), but there are 3-4 points we should smooth out so your statistics (especially for the dunk goal) stay precise.</p>
+            <div className={s.sectionTitle}>1. &quot;Orphaned Fields&quot; (Unknown Data Fields) ⚠️</div>
+            <p>The system found some fields in your logs that it can&apos;t (yet) do anything with because they don&apos;t land in any standard interfaces. This inflates your &quot;Agenda&quot;.</p>
+            <p><strong>Why this matters:</strong> When you write &quot;Overall Feeling: 7&quot; but Kura only understands <strong>enjoyment (1-10)</strong>, that info is statistically lost.</p>
+            <p><strong>Action:</strong> I&apos;ll make sure to map these terms to Kura&apos;s standard fields next time we log.</p>
+          </>
+        ),
+      },
+    },
+    {
+      from: 'user',
+      text: "About the 'Orphaned Fields' (unknown data fields): Should we correct anything here?",
+      time: '20:16',
+    },
+    {
+      from: 'agent',
+      card: {
+        emoji: '🦊',
+        title: 'Recommendation: Leave Old Data',
+        body: (
+          <>
+            <p>My recommendation: <strong>Let&apos;s leave the old entries as they are.</strong> 🦊</p>
+            <ul className={s.bulletList}>
+              <li><strong>Cost-benefit:</strong> Smoothing this out manually would be a huge amount of events without changing your e1RM values at all.</li>
+              <li><strong>The agenda cleans itself:</strong> Kura&apos;s agenda only shows fields that were observed &quot;recently&quot; or &quot;frequently&quot;. If we log cleanly from today, these warnings will gradually disappear from your active profile.</li>
             </ul>
           </>
         ),
