@@ -5,7 +5,7 @@
   },
   "nav": {
     "home": "Warum KURA?",
-    "howIUseIt": "How I Use It",
+    "howIUseIt": "So nutze ich es",
     "setup": "Einrichtung",
     "login": "Anmelden",
     "signup": "Konto erstellen",
@@ -276,7 +276,7 @@
     }
   },
   "howIUseIt": {
-    "title": "How I Use It",
+    "title": "So nutze ich es",
     "subtitle": "Echte Gespräche zwischen mir und meinem Agenten."
   },
   "setup": {

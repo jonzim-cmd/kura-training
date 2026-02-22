@@ -5,7 +5,7 @@
   },
   "nav": {
     "home": "KURAとは?",
-    "howIUseIt": "How I Use It",
+    "howIUseIt": "使い方の実例",
     "setup": "設定ガイド",
     "login": "ログイン",
     "signup": "アカウント作成",
@@ -276,7 +276,7 @@
     }
   },
   "howIUseIt": {
-    "title": "How I Use It",
+    "title": "使い方の実例",
     "subtitle": "エージェントとの実際の会話。"
   },
   "setup": {

@@ -49,6 +49,7 @@ export default function LandingContent() {
       <section className={styles.cta}>
         <Link href="/request-access" className={styles.ctaButton}>{t('getStarted')}</Link>
         <Link href="/start" className={styles.ctaWhyLink}>{tn('home')}</Link>
+        <Link href="/how-i-use-it" className={styles.ctaWhyLink}>{tn('howIUseIt')}</Link>
       </section>
 
       {/* BOTTOM */}
