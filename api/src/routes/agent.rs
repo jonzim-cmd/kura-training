@@ -2242,7 +2242,9 @@ fn agent_context_reload_hint(section: &str) -> &'static str {
         "quality_health" => "Reload with GET /v1/projections/quality_health/overview.",
         "consistency_inbox" => "Reload with GET /v1/projections/consistency_inbox/overview.",
         "semantic_memory" => "Reload with GET /v1/projections/semantic_memory/overview.",
-        "training_plan" => "Reload with GET /v1/projections/training_plan/overview.",
+        "training_plan" => {
+            "Reload with GET /v1/projections/training_plan/overview and GET /v1/projections/training_plan/details for prescription-level fields."
+        }
         "recovery" => "Reload with GET /v1/projections/recovery/overview.",
         "nutrition" => "Reload with GET /v1/projections/nutrition/overview.",
         "supplements" => "Reload with GET /v1/projections/supplements/overview.",
@@ -9256,6 +9258,14 @@ mod tests {
             }
             _ => panic!("expected validation error for budget_tokens"),
         }
+    }
+
+    #[test]
+    fn agent_context_reload_hint_for_training_plan_mentions_details_projection() {
+        let hint = super::agent_context_reload_hint("training_plan");
+        assert!(hint.contains("/v1/projections/training_plan/overview"));
+        assert!(hint.contains("/v1/projections/training_plan/details"));
+        assert!(hint.contains("prescription-level fields"));
     }
 
     #[test]

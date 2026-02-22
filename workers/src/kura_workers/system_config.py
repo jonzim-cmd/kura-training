@@ -992,6 +992,45 @@ def _get_conventions() -> dict[str, Any]:
                 "must_avoid_bureaucratic_friction_for_routine_adjustments": True,
             },
         },
+        "training_plan_detail_retrieval_v1": {
+            "schema_version": "training_plan_detail_retrieval.v1",
+            "rules": [
+                "Never claim plan details are missing before checking both training_plan/overview and training_plan/details.",
+                "Use training_plan/overview.detail_locator as deterministic source-of-truth for where detailed prescriptions live.",
+                "If detail_level=header_only, use source_event from detail_locator for fallback event inspection.",
+                "When detail_level=structured, answer from training_plan/details.plan_payload first.",
+            ],
+            "primary_projection": {
+                "projection_type": "training_plan",
+                "key": "overview",
+                "required_fields": [
+                    "active_plan",
+                    "detail_locator.projection_key",
+                    "detail_locator.detail_level",
+                    "detail_locator.source_event",
+                ],
+            },
+            "detail_projection": {
+                "projection_type": "training_plan",
+                "key": "details",
+                "required_fields": [
+                    "schema_version",
+                    "active_plan_id",
+                    "detail_level",
+                    "plan_payload",
+                ],
+            },
+            "fallback_event_policy": {
+                "event_type": "training_plan.updated",
+                "required_when": "detail_level=header_only",
+                "max_events_to_scan": 5,
+                "ordering": "timestamp_desc",
+            },
+            "safety": {
+                "must_not_present_guess_as_plan_detail": True,
+                "must_declare_when_only_header_is_available": True,
+            },
+        },
         "learning_backlog_bridge_v1": {
             "rules": [
                 "Generate machine-readable issue candidates from weekly learning_issue_clusters and extraction underperformance reports.",

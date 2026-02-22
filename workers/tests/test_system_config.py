@@ -600,6 +600,22 @@ class TestConventions:
             is True
         )
 
+    def test_has_training_plan_detail_retrieval_v1_conventions(self):
+        result = _get_conventions()
+        assert "training_plan_detail_retrieval_v1" in result
+        contract = result["training_plan_detail_retrieval_v1"]
+        assert contract["schema_version"] == "training_plan_detail_retrieval.v1"
+        primary = contract["primary_projection"]
+        assert primary["projection_type"] == "training_plan"
+        assert primary["key"] == "overview"
+        detail = contract["detail_projection"]
+        assert detail["projection_type"] == "training_plan"
+        assert detail["key"] == "details"
+        fallback = contract["fallback_event_policy"]
+        assert fallback["event_type"] == "training_plan.updated"
+        assert fallback["required_when"] == "detail_level=header_only"
+        assert contract["safety"]["must_not_present_guess_as_plan_detail"] is True
+
     def test_has_proof_in_production_v1_conventions(self):
         result = _get_conventions()
         assert "proof_in_production_v1" in result
