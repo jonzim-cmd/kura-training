@@ -23,6 +23,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from ..consistency_inbox import refresh_consistency_inbox_for_user
+from ..event_conventions import get_event_conventions
 from ..external_import_error_taxonomy import (
     classify_import_error_code,
     is_import_parse_quality_failure,
@@ -49,6 +50,7 @@ logger = logging.getLogger(__name__)
 
 _INVARIANT_SOURCE_EVENT_TYPES = (
     "set.logged",
+    "session.completed",
     "session.logged",
     "set.corrected",
     "exercise.alias_created",
@@ -56,6 +58,15 @@ _INVARIANT_SOURCE_EVENT_TYPES = (
     "profile.updated",
     "goal.set",
     "bodyweight.logged",
+    "measurement.logged",
+    "meal.logged",
+    "sleep.logged",
+    "soreness.logged",
+    "energy.logged",
+    "recovery.daily_checkin",
+    "supplement.logged",
+    "supplement.taken",
+    "supplement.skipped",
     "projection_rule.created",
     "projection_rule.archived",
     "training_plan.created",
@@ -94,6 +105,19 @@ _SEVERITY_ORDER = {
     "medium": 1,
     "low": 2,
     "info": 3,
+}
+
+_UNKNOWN_FIELD_RECENT_WINDOW_DAYS = 14
+_UNKNOWN_FIELD_MEDIUM_OCCURRENCES = 6
+_UNKNOWN_FIELD_MEDIUM_EVENT_TYPES = 2
+_UNKNOWN_FIELD_TOP_LIMIT = 5
+_UNKNOWN_FIELD_HINTS: dict[tuple[str, str], str] = {
+    ("session.completed", "overall_feeling"): "enjoyment",
+    ("session.completed", "feeling"): "enjoyment",
+    ("soreness.logged", "overall_level"): "severity",
+    ("soreness.logged", "soreness_level"): "severity",
+    ("energy.logged", "energy_level"): "level",
+    ("set.logged", "notes"): "load_context",
 }
 
 _REPAIR_STATE_PROPOSED = "proposed"
@@ -2141,6 +2165,149 @@ def _compute_draft_hygiene_metrics(
     }
 
 
+def _extract_field_token(raw: str) -> str | None:
+    token = str(raw).split(".", 1)[0].strip()
+    return token if token else None
+
+
+def _extract_convention_known_fields(convention: dict[str, Any]) -> set[str]:
+    known_fields: set[str] = set()
+
+    fields = convention.get("fields")
+    if isinstance(fields, dict):
+        for key in fields.keys():
+            token = str(key).strip()
+            if token:
+                known_fields.add(token)
+    elif isinstance(fields, list):
+        for item in fields:
+            if isinstance(item, str):
+                token = _extract_field_token(item)
+                if token:
+                    known_fields.add(token)
+
+    for list_key in ("required_fields", "optional_fields"):
+        values = convention.get(list_key)
+        if not isinstance(values, list):
+            continue
+        for item in values:
+            if not isinstance(item, str):
+                continue
+            token = _extract_field_token(item)
+            if token:
+                known_fields.add(token)
+
+    return known_fields
+
+
+def _build_event_convention_field_registry() -> dict[str, set[str]]:
+    registry: dict[str, set[str]] = {}
+    for event_type, convention in get_event_conventions().items():
+        if not isinstance(convention, dict):
+            continue
+        known_fields = _extract_convention_known_fields(convention)
+        if known_fields:
+            registry[event_type] = known_fields
+    return registry
+
+
+_EVENT_CONVENTION_FIELD_REGISTRY = _build_event_convention_field_registry()
+
+
+def _unknown_field_mapping_hint(event_type: str, field: str) -> str | None:
+    return _UNKNOWN_FIELD_HINTS.get(
+        (event_type.strip().lower(), field.strip().lower())
+    )
+
+
+def _compute_unknown_field_drift_metrics(
+    event_rows: list[dict[str, Any]],
+    evaluated_at: datetime,
+) -> dict[str, Any]:
+    window_start = evaluated_at - timedelta(days=_UNKNOWN_FIELD_RECENT_WINDOW_DAYS)
+
+    total_counts: Counter[tuple[str, str]] = Counter()
+    recent_counts: Counter[tuple[str, str]] = Counter()
+    first_seen: dict[tuple[str, str], datetime] = {}
+    last_seen: dict[tuple[str, str], datetime] = {}
+    unknown_field_events_total = 0
+    unknown_field_events_recent = 0
+    recent_event_types: set[str] = set()
+
+    for row in event_rows:
+        event_type = str(row.get("event_type") or "").strip()
+        if not event_type:
+            continue
+        known_fields = _EVENT_CONVENTION_FIELD_REGISTRY.get(event_type)
+        if not known_fields:
+            continue
+
+        payload = row.get("effective_data") or row.get("data") or {}
+        if not isinstance(payload, dict):
+            continue
+
+        timestamp = _coerce_datetime_utc(row.get("timestamp"))
+        is_recent = timestamp is None or timestamp >= window_start
+        row_has_unknown = False
+
+        for field in payload.keys():
+            field_name = str(field).strip()
+            if not field_name or field_name in known_fields:
+                continue
+            row_has_unknown = True
+            key = (event_type, field_name)
+            total_counts[key] += 1
+            if is_recent:
+                recent_counts[key] += 1
+            if timestamp is not None:
+                prev_first = first_seen.get(key)
+                if prev_first is None or timestamp < prev_first:
+                    first_seen[key] = timestamp
+                prev_last = last_seen.get(key)
+                if prev_last is None or timestamp > prev_last:
+                    last_seen[key] = timestamp
+
+        if not row_has_unknown:
+            continue
+        unknown_field_events_total += 1
+        if is_recent:
+            unknown_field_events_recent += 1
+            recent_event_types.add(event_type)
+
+    ranked_recent = sorted(
+        recent_counts.items(),
+        key=lambda item: (-item[1], item[0][0], item[0][1]),
+    )
+    top_unknown_fields_recent: list[dict[str, Any]] = []
+    for (event_type, field_name), count in ranked_recent[:_UNKNOWN_FIELD_TOP_LIMIT]:
+        entry: dict[str, Any] = {
+            "event_type": event_type,
+            "field": field_name,
+            "count": count,
+        }
+        seen_first = first_seen.get((event_type, field_name))
+        seen_last = last_seen.get((event_type, field_name))
+        if seen_first is not None:
+            entry["first_seen"] = seen_first.isoformat()
+        if seen_last is not None:
+            entry["last_seen"] = seen_last.isoformat()
+        hint = _unknown_field_mapping_hint(event_type, field_name)
+        if hint:
+            entry["mapped_field_hint"] = hint
+        top_unknown_fields_recent.append(entry)
+
+    return {
+        "window_days": _UNKNOWN_FIELD_RECENT_WINDOW_DAYS,
+        "unknown_field_occurrences_total": int(sum(total_counts.values())),
+        "unknown_field_occurrences_recent": int(sum(recent_counts.values())),
+        "unknown_field_events_total": unknown_field_events_total,
+        "unknown_field_events_recent": unknown_field_events_recent,
+        "unknown_field_event_types_recent": len(recent_event_types),
+        "unknown_field_distinct_keys_recent": len(recent_counts),
+        "top_unknown_fields_recent": top_unknown_fields_recent,
+    }
+
+
 def _evaluate_read_only_invariants(
     event_rows: list[dict[str, Any]],
     alias_map: dict[str, str],
@@ -2158,8 +2325,10 @@ def _evaluate_read_only_invariants(
     - INV-006 (baseline profile explicitness)
     - INV-009 (external import quality + dedup integrity)
     - INV-010 (session block logging completeness drift)
+    - INV-011 (unknown field drift on registered event schemas)
     """
     issues: list[dict[str, Any]] = []
+    evaluated_dt = evaluated_at or datetime.now(timezone.utc)
     raw_set_rows = [r for r in event_rows if r["event_type"] == "set.logged"]
     set_correction_rows = [
         r for r in event_rows if r["event_type"] == "set.corrected"
@@ -2396,6 +2565,51 @@ def _evaluate_read_only_invariants(
             )
         )
 
+    unknown_field_metrics = _compute_unknown_field_drift_metrics(event_rows, evaluated_dt)
+    unknown_field_occurrences_recent = int(
+        unknown_field_metrics["unknown_field_occurrences_recent"]
+    )
+    unknown_field_event_types_recent = int(
+        unknown_field_metrics["unknown_field_event_types_recent"]
+    )
+    if unknown_field_occurrences_recent > 0:
+        severity = (
+            "medium"
+            if unknown_field_occurrences_recent >= _UNKNOWN_FIELD_MEDIUM_OCCURRENCES
+            or unknown_field_event_types_recent >= _UNKNOWN_FIELD_MEDIUM_EVENT_TYPES
+            else "low"
+        )
+        window_days = int(unknown_field_metrics["window_days"])
+        issues.append(
+            _issue(
+                "INV-011",
+                "unknown_field_drift",
+                severity,
+                (
+                    f"{unknown_field_occurrences_recent} unknown field writes detected in the "
+                    f"last {window_days} days. Values are preserved, but canonical projections "
+                    "may ignore them until mapped."
+                ),
+                metrics={
+                    "window_days": window_days,
+                    "unknown_field_occurrences_recent": unknown_field_occurrences_recent,
+                    "unknown_field_events_recent": int(
+                        unknown_field_metrics["unknown_field_events_recent"]
+                    ),
+                    "unknown_field_event_types_recent": unknown_field_event_types_recent,
+                    "unknown_field_distinct_keys_recent": int(
+                        unknown_field_metrics["unknown_field_distinct_keys_recent"]
+                    ),
+                    "unknown_field_occurrences_total": int(
+                        unknown_field_metrics["unknown_field_occurrences_total"]
+                    ),
+                    "top_unknown_fields_recent": unknown_field_metrics[
+                        "top_unknown_fields_recent"
+                    ],
+                },
+            )
+        )
+
     session_rows = [r for r in event_rows if r.get("event_type") == "session.logged"]
     session_logged_total = len(session_rows)
     session_logged_invalid_total = 0
@@ -2624,7 +2838,6 @@ def _evaluate_read_only_invariants(
             )
         )
 
-    evaluated_dt = evaluated_at or datetime.now(timezone.utc)
     draft_hygiene = _compute_draft_hygiene_metrics(
         raw_event_rows if raw_event_rows is not None else event_rows,
         event_rows,
@@ -2652,6 +2865,26 @@ def _evaluate_read_only_invariants(
         else None,
         "inv004_policy_cutoff": inv004_cutoff.isoformat(),
         "mention_field_missing_total": len(mention_missing_rows),
+        "unknown_field_occurrences_total": int(
+            unknown_field_metrics["unknown_field_occurrences_total"]
+        ),
+        "unknown_field_occurrences_recent": int(
+            unknown_field_metrics["unknown_field_occurrences_recent"]
+        ),
+        "unknown_field_events_total": int(
+            unknown_field_metrics["unknown_field_events_total"]
+        ),
+        "unknown_field_events_recent": int(
+            unknown_field_metrics["unknown_field_events_recent"]
+        ),
+        "unknown_field_event_types_recent": int(
+            unknown_field_metrics["unknown_field_event_types_recent"]
+        ),
+        "unknown_field_distinct_keys_recent": int(
+            unknown_field_metrics["unknown_field_distinct_keys_recent"]
+        ),
+        "unknown_field_top_recent": unknown_field_metrics["top_unknown_fields_recent"],
+        "unknown_field_recent_window_days": int(unknown_field_metrics["window_days"]),
         "session_logged_total": session_logged_total,
         "session_logged_invalid_total": session_logged_invalid_total,
         "session_missing_anchor_total": session_missing_anchor_total,
@@ -2848,6 +3081,7 @@ def _build_quality_projection_data(
             "INV-009",
             "INV-010",
             "INV-008",
+            "INV-011",
         ],
         "metrics": metrics,
         "integrity_slos": integrity_slos or {

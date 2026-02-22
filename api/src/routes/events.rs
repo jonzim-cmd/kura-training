@@ -1924,6 +1924,169 @@ fn check_event_plausibility(event_type: &str, data: &serde_json::Value) -> Vec<E
     warnings
 }
 
+fn extract_field_token(raw: &str) -> Option<String> {
+    let token = raw.split('.').next().unwrap_or(raw).trim();
+    if token.is_empty() {
+        return None;
+    }
+    Some(token.to_string())
+}
+
+fn extract_known_data_fields_from_convention(convention: &Value) -> HashSet<String> {
+    let mut known: HashSet<String> = HashSet::new();
+
+    if let Some(fields) = convention.get("fields") {
+        if let Some(map) = fields.as_object() {
+            for key in map.keys() {
+                let normalized = key.trim();
+                if !normalized.is_empty() {
+                    known.insert(normalized.to_string());
+                }
+            }
+        } else if let Some(items) = fields.as_array() {
+            for item in items {
+                if let Some(raw) = item.as_str() {
+                    if let Some(token) = extract_field_token(raw) {
+                        known.insert(token);
+                    }
+                }
+            }
+        }
+    }
+
+    for list_key in ["required_fields", "optional_fields"] {
+        if let Some(items) = convention.get(list_key).and_then(Value::as_array) {
+            for item in items {
+                if let Some(raw) = item.as_str() {
+                    if let Some(token) = extract_field_token(raw) {
+                        known.insert(token);
+                    }
+                }
+            }
+        }
+    }
+
+    known
+}
+
+fn extract_known_event_fields_from_event_conventions(
+    event_conventions: &Value,
+    requested_event_types: &HashSet<String>,
+) -> HashMap<String, HashSet<String>> {
+    let mut known_fields: HashMap<String, HashSet<String>> = HashMap::new();
+    if requested_event_types.is_empty() {
+        return known_fields;
+    }
+
+    if let Some(map) = event_conventions.as_object() {
+        for event_type in requested_event_types {
+            let Some(convention) = map.get(event_type) else {
+                continue;
+            };
+            let fields = extract_known_data_fields_from_convention(convention);
+            if !fields.is_empty() {
+                known_fields.insert(event_type.clone(), fields);
+            }
+        }
+        return known_fields;
+    }
+
+    if let Some(items) = event_conventions.as_array() {
+        for item in items {
+            let normalized_event_type = item
+                .get("event_type")
+                .and_then(Value::as_str)
+                .map(normalize_event_type)
+                .unwrap_or_default();
+            if normalized_event_type.is_empty()
+                || !requested_event_types.contains(&normalized_event_type)
+            {
+                continue;
+            }
+            let fields = extract_known_data_fields_from_convention(item);
+            if !fields.is_empty() {
+                known_fields.insert(normalized_event_type, fields);
+            }
+        }
+    }
+
+    known_fields
+}
+
+async fn fetch_known_event_fields_for_event_types(
+    pool: &sqlx::PgPool,
+    requested_event_types: &HashSet<String>,
+) -> Result<HashMap<String, HashSet<String>>, AppError> {
+    if requested_event_types.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let event_conventions = sqlx::query_scalar::<_, Value>(
+        "SELECT data->'event_conventions' FROM system_config WHERE key = 'global'",
+    )
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or(Value::Null);
+
+    Ok(extract_known_event_fields_from_event_conventions(
+        &event_conventions,
+        requested_event_types,
+    ))
+}
+
+fn mapped_field_hint(event_type: &str, field: &str) -> Option<&'static str> {
+    let normalized_event_type = normalize_event_type(event_type);
+    let normalized_field = field.trim().to_lowercase();
+    match (normalized_event_type.as_str(), normalized_field.as_str()) {
+        ("session.completed", "overall_feeling") | ("session.completed", "feeling") => {
+            Some("enjoyment")
+        }
+        ("soreness.logged", "overall_level") | ("soreness.logged", "soreness_level") => {
+            Some("severity")
+        }
+        ("energy.logged", "energy_level") => Some("level"),
+        ("set.logged", "notes") => Some("load_context"),
+        _ => None,
+    }
+}
+
+fn check_unknown_fields(
+    event_type: &str,
+    data: &Value,
+    known_fields: Option<&HashSet<String>>,
+) -> Vec<EventWarning> {
+    let Some(known_fields) = known_fields else {
+        return Vec::new();
+    };
+    let Some(payload) = data.as_object() else {
+        return Vec::new();
+    };
+
+    let mut warnings: Vec<EventWarning> = Vec::new();
+    for field in payload.keys() {
+        let normalized_field = field.trim();
+        if normalized_field.is_empty() || known_fields.contains(normalized_field) {
+            continue;
+        }
+        let mut message = format!(
+            "Unknown field '{}' is not declared for {}. Value is stored, but projections may ignore it.",
+            normalized_field, event_type
+        );
+        if let Some(mapped) = mapped_field_hint(event_type, normalized_field) {
+            message.push_str(&format!(" Consider '{}' instead.", mapped));
+        } else {
+            message.push_str(" Check system_config.event_conventions for canonical field names.");
+        }
+        warnings.push(EventWarning {
+            field: format!("data.{normalized_field}"),
+            message,
+            severity: "warning".to_string(),
+        });
+    }
+    warnings.sort_by(|a, b| a.field.cmp(&b.field));
+    warnings
+}
+
 /// Fetch all distinct exercise_ids for a user from the events table.
 async fn fetch_user_exercise_ids(
     pool: &sqlx::PgPool,
@@ -2866,7 +3029,28 @@ pub async fn create_event(
     }
     enforce_legacy_domain_invariants(&state, user_id, std::slice::from_ref(&req)).await?;
 
+    let normalized_event_type = normalize_event_type(&req.event_type);
+    let requested_event_types: HashSet<String> =
+        [normalized_event_type.clone()].into_iter().collect();
+    let known_fields_by_event_type =
+        match fetch_known_event_fields_for_event_types(&state.db, &requested_event_types).await {
+            Ok(value) => value,
+            Err(err) => {
+                tracing::warn!(
+                    user_id = %user_id,
+                    error = ?err,
+                    "unknown_field_advisory_schema_lookup_failed"
+                );
+                HashMap::new()
+            }
+        };
+
     let mut warnings = check_event_plausibility(&req.event_type, &req.data);
+    warnings.extend(check_unknown_fields(
+        &req.event_type,
+        &req.data,
+        known_fields_by_event_type.get(&normalized_event_type),
+    ));
 
     // Exercise-ID similarity check (needs DB to fetch known IDs)
     let known_ids = fetch_user_exercise_ids(&state.db, user_id).await?;
@@ -2909,6 +3093,22 @@ pub(crate) async fn create_events_batch_internal(
 
     // Fetch known exercise_ids once for the entire batch
     let mut known_ids = fetch_user_exercise_ids(&state.db, user_id).await?;
+    let requested_event_types: HashSet<String> = events
+        .iter()
+        .map(|event| normalize_event_type(&event.event_type))
+        .collect();
+    let known_fields_by_event_type =
+        match fetch_known_event_fields_for_event_types(&state.db, &requested_event_types).await {
+            Ok(value) => value,
+            Err(err) => {
+                tracing::warn!(
+                    user_id = %user_id,
+                    error = ?err,
+                    "unknown_field_advisory_schema_lookup_failed"
+                );
+                HashMap::new()
+            }
+        };
 
     // Validate all events before writing any
     let mut all_warnings: Vec<BatchEventWarning> = Vec::new();
@@ -2943,6 +3143,19 @@ pub(crate) async fn create_events_batch_internal(
 
         // Collect plausibility warnings per event
         for w in check_event_plausibility(&event.event_type, &event.data) {
+            all_warnings.push(BatchEventWarning {
+                event_index: i,
+                field: w.field,
+                message: w.message,
+                severity: w.severity,
+            });
+        }
+        let normalized_event_type = normalize_event_type(&event.event_type);
+        for w in check_unknown_fields(
+            &event.event_type,
+            &event.data,
+            known_fields_by_event_type.get(&normalized_event_type),
+        ) {
             all_warnings.push(BatchEventWarning {
                 event_index: i,
                 field: w.field,
@@ -3130,6 +3343,23 @@ pub async fn simulate_events(
     }
 
     let mut known_ids = fetch_user_exercise_ids(&state.db, user_id).await?;
+    let requested_event_types: HashSet<String> = req
+        .events
+        .iter()
+        .map(|event| normalize_event_type(&event.event_type))
+        .collect();
+    let known_fields_by_event_type =
+        match fetch_known_event_fields_for_event_types(&state.db, &requested_event_types).await {
+            Ok(value) => value,
+            Err(err) => {
+                tracing::warn!(
+                    user_id = %user_id,
+                    error = ?err,
+                    "unknown_field_advisory_schema_lookup_failed"
+                );
+                HashMap::new()
+            }
+        };
     let mut warnings: Vec<BatchEventWarning> = Vec::new();
     let mut candidates: HashMap<ProjectionTargetKey, ProjectionTargetCandidate> = HashMap::new();
     let mut notes: Vec<String> = Vec::new();
@@ -3173,6 +3403,19 @@ pub async fn simulate_events(
         })?;
 
         for w in check_event_plausibility(&event.event_type, &event.data) {
+            warnings.push(BatchEventWarning {
+                event_index: i,
+                field: w.field,
+                message: w.message,
+                severity: w.severity,
+            });
+        }
+        let normalized_event_type = normalize_event_type(&event.event_type);
+        for w in check_unknown_fields(
+            &event.event_type,
+            &event.data,
+            known_fields_by_event_type.get(&normalized_event_type),
+        ) {
             warnings.push(BatchEventWarning {
                 event_index: i,
                 field: w.field,
@@ -4343,6 +4586,94 @@ mod tests {
     fn test_unknown_event_type_no_warnings() {
         let w = check_event_plausibility("custom.event", &json!({"anything": 999999}));
         assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_unknown_field_advisory_warns_for_registered_event_type() {
+        let known_fields: HashSet<String> = ["level", "time_of_day"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let warnings = check_unknown_fields(
+            "energy.logged",
+            &json!({"energy_level": 6, "time_of_day": "morning"}),
+            Some(&known_fields),
+        );
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].field, "data.energy_level");
+        assert_eq!(warnings[0].severity, "warning");
+        assert!(warnings[0].message.contains("Consider 'level' instead"));
+    }
+
+    #[test]
+    fn test_unknown_field_advisory_skips_known_fields() {
+        let known_fields: HashSet<String> = ["severity", "area", "notes"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let warnings = check_unknown_fields(
+            "soreness.logged",
+            &json!({"severity": 4, "area": "legs", "notes": "after plyo"}),
+            Some(&known_fields),
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn test_extract_known_event_fields_from_event_conventions_object_shape() {
+        let event_conventions = json!({
+            "energy.logged": {
+                "fields": {
+                    "level": "number",
+                    "time_of_day": "string"
+                }
+            },
+            "evidence.claim.logged": {
+                "required_fields": ["claim_id", "provenance.source_text_span"],
+                "optional_fields": ["scope.level"]
+            }
+        });
+        let requested: HashSet<String> = ["energy.logged", "evidence.claim.logged"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        let known =
+            extract_known_event_fields_from_event_conventions(&event_conventions, &requested);
+
+        assert_eq!(
+            known.get("energy.logged").cloned().unwrap_or_default(),
+            ["level", "time_of_day"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<HashSet<String>>()
+        );
+        let evidence = known
+            .get("evidence.claim.logged")
+            .expect("required/optional fields should be extracted");
+        assert!(evidence.contains("claim_id"));
+        assert!(evidence.contains("provenance"));
+        assert!(evidence.contains("scope"));
+    }
+
+    #[test]
+    fn test_extract_known_event_fields_from_event_conventions_array_shape() {
+        let event_conventions = json!([
+            {
+                "event_type": "energy.logged",
+                "fields": {"level": "number", "time_of_day": "string"}
+            }
+        ]);
+        let requested: HashSet<String> = ["energy.logged"].into_iter().map(str::to_string).collect();
+        let known =
+            extract_known_event_fields_from_event_conventions(&event_conventions, &requested);
+        assert_eq!(
+            known.get("energy.logged").cloned().unwrap_or_default(),
+            ["level", "time_of_day"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<HashSet<String>>()
+        );
     }
 
     #[test]

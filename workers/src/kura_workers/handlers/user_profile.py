@@ -462,32 +462,50 @@ def _find_orphaned_event_types(
     return orphaned
 
 
-def _escalate_priority(count: int, first_seen: str | None) -> str:
-    """Compute escalated priority based on event count and age.
+def _escalate_priority(count: int, last_seen: str | None) -> str:
+    """Compute priority from frequency plus recency decay.
 
-    Thresholds (OR-based — either criterion triggers):
-    - info: default
-    - low: >20 events OR >7 days old
-    - medium: >50 events OR >14 days old
-    - high: >100 events OR >28 days old
+    Base level from count:
+    - info: <=20
+    - low: >20
+    - medium: >50
+    - high: >100
+
+    Recency adjustment from last_seen:
+    - <=7 days ago: +1 level (active drift)
+    - 8..14 days ago: no change
+    - 15..28 days ago: -1 level
+    - >28 days ago: -2 levels (historical noise decays)
     """
-    age_days = 0
-    if first_seen:
+    if count > 100:
+        base_level = 3
+    elif count > 50:
+        base_level = 2
+    elif count > 20:
+        base_level = 1
+    else:
+        base_level = 0
+
+    recency_adjustment = 0
+    if last_seen:
         try:
-            fs = datetime.fromisoformat(first_seen)
-            if fs.tzinfo is None:
-                fs = fs.replace(tzinfo=timezone.utc)
-            age_days = (datetime.now(timezone.utc) - fs).days
+            ls = datetime.fromisoformat(last_seen)
+            if ls.tzinfo is None:
+                ls = ls.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - ls).days
+            if age_days <= 7:
+                recency_adjustment = 1
+            elif age_days <= 14:
+                recency_adjustment = 0
+            elif age_days <= 28:
+                recency_adjustment = -1
+            else:
+                recency_adjustment = -2
         except (ValueError, TypeError):
             pass
 
-    if count > 100 or age_days > 28:
-        return "high"
-    if count > 50 or age_days > 14:
-        return "medium"
-    if count > 20 or age_days > 7:
-        return "low"
-    return "info"
+    level = max(0, min(3, base_level + recency_adjustment))
+    return ["info", "low", "medium", "high"][level]
 
 
 def _build_observed_patterns(
@@ -495,7 +513,9 @@ def _build_observed_patterns(
     orphaned_event_types: list[dict[str, Any]],
     orphaned_field_samples: dict[str, list[str]],
     orphaned_first_seen: dict[str, str] | None = None,
+    orphaned_last_seen: dict[str, str] | None = None,
     observed_field_first_seen: dict[str, dict[str, str]] | None = None,
+    observed_field_last_seen: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Build observation landscape from projection data (Phase 2, Decision 10).
 
@@ -550,6 +570,10 @@ def _build_observed_patterns(
                 fs = observed_field_first_seen[event_type].get(field)
                 if fs:
                     entry["first_seen"] = fs
+            if observed_field_last_seen and event_type in observed_field_last_seen:
+                ls = observed_field_last_seen[event_type].get(field)
+                if ls:
+                    entry["last_seen"] = ls
             observed_fields[event_type][field] = entry
 
     # Orphaned event types with field analysis
@@ -562,6 +586,8 @@ def _build_observed_patterns(
         }
         if orphaned_first_seen and et in orphaned_first_seen:
             entry["first_seen"] = orphaned_first_seen[et]
+        if orphaned_last_seen and et in orphaned_last_seen:
+            entry["last_seen"] = orphaned_last_seen[et]
         orphaned_types[et] = entry
 
     result: dict[str, Any] = {}
@@ -901,12 +927,13 @@ def _build_agenda(
         })
 
     # Observation landscape (Phase 2, Decision 10)
-    # Priority escalates based on event count + age (aok).
+    # Priority is frequency-based with recency decay (active drift surfaces higher).
     if observed_patterns:
         for event_type, fields in sorted(observed_patterns.get("observed_fields", {}).items()):
             for field, info in sorted(fields.items()):
                 first_seen = info.get("first_seen")
-                priority = _escalate_priority(info["count"], first_seen)
+                last_seen = info.get("last_seen")
+                priority = _escalate_priority(info["count"], last_seen)
                 item: dict[str, Any] = {
                     "priority": priority,
                     "type": "field_observed",
@@ -918,12 +945,15 @@ def _build_agenda(
                 }
                 if first_seen:
                     item["first_seen"] = first_seen
+                if last_seen:
+                    item["last_seen"] = last_seen
                 agenda.append(item)
 
         for event_type, info in sorted(observed_patterns.get("orphaned_event_types", {}).items()):
             fields_str = ", ".join(info["common_fields"]) if info["common_fields"] else "unknown"
             first_seen = info.get("first_seen")
-            priority = _escalate_priority(info["count"], first_seen)
+            last_seen = info.get("last_seen")
+            priority = _escalate_priority(info["count"], last_seen)
             item = {
                 "priority": priority,
                 "type": "orphaned_event_type",
@@ -937,6 +967,8 @@ def _build_agenda(
             }
             if first_seen:
                 item["first_seen"] = first_seen
+            if last_seen:
+                item["last_seen"] = last_seen
             agenda.append(item)
 
     # Sort by priority (most urgent first)
@@ -1362,14 +1394,15 @@ async def update_user_profile(
         dimension_metadata, projection_rows, training_activity_range
     )
 
-    # First-seen timestamps for escalation (aok)
+    # First/last seen timestamps for recency-aware escalation.
     orphaned_first_seen: dict[str, str] = {}
+    orphaned_last_seen: dict[str, str] = {}
     if orphaned_event_types:
         orphaned_type_names = [o["event_type"] for o in orphaned_event_types]
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                SELECT event_type, MIN(timestamp) as first_seen
+                SELECT event_type, MIN(timestamp) as first_seen, MAX(timestamp) as last_seen
                 FROM events
                 WHERE user_id = %s AND event_type = ANY(%s)
                 GROUP BY event_type
@@ -1377,23 +1410,28 @@ async def update_user_profile(
                 (user_id, orphaned_type_names),
             )
             for r in await cur.fetchall():
-                orphaned_first_seen[r["event_type"]] = r["first_seen"].isoformat()
+                if r.get("first_seen") is not None:
+                    orphaned_first_seen[r["event_type"]] = r["first_seen"].isoformat()
+                if r.get("last_seen") is not None:
+                    orphaned_last_seen[r["event_type"]] = r["last_seen"].isoformat()
 
     # Observation landscape (Phase 2, Decision 10)
     observed_patterns = _build_observed_patterns(
         projection_rows, orphaned_event_types, orphaned_field_samples,
         orphaned_first_seen=orphaned_first_seen,
+        orphaned_last_seen=orphaned_last_seen,
     )
 
-    # First-seen for observed unknown fields (query after patterns are built)
+    # First/last seen for observed unknown fields (query after patterns are built)
     observed_field_first_seen: dict[str, dict[str, str]] = {}
+    observed_field_last_seen: dict[str, dict[str, str]] = {}
     if observed_patterns and "observed_fields" in observed_patterns:
         for et, fields in observed_patterns["observed_fields"].items():
             field_names = list(fields.keys())
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
-                    SELECT k AS field, MIN(e.timestamp) AS first_seen
+                    SELECT k AS field, MIN(e.timestamp) AS first_seen, MAX(e.timestamp) AS last_seen
                     FROM events e,
                          jsonb_object_keys(e.data) AS k
                     WHERE e.user_id = %s
@@ -1404,14 +1442,19 @@ async def update_user_profile(
                     (user_id, et, field_names),
                 )
                 for r in await cur.fetchall():
-                    observed_field_first_seen.setdefault(et, {})[r["field"]] = r["first_seen"].isoformat()
+                    if r.get("first_seen") is not None:
+                        observed_field_first_seen.setdefault(et, {})[r["field"]] = r["first_seen"].isoformat()
+                    if r.get("last_seen") is not None:
+                        observed_field_last_seen.setdefault(et, {})[r["field"]] = r["last_seen"].isoformat()
 
-    # Rebuild with first_seen enrichment if we have any
-    if observed_field_first_seen:
+    # Rebuild with seen-timestamp enrichment if we have any
+    if observed_field_first_seen or observed_field_last_seen:
         observed_patterns = _build_observed_patterns(
             projection_rows, orphaned_event_types, orphaned_field_samples,
             orphaned_first_seen=orphaned_first_seen,
+            orphaned_last_seen=orphaned_last_seen,
             observed_field_first_seen=observed_field_first_seen,
+            observed_field_last_seen=observed_field_last_seen,
         )
 
     data_quality = _build_data_quality(

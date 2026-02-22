@@ -1205,17 +1205,28 @@ class TestAgendaWithObservedPatterns:
         assert len(result) == 1
         assert result[0]["type"] == "resolve_exercises"
 
-    def test_first_seen_included_in_agenda_items(self):
-        """first_seen propagates from observed_patterns into agenda items."""
-        fs = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    def test_seen_timestamps_included_in_agenda_items(self):
+        """first_seen/last_seen propagate from observed_patterns into agenda items."""
+        fs = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+        ls = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
         patterns = {
             "observed_fields": {
                 "set.logged": {
-                    "tempo": {"count": 5, "dimensions": ["training_timeline"], "first_seen": fs},
+                    "tempo": {
+                        "count": 5,
+                        "dimensions": ["training_timeline"],
+                        "first_seen": fs,
+                        "last_seen": ls,
+                    },
                 },
             },
             "orphaned_event_types": {
-                "cardio.logged": {"count": 3, "common_fields": ["type"], "first_seen": fs},
+                "cardio.logged": {
+                    "count": 3,
+                    "common_fields": ["type"],
+                    "first_seen": fs,
+                    "last_seen": ls,
+                },
             },
         }
         result = _build_agenda([], [], observed_patterns=patterns)
@@ -1223,19 +1234,27 @@ class TestAgendaWithObservedPatterns:
         for item in result:
             assert "first_seen" in item
             assert item["first_seen"] == fs
+            assert "last_seen" in item
+            assert item["last_seen"] == ls
 
-    def test_escalation_by_age_in_agenda(self):
-        """Old fields escalate priority even with low counts."""
-        fs = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    def test_recency_decay_in_agenda(self):
+        """Old fields decay in priority even when frequency is high."""
+        fs = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+        ls = (datetime.now(timezone.utc) - timedelta(days=35)).isoformat()
         patterns = {
             "observed_fields": {
                 "set.logged": {
-                    "tempo": {"count": 5, "dimensions": ["training_timeline"], "first_seen": fs},
+                    "tempo": {
+                        "count": 60,
+                        "dimensions": ["training_timeline"],
+                        "first_seen": fs,
+                        "last_seen": ls,
+                    },
                 },
             },
         }
         result = _build_agenda([], [], observed_patterns=patterns)
-        assert result[0]["priority"] == "high"  # >28 days old
+        assert result[0]["priority"] == "info"
 
     def test_agenda_sorted_by_priority(self):
         """Agenda items are sorted: high → medium → low → info."""
@@ -1268,33 +1287,27 @@ class TestEscalatePriority:
     def test_low_by_count(self):
         assert _escalate_priority(25, None) == "low"
 
-    def test_low_by_age(self):
-        fs = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
-        assert _escalate_priority(5, fs) == "low"
+    def test_low_by_recent_activity(self):
+        ls = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+        assert _escalate_priority(5, ls) == "low"
 
     def test_medium_by_count(self):
         assert _escalate_priority(60, None) == "medium"
 
-    def test_medium_by_age(self):
-        fs = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat()
-        assert _escalate_priority(5, fs) == "medium"
-
     def test_high_by_count(self):
         assert _escalate_priority(150, None) == "high"
 
-    def test_high_by_age(self):
-        fs = (datetime.now(timezone.utc) - timedelta(days=35)).isoformat()
-        assert _escalate_priority(5, fs) == "high"
+    def test_recent_activity_boosts_priority(self):
+        ls = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        assert _escalate_priority(60, ls) == "high"
 
-    def test_or_semantics_count_wins(self):
-        """Recent but many events — count determines priority."""
-        fs = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-        assert _escalate_priority(60, fs) == "medium"
+    def test_mid_stale_activity_decays_priority_one_level(self):
+        ls = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat()
+        assert _escalate_priority(60, ls) == "low"
 
-    def test_or_semantics_age_wins(self):
-        """Old but few events — age determines priority."""
-        fs = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-        assert _escalate_priority(5, fs) == "high"
+    def test_old_activity_decays_priority_two_levels(self):
+        ls = (datetime.now(timezone.utc) - timedelta(days=35)).isoformat()
+        assert _escalate_priority(150, ls) == "low"
 
     def test_boundary_20_is_info(self):
         assert _escalate_priority(20, None) == "info"  # >20, not >=20
@@ -1314,11 +1327,11 @@ class TestEscalatePriority:
     def test_boundary_101_is_high(self):
         assert _escalate_priority(101, None) == "high"
 
-    def test_none_first_seen(self):
+    def test_none_last_seen(self):
         assert _escalate_priority(5, None) == "info"
 
-    def test_invalid_first_seen_ignored(self):
-        assert _escalate_priority(5, "not-a-date") == "info"
+    def test_invalid_last_seen_ignored(self):
+        assert _escalate_priority(60, "not-a-date") == "medium"
 
 
 # --- TestBuildObservedPatternsWithFirstSeen ---
@@ -1331,6 +1344,12 @@ class TestBuildObservedPatternsWithFirstSeen:
         result = _build_observed_patterns([], orphaned, {}, orphaned_first_seen=fs)
         assert result["orphaned_event_types"]["cardio.logged"]["first_seen"] == "2026-01-15T10:00:00+00:00"
 
+    def test_orphaned_last_seen_included(self):
+        orphaned = [{"event_type": "cardio.logged", "count": 10}]
+        ls = {"cardio.logged": "2026-02-20T10:00:00+00:00"}
+        result = _build_observed_patterns([], orphaned, {}, orphaned_last_seen=ls)
+        assert result["orphaned_event_types"]["cardio.logged"]["last_seen"] == "2026-02-20T10:00:00+00:00"
+
     def test_observed_field_first_seen_included(self):
         rows = [{
             "projection_type": "exercise_progression",
@@ -1340,8 +1359,18 @@ class TestBuildObservedPatternsWithFirstSeen:
         result = _build_observed_patterns(rows, [], {}, observed_field_first_seen=fs)
         assert result["observed_fields"]["set.logged"]["tempo"]["first_seen"] == "2026-01-20T08:00:00+00:00"
 
-    def test_backwards_compatible_without_first_seen(self):
-        """Old-style call without first_seen params still works."""
+    def test_observed_field_last_seen_included(self):
+        rows = [{
+            "projection_type": "exercise_progression",
+            "data": {"data_quality": {"observed_attributes": {"set.logged": {"tempo": 5}}}},
+        }]
+        ls = {"set.logged": {"tempo": "2026-02-21T08:00:00+00:00"}}
+        result = _build_observed_patterns(rows, [], {}, observed_field_last_seen=ls)
+        assert result["observed_fields"]["set.logged"]["tempo"]["last_seen"] == "2026-02-21T08:00:00+00:00"
+
+    def test_backwards_compatible_without_seen_timestamps(self):
+        """Old-style call without seen-timestamp params still works."""
         orphaned = [{"event_type": "cardio.logged", "count": 10}]
         result = _build_observed_patterns([], orphaned, {})
         assert "first_seen" not in result["orphaned_event_types"]["cardio.logged"]
+        assert "last_seen" not in result["orphaned_event_types"]["cardio.logged"]

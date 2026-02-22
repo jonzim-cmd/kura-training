@@ -319,6 +319,44 @@ class TestEvaluateReadOnlyInvariants:
         issues, _ = _evaluate_read_only_invariants(rows, alias_map={})
         assert all(issue["type"] != "mention_field_missing" for issue in issues)
 
+    def test_unknown_field_drift_detected_as_advisory_issue(self):
+        rows = [
+            _row("energy.logged", {"energy_level": 6}),
+            _row("preference.set", {"key": "timezone", "value": "Europe/Berlin"}),
+            _row("profile.updated", {"age_deferred": True, "bodyweight_deferred": True}),
+        ]
+        issues, metrics = _evaluate_read_only_invariants(rows, alias_map={})
+
+        issue = next((item for item in issues if item["invariant_id"] == "INV-011"), None)
+        assert issue is not None
+        assert issue["type"] == "unknown_field_drift"
+        assert issue["severity"] == "low"
+        top_recent = issue["metrics"]["top_unknown_fields_recent"]
+        assert top_recent[0]["event_type"] == "energy.logged"
+        assert top_recent[0]["field"] == "energy_level"
+        assert top_recent[0]["mapped_field_hint"] == "level"
+        assert metrics["unknown_field_occurrences_recent"] == 1
+        assert metrics["unknown_field_event_types_recent"] == 1
+
+    def test_unknown_field_drift_escalates_when_repeated_recently(self):
+        rows = [
+            _row("energy.logged", {"energy_level": 6}),
+            _row("energy.logged", {"energy_level": 5}),
+            _row("energy.logged", {"energy_level": 7}),
+            _row("energy.logged", {"energy_level": 4}),
+            _row("energy.logged", {"energy_level": 6}),
+            _row("energy.logged", {"energy_level": 5}),
+            _row("preference.set", {"key": "timezone", "value": "Europe/Berlin"}),
+            _row("profile.updated", {"age_deferred": True, "bodyweight_deferred": True}),
+        ]
+        issues, metrics = _evaluate_read_only_invariants(rows, alias_map={})
+
+        issue = next((item for item in issues if item["invariant_id"] == "INV-011"), None)
+        assert issue is not None
+        assert issue["severity"] == "medium"
+        assert issue["metrics"]["unknown_field_occurrences_recent"] == 6
+        assert metrics["unknown_field_occurrences_recent"] == 6
+
     def test_session_missing_anchor_rate_and_confidence_distribution_metrics(self):
         rows = [
             _row(
@@ -542,6 +580,7 @@ class TestQualityProjectionData:
         assert data["issues_by_severity"]["high"] == 1
         assert data["top_issues"][0]["invariant_id"] == "INV-003"
         assert data["invariant_mode"] == "read_only"
+        assert "INV-011" in data["invariants_evaluated"]
         assert "extraction_calibration" in data
         assert data["schema_capabilities"]["status"] == "healthy"
 
